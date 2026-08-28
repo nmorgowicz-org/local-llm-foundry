@@ -5,6 +5,12 @@ existing protocol fields compatible through 2.x. New installs use the canonical
 root and executable; detection preserves an existing custom or legacy install
 path until the user explicitly migrates it.
 
+Managed-path detection checks both product roots with both executable names. This
+covers upgrades where the rebranded `local-llm-foundry.exe` was installed inside
+the retained `%APPDATA%\llama-monitor\bin` root. Install, start, and SSH
+autostart all use the same detected path, including its matching configuration
+directory.
+
 The remote agent adds host-level telemetry to remote llama.cpp endpoints. Without it, Llama Monitor can still attach to a remote server and read performance metrics, but GPU, CPU, RAM, and host-health data remain unavailable.
 
 Implementation lives in `src/web/api/remote_agent.rs` (API endpoints) and the agent binary's own codebase. The endpoints are composed into the main router in `src/web/api/mod.rs`.
