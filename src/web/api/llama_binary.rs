@@ -25,6 +25,8 @@ fn default_backend_for_os(os: &str) -> &'static str {
     }
 }
 
+const LLAMA_SERVER_HEALTH_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn normalized_arch(arch: &str) -> &str {
     match arch {
         "aarch64" => "arm64",
@@ -629,7 +631,9 @@ fn describe_process_status(status: std::process::ExitStatus) -> String {
 }
 
 async fn check_llama_server_binary(binary: &Path) -> Result<(), String> {
-    let output = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    // macOS Metal dylib initialization can make --help take longer than ten
+    // seconds on a cold process, even when the downloaded binary is healthy.
+    let output = tokio::time::timeout(LLAMA_SERVER_HEALTH_CHECK_TIMEOUT, async {
         tokio::process::Command::new(binary)
             .arg("--help")
             .stdout(std::process::Stdio::null())
@@ -652,6 +656,33 @@ async fn check_llama_server_binary(binary: &Path) -> Result<(), String> {
     } else {
         Err(format!("{status}: {stderr}"))
     }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn restore_promoted_directory(
+    destination: &Path,
+    backup: &Path,
+    failed: &Path,
+) -> Result<(), String> {
+    if !backup.is_dir() {
+        return Err("previous binary directory is unavailable".to_string());
+    }
+    if failed.exists() {
+        std::fs::remove_dir_all(failed)
+            .map_err(|error| format!("could not clear failed update directory: {error}"))?;
+    }
+    std::fs::rename(destination, failed)
+        .map_err(|error| format!("could not move failed update aside: {error}"))?;
+    if let Err(error) = std::fs::rename(backup, destination) {
+        let _ = std::fs::rename(failed, destination);
+        return Err(format!(
+            "could not restore previous binary directory: {error}"
+        ));
+    }
+    std::fs::remove_dir_all(failed).map_err(|error| {
+        format!("previous binary restored, but failed update cleanup failed: {error}")
+    })?;
+    Ok(())
 }
 
 /// POST /api/llama-binary/update — downloads latest release and overwrites llama-server binary
@@ -1065,14 +1096,28 @@ fn api_llama_binary_update(
                     }
 
                     if let Err(detail) = check_llama_server_binary(&dest_path).await {
+                        let failed_dir = dest_parent.join(format!(
+                            "{dest_name}-failed-{tag}-{}-{stamp}",
+                            std::process::id()
+                        ));
+                        let rollback =
+                            restore_promoted_directory(dest_dir, &backup_dir, &failed_dir);
+                        let error = match &rollback {
+                            Ok(()) => format!(
+                                "Installed llama-server binary failed health check after promote: {detail}. Previous binary restored."
+                            ),
+                            Err(error) => format!(
+                                "Installed llama-server binary failed health check after promote: {detail}. Rollback failed: {error}"
+                            ),
+                        };
                         state.push_log(format!(
-                            "[monitor] llama-binary/update: installed binary failed health check after promote: {}.",
-                            detail
+                            "[monitor] llama-binary/update: {}",
+                            error
                         ));
                         return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
                             warp::reply::json(&serde_json::json!({
                                 "ok": false,
-                                "error": format!("Installed llama-server binary failed health check after promote: {}", detail)
+                                "error": error
                             })),
                         ));
                     }
@@ -1339,5 +1384,34 @@ mod tests {
             ));
 
         assert!(llama_update_restart_config(&state).is_none());
+    }
+
+    #[test]
+    fn promoted_binary_failure_restores_previous_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("bin");
+        let backup = root.path().join("bin-previous");
+        let failed = root.path().join("bin-failed");
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::write(destination.join("llama-server"), b"new").unwrap();
+        std::fs::write(backup.join("llama-server"), b"known-good").unwrap();
+
+        restore_promoted_directory(&destination, &backup, &failed).unwrap();
+
+        assert_eq!(
+            std::fs::read(destination.join("llama-server")).unwrap(),
+            b"known-good"
+        );
+        assert!(!backup.exists());
+        assert!(!failed.exists());
+    }
+
+    #[test]
+    fn health_check_timeout_allows_slow_cold_macos_startup() {
+        assert_eq!(
+            LLAMA_SERVER_HEALTH_CHECK_TIMEOUT,
+            std::time::Duration::from_secs(30)
+        );
     }
 }

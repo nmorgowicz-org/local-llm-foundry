@@ -1102,24 +1102,9 @@ pub async fn detect_remote_agent(req: RemoteAgentDetectRequest) -> RemoteAgentDe
     let remote_os = detect_remote_os_with(&connection).await;
     let os = remote_os.as_str().to_string();
     let arch = detect_remote_arch_with(&connection, remote_os).await;
-    let canonical_install_path = install_path_for_os(remote_os).map(ToOwned::to_owned);
-    let legacy_install_path = legacy_install_path_for_os(remote_os).map(ToOwned::to_owned);
-    let canonical_installed = match canonical_install_path.as_deref() {
-        Some(path) => remote_file_exists_with(&connection, remote_os, path).await,
-        None => false,
-    };
-    let legacy_installed = match legacy_install_path.as_deref() {
-        Some(path) => remote_file_exists_with(&connection, remote_os, path).await,
-        None => false,
-    };
-    let install_path = if canonical_installed {
-        canonical_install_path
-    } else if legacy_installed {
-        legacy_install_path
-    } else {
-        canonical_install_path
-    };
-    let installed = canonical_installed || legacy_installed;
+    let detected_install_path = preferred_remote_install_path(&connection, remote_os).await;
+    let installed = remote_file_exists_with(&connection, remote_os, &detected_install_path).await;
+    let install_path = Some(detected_install_path);
     let managed_task =
         install::managed_task_status(&connection, remote_os, install_path.as_deref())
             .await
@@ -1564,7 +1549,7 @@ async fn maybe_autostart_remote_agent(
     }
 
     let remote_os = detect_remote_os_with(&connection).await;
-    let default_install_path = default_install_path_for_os(remote_os);
+    let default_install_path = preferred_remote_install_path(&connection, remote_os).await;
     let default_command =
         default_start_command_for_os_with(&connection, remote_os, &default_install_path).await;
 
@@ -2395,19 +2380,87 @@ async fn remote_file_exists_with(connection: &SshConnection, os: RemoteOs, path:
     )
 }
 
-async fn preferred_remote_install_path(connection: &SshConnection, os: RemoteOs) -> String {
-    let canonical = install_path_for_os(os)
-        .unwrap_or("/tmp/local-llm-foundry")
-        .to_string();
-    if remote_file_exists_with(connection, os, &canonical).await {
-        return canonical;
-    }
-    if let Some(legacy) = legacy_install_path_for_os(os)
-        && remote_file_exists_with(connection, os, legacy).await
+pub(crate) async fn resolve_remote_install_path(
+    connection: Option<&SshConnection>,
+    os: RemoteOs,
+    requested: Option<&str>,
+) -> String {
+    let requested = requested.map(str::trim).filter(|path| !path.is_empty());
+    let requested_is_managed = requested.is_some_and(|path| {
+        managed_install_path_candidates(os)
+            .iter()
+            .any(|managed| managed_install_path_matches(path, managed))
+    });
+
+    if let Some(path) = requested
+        && !requested_is_managed
     {
-        return legacy.to_string();
+        return path.to_string();
     }
-    canonical
+
+    if let Some(connection) = connection {
+        return preferred_remote_install_path(connection, os).await;
+    }
+
+    requested
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| default_install_path_for_os(os))
+}
+
+fn managed_install_path_matches(requested: &str, managed: &str) -> bool {
+    fn normalize(path: &str) -> String {
+        path.trim_end_matches(['\\', '/'])
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+    }
+
+    normalize(requested) == normalize(managed)
+}
+
+pub(crate) async fn preferred_remote_install_path(
+    connection: &SshConnection,
+    os: RemoteOs,
+) -> String {
+    let candidates = managed_install_path_candidates(os);
+    for path in &candidates {
+        if remote_file_exists_with(connection, os, path).await {
+            return path.clone();
+        }
+    }
+    default_install_path_for_os(os)
+}
+
+fn managed_install_path_candidates(os: RemoteOs) -> Vec<String> {
+    let Some(canonical) = install_path_for_os(os) else {
+        return Vec::new();
+    };
+    let Some(legacy) = legacy_install_path_for_os(os) else {
+        return vec![canonical.to_string()];
+    };
+    let canonical_name = if os == RemoteOs::Windows {
+        crate::identity::binary_name(true)
+    } else {
+        crate::identity::binary_name(false)
+    };
+    let legacy_name = if os == RemoteOs::Windows {
+        crate::identity::legacy_binary_name(true)
+    } else {
+        crate::identity::legacy_binary_name(false)
+    };
+    let mut candidates = vec![
+        canonical.to_string(),
+        path_with_file_name(canonical, legacy_name),
+        path_with_file_name(legacy, canonical_name),
+        legacy.to_string(),
+    ];
+    candidates.dedup();
+    candidates
+}
+
+fn path_with_file_name(path: &str, file_name: &str) -> String {
+    path.rfind(['\\', '/'])
+        .map(|index| format!("{}{}", &path[..=index], file_name))
+        .unwrap_or_else(|| file_name.to_string())
 }
 
 async fn agent_health_reachable(agent_url: &str) -> bool {
@@ -2927,14 +2980,13 @@ pub mod install {
         os: RemoteOs,
         api_token: Option<String>,
     ) -> Result<RemoteAgentInstallResponse> {
-        let install_path = install_path
-            .or_else(|| install_path_for_os(os).map(ToOwned::to_owned))
-            .context("Could not determine install path")?;
+        let connection = ssh_connection.unwrap_or_else(|| SshConnection::from_target(ssh_target));
+        let install_path =
+            resolve_remote_install_path(Some(&connection), os, install_path.as_deref()).await;
 
         // Validate install path before any network operations
         validate_install_path(&install_path, os).context("Invalid install path")?;
 
-        let connection = ssh_connection.unwrap_or_else(|| SshConnection::from_target(ssh_target));
         // SCP and PowerShell do not consistently expand `%APPDATA%` when the
         // command is executed by SSH or Task Scheduler. Resolve it once and
         // carry the absolute path through extraction, certificate provisioning,
@@ -4427,6 +4479,33 @@ mod tests {
             assets: Vec::new(),
         };
         assert_eq!(release.checksums_url.as_deref(), Some(checksum));
+    }
+
+    #[test]
+    fn managed_install_path_candidates_cover_rebranded_legacy_binary() {
+        let candidates = managed_install_path_candidates(RemoteOs::Windows);
+        assert_eq!(candidates[0], crate::identity::install_path(true));
+        assert_eq!(
+            candidates[2],
+            "%APPDATA%\\llama-monitor\\bin\\local-llm-foundry.exe"
+        );
+        assert_eq!(candidates[3], crate::identity::legacy_install_path(true));
+    }
+
+    #[test]
+    fn managed_install_path_matching_preserves_custom_paths() {
+        assert!(managed_install_path_matches(
+            "%APPDATA%\\LOCAL-LLM-FOUNDRY\\bin\\local-llm-foundry.exe",
+            crate::identity::install_path(true)
+        ));
+        assert!(managed_install_path_matches(
+            crate::identity::legacy_install_path(false),
+            crate::identity::legacy_install_path(false)
+        ));
+        assert!(!managed_install_path_matches(
+            "/opt/custom-agent/bin/agent",
+            crate::identity::install_path(false)
+        ));
     }
 
     #[test]

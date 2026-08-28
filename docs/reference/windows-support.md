@@ -90,6 +90,11 @@ that controlled restart completes, local binary updates intentionally target
 the active legacy `bin` directory; afterward the canonical
 `local-llm-foundry/bin` directory is selected.
 
+Remote agent management applies the same compatibility rule: a retained legacy
+root is preferred when it is the only managed install, even when that root
+contains the rebranded executable name. A canonical root takes precedence once
+the migration has completed.
+
 ---
 
 ## GPU data sources

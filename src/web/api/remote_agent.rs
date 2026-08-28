@@ -476,10 +476,14 @@ fn api_remote_agent_start(app_config: Arc<AppConfig>) -> ApiRoute {
                     } else {
                         agent::detect_remote_os_simple(&ssh_target).await
                     };
-                    let install_path = match request.get("install_path").and_then(|v| v.as_str()) {
-                        Some(p) if !p.is_empty() => p.to_string(),
-                        _ => agent::default_install_path_for_os(remote_os),
-                    };
+                    let requested_install_path =
+                        request.get("install_path").and_then(|v| v.as_str());
+                    let install_path = agent::resolve_remote_install_path(
+                        ssh_connection.as_ref(),
+                        remote_os,
+                        requested_install_path,
+                    )
+                    .await;
                     let command = if let Some(ref conn) = ssh_connection {
                         agent::default_start_command_for_os_with(conn, remote_os, &install_path)
                             .await
