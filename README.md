@@ -89,6 +89,11 @@ Four accent palettes (Carbon Mint, Cyber Rose, Solar Violet, Lava Core) pair wit
 
 ![Light mode dashboard](docs/screenshots/neutral--appearance-light-dashboard.png)
 
+![Carbon Mint appearance](docs/screenshots/appearance-palette--neutral--carbon-mint.png)
+![Cyber Rose appearance](docs/screenshots/appearance-palette--neutral--cyber-rose.png)
+![Solar Violet appearance](docs/screenshots/appearance-palette--neutral--solar-violet.png)
+![Lava Core appearance](docs/screenshots/appearance-palette--neutral--lava-core.png)
+
 ### TLS, ACME & mTLS
 
 Built-in TLS with ACME (Let's Encrypt) and mTLS for remote agents. Choose No HTTPS, Self-Signed, Bring Your Own Key, or fully automated ACME with DNS-01 and renewal.
