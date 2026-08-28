@@ -43,6 +43,9 @@ Choose **Keep legacy root** to continue using the existing files, or choose
 receipt-backed, resumable, and never silently merges two roots. The original
 legacy root remains available until you explicitly remove it.
 
+If the migration notice is already in notification history after a reload,
+**Review migration** remains enabled and opens Settings → Migration.
+
 Model libraries follow the same policy. An external/custom model root is never
 moved automatically. Use the Model Library migration preview to select a
 destination and retain or remove the source only after verification.

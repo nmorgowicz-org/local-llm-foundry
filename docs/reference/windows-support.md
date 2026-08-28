@@ -84,6 +84,12 @@ target-aware compile check runs on macOS; native `%APPDATA%`, scheduled-task,
 tray, and installer behavior is qualified on Windows during the final release
 matrix.
 
+The migration notification action is restored on every authenticated startup,
+including when the notification was persisted by an earlier session. Until
+that controlled restart completes, local binary updates intentionally target
+the active legacy `bin` directory; afterward the canonical
+`local-llm-foundry/bin` directory is selected.
+
 ---
 
 ## GPU data sources

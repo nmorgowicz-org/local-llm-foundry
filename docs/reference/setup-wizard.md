@@ -117,7 +117,7 @@ GGUF remains first-class under llama.cpp and is not converted during this flow.
 #### HuggingFace Hub
 See [HuggingFace Integration](#huggingface-integration) below.
 
-![HuggingFace Hub file browser](../screenshots/spawn-wizard--llamacpp-local--model-hf-base.png)
+![HuggingFace model setup](../screenshots/spawn-wizard-hf-download--llamacpp-local--idle.png)
 
 - The wizard includes a short helper explaining when a token is optional and links directly to `https://huggingface.co/settings/tokens`.
 - Recommended token type: **Read**.

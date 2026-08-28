@@ -369,7 +369,7 @@ When Rapid-MLX is selected, the wizard adapts the Model and Hardware step UI:
   - A Rapid-MLX-specific panel (rapid-hardware-panel) is shown for backend-specific
     configuration, keeping its settings isolated from llama.cpp flags.
 
-![Rapid-MLX hardware panel](../screenshots/spawn-wizard-rapid-mlx-fit.png)
+![Rapid-MLX hardware panel](../screenshots/rapidmlx-local--spawn-wizard-rapid-mlx-fit.png)
 - Launch guard:
   - Model-step validation:
     - Blocks if Rapid-MLX is selected but not Apple Silicon.

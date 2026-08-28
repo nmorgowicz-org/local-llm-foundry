@@ -243,6 +243,19 @@ function registerPersistentNotification(id, title, type, message, actions) {
     renderNotificationCenter();
 }
 
+// Persistent notifications are restored before feature modules finish their
+// startup work. Re-register handlers for an existing record so an action does
+// not remain disabled merely because the page was reloaded.
+export function registerNotificationActionHandlers(id, actions = []) {
+    ensureNotificationState();
+    actions.forEach(action => {
+        if (typeof action.handler === 'function') {
+            notificationHandlers.set(notificationHandlerKey(id, action.id), action.handler);
+        }
+    });
+    renderNotificationCenter();
+}
+
 export function resolveNotification(id, reason = 'Resolved automatically.') {
     ensureNotificationState();
     const record = activeNotifications.get(id);

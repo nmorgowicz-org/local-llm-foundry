@@ -2935,6 +2935,18 @@ pub mod install {
         validate_install_path(&install_path, os).context("Invalid install path")?;
 
         let connection = ssh_connection.unwrap_or_else(|| SshConnection::from_target(ssh_target));
+        // SCP and PowerShell do not consistently expand `%APPDATA%` when the
+        // command is executed by SSH or Task Scheduler. Resolve it once and
+        // carry the absolute path through extraction, certificate provisioning,
+        // and scheduled-task registration.
+        let install_path = if os == RemoteOs::Windows {
+            resolve_windows_appdata(&connection)
+                .await
+                .map(|appdata| install_path.replace("%APPDATA%", &appdata))
+                .unwrap_or(install_path)
+        } else {
+            install_path
+        };
         let remote_temp_dir = detect_remote_temp_dir(&connection, os).await;
         let remote_temp_name = remote_temp_name_for_asset(asset, os);
         let remote_temp_path = match os {
@@ -3270,7 +3282,7 @@ pub mod install {
             .rsplit_once('\\')
             .map(|(dir, _)| dir.to_string())
             .ok_or_else(|| io::Error::other("no directory in install path"))?;
-        let extract_dir = format!("{install_dir}\\__llama_monitor_extract");
+        let extract_dir = format!("{install_dir}\\__local_llm_foundry_extract");
 
         // PowerShell single-quote escaping: double any embedded single quotes
         let ps_dir = install_dir.replace('\'', "''");
@@ -3285,15 +3297,16 @@ New-Item -ItemType Directory -Path '{extract_dir}' -Force | Out-Null; \
 Expand-Archive -LiteralPath '{archive}' -DestinationPath '{extract_dir}' -Force; \
 $targets = @('local-llm-foundry.exe', 'llama-monitor.exe', 'sensor_bridge.exe', 'WebView2Loader.dll'); \
 foreach ($name in $targets) {{ \
-  $src = Join-Path '{extract_dir}' $name; \
+  $src = Get-ChildItem -LiteralPath '{extract_dir}' -Recurse -File -Filter $name | Select-Object -First 1; \
   $dst = Join-Path '{dir}' $name; \
-  if (Test-Path $src) {{ \
+  if ($null -ne $src) {{ \
     for ($i = 0; $i -lt 10; $i++) {{ \
       if (Test-Path $dst) {{ Remove-Item -LiteralPath $dst -Force -ErrorAction SilentlyContinue }}; \
-      try {{ [System.IO.File]::Copy($src, $dst, $true); Remove-Item -LiteralPath $src -Force -ErrorAction SilentlyContinue; break }} catch {{ if ($i -eq 9) {{ throw }}; Start-Sleep -Milliseconds 500 }} \
+      try {{ [System.IO.File]::Copy($src.FullName, $dst, $true); Remove-Item -LiteralPath $src.FullName -Force -ErrorAction SilentlyContinue; break }} catch {{ if ($i -eq 9) {{ throw }}; Start-Sleep -Milliseconds 500 }} \
     }} \
   }} \
 }}; \
+if (!(Test-Path (Join-Path '{dir}' 'local-llm-foundry.exe'))) {{ throw 'Required local-llm-foundry.exe was not found in the Windows agent archive' }}; \
 Remove-Item -LiteralPath '{extract_dir}' -Recurse -Force -ErrorAction SilentlyContinue; \
 Remove-Item -LiteralPath '{archive}' -Force -ErrorAction SilentlyContinue\"",
             dir = ps_dir,
@@ -3437,9 +3450,12 @@ Start-Sleep -Seconds 2\""
     /// Maps a Windows scheduled-task `LastTaskResult` code to a human-readable
     /// hint. The agent crashes in the OS loader (before `main()`) emit no agent
     /// logs, so the task exit code is the only signal we have for *why* it died.
-    fn describe_windows_task_result(code: i64) -> Option<&'static str> {
+    pub(crate) fn describe_windows_task_result(code: i64) -> Option<&'static str> {
         match code {
             0 => None,
+            // 0x80070002 / ERROR_FILE_NOT_FOUND — Task Scheduler could not
+            // launch the executable recorded in the task action.
+            2_147_942_402 => Some("agent executable not found at the scheduled task path"),
             // 0xC0000135 STATUS_DLL_NOT_FOUND — a required DLL (e.g.
             // WebView2Loader.dll) is missing next to llama-monitor.exe.
             3_221_225_781 => {
@@ -3594,30 +3610,27 @@ Start-Sleep -Seconds 2\""
         let running = matches!(health_reachable, Ok(true));
 
         let error = if !running {
-            let health_error = match health_reachable {
-                Err(tokio::time::error::Elapsed { .. }) => {
-                    let mut msg = "Agent did not start within 30 seconds. Check if the agent is listening on 0.0.0.0:7779 and if the remote firewall allows inbound connections on port 7779.".to_string();
-                    // On Windows the agent can crash in the OS loader before main()
-                    // (e.g. a missing DLL), emitting no agent logs — surface the
-                    // scheduled task's last exit code so the real cause is visible.
-                    if os_hint == RemoteOs::Windows
-                        && let Some(diag) = windows_agent_task_diagnostic(&connection).await
-                    {
-                        eprintln!("[agent] {diag}");
-                        msg.push(' ');
-                        msg.push_str(&diag);
-                    }
-                    Some(msg)
-                }
-                Ok(_) => None,
+            let mut msg = match health_reachable {
+                Err(tokio::time::error::Elapsed { .. }) => "Agent did not start within 30 seconds. Check if the agent is listening on 0.0.0.0:7779 and if the remote firewall allows inbound connections on port 7779.".to_string(),
+                Ok(_) => "Agent started but is not reachable. Check SSH access and firewall rules on port 7779.".to_string(),
             };
-            if health_error.is_some() {
-                health_error
-            } else if start_warning.is_some() {
-                start_warning
-            } else {
-                Some("Agent started but is not reachable. Check SSH access and firewall rules on port 7779.".to_string())
+            // On Windows the agent can crash in the OS loader before main()
+            // (e.g. a missing executable or DLL), emitting no agent logs.
+            // Always query the scheduled task after a failed health check,
+            // including the common Ok(false) path where the outer timeout did
+            // not expire.
+            if os_hint == RemoteOs::Windows
+                && let Some(diag) = windows_agent_task_diagnostic(&connection).await
+            {
+                eprintln!("[agent] {diag}");
+                msg.push(' ');
+                msg.push_str(&diag);
             }
+            if let Some(warning) = start_warning {
+                msg.push(' ');
+                msg.push_str(&warning);
+            }
+            Some(msg)
         } else {
             None
         };
@@ -4552,6 +4565,19 @@ mod tests {
             let result = validate_install_path(path, RemoteOs::Windows);
             assert!(result.is_ok(), "Expected '{}' to be accepted", path);
         }
+    }
+
+    #[test]
+    fn windows_task_result_identifies_missing_agent_executable() {
+        assert_eq!(
+            install::describe_windows_task_result(2_147_942_402),
+            Some("agent executable not found at the scheduled task path")
+        );
+    }
+
+    #[test]
+    fn windows_task_result_keeps_success_silent() {
+        assert_eq!(install::describe_windows_task_result(0), None);
     }
 
     #[test]

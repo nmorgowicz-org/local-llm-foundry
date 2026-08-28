@@ -158,6 +158,15 @@ html.palette-changing *::after {
   --brand-ingot-copper:       #f97316;
   --brand-forge-charcoal:     #1f232a;
 
+  /* Token Ingot mark — palette-specific so the in-app mark follows the UI. */
+  --brand-mark-background:    #111827;
+  --brand-mark-shadow:        #1f232a;
+  --brand-mark-layer-deep:    #0f766e;
+  --brand-mark-layer:         #14b8a6;
+  --brand-mark-layer-light:   #2dd4bf;
+  --brand-mark-highlight:     #ffffff;
+  --brand-mark-core:          #f97316;
+
   /* Primary = accent so all existing --color-primary CSS auto-follows palette */
   --color-primary:       var(--color-accent);
   --color-primary-dark:  var(--color-accent-deep);
@@ -295,6 +304,13 @@ html.palette-changing *::after {
   --color-accent-deep:  #be185d;
   --color-accent-light: #f9a8d4;
 
+  --brand-mark-background:  #211225;
+  --brand-mark-shadow:      #35172f;
+  --brand-mark-layer-deep:  #be185d;
+  --brand-mark-layer:       #db2777;
+  --brand-mark-layer-light: #f472b6;
+  --brand-mark-core:        #facc15;
+
   --surface-card-ambient-a:   rgba(244, 114, 182, 0.12);
   --surface-card-ambient-b:   rgba(232, 121, 249, 0.08);
   --surface-card-glow:        rgba(190, 24, 93, 0.16);
@@ -315,6 +331,13 @@ html.palette-changing *::after {
   --color-accent-deep:  #6d28d9;
   --color-accent-light: #c4b5fd;
 
+  --brand-mark-background:  #17132d;
+  --brand-mark-shadow:      #29204d;
+  --brand-mark-layer-deep:  #6d28d9;
+  --brand-mark-layer:       #8b5cf6;
+  --brand-mark-layer-light: #a78bfa;
+  --brand-mark-core:        #f59e0b;
+
   --surface-card-ambient-a:   rgba(167, 139, 250, 0.12);
   --surface-card-ambient-b:   rgba(99, 102, 241, 0.09);
   --surface-card-glow:        rgba(109, 40, 217, 0.16);
@@ -334,6 +357,13 @@ html.palette-changing *::after {
   --color-accent:       #ef4444;
   --color-accent-deep:  #b91c1c;
   --color-accent-light: #fca5a5;
+
+  --brand-mark-background:  #261416;
+  --brand-mark-shadow:      #432022;
+  --brand-mark-layer-deep:  #b91c1c;
+  --brand-mark-layer:       #dc2626;
+  --brand-mark-layer-light: #ef4444;
+  --brand-mark-core:        #fbbf24;
 
   --surface-card-ambient-a:   rgba(239, 68, 68, 0.10);
   --surface-card-ambient-b:   rgba(249, 115, 22, 0.08);
@@ -377,6 +407,10 @@ html.palette-changing *::after {
   --brand-foundry-teal-deep:  #0f766e;
   --brand-ingot-copper:       #f97316;
   --brand-forge-charcoal:     #1f232a;
+
+  --brand-mark-background:    #f8fafc;
+  --brand-mark-shadow:        #dbe4ef;
+  --brand-mark-highlight:     #ffffff;
 
   /* Primary cascades from accent */
   --color-primary:       var(--color-accent);
@@ -428,6 +462,9 @@ html.palette-changing *::after {
 
 /* ── Light + Cyber Rose ──────────────────────────────────────────── */
 [data-theme="light"][data-palette="cyber-rose"] {
+  --brand-mark-background: #fff7fb;
+  --brand-mark-shadow:     #f5d6e7;
+  --brand-mark-highlight:  #ffffff;
   --color-accent:       #db2777;
   --color-accent-deep:  #9d174d;
   --color-accent-light: #f472b6;
@@ -440,6 +477,9 @@ html.palette-changing *::after {
 
 /* ── Light + Solar Violet ────────────────────────────────────────── */
 [data-theme="light"][data-palette="solar-violet"] {
+  --brand-mark-background: #faf8ff;
+  --brand-mark-shadow:     #e5dcfa;
+  --brand-mark-highlight:  #ffffff;
   --color-accent:       #7c3aed;
   --color-accent-deep:  #5b21b6;
   --color-accent-light: #a78bfa;
@@ -452,6 +492,9 @@ html.palette-changing *::after {
 
 /* ── Light + Lava Core ───────────────────────────────────────────── */
 [data-theme="light"][data-palette="lava-core"] {
+  --brand-mark-background: #fff8f7;
+  --brand-mark-shadow:     #f3d9d4;
+  --brand-mark-highlight:  #ffffff;
   --color-accent:       #dc2626;
   --color-accent-deep:  #991b1b;
   --color-accent-light: #f87171;

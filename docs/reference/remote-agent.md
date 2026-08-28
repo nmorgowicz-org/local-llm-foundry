@@ -273,7 +273,7 @@ When autostart is used, the agent token is persisted on the remote machine (`age
 
 ### Windows
 
-On Windows, the managed install uses scheduled tasks for both the agent and `sensor_bridge.exe`, allowing startup without an interactive session.
+On Windows, the managed install uses scheduled tasks for both the agent and `sensor_bridge.exe`, allowing startup without an interactive session. The installer resolves `%APPDATA%` to the remote user's absolute profile path before SCP, archive extraction, certificate installation, and task registration. It also searches nested archive directories and fails loudly if `local-llm-foundry.exe` is missing, rather than leaving a task that silently exits with `0x80070002`.
 
 ### Linux and macOS
 

@@ -1,4 +1,4 @@
-import { showToast, showToastWithActions } from './toast.js';
+import { registerNotificationActionHandlers, showToast, showToastWithActions } from './toast.js';
 import { switchTab } from './nav.js';
 
 const TOAST_SEEN_KEY = 'local-llm-foundry-migration-toast-seen';
@@ -89,29 +89,32 @@ export async function initAppHomeMigration() {
         }
     });
 
+    const migrationActions = [{
+        id: 'review-migration',
+        label: 'Review migration',
+        primary: true,
+        handler: () => {
+            switchTab('settings');
+            import('./settings.js').then(({ openSettingsModal }) => openSettingsModal('migration'));
+        },
+    }];
+    const notificationId = 'app-home-migration-pending';
+    registerNotificationActionHandlers(notificationId, migrationActions);
+
+    let toastSeen = false;
     try {
-        if (sessionStorage.getItem(TOAST_SEEN_KEY) === '1') return;
-        sessionStorage.setItem(TOAST_SEEN_KEY, '1');
+        toastSeen = sessionStorage.getItem(TOAST_SEEN_KEY) === '1';
+        if (!toastSeen) sessionStorage.setItem(TOAST_SEEN_KEY, '1');
     } catch {
         // A storage failure must not block the dashboard or migration hint.
     }
+    if (toastSeen) return;
 
     showToastWithActions(
         'Upgrade ready',
         'info',
         'Nothing moves until you approve.',
-        [{
-            id: 'review-migration',
-            label: 'Review migration',
-            primary: true,
-                handler: () => {
-                    switchTab('settings');
-                    import('./settings.js').then(({ openSettingsModal }) => openSettingsModal('migration'));
-                },
-        }],
-        {
-            notificationId: 'app-home-migration-pending',
-            duration: 12000,
-        },
+        migrationActions,
+        { notificationId, duration: 12000 },
     );
 }
