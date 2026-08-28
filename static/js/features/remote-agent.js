@@ -1023,7 +1023,7 @@ async function finishRemoteAgentSetup() {
     // Only override the token if the user explicitly entered one.
     // If the token was auto-saved by maybeAutoSaveAgentToken, it's already
     // in currentSettings and will be preserved by the spread above.
-    const explicitToken = agentTokenInput?.value.trim();
+    const explicitToken = agentTokenInput?.dataset.fullValue || agentTokenInput?.value.trim();
     if (explicitToken) {
         settings.remote_agent_token = explicitToken;
     } else if (agentTokenInput?.dataset.fullValue) {
@@ -1427,13 +1427,23 @@ async function agentMenuRemove() {
 
 function maybeAutoSaveAgentToken(token) {
     if (!token) return;
-    const tokenInput = document.getElementById('set-remote-agent-token');
-    if (!tokenInput) return;
-    const current = tokenInput.dataset.fullValue || tokenInput.value.trim();
-    if (current === token) return;
-    tokenInput.dataset.fullValue = token;
-    tokenInput.value = maskSecret(token);
-    saveSettings();
+    let changed = false;
+
+    for (const id of ['set-remote-agent-token', 'agent-setup-agent-token']) {
+        const tokenInput = document.getElementById(id);
+        if (!tokenInput) continue;
+
+        const current = tokenInput.dataset.fullValue || tokenInput.value.trim();
+        if (current === token) continue;
+
+        tokenInput.dataset.fullValue = token;
+        tokenInput.value = maskSecret(token);
+        changed = true;
+    }
+
+    if (changed && document.getElementById('set-remote-agent-token')) {
+        saveSettings();
+    }
 }
 
 function maskSecret(value) {
