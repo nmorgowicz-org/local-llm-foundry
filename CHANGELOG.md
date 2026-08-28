@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.7](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.0.6...v2.0.7) (2026-08-28)
+
+
+### Bug Fixes
+
+* **ui:** reconcile remote agent state after repair ([#366](https://github.com/nmorgowicz-org/local-llm-foundry/issues/366)) ([f55a07b](https://github.com/nmorgowicz-org/local-llm-foundry/commit/f55a07b5cf0327a30c0514bf07381273d63c6222))
+
 ## [2.0.6](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.0.5...v2.0.6) (2026-08-28)
 
 
