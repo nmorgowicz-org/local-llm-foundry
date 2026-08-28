@@ -658,6 +658,7 @@ async fn check_llama_server_binary(binary: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn restore_promoted_directory(
     destination: &Path,
     backup: &Path,
