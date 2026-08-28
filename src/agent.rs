@@ -2417,6 +2417,33 @@ fn managed_install_path_matches(requested: &str, managed: &str) -> bool {
     normalize(requested) == normalize(managed)
 }
 
+fn windows_path_matches_install_path(
+    command: &str,
+    install_path: &str,
+    appdata: Option<&str>,
+) -> bool {
+    fn normalize(path: &str, appdata: Option<&str>) -> String {
+        let mut normalized = path.replace('/', "\\").to_ascii_lowercase();
+
+        if let Some(appdata) = appdata {
+            let appdata = appdata
+                .trim_end_matches(['\\', '/'])
+                .replace('/', "\\")
+                .to_ascii_lowercase();
+            normalized = normalized.replace("%appdata%", &appdata);
+        }
+
+        normalized
+            .trim_matches(['"', '\''])
+            .trim_end_matches(['\\', '/'])
+            .to_string()
+    }
+
+    let command = normalize(command, appdata);
+    let install_path = normalize(install_path, appdata);
+    !install_path.is_empty() && command.contains(&install_path)
+}
+
 pub(crate) async fn preferred_remote_install_path(
     connection: &SshConnection,
     os: RemoteOs,
@@ -3963,11 +3990,10 @@ Start-Sleep -Seconds 2\""
                 .find_map(|line| line.trim().strip_prefix("Task To Run:").map(str::trim))
                 .filter(|value| !value.is_empty() && *value != "N/A")
                 .map(ToOwned::to_owned);
+            let appdata = resolve_windows_appdata(connection).await;
             let matches_install_path = command.as_deref().is_some_and(|command| {
                 install_path.is_some_and(|path| {
-                    command
-                        .to_ascii_lowercase()
-                        .contains(&path.to_ascii_lowercase())
+                    windows_path_matches_install_path(command, path, appdata.as_deref())
                 })
             });
 
@@ -4505,6 +4531,33 @@ mod tests {
         assert!(!managed_install_path_matches(
             "/opt/custom-agent/bin/agent",
             crate::identity::install_path(false)
+        ));
+    }
+
+    #[test]
+    fn windows_task_path_matches_expanded_appdata_install_path() {
+        assert!(windows_path_matches_install_path(
+            r#"C:\Users\nick\AppData\Roaming\llama-monitor\bin\local-llm-foundry.exe --agent --config-dir C:\Users\nick\AppData\Roaming\llama-monitor"#,
+            r#"%APPDATA%\llama-monitor\bin\local-llm-foundry.exe"#,
+            Some(r#"C:\Users\nick\AppData\Roaming"#),
+        ));
+    }
+
+    #[test]
+    fn windows_task_path_match_is_case_and_slash_insensitive() {
+        assert!(windows_path_matches_install_path(
+            r#""c:/USERS/nick/AppData/Roaming/local-llm-foundry/bin/local-llm-foundry.exe" --agent"#,
+            r#"%appdata%\local-llm-foundry\bin\local-llm-foundry.exe"#,
+            Some(r#"C:\Users\nick\AppData\Roaming"#),
+        ));
+    }
+
+    #[test]
+    fn windows_task_path_does_not_match_different_install_root() {
+        assert!(!windows_path_matches_install_path(
+            r#"C:\Users\nick\AppData\Roaming\local-llm-foundry\bin\local-llm-foundry.exe --agent"#,
+            r#"%APPDATA%\llama-monitor\bin\local-llm-foundry.exe"#,
+            Some(r#"C:\Users\nick\AppData\Roaming"#),
         ));
     }
 
