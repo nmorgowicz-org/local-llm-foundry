@@ -3158,3 +3158,5 @@ body.chat-focus-mode #focus-mode-exit-beacon {
 .local-server-error-details-body .doctor-finding .doctor-fix-btn:active {
   background: rgba(99, 102, 241, 0.3);
 }
+.nav-logo svg.brand-token-ingot { display: block !important; width: 32px; height: 32px; border-radius: inherit; }
+.nav-logo img[hidden] { display: none !important; }
