@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.8](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.0.7...v2.0.8) (2026-08-29)
+
+
+### Bug Fixes
+
+* restore llama.cpp and remote-agent status ([5e92cf4](https://github.com/nmorgowicz-org/local-llm-foundry/commit/5e92cf43a8a4c2db8f24cb068018772a0dbf15c3))
+
 ## [2.0.7](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.0.6...v2.0.7) (2026-08-28)
 
 
