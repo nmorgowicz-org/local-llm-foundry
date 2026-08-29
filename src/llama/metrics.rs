@@ -12,6 +12,7 @@ pub struct LlamaMetrics {
     pub prompt_tokens_total: u64,
     pub generation_tokens_total: u64,
     pub tokens_per_decode: f64,
+    pub speculative_acceptance_rate: Option<f64>,
     pub predicted_tokens_total: u64,
     pub kv_cache_tokens: u64,
     pub kv_cache_max: u64,
@@ -41,13 +42,13 @@ pub struct LlamaMetrics {
     pub model_ctx_train: Option<u64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MetricConfigItem {
     pub label: String,
     pub value: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SlotSnapshot {
     pub id: Option<u64>,
     pub n_ctx: u64,
@@ -91,6 +92,8 @@ pub struct PrometheusValues {
     pub n_busy_slots_per_decode: f64,
     // Derived: predicted_tokens_total / n_decode_total — spec efficiency (>1 means drafts accepted)
     pub tokens_per_decode: f64,
+    pub speculative_draft_tokens_total: f64,
+    pub speculative_accepted_tokens_total: f64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -138,6 +141,12 @@ pub fn parse_prometheus_metrics(body: &str) -> PrometheusValues {
             "llamacpp:requests_processing" => vals.requests_processing = value as u32,
             "llamacpp:n_decode_total" => vals.n_decode_total = value,
             "llamacpp:n_busy_slots_per_decode" => vals.n_busy_slots_per_decode = value,
+            "llamacpp:spec_decode_num_draft_tokens_total" => {
+                vals.speculative_draft_tokens_total = value
+            }
+            "llamacpp:spec_decode_num_accepted_tokens_total" => {
+                vals.speculative_accepted_tokens_total = value
+            }
             _ => {}
         }
     }
@@ -407,6 +416,8 @@ mod tests {
         assert_eq!(vals.requests_processing, 1);
         assert!((vals.n_decode_total - 42000.0).abs() < 0.1);
         assert!((vals.n_busy_slots_per_decode - 1.5).abs() < 0.01);
+        assert_eq!(vals.speculative_draft_tokens_total, 200.0);
+        assert_eq!(vals.speculative_accepted_tokens_total, 100.0);
     }
 
     #[test]

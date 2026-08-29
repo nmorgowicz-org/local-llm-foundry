@@ -988,6 +988,8 @@ pub async fn poll_llama_cpp_metrics(
         }
 
         // Prometheus metrics
+        let mut tokens_per_decode = 0.0;
+        let mut n_busy_slots_per_decode = 0.0;
         let metrics_req = if let Some(key) = api_key {
             client
                 .get(format!("{base}/metrics"))
@@ -1004,6 +1006,12 @@ pub async fn poll_llama_cpp_metrics(
             snapshot.completion_tokens_total = Some(prom.predicted_tokens_total as u64);
             snapshot.running_requests = Some(prom.requests_processing as u64);
             snapshot.steps_executed = Some(prom.n_decode_total as u64);
+            tokens_per_decode = prom.tokens_per_decode;
+            n_busy_slots_per_decode = prom.n_busy_slots_per_decode;
+            snapshot.speculative_acceptance_rate = (prom.speculative_draft_tokens_total > 0.0)
+                .then(|| {
+                    prom.speculative_accepted_tokens_total / prom.speculative_draft_tokens_total
+                });
 
             let current_counters = CounterSnapshot {
                 prompt_tokens_total: prom.prompt_tokens_total,
@@ -1063,6 +1071,17 @@ pub async fn poll_llama_cpp_metrics(
                 "kv_cache_tokens": slots.kv_cache_tokens,
                 "kv_cache_tokens_available": slots.kv_cache_tokens_available,
                 "kv_cache_tokens_source": slots.kv_cache_tokens_source,
+                "active_task_id": slots.active_task_id,
+                "last_task_id": slots.last_task_id,
+                "slot_generation_tokens": slots.slot_generation_tokens,
+                "slot_generation_remaining": slots.slot_generation_remaining,
+                "slot_generation_limit": slots.slot_generation_limit,
+                "slot_generation_active": slots.slot_generation_active,
+                "slot_generation_available": slots.slot_generation_available,
+                "slots": slots.slots,
+                "tokens_per_decode": tokens_per_decode,
+                "n_busy_slots_per_decode": n_busy_slots_per_decode,
+                "speculative_acceptance_rate": snapshot.speculative_acceptance_rate,
             }));
         }
 

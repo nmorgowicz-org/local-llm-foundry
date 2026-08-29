@@ -571,6 +571,10 @@ function renderDecodingConfig(l, hasActiveEndpoint, isGenerating) {
             const parts = ['Speculative'];
             if (specType) parts.push(specType);
             if (nMax) parts.push('n_max ' + nMax.value);
+            const acceptance = l?.speculative_acceptance_rate;
+            if (typeof acceptance === 'number' && Number.isFinite(acceptance)) {
+                parts.push((acceptance * 100).toFixed(1) + '% accepted');
+            }
             specChip.textContent = parts.join(' · ');
             specChip.classList.add('enabled');
         } else {

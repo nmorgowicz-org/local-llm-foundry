@@ -1,6 +1,7 @@
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::llama::metrics::SlotSnapshot;
 use crate::state::AppState;
 
 fn spawned_base_url(port: u16, bind_host: Option<&str>) -> String {
@@ -336,6 +337,25 @@ pub async fn llama_metrics_poller(state: AppState, poll_interval: u64) {
                     }
                     if let Some(last) = details.get("last_task_id").and_then(|v| v.as_u64()) {
                         m.last_task_id = Some(last);
+                    }
+                    if let Some(tokens_per_decode) =
+                        details.get("tokens_per_decode").and_then(|v| v.as_f64())
+                    {
+                        m.tokens_per_decode = tokens_per_decode;
+                    }
+                    if let Some(busy_slots_per_decode) = details
+                        .get("n_busy_slots_per_decode")
+                        .and_then(|v| v.as_f64())
+                    {
+                        m.n_busy_slots_per_decode = busy_slots_per_decode;
+                    }
+                    m.speculative_acceptance_rate = details
+                        .get("speculative_acceptance_rate")
+                        .and_then(|v| v.as_f64());
+                    if let Some(slots) = details.get("slots").and_then(|value| {
+                        serde_json::from_value::<Vec<SlotSnapshot>>(value.clone()).ok()
+                    }) {
+                        m.slots = slots;
                     }
                 }
                 if let Some(model) = snapshot.model {
