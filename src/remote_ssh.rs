@@ -126,10 +126,12 @@ impl SshConnection {
 
         let tcp = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)
             .with_context(|| format!("failed to connect to SSH host {}", self.host))?;
-        tcp.set_read_timeout(Some(CONNECT_TIMEOUT)).ok();
-        tcp.set_write_timeout(Some(CONNECT_TIMEOUT)).ok();
-
         let mut session = Session::new().context("failed to create SSH session")?;
+        // Keep the socket blocking and let libssh2 own the timeout. Socket
+        // SO_RCVTIMEO/SO_SNDTIMEO can make a partial USERAUTH exchange surface
+        // as `Waiting for USERAUTH response` on Windows OpenSSH servers even
+        // when the same key succeeds with the system OpenSSH client.
+        session.set_timeout(CONNECT_TIMEOUT.as_millis() as u32);
         session.set_tcp_stream(tcp);
         session.handshake().context("SSH handshake failed")?;
 
@@ -187,7 +189,12 @@ impl SshConnection {
                         if let Err(e) =
                             session.userauth_pubkey_file(&username, None, Path::new(key), None)
                         {
-                            eprintln!("[ssh] Key auth failed for {}: {}", key, e);
+                            eprintln!(
+                                "[ssh] Key auth failed for {} (code {:?}): {}",
+                                key,
+                                e.code(),
+                                e
+                            );
                             continue;
                         }
                         if session.authenticated() {
@@ -196,7 +203,15 @@ impl SshConnection {
                     }
                 }
             }
-            // Fall back to SSH agent
+            // Match OpenSSH's normal behavior by trying the running agent first.
+            // This matters for Windows OpenSSH hosts: libssh2 can reject a valid
+            // Ed25519 key-file exchange while the same key succeeds through the
+            // agent.
+            if session.userauth_agent(&username).is_ok() && session.authenticated() {
+                return Ok(session);
+            }
+
+            // Fall back to SSH agent after trying default key paths.
             session
                 .userauth_agent(&username)
                 .context("SSH agent authentication failed")?;
@@ -372,10 +387,8 @@ fn scan_host_key_blocking(connection: &SshConnection) -> Result<(String, String)
         .context("SSH host resolved to no addresses")?;
     let tcp = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)
         .with_context(|| format!("failed to connect to SSH host {}", connection.host))?;
-    tcp.set_read_timeout(Some(CONNECT_TIMEOUT)).ok();
-    tcp.set_write_timeout(Some(CONNECT_TIMEOUT)).ok();
-
     let mut session = Session::new().context("failed to create SSH session")?;
+    session.set_timeout(CONNECT_TIMEOUT.as_millis() as u32);
     session.set_tcp_stream(tcp);
     session.handshake().context("SSH handshake failed")?;
     let (key, key_type) = session

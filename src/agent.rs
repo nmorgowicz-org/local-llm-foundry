@@ -2765,7 +2765,7 @@ async fn read_remote_agent_token(
                 )
             };
             format!(
-                "powershell.exe -NoProfile -NonInteractive -Command \"$files=@(Get-ChildItem -Path $env:USERPROFILE+'\\{preferred_dir}\\{preferred_prefix}*.tmp' -ErrorAction SilentlyContinue); if (-not $files) {{ $files=@(Get-ChildItem -Path $env:USERPROFILE+'\\{fallback_dir}\\{fallback_prefix}*.tmp' -ErrorAction SilentlyContinue) }}; $files=$files | Sort-Object LastWriteTime -Descending; if ($files) {{ Get-Content -Raw -LiteralPath $files[0].FullName }}\""
+                "powershell.exe -NoProfile -NonInteractive -Command \"$files=@(Get-ChildItem -Path (Join-Path $env:USERPROFILE '{preferred_dir}\\{preferred_prefix}*.tmp') -ErrorAction SilentlyContinue); if (-not $files) {{ $files=@(Get-ChildItem -Path (Join-Path $env:USERPROFILE '{fallback_dir}\\{fallback_prefix}*.tmp') -ErrorAction SilentlyContinue) }}; $files=$files | Sort-Object LastWriteTime -Descending; if ($files) {{ Get-Content -Raw -LiteralPath $files[0].FullName }}\""
             )
         }
         RemoteOs::Unix | RemoteOs::Macos => {
