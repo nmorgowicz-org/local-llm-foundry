@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.9](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.0.8...v2.0.9) (2026-08-29)
+
+
+### Bug Fixes
+
+* **agent:** recover remote metrics and scope engine indicator ([6cdc534](https://github.com/nmorgowicz-org/local-llm-foundry/commit/6cdc534a77a1ab128dce59b3978b436170fa441e))
+
 ## [2.0.8](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.0.7...v2.0.8) (2026-08-29)
 
 
