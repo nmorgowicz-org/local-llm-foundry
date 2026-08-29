@@ -2677,10 +2677,32 @@ async fn read_remote_agent_token(
     // home directory so the SSH user can read it. On Unix, it writes to /tmp.
     let temp_file_cmd = match os {
         RemoteOs::Windows => {
-            // Read canonical bootstrap files first, then retain the legacy glob
-            // for agents upgraded in place during the 2.x compatibility window.
-            "powershell.exe -NoProfile -NonInteractive -Command \"$files=@(Get-ChildItem -Path $env:USERPROFILE+'\\.local-llm-foundry\\local-llm-foundry-agent-token-*.tmp' -ErrorAction SilentlyContinue; Get-ChildItem -Path $env:USERPROFILE+'\\.llama-monitor\\llama-monitor-agent-token-*.tmp' -ErrorAction SilentlyContinue) | Sort-Object LastWriteTime -Descending; if ($files) { Get-Content -Raw -LiteralPath $files[0].FullName }\""
-                .to_string()
+            // Prefer the handoff directory matching the installed executable.
+            // Both Foundry and legacy agents may leave readable temp tokens on
+            // the same host; merging the globs can select a stale legacy token.
+            let install_path = preferred_remote_install_path(connection, os).await;
+            let foundry_agent = install_path
+                .to_ascii_lowercase()
+                .ends_with("local-llm-foundry.exe");
+            let (preferred_dir, preferred_prefix, fallback_dir, fallback_prefix) = if foundry_agent
+            {
+                (
+                    ".local-llm-foundry",
+                    crate::identity::CANONICAL_AGENT_TOKEN_PREFIX,
+                    ".llama-monitor",
+                    crate::identity::LEGACY_AGENT_TOKEN_PREFIX,
+                )
+            } else {
+                (
+                    ".llama-monitor",
+                    crate::identity::LEGACY_AGENT_TOKEN_PREFIX,
+                    ".local-llm-foundry",
+                    crate::identity::CANONICAL_AGENT_TOKEN_PREFIX,
+                )
+            };
+            format!(
+                "powershell.exe -NoProfile -NonInteractive -Command \"$files=@(Get-ChildItem -Path $env:USERPROFILE+'\\{preferred_dir}\\{preferred_prefix}*.tmp' -ErrorAction SilentlyContinue); if (-not $files) {{ $files=@(Get-ChildItem -Path $env:USERPROFILE+'\\{fallback_dir}\\{fallback_prefix}*.tmp' -ErrorAction SilentlyContinue) }}; $files=$files | Sort-Object LastWriteTime -Descending; if ($files) {{ Get-Content -Raw -LiteralPath $files[0].FullName }}\""
+            )
         }
         RemoteOs::Unix | RemoteOs::Macos => {
             // Canonical files are preferred; legacy files remain readable for
@@ -2710,7 +2732,7 @@ async fn read_remote_agent_token(
             // The scheduled task runs as SYSTEM but the bootstrap command
             // deliberately points it at the SSH user's %APPDATA% directory.
             // Probe both user and SYSTEM profiles during the migration window.
-            r#"cmd.exe /C "(type "%APPDATA%\local-llm-foundry\agent-token" 2>NUL || type "%APPDATA%\llama-monitor\agent-token" 2>NUL || type "C:\Windows\System32\config\systemprofile\AppData\Roaming\local-llm-foundry\agent-token" 2>NUL || type "C:\Windows\System32\config\systemprofile\AppData\Roaming\llama-monitor\agent-token" 2>NUL)""#
+            r#"powershell.exe -NoProfile -NonInteractive -Command "$paths=@($env:APPDATA+'\local-llm-foundry\agent-token',$env:APPDATA+'\llama-monitor\agent-token','C:\Windows\System32\config\systemprofile\AppData\Roaming\local-llm-foundry\agent-token','C:\Windows\System32\config\systemprofile\AppData\Roaming\llama-monitor\agent-token'); foreach ($p in $paths) { if (Test-Path -LiteralPath $p) { $value=(Get-Content -Raw -LiteralPath $p).Trim(); if ($value) { Write-Output $value; exit 0 } } }; exit 1""#
                 .to_string()
         }
         RemoteOs::Unix | RemoteOs::Macos => "(cat ~/.config/local-llm-foundry/agent-token 2>/dev/null || cat ~/.config/llama-monitor/agent-token 2>/dev/null)".to_string(),
@@ -4109,7 +4131,17 @@ Start-Sleep -Seconds 2\""
         let remote_os = detect_remote_os_with(&connection).await;
         let install_path = preferred_remote_install_path(&connection, remote_os).await;
         let command = match remote_os {
-            RemoteOs::Windows => format!("cmd.exe /C \"\"{install_path}\" --version\""),
+            RemoteOs::Windows => {
+                let appdata = resolve_windows_appdata(&connection)
+                    .await
+                    .unwrap_or_else(|| "%APPDATA%".to_string());
+                let path = install_path
+                    .replace("%APPDATA%", &appdata)
+                    .replace('\'', "''");
+                format!(
+                    "powershell.exe -NoProfile -NonInteractive -Command \"& '{path}' --version\""
+                )
+            }
             RemoteOs::Unix | RemoteOs::Macos => format!("{install_path} --version"),
             RemoteOs::Unknown => return Ok(None),
         };

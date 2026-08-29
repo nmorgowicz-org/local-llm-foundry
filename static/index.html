@@ -123,6 +123,10 @@
                         <div class="agent-tooltip-details" id="agent-tooltip-details"></div>
                     </div>
                 </div>
+                <div id="engine-indicator" class="engine-indicator" style="display:none;" title="Active local engine and model">
+                    <span class="engine-indicator-label"></span>
+                    <span class="engine-indicator-dot"></span>
+                </div>
                 <button class="nav-monitoring-chip" id="nav-monitoring-chip" type="button" aria-pressed="false" title="Dashboard monitoring active — click to pause telemetry" style="display:none;">
                     <span class="status-dot ok" id="nav-monitoring-dot"></span>
                     <span id="nav-monitoring-label">Monitoring</span>
@@ -186,13 +190,9 @@
             <div id="session-controls">
                 <button class="nav-btn" id="nav-new-session-btn" title="New Session" style="display:none;">+ New Session</button>
             </div>
-            <button id="llama-pill" class="top-nav-pill llama-pill-idle" style="display:none;" type="button" title="llama-server binary version">
+            <button id="llama-pill" class="top-nav-pill llama-pill-idle" style="display:none;" type="button" title="Manage the installed local llama.cpp binary and releases">
               <span id="llama-pill-version">b—</span>
             </button>
-            <div id="engine-indicator" class="engine-indicator" style="display:none;" title="Active engine and model">
-              <span class="engine-indicator-label"></span>
-              <span class="engine-indicator-dot"></span>
-            </div>
             <button id="update-pill" class="top-nav-pill" style="display:none;">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4"/>

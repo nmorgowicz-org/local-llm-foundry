@@ -329,11 +329,12 @@ export function refreshTopCockpit() {
       const dotEl = indicator?.querySelector('.engine-indicator-dot');
       if (indicator && labelEl && dotEl) {
         const backend = wsData?.backend || null;
+        const endpointKind = wsData?.endpoint_kind || null;
         const modelIdentity = wsData?.active_session_model_identity || null;
         const sessionStatus = wsData?.active_session_status || null;
         const isRunning = sessionStatus === 'running' || sessionStatus === 'disconnected';
 
-        if (backend && isRunning && (modelIdentity || sessionStatus)) {
+        if (backend && endpointKind === 'Local' && isRunning && (modelIdentity || sessionStatus)) {
           const engineName = backend === 'rapid_mlx' ? 'Rapid-MLX' : 'llama.cpp';
           const modelName = modelIdentity
             ? modelIdentity.length > 24
