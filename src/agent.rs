@@ -1319,6 +1319,14 @@ pub async fn remote_agent_poller(state: AppState, app_config: Arc<AppConfig>) {
                 }
             }
 
+            // A reinstall can rotate the remote token while leaving the agent
+            // process and its health endpoint running. Recover the durable
+            // token over the already-trusted SSH channel instead of treating
+            // HTTP 401 as a permanently disconnected agent.
+            if metrics_result.is_none() && saw_unauthorized {
+                refresh_remote_agent_token(&state, &app_config, &settings, &url).await;
+            }
+
             match metrics_result {
                 Some((resolved_url, resp)) => match resp.json::<AgentMetrics>().await {
                     Ok(metrics) => {
@@ -1616,6 +1624,50 @@ async fn maybe_autostart_remote_agent(
             state.agent_poll_notify.notify_waiters();
         }
     }
+}
+
+async fn refresh_remote_agent_token(
+    state: &AppState,
+    app_config: &AppConfig,
+    settings: &crate::state::UiSettings,
+    agent_url: &str,
+) {
+    let target = first_non_empty([
+        app_config.remote_agent_ssh_target.as_deref(),
+        Some(settings.remote_agent_ssh_target.as_str()),
+    ])
+    .or_else(|| remote_host_from_agent_url(agent_url));
+    let Some(target) = target else {
+        return;
+    };
+
+    let Ok(connection) = remote_ssh::with_trusted_host_key(
+        SshConnection::from_target(&target),
+        &app_config.ssh_known_hosts_file,
+    ) else {
+        return;
+    };
+    if connection.trusted_host_key.is_none() {
+        return;
+    }
+
+    let os = detect_remote_os_with(&connection).await;
+    let Some(token) = read_remote_agent_token(&connection, os, Some(agent_url)).await else {
+        return;
+    };
+
+    let mut current = state.ui_settings.lock().unwrap();
+    if current.remote_agent_token == token {
+        return;
+    }
+    current.remote_agent_token = token;
+    if let Err(error) = crate::state::save_ui_settings(&state.ui_settings_path, &current) {
+        eprintln!("[agent] Failed to persist refreshed remote-agent token: {error}");
+        return;
+    }
+    eprintln!("[agent] Refreshed remote-agent token after an unauthorized metrics response");
+    drop(current);
+    state.agent_poll_notify.notify_waiters();
 }
 
 fn mark_disconnected(state: &AppState) {
@@ -2514,6 +2566,28 @@ async fn agent_health_reachable_with_token(agent_url: &str, token: Option<&str>)
     false
 }
 
+async fn agent_metrics_reachable_with_token(agent_url: &str, token: Option<&str>) -> bool {
+    let Some(token) = token else {
+        return false;
+    };
+    let https_client = build_agent_https_client(Duration::from_secs(2));
+    let http_client = build_plain_http_client(Duration::from_secs(2));
+
+    for candidate in agent_url_candidates(agent_url) {
+        let client = agent_client_for_url(&candidate, https_client.as_ref(), &http_client);
+        if let Ok(resp) = client
+            .get(format!("{candidate}/metrics"))
+            .bearer_auth(token)
+            .send()
+            .await
+            && resp.status().is_success()
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Write the agent token to a temp file in each user's home directory, so the
 /// main app can read it via SSH even when the agent runs as SYSTEM (Windows) or
 /// another user. The files are cleaned up after 30 seconds.
@@ -2633,8 +2707,10 @@ async fn read_remote_agent_token(
     // fails on Windows SYSTEM profile).
     let command = match os {
         RemoteOs::Windows => {
-            // Agent runs as SYSTEM; token lives in SYSTEM's roaming profile.
-            r#"cmd.exe /C "(type "C:\Windows\System32\config\systemprofile\AppData\Roaming\local-llm-foundry\agent-token" 2>NUL || type "C:\Windows\System32\config\systemprofile\AppData\Roaming\llama-monitor\agent-token" 2>NUL)""#
+            // The scheduled task runs as SYSTEM but the bootstrap command
+            // deliberately points it at the SSH user's %APPDATA% directory.
+            // Probe both user and SYSTEM profiles during the migration window.
+            r#"cmd.exe /C "(type "%APPDATA%\local-llm-foundry\agent-token" 2>NUL || type "%APPDATA%\llama-monitor\agent-token" 2>NUL || type "C:\Windows\System32\config\systemprofile\AppData\Roaming\local-llm-foundry\agent-token" 2>NUL || type "C:\Windows\System32\config\systemprofile\AppData\Roaming\llama-monitor\agent-token" 2>NUL)""#
                 .to_string()
         }
         RemoteOs::Unix | RemoteOs::Macos => "(cat ~/.config/local-llm-foundry/agent-token 2>/dev/null || cat ~/.config/llama-monitor/agent-token 2>/dev/null)".to_string(),
@@ -3502,11 +3578,15 @@ Start-Sleep -Seconds 2\""
         pub installed: bool,
         pub running: bool,
         pub health_reachable: bool,
+        #[serde(default)]
+        pub metrics_reachable: bool,
         pub installed_version: Option<String>,
         pub managed_task_name: Option<String>,
         pub managed_task_installed: bool,
         pub managed_task_command: Option<String>,
         pub managed_task_matches: bool,
+        #[serde(default)]
+        pub agent_token: Option<String>,
         pub error: Option<String>,
     }
 
@@ -3870,6 +3950,7 @@ Start-Sleep -Seconds 2\""
     pub async fn status_remote_agent(
         ssh_target: &str,
         ssh_connection: Option<SshConnection>,
+        agent_url: Option<&str>,
     ) -> Result<RemoteAgentStatusResponse> {
         let connection = ssh_connection.unwrap_or_else(|| SshConnection::from_target(ssh_target));
         let os = detect_remote_os_with(&connection).await;
@@ -3882,19 +3963,28 @@ Start-Sleep -Seconds 2\""
                 installed: false,
                 running: false,
                 health_reachable: false,
+                metrics_reachable: false,
                 installed_version: None,
                 managed_task_name: None,
                 managed_task_installed: false,
                 managed_task_command: None,
                 managed_task_matches: false,
+                agent_token: None,
                 error: Some("Unknown remote OS".to_string()),
             });
         }
 
         let install_path = preferred_remote_install_path(&connection, os).await;
         let installed = remote_file_exists_with(&connection, os, &install_path).await;
-        let health_reachable =
-            agent_health_reachable(&connection.agent_url(REMOTE_AGENT_DEFAULT_PORT)).await;
+        let agent_url = agent_url
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| connection.agent_url(REMOTE_AGENT_DEFAULT_PORT));
+        let health_reachable = agent_health_reachable(&agent_url).await;
+        let agent_token = read_remote_agent_token(&connection, os, Some(&agent_url)).await;
+        let metrics_reachable =
+            agent_metrics_reachable_with_token(&agent_url, agent_token.as_deref()).await;
         let installed_version = if installed {
             get_remote_version_with(connection.clone())
                 .await
@@ -3922,11 +4012,13 @@ Start-Sleep -Seconds 2\""
             installed,
             running: health_reachable,
             health_reachable,
+            metrics_reachable,
             installed_version,
             managed_task_name,
             managed_task_installed,
             managed_task_command,
             managed_task_matches,
+            agent_token,
             error: None,
         })
     }

@@ -98,6 +98,35 @@ impl AppPaths {
         self.root.join("bin")
     }
 
+    /// Resolve the managed llama.cpp server while the application-root
+    /// migration remains restartable. A healthy binary in either the canonical
+    /// or legacy root must remain usable by every runtime consumer, not only by
+    /// the updater API.
+    pub fn default_llama_server_path(&self) -> PathBuf {
+        let binary_name = if cfg!(windows) {
+            "llama-server.exe"
+        } else {
+            "llama-server"
+        };
+        let configured = self.bin_dir().join(binary_name);
+        if configured.is_file() {
+            return configured;
+        }
+
+        for root in [
+            self.root.clone(),
+            Self::canonical_default_root(),
+            Self::legacy_default_root(),
+        ] {
+            let candidate = root.join("bin").join(binary_name);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+
+        configured
+    }
+
     pub fn models_dir(&self) -> PathBuf {
         if self.root == Self::canonical_default_root()
             && let Ok(bytes) = std::fs::read(self.model_root_selection_file())

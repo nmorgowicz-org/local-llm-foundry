@@ -430,7 +430,7 @@ async function checkRemoteAgentVersions() {
     const wsVersion = wsData?.remote_agent_version;
     const wsUpdateAvailable = wsData?.remote_agent_update_available === true;
 
-    if (wsVersion) {
+    if (wsVersion && wsData?.remote_agent_connected) {
         remoteAgentSetupState.installedVersion = wsVersion;
         if (installedEl) installedEl.textContent = wsVersion;
 
@@ -546,13 +546,17 @@ function renderManagedAgentStatus(data) {
     const installedEl = document.getElementById('agent-setup-installed-version');
     if (installedEl) installedEl.textContent = data.installed_version || (data.installed ? 'Unknown' : 'Not installed');
 
+    maybeAutoSaveAgentToken(data.agent_token);
+
     const installBtn = document.getElementById('btn-agent-setup-install');
     const startBtn = document.getElementById('btn-agent-setup-start');
     const stopBtn = document.getElementById('btn-agent-setup-stop');
     const removeBtn = document.getElementById('btn-agent-setup-remove');
 
+    const metricsReachable = data.metrics_reachable === true;
+    const needsRepair = data.installed && (!data.managed_task_matches || !metricsReachable);
     if (installBtn) {
-        installBtn.style.display = data.installed && data.managed_task_matches && !data.update_available ? 'none' : '';
+        installBtn.style.display = data.installed && !needsRepair && !data.update_available ? 'none' : '';
         installBtn.querySelector('.btn-icon')?.replaceChildren(document.createTextNode(data.installed ? '\u21bb' : '\u2b07'));
     }
     if (startBtn) startBtn.style.display = data.running ? 'none' : '';
@@ -563,11 +567,15 @@ function renderManagedAgentStatus(data) {
         '<strong>Install path:</strong> ' + escapeHtml(data.install_path || 'unknown'),
         '<strong>Installed:</strong> ' + (data.installed ? 'yes' : 'no'),
         '<strong>Running:</strong> ' + (data.running || data.reachable ? 'yes' : 'no'),
+        '<strong>Metrics/authenticated:</strong> ' + (metricsReachable ? 'yes' : 'no'),
     ];
     if (data.installed_version) managedLines.push('<strong>Version:</strong> ' + escapeHtml(data.installed_version));
     if (data.managed_task_name) managedLines.push('<strong>Startup task:</strong> ' + escapeHtml(data.managed_task_name) + (data.managed_task_matches ? ' (healthy)' : ' (needs repair)'));
     if (data.managed_task_command && !data.managed_task_matches) managedLines.push('<strong>Task command:</strong> ' + escapeHtml(data.managed_task_command));
-    showAgentSetupStatus(managedLines.join('<br>'), data.running || data.reachable ? 'ok' : 'info');
+    showAgentSetupStatus(
+        managedLines.join('<br>'),
+        metricsReachable ? 'ok' : (data.running || data.reachable ? 'warning' : 'info')
+    );
 }
 
 // ── Managed Agent Operations (Setup Modal) ─────────────────────────────────────

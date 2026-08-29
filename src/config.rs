@@ -519,15 +519,21 @@ impl AppConfig {
         let app_paths = AppPaths::from_root(AppPaths::resolve_root(args.config_dir.clone()));
         let config_dir = app_paths.root.clone();
 
-        // Default binary location: <config_dir>/bin/llama-server
-        // (The legacy root remains selected until explicit 2.0 migration.)
-        // Subdirectory keeps binaries separate from JSON config files.
-        let binary_name = if cfg!(windows) {
-            "llama-server.exe"
+        // Default binary location: <config_dir>/bin/llama-server. During the
+        // restartable root migration, reuse a healthy managed binary from the
+        // other application root when the selected root has no binary yet.
+        // Pure config construction must remain filesystem-free for migration
+        // planning and status commands.
+        let default_server_path = if initialize_resources {
+            app_paths.default_llama_server_path()
         } else {
-            "llama-server"
+            let binary_name = if cfg!(windows) {
+                "llama-server.exe"
+            } else {
+                "llama-server"
+            };
+            app_paths.bin_dir().join(binary_name)
         };
-        let default_server_path = app_paths.bin_dir().join(binary_name);
 
         let presets_file = args
             .presets_file

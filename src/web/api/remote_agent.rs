@@ -396,7 +396,12 @@ fn api_remote_agent_status(app_config: Arc<AppConfig>) -> ApiRoute {
                                 as Box<dyn warp::reply::Reply>);
                         }
                     };
-                    match agent::status_remote_agent(&ssh_target, ssh_connection).await {
+                    let agent_url = request
+                        .get("agent_url")
+                        .and_then(|value| value.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty());
+                    match agent::status_remote_agent(&ssh_target, ssh_connection, agent_url).await {
                         Ok(response) => {
                             Ok::<_, warp::Rejection>(Box::new(warp::reply::json(&response))
                                 as Box<dyn warp::reply::Reply>)
