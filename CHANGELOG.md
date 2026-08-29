@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.10](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.0.9...v2.0.10) (2026-08-29)
+
+
+### Bug Fixes
+
+* **agent:** recover migrated remote metrics and release assets ([#372](https://github.com/nmorgowicz-org/local-llm-foundry/issues/372)) ([f8df927](https://github.com/nmorgowicz-org/local-llm-foundry/commit/f8df927c1836cc545d44d500e4111d15aad549fe))
+
 ## [2.0.9](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.0.8...v2.0.9) (2026-08-29)
 
 
