@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.11](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.0.10...v2.0.11) (2026-08-29)
+
+
+### Bug Fixes
+
+* **agent:** repair Windows SSH token handoff ([#374](https://github.com/nmorgowicz-org/local-llm-foundry/issues/374)) ([ed91c55](https://github.com/nmorgowicz-org/local-llm-foundry/commit/ed91c559c94b7fcb30add3df0803cc0ad4ab01ac))
+
 ## [2.0.10](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.0.9...v2.0.10) (2026-08-29)
 
 
