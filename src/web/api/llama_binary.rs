@@ -12,6 +12,7 @@ use crate::llama::llama_cpp_downloader::{
     select_assets_for_os, sort_releases_by_published_at,
 };
 use crate::llama::server::{start_server, stop_server};
+use crate::paths::AppPaths;
 use crate::state::AppState;
 use crate::web::safe_json_body;
 
@@ -26,6 +27,57 @@ fn default_backend_for_os(os: &str) -> &'static str {
 }
 
 const LLAMA_SERVER_HEALTH_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn managed_llama_server_path(config: &AppConfig) -> std::path::PathBuf {
+    let binary_name = if cfg!(windows) {
+        "llama-server.exe"
+    } else {
+        "llama-server"
+    };
+    let configured = config.llama_server_path.clone();
+
+    // Explicit custom paths remain authoritative. The fallback is only for the
+    // default managed path, which may be split between the canonical and legacy
+    // roots while the 2.x migration is intentionally restartable.
+    if configured.is_file() || configured != config.app_paths.bin_dir().join(binary_name) {
+        return configured;
+    }
+
+    let mut candidates = vec![configured];
+    for root in [
+        config.app_paths.root.clone(),
+        AppPaths::canonical_default_root(),
+        AppPaths::legacy_default_root(),
+    ] {
+        let candidate = root.join("bin").join(binary_name);
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| config.llama_server_path.clone())
+}
+
+fn parse_llama_build(output: &str) -> Option<u64> {
+    use regex::Regex;
+
+    static BUILD_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static VERSION_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+
+    let build_re = BUILD_RE.get_or_init(|| Regex::new(r"(?i)\bbuild\s*[:=]?\s*(\d+)").unwrap());
+    let version_re =
+        VERSION_RE.get_or_init(|| Regex::new(r"(?i)\bversion\s*[:=]\s*(\d+)").unwrap());
+
+    build_re
+        .captures(output)
+        .or_else(|| version_re.captures(output))
+        .and_then(|captures| captures.get(1))
+        .and_then(|match_| match_.as_str().parse::<u64>().ok())
+        .filter(|build| *build > 0)
+}
 
 fn normalized_arch(arch: &str) -> &str {
     match arch {
@@ -100,7 +152,7 @@ fn api_llama_binary_version(
                     return Ok(unauthorized_api_token());
                 }
 
-                let binary_path = cfg.llama_server_path.clone();
+                let binary_path = managed_llama_server_path(&cfg);
                 let path_str = binary_path.display().to_string();
 
                 let result = tokio::task::spawn_blocking(move || {
@@ -127,16 +179,7 @@ fn api_llama_binary_version(
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let combined = format!("{}{}", stdout, stderr);
 
-                // Try to parse build number from "version: 1234" or "build: 1234"
-                let build_num: Option<u64> = {
-                    use regex::Regex;
-                    static VERSION_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-                    let re = VERSION_RE
-                        .get_or_init(|| Regex::new(r"(?:version|build)[:\s]+(\d+)").unwrap());
-                    re.captures(&combined)
-                        .and_then(|c| c.get(1))
-                        .and_then(|m| m.as_str().parse().ok())
-                };
+                let build_num = parse_llama_build(&combined);
 
                 match build_num {
                     Some(n) => Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
@@ -708,7 +751,7 @@ fn api_llama_binary_update(
                 let previous_config = llama_update_restart_config(&state);
                 let restart_applicable = previous_config.is_some();
 
-                let dest_path = cfg.llama_server_path.clone();
+                let dest_path = managed_llama_server_path(&cfg);
 
                 let os = std::env::consts::OS;
                 let arch = std::env::consts::ARCH;
@@ -1413,5 +1456,20 @@ mod tests {
             LLAMA_SERVER_HEALTH_CHECK_TIMEOUT,
             std::time::Duration::from_secs(30)
         );
+    }
+
+    #[test]
+    fn parse_llama_build_prefers_build_over_semver_version() {
+        assert_eq!(
+            parse_llama_build("version: 0.3.0-dev (build 10672, commit abc)"),
+            Some(10672)
+        );
+    }
+
+    #[test]
+    fn parse_llama_build_accepts_legacy_numeric_formats() {
+        assert_eq!(parse_llama_build("build: 10576"), Some(10576));
+        assert_eq!(parse_llama_build("version: 10576"), Some(10576));
+        assert_eq!(parse_llama_build("version: 0.0.0"), None);
     }
 }
