@@ -1,8 +1,9 @@
 # Local LLM Foundry
 
-Local LLM Foundry is the 2.0 home for local AI inference: one dashboard for
-models, live GPU/system telemetry, chat, a hardware-aware setup wizard, and
-managed llama.cpp and Rapid-MLX runtimes on macOS, Linux, and Windows.
+Local LLM Foundry is the 2.0 home for llama.cpp and GGUF inference: one
+dashboard for models, live GPU/system telemetry, chat, a hardware-aware setup
+wizard, and managed llama.cpp builds on macOS, Linux, and Windows. Rapid-MLX is
+also supported as a first-class Apple Silicon backend.
 
 This is a compatibility-preserving rebrand of Llama Monitor. The `llama-monitor`
 executable, legacy roots, API routes, browser storage, and release aliases
@@ -29,6 +30,34 @@ Quick start:
 - Start a new conversation from the chat workspace when ready.
 
 ## Features
+
+### llama.cpp + GGUF (the core path)
+
+llama.cpp is the original engine Local LLM Foundry was built around, and GGUF
+is its native model format. The app takes the workflow from model discovery to
+an evidence-backed launch configuration:
+
+- **First-class GGUF library**: discover GGUFs locally or on Hugging Face,
+  import models from common local-tool ecosystems, and keep model metadata,
+  quantization, architecture, and lifecycle state together.
+- **Header-aware model intelligence**: inspect GGUF metadata and tensor shapes
+  without reading the model weights, then use the real architecture and
+  quantization data for VRAM estimates and context-fit decisions.
+- **Hardware-aware launch controls**: tune context length, GPU offload, KV
+  cache precision, batch and parallel slots, MoE CPU offload, Flash Attention,
+  RoPE settings, and other llama-server options from Guided or Pro wizard
+  controls.
+- **Multimodal and speculative decoding support**: pair vision models with
+  `.mmproj.gguf` projectors and configure n-gram, built-in MTP, or external
+  draft-model workflows with llama.cpp-native KV and draft controls.
+- **Managed upstream builds**: inspect release notes and install supported
+  rolling `b#####` builds (including beta/nightly-style builds) from the app;
+  the picker filters downloads by the host OS, architecture, and backend.
+- **Measure before tuning**: run llama.cpp benchmarks and MTP sweeps from the
+  Tuning panel, with live throughput, context, slot, GPU, and system telemetry
+  in the same dashboard.
+
+![llama.cpp engine selection](docs/screenshots/spawn-wizard-engines--neutral--dark.png)
 
 ### Rapid-MLX Backend (Apple Silicon)
 
@@ -112,7 +141,8 @@ An integrated setup wizard for discovering, downloading, configuring, and launch
   - Third-party import (Ollama, LM Studio, Jan, GPT4All, HF cache)
   - Local GGUF files with VRAM estimates
 - **VRAM-aware tuning**: live breakdown bar with auto-size and quant-compare
-- **llama.cpp binary management**: auto-download, install, and update the llama.cpp runtime
+- **llama.cpp binary management**: browse release notes and auto-download,
+  install, update, or roll back supported llama.cpp builds
 
 ![Engine selection in Setup wizard](docs/screenshots/spawn-wizard-engines--neutral--dark.png)
 
