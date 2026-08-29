@@ -27,6 +27,10 @@ fn default_backend_for_os(os: &str) -> &'static str {
 }
 
 const LLAMA_SERVER_HEALTH_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+// GitHub publishes release metadata before all platform archives finish
+// uploading. Keep this short so a temporarily incomplete nightly cannot make
+// a valid platform build look unavailable for the next half hour.
+const RELEASE_LIST_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 fn managed_llama_server_path(config: &AppConfig) -> std::path::PathBuf {
     let binary_name = if cfg!(windows) {
@@ -352,11 +356,11 @@ fn api_llama_binary_releases(
                     return Ok(unauthorized_api_token());
                 }
 
-                // Check 30-minute cache
+                // Check short-lived cache; release assets are uploaded asynchronously.
                 {
                     let guard = RELEASES_CACHE.lock().await;
                     if let Some((ts, ref cached)) = *guard
-                        && ts.elapsed() < std::time::Duration::from_secs(30 * 60)
+                        && ts.elapsed() < RELEASE_LIST_CACHE_TTL
                     {
                         return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
                             warp::reply::json(cached),
@@ -1410,6 +1414,23 @@ mod tests {
         ));
         assert!(!release_has_matching_assets(
             &release, "cuda12", "arm64", "linux"
+        ));
+    }
+
+    #[test]
+    fn macos_arm_release_with_generic_metal_archive_is_installable() {
+        let release = LlamaCppRelease {
+            tag_name: "b10685".into(),
+            assets: vec![crate::llama::llama_cpp_downloader::LlamaCppAsset {
+                name: "llama-b10685-bin-macos-arm64.tar.gz".into(),
+                browser_download_url: "https://example.com/macos-arm64".into(),
+            }],
+            published_at: String::new(),
+            body: String::new(),
+        };
+
+        assert!(release_has_matching_assets(
+            &release, "metal", "arm64", "macos"
         ));
     }
 

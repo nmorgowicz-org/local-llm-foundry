@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{
     Arc, LazyLock, Mutex,
@@ -209,6 +209,7 @@ const AGENT_MASTER_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const AGENT_IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const REMOTE_AGENT_AUTOSTART_TIMEOUT: Duration = Duration::from_secs(15);
 const REMOTE_AGENT_AUTOSTART_SUPPRESS_DURATION: Duration = Duration::from_secs(120);
+const REMOTE_AGENT_ENROLLMENT_RETRY_INTERVAL: Duration = Duration::from_secs(10);
 const GITHUB_LATEST_RELEASE_URL: &str = crate::identity::RELEASE_API_URL;
 
 fn unix_timestamp_seconds() -> u64 {
@@ -1232,6 +1233,9 @@ pub async fn remote_agent_poller(state: AppState, app_config: Arc<AppConfig>) {
     // Tracks which agent base URLs we have already attempted (or confirmed) enrollment
     // for in this session. Avoids re-running enrollment on every poll after success.
     let mut enrolled_urls: HashSet<String> = HashSet::new();
+    let mut enrollment_attempted_at: HashMap<String, Instant> = HashMap::new();
+    let mut last_metrics_failure: Option<(String, bool, bool, bool)> = None;
+    let mut token_refresh_attempted_at: HashMap<String, Instant> = HashMap::new();
 
     loop {
         if !enabled {
@@ -1245,9 +1249,12 @@ pub async fn remote_agent_poller(state: AppState, app_config: Arc<AppConfig>) {
             Some(settings.remote_agent_url.as_str()),
         ]);
         let url = remote_agent_url_for_active_session(&state, configured_url.as_deref());
+        // Prefer the persisted UI token: a remote reinstall may rotate the token
+        // after startup, and refresh_remote_agent_token updates this value. The
+        // CLI/config token remains a fallback for headless deployments.
         let token = first_non_empty([
-            app_config.remote_agent_token.as_deref(),
             Some(settings.remote_agent_token.as_str()),
+            app_config.remote_agent_token.as_deref(),
         ]);
 
         if let Some(url) = url {
@@ -1267,6 +1274,7 @@ pub async fn remote_agent_poller(state: AppState, app_config: Arc<AppConfig>) {
                         // Successful connection — mark enrollment confirmed for this base URL.
                         enrolled_urls.insert(url.trim_end_matches('/').to_string());
                         metrics_result = Some((candidate, resp));
+                        last_metrics_failure = None;
                         break;
                     }
                     Ok(resp) => {
@@ -1285,7 +1293,11 @@ pub async fn remote_agent_poller(state: AppState, app_config: Arc<AppConfig>) {
             // is configured, bootstrap trust automatically via SSH — no user interaction needed.
             if metrics_result.is_none() && saw_connect_error {
                 let base_url = url.trim_end_matches('/').to_string();
-                if !enrolled_urls.contains(&base_url) {
+                let retry_allowed = enrollment_attempted_at
+                    .get(&base_url)
+                    .is_none_or(|last| last.elapsed() >= REMOTE_AGENT_ENROLLMENT_RETRY_INTERVAL);
+                if !enrolled_urls.contains(&base_url) && retry_allowed {
+                    enrollment_attempted_at.insert(base_url.clone(), Instant::now());
                     let ssh_target = first_non_empty([
                         app_config.remote_agent_ssh_target.as_deref(),
                         Some(settings.remote_agent_ssh_target.as_str()),
@@ -1298,19 +1310,27 @@ pub async fn remote_agent_poller(state: AppState, app_config: Arc<AppConfig>) {
                             &app_config.ssh_known_hosts_file,
                         ) {
                             Ok(connection) if connection.trusted_host_key.is_some() => {
-                                enrolled_urls.insert(base_url); // prevent retry loops
-                                bootstrap_client_enrollment(&connection, &url, &state, &app_config)
-                                    .await;
+                                if bootstrap_client_enrollment(
+                                    &connection,
+                                    &url,
+                                    &state,
+                                    &app_config,
+                                )
+                                .await
+                                {
+                                    enrolled_urls.insert(base_url.clone());
+                                    enrollment_attempted_at.remove(&base_url);
+                                }
                             }
                             _ => {
-                                enrolled_urls.insert(base_url);
                                 eprintln!(
-                                    "[agent] SSH enrollment blocked by host key check for {target}"
+                                    "[agent] SSH enrollment deferred for {target}; host key is not trusted"
                                 );
                             }
                         }
                     } else {
-                        enrolled_urls.insert(base_url);
+                        // Leave this URL eligible for a future retry if SSH is
+                        // configured later in the same application session.
                         eprintln!(
                             "[agent] mTLS connect failed for {url} and no SSH target configured; \
                              set remote_agent_ssh_target to enable automatic enrollment"
@@ -1319,12 +1339,34 @@ pub async fn remote_agent_poller(state: AppState, app_config: Arc<AppConfig>) {
                 }
             }
 
+            if metrics_result.is_none() {
+                let failure = (
+                    url.trim_end_matches('/').to_string(),
+                    token.is_some(),
+                    saw_unauthorized,
+                    saw_connect_error,
+                );
+                if last_metrics_failure.as_ref() != Some(&failure) {
+                    eprintln!(
+                        "[agent] Remote metrics unavailable: url={} token_present={} unauthorized={} connection_error={}",
+                        failure.0, failure.1, failure.2, failure.3,
+                    );
+                    last_metrics_failure = Some(failure);
+                }
+            }
+
             // A reinstall can rotate the remote token while leaving the agent
             // process and its health endpoint running. Recover the durable
             // token over the already-trusted SSH channel instead of treating
             // HTTP 401 as a permanently disconnected agent.
             if metrics_result.is_none() && saw_unauthorized {
-                refresh_remote_agent_token(&state, &app_config, &settings, &url).await;
+                let refresh_allowed = token_refresh_attempted_at
+                    .get(&url)
+                    .is_none_or(|last| last.elapsed() >= REMOTE_AGENT_ENROLLMENT_RETRY_INTERVAL);
+                if refresh_allowed {
+                    token_refresh_attempted_at.insert(url.clone(), Instant::now());
+                    refresh_remote_agent_token(&state, &app_config, &settings, &url).await;
+                }
             }
 
             match metrics_result {
@@ -1638,6 +1680,9 @@ async fn refresh_remote_agent_token(
     ])
     .or_else(|| remote_host_from_agent_url(agent_url));
     let Some(target) = target else {
+        eprintln!(
+            "[agent] Cannot refresh remote-agent token for {agent_url}: no SSH target configured"
+        );
         return;
     };
 
@@ -1645,19 +1690,29 @@ async fn refresh_remote_agent_token(
         SshConnection::from_target(&target),
         &app_config.ssh_known_hosts_file,
     ) else {
+        eprintln!(
+            "[agent] Cannot refresh remote-agent token for {agent_url}: SSH connection failed"
+        );
         return;
     };
     if connection.trusted_host_key.is_none() {
+        eprintln!(
+            "[agent] Cannot refresh remote-agent token for {agent_url}: SSH host key is not trusted"
+        );
         return;
     }
 
     let os = detect_remote_os_with(&connection).await;
     let Some(token) = read_remote_agent_token(&connection, os, Some(agent_url)).await else {
+        eprintln!(
+            "[agent] Cannot refresh remote-agent token for {agent_url}: no readable handoff or config token"
+        );
         return;
     };
 
     let mut current = state.ui_settings.lock().unwrap();
     if current.remote_agent_token == token {
+        eprintln!("[agent] Remote-agent token refresh found the existing token for {agent_url}");
         return;
     }
     current.remote_agent_token = token;
@@ -2157,7 +2212,7 @@ async fn read_remote_ca_pem(connection: &SshConnection, os: RemoteOs) -> Option<
         RemoteOs::Unix | RemoteOs::Macos => "cat ~/.config/llama-monitor/certs/ca.pem".to_string(),
         RemoteOs::Unknown => return None,
     };
-    match tokio::time::timeout(
+    let pem = match tokio::time::timeout(
         Duration::from_secs(5),
         remote_ssh::exec(connection.clone(), command),
     )
@@ -2167,7 +2222,14 @@ async fn read_remote_ca_pem(connection: &SshConnection, os: RemoteOs) -> Option<
             Some(output.stdout)
         }
         _ => None,
+    };
+    if pem.is_none() {
+        eprintln!(
+            "[agent] Remote CA lookup failed for {} (expected certificate paths unavailable)",
+            connection.target_label()
+        );
     }
+    pem
 }
 
 /// Fully automated bootstrap enrollment for a new client device.
@@ -2211,7 +2273,9 @@ async fn bootstrap_client_enrollment(
 
     // 2. Fetch the api-token from the remote agent via SSH.
     let Some(api_token) = read_remote_agent_token(connection, os, Some(agent_url)).await else {
-        eprintln!("[agent] Could not read api-token from remote agent via SSH; cannot enroll");
+        eprintln!(
+            "[agent] Could not read api-token from remote agent via SSH; enrollment will retry after the agent refreshes its token handoff"
+        );
         return false;
     };
 
