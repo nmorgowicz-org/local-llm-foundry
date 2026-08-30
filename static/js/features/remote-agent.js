@@ -187,8 +187,11 @@ function updateAgentSetupStatusAlert() {
     const icon = document.getElementById('agent-setup-status-alert-icon');
     const title = document.getElementById('agent-setup-status-alert-title');
     const message = document.getElementById('agent-setup-status-alert-message');
+    const upgradeButton = document.getElementById('btn-agent-setup-upgrade');
 
     if (!alert) return;
+
+    if (upgradeButton) upgradeButton.style.display = 'none';
 
     if (!wsData) {
         alert.style.display = 'none';
@@ -219,6 +222,7 @@ function updateAgentSetupStatusAlert() {
         icon.textContent = '\u2191\ufe0f';
         title.textContent = 'Agent Update Available';
         message.textContent = 'Running v' + agentVersion + ' — a newer version is available. Click Upgrade to install it.';
+        if (upgradeButton) upgradeButton.style.display = '';
         return;
     }
 
@@ -2107,6 +2111,7 @@ export function initRemoteAgent() {
             installRemoteAgent();
         }
     });
+    document.getElementById('btn-agent-setup-upgrade')?.addEventListener('click', upgradeRemoteAgent);
     document.getElementById('btn-agent-setup-start')?.addEventListener('click', startRemoteAgent);
     document.getElementById('btn-agent-setup-stop')?.addEventListener('click', stopManagedRemoteAgent);
     document.getElementById('btn-agent-setup-remove')?.addEventListener('click', removeManagedRemoteAgent);

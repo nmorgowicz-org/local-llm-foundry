@@ -248,7 +248,30 @@ test.describe('modals and menus', () => {
     });
     await page.locator('.btn-agent-fix').click();
     await expect(page.locator('#remote-agent-setup-modal')).toBeVisible();
+    await expect(page.locator('#btn-agent-setup-upgrade')).toBeHidden();
   });
+
+test('remote agent update banner exposes upgrade action', async ({ page }) => {
+  await enterMonitorView(page);
+  await page.evaluate(async () => {
+    const { setWsData } = await import('/js/core/app-state.js');
+    const { openRemoteAgentSetup } = await import('/js/features/remote-agent.js');
+    setWsData({
+      remote_agent_connected: true,
+      remote_agent_health_reachable: true,
+      remote_agent_update_available: true,
+      remote_agent_version: '2.0.11',
+      session_mode: 'attach',
+      endpoint_kind: 'Remote',
+      system: { cpu_temp_available: true, cpu_temp: 45 },
+    });
+    openRemoteAgentSetup();
+  });
+  await expect(page.locator('#remote-agent-setup-modal')).toBeVisible();
+  await expect(page.locator('#agent-setup-status-alert')).toHaveClass(/warning/);
+  await expect(page.locator('#agent-setup-status-alert-title')).toHaveText('Agent Update Available');
+  await expect(page.locator('#btn-agent-setup-upgrade')).toBeVisible();
+});
 
 test('configuration explains local executable, GPU, and explicit SSH flow', async ({ page }) => {
     // Open config modal directly via JS (avoids flaky Settings modal interactions)
