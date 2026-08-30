@@ -22,3 +22,5 @@ llamacpp:n_decode_total 42000
 # HELP llamacpp:n_busy_slots_per_decode Average number of busy slots per decode call
 # TYPE llamacpp:n_busy_slots_per_decode gauge
 llamacpp:n_busy_slots_per_decode 1.5
+llamacpp:spec_decode_num_draft_tokens_total 200
+llamacpp:spec_decode_num_accepted_tokens_total 100
