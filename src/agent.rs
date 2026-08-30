@@ -219,6 +219,25 @@ fn unix_timestamp_seconds() -> u64 {
         .as_secs()
 }
 
+/// Build an idempotent command for stopping a managed remote agent.
+///
+/// Windows taskkill returns a failure status when a named process is absent.
+/// That is normal during an update (and especially after migrating away from
+/// the legacy llama-monitor.exe name), so only the canonical process result
+/// controls the command status. The legacy process is still stopped when it is
+/// present, but its result is deliberately ignored.
+fn remote_agent_stop_command(os: RemoteOs) -> Option<&'static str> {
+    match os {
+        RemoteOs::Windows => Some(
+            r###"cmd.exe /V:ON /C "(taskkill /IM local-llm-foundry.exe /F >NUL 2>NUL) & set canonical_error=!ERRORLEVEL! & taskkill /IM llama-monitor.exe /F >NUL 2>NUL & if !canonical_error! EQU 128 exit /B 0 & exit /B !canonical_error!""###,
+        ),
+        RemoteOs::Unix | RemoteOs::Macos => Some(
+            "pkill -x local-llm-foundry >/dev/null 2>&1; pkill -x llama-monitor >/dev/null 2>&1; true",
+        ),
+        RemoteOs::Unknown => None,
+    }
+}
+
 fn master_request_is_recent(last_request: &AtomicU64, now: u64) -> bool {
     let last = last_request.load(Ordering::Relaxed);
     last != 0 && now.saturating_sub(last) <= AGENT_MASTER_IDLE_TIMEOUT.as_secs()
@@ -4009,26 +4028,30 @@ Start-Sleep -Seconds 2\""
     ) -> Result<RemoteAgentStopResponse> {
         let connection = ssh_connection.unwrap_or_else(|| SshConnection::from_target(ssh_target));
         let os = detect_remote_os_with(&connection).await;
-        let command = match os {
-            RemoteOs::Windows => {
-                "cmd.exe /C (taskkill /IM local-llm-foundry.exe /F >NUL 2>NUL & taskkill /IM llama-monitor.exe /F >NUL 2>NUL)"
-            }
-            RemoteOs::Unix | RemoteOs::Macos => {
-                "pkill -x local-llm-foundry >/dev/null 2>&1; pkill -x llama-monitor >/dev/null 2>&1; true"
-            }
-            RemoteOs::Unknown => return Err(io::Error::other("Unknown OS").into()),
-        };
+        let command =
+            remote_agent_stop_command(os).ok_or_else(|| io::Error::other("Unknown OS"))?;
 
-        let output = remote_ssh::exec(connection.clone(), command.to_string()).await?;
+        let output = remote_ssh::exec(connection.clone(), command.into()).await?;
+        let stopped = output.status == 0;
+        if !stopped {
+            eprintln!(
+                "[agent] Remote stop command failed: status={} stderr={}",
+                output.status,
+                output.stderr.trim()
+            );
+        }
 
         Ok(RemoteAgentStopResponse {
-            ok: output.status == 0,
+            ok: stopped,
             ssh_target: connection.target_label(),
-            stopped: output.status == 0,
-            error: if output.status == 0 {
+            stopped,
+            error: if stopped {
                 None
             } else {
-                Some("Failed to stop agent".to_string())
+                Some(format!(
+                    "Failed to stop agent (remote exit status {})",
+                    output.status
+                ))
             },
         })
     }
@@ -4893,6 +4916,28 @@ mod tests {
             install::describe_windows_task_result(2_147_942_402),
             Some("agent executable not found at the scheduled task path")
         );
+    }
+
+    #[test]
+    fn windows_stop_command_ignores_absent_legacy_process_only() {
+        let command = remote_agent_stop_command(RemoteOs::Windows).unwrap();
+
+        assert!(command.contains("taskkill /IM local-llm-foundry.exe"));
+        assert!(command.contains("taskkill /IM llama-monitor.exe"));
+        assert!(command.contains("set canonical_error=!ERRORLEVEL!"));
+        assert!(command.contains("if !canonical_error! EQU 128 exit /B 0"));
+        assert!(command.contains("exit /B !canonical_error!"));
+    }
+
+    #[test]
+    fn remote_stop_command_is_noop_safe_on_unix_and_unknown_is_rejected() {
+        assert_eq!(
+            remote_agent_stop_command(RemoteOs::Unix),
+            Some(
+                "pkill -x local-llm-foundry >/dev/null 2>&1; pkill -x llama-monitor >/dev/null 2>&1; true"
+            )
+        );
+        assert_eq!(remote_agent_stop_command(RemoteOs::Unknown), None);
     }
 
     #[test]
