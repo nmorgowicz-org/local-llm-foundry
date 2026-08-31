@@ -21,6 +21,7 @@ mod lhm;
 mod llama_binary;
 mod metrics;
 mod models;
+mod preset_bundles;
 #[path = "presets.rs"]
 mod preset_routes;
 mod rapid_mlx_repair;
@@ -65,6 +66,7 @@ pub fn api_routes(
     };
 
     let preset_routes = preset_routes::routes(ctx.clone());
+    let preset_bundle_routes = preset_bundles::routes(ctx.clone());
     let app_home_migration_routes = app_home_migration::routes(ctx.clone());
     let template_routes = templates::routes(ctx.clone());
     let browse_routes = browse::routes(ctx.clone());
@@ -98,6 +100,7 @@ pub fn api_routes(
         .or(browse_with_chat)
         .or(db_routes)
         .or(preset_routes)
+        .or(preset_bundle_routes)
         .or(app_home_migration_routes)
         .or(template_routes)
         .or(models_routes)

@@ -200,6 +200,34 @@ impl MixedMainKv {
 }
 
 impl CapabilitySnapshot {
+    /// Conservative snapshot used when no executable is configured (for
+    /// schema/API tests and degraded preview). It never authorizes optional
+    /// binary-specific behavior.
+    pub fn product_default() -> Self {
+        Self {
+            executable_identity: ExecutableIdentity {
+                path: String::new(),
+                file_hash: String::new(),
+                file_mtime_unix: 0,
+            },
+            version_text: String::new(),
+            help_hash: String::new(),
+            serve_flags: Vec::new(),
+            cache: CacheCapabilities::default(),
+            context: ContextCapabilities::default(),
+            concurrency: ConcurrencyCapabilities::default(),
+            endpoints: EndpointCapabilities::default(),
+            streaming: StreamingCapabilities::default(),
+            templates: TemplateCapabilities::default(),
+            tools: ToolCapabilities::default(),
+            speculation: SpeculationCapabilities::default(),
+            typed: TypedLlamaCapabilities::default(),
+            mixed_main_kv: MixedMainKv::product_default_denied(),
+            evidence_timestamp: 0,
+            source: CapabilitySnapshotSource::ManualOverride,
+        }
+    }
+
     /// Whether the exact binary advertised a flag in its bounded `--help`
     /// probe. This is deliberately the only generic flag lookup used by typed
     /// launch validation; callers must still apply the option-specific policy.

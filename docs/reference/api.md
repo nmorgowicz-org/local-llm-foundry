@@ -289,11 +289,14 @@ Request:
 {
   "preset_id": "default-1",
   "name": "Session on port 8001",
-  "port": 8001
+  "port": 8001,
+  "selection": null,
+  "expected_revision": 1,
+  "expected_resolved_config_hash": "cfg-v1:<sha256>"
 }
 ```
 
-`preset_id` is required. `name` defaults to `Session on port {port}`. `port` defaults to `8001`.
+`preset_id` is required. For a bundled preset, the server resolves the saved default or the optional exact `selection`; it never trusts a client-submitted flat preset. `expected_revision` is checked when supplied and is required with a one-shot selection. `expected_resolved_config_hash` protects a preview-to-start action and returns `412 preview_stale` if the effective configuration changed. `name` defaults to `Session on port {port}`. `port` defaults to `8001`.
 
 Success response:
 
@@ -428,8 +431,9 @@ Emergency process kill for `llama-server`.
 
 ## Presets
 
-Presets are stored in `presets.json` and use the `ModelPreset` struct.
-Route handlers: `src/web/api/presets.rs`.
+Presets are stored in `presets.json` and use the `ModelPreset` struct. Bundle
+cards and selection resolution are handled separately from legacy CRUD in
+`src/web/api/preset_bundles.rs`.
 
 ### `GET /api/presets`
 Auth: api-token.
@@ -480,6 +484,36 @@ Auth: api-token.
     "extra_args": ""
   }
 ]
+```
+
+### `GET /api/preset-cards`
+Auth: api-token.
+
+Returns the redacted setup-card projection and a catalog concurrency token. Cards expose safe artifact labels and availability, saved bundle selections, and bundle identity; local paths and API keys are not included.
+
+```json
+{
+  "cards": [{"id": "preset-1", "revision": 1, "name": "Qwen bundle", "bundle": {"bundle_id": "qwen38", "tune_id": "brainwaves-q4-q5", "default_selection": {"artifact_id": "weights-q4", "context_size": 160000, "kv_policy": "q4_0_q4_0", "performance_id": "balanced", "n_cpu_moe": 0}}}],
+  "catalog_etag": "catalog-v1:<sha256>"
+}
+```
+
+### `POST /api/presets/{id}/resolve`
+Auth: api-token.
+
+Resolves the saved bundle selection or an optional one-shot `selection` through the server-owned resolver. Resolution does not write state. The response includes `sel-v1:` and `cfg-v1:` identifiers, normalized selection, changes, capability reasons, and a tagged estimate status. It never includes a flat preset, local artifact paths, API keys, or raw launch arguments.
+
+```json
+{"selection": {"artifact_id": "weights-q4", "context_size": 160000, "kv_policy": "q4_0_q4_0", "performance_id": "balanced", "n_cpu_moe": 0}}
+```
+
+### `PATCH /api/presets/{id}/selection`
+Auth: api-token.
+
+Updates a bundled preset’s saved default selection. `expected_revision` is required; the server strips any submitted `intent_source`, validates the candidate, durably saves it, then changes in-memory state. A stale revision returns `409` and leaves state unchanged.
+
+```json
+{"expected_revision": 1, "selection": {"artifact_id": "weights-q5", "context_size": 200000, "kv_policy": "q4_0_q4_0", "performance_id": "throughput", "n_cpu_moe": 6}}
 ```
 
 ### `POST /api/model-defaults`
@@ -670,22 +704,56 @@ Response:
 
 ### `PUT /api/presets/{id}`
 Auth: api-token.
-Updates the preset matched by the path `id`. Accepts the same `ModelPreset` shape as POST.
+Updates the preset matched by the path `id`. Accepts the same `ModelPreset`
+shape as POST. A bundled preset must be sent as
+`{"expected_revision": <revision>, "preset": <model-preset>}`; the submitted
+flat projection must agree with `bundle.default_selection`. The server assigns
+the next revision and returns `409` for a stale revision or `400` for a
+projection conflict.
 
-### `DELETE /api/presets/{id}`
+### `POST /api/presets/{id}/copy`
 Auth: api-token.
 
+Creates a new preset from the current preset after checking its revision. The
+source is unchanged; the new preset receives a server-generated ID and
+`revision: 1`.
+
 ```json
-{ "ok": true }
+{"expected_revision": 2, "new_name": "Qwen copy"}
+```
+
+### `POST /api/presets/{id}/convert-to-bundle`
+Auth: api-token.
+
+Explicitly converts one legacy flat preset into a one-artifact bundle. The
+conversion is transactional, uses the saved flat values and adopted companion
+paths, and assigns a fresh bundle/tune identity. `conversion` is reserved for
+future bounded conversion options.
+
+```json
+{"expected_revision": 1, "conversion": {}}
+```
+
+### `DELETE /api/presets/{id}`
+Auth: db-admin-token. Requires the exact confirmation string and the current
+preset revision.
+
+```json
+{ "expected_revision": 2, "confirmation": "DELETE PRESET" }
 ```
 
 ### `POST /api/presets/reset`
-Auth: api-token.
-Replaces the in-memory and on-disk preset list with factory defaults.
+Auth: db-admin-token. Requires the current catalog etag and the exact
+confirmation string. Replaces the in-memory and on-disk preset list with
+factory defaults only after both guards pass.
 
 ```json
-{ "ok": true }
+{ "expected_catalog_etag": "catalog-v1:<sha256>", "confirmation": "RESET PRESETS" }
 ```
+
+Successful mutations return the updated `revision` where applicable and a
+fresh `catalog_etag`. Persistence failures return a non-success response and
+leave the live in-memory catalog unchanged.
 
 ## Templates
 

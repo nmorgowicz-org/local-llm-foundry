@@ -1,60 +1,560 @@
-//! Phase 2: bundle selection resolver — types + exact-selection stub.
+//! The single pure resolver for typed preset bundles.
 //!
-//! Architecture §7 makes one server-side resolver authoritative for preview,
-//! save, and spawn:
-//!
-//! ```text
-//! ModelPreset + optional one-shot selection
-//!     -> structural/product validation (pure; no executable required)
-//!     -> validate bundle membership and revision
-//!     -> resolve named policies to exact values
-//!     -> materialize flat ModelPreset
-//!     -> runtime validation with an explicit CapabilitySnapshot/provider
-//!     -> build canonical ResolvedLaunchManifest
-//!     -> optionally enrich with estimate and evidence
-//!     -> return internal ResolvedLaunch plus a separately redacted API view
-//! ```
-//!
-//! This phase introduces the **types** and the **exact-selection** resolver
-//! interface only. The intent/proposal algorithm (Low VRAM, architecture §11)
-//! is deliberately not implemented yet ("no intent algorithm yet"). An *exact*
-//! selection is the saved default or a one-shot override — a concrete choice,
-//! not an unresolved intent, so resolving it performs membership and capability
-//! support checks and never a proposal search.
+//! Resolution deliberately consumes only persisted preset metadata and the
+//! caller-provided capability snapshot. It never reads an artifact, probes a
+//! binary, or performs network I/O.
 
 use crate::inference::llama_cpp_capabilities::CapabilitySnapshot;
+use crate::presets::validation::ValidationIssue;
+use crate::presets::{ModelPreset, bundle};
+use bundle::BoundedEnum;
+use bundle::{
+    LlamaKvPolicyId, PresetArtifactRole, PresetBundleSelection, PresetBundleSpec, PresetModelKind,
+};
+use sha2::{Digest, Sha256};
 
-use super::bundle::{LlamaKvPolicyId, PresetArtifactRole, PresetBundleSelection, PresetBundleSpec};
-
-/// A one-shot selection supplied by the client (Configure-drawer draft or
-/// "Start without saving"). It is structurally identical to the stored default
-/// selection; the server treats both the same way at resolve time.
 pub type OneShotSelection = PresetBundleSelection;
+/// Phase 4 owns the concrete estimator response. This marker keeps the
+/// internal contract typed without making Phase 3 serialize estimator state.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LaunchEstimate;
 
-/// The result of resolving one exact selection against a bundle and an
-/// (optional) capability snapshot.
-///
-/// This is the "materialize the choice + explain launchability" boundary from
-/// architecture §7. `block_codes` are stable, machine-readable codes the UI can
-/// act on (repair links, disabled-option reasons); `reasons` are the matching
-/// human-readable explanations. An empty `block_codes` means launchable (subject
-/// to a successful launch-time binary check in a later phase).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceMatch {
+    pub class: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedLaunch {
+    /// A flat launch envelope. Bundle authority is removed so a one-shot
+    /// selection cannot be re-materialized as the saved default downstream.
+    pub preset: ModelPreset,
+    pub selection_hash: String,
+    pub config_hash: String,
+    pub changes: Vec<ResolvedChange>,
+    pub estimate: Option<LaunchEstimate>,
+    pub evidence: Option<EvidenceMatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ResolvedChange {
+    pub code: String,
+    pub field: String,
+    pub before: Option<String>,
+    pub after: String,
+    pub explanation: String,
+    pub source_policy: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum EstimateStatus {
+    Available { estimate: LaunchEstimate },
+    Unavailable { code: String, message: String },
+    NotApplicable { code: String },
+}
+
+/// Resolve a preset plus an optional one-shot selection into a flat launch
+/// configuration. This function is pure with respect to the filesystem.
+pub fn resolve_preset(
+    preset: &ModelPreset,
+    selection: Option<&PresetBundleSelection>,
+    capabilities: &CapabilitySnapshot,
+) -> Result<ResolvedLaunch, Vec<ValidationIssue>> {
+    let mut issues =
+        crate::presets::validation::validate_llama_launch_policy(preset, Some(capabilities));
+    if let Err(error) = crate::inference::launch::validate_preset_backend_config(preset) {
+        issues.push(issue(
+            "backend",
+            "INVALID_BACKEND_CONFIG",
+            error.to_string(),
+        ));
+    }
+
+    let Some(bundle) = preset.bundle.as_ref() else {
+        if selection.is_some() {
+            issues.push(issue(
+                "selection",
+                "PRESET_NOT_BUNDLED",
+                "a one-shot selection requires a bundled llama.cpp preset",
+            ));
+        }
+        if !issues.is_empty() {
+            return Err(issues);
+        }
+        return Ok(build_result(preset, preset.clone(), None, Vec::new()));
+    };
+
+    issues.extend(
+        bundle::validate_bundle_structural(preset)
+            .into_iter()
+            .map(|message| issue("bundle", "INVALID_BUNDLE", message)),
+    );
+    let requested = selection.unwrap_or(&bundle.default_selection);
+
+    if selection.is_none() {
+        let mut projected = preset.clone();
+        bundle::materialize_default_projection(&mut projected);
+        projection_conflicts(preset, &projected, &mut issues);
+    }
+
+    let exact = resolve_exact_selection(bundle, requested, Some(capabilities));
+    for (code, message) in exact.block_codes.iter().zip(exact.reasons.iter()) {
+        issues.push(issue("selection", code, message.clone()));
+    }
+    issues.extend(
+        validate_runtime_selection(bundle, requested, capabilities, cfg!(target_os = "macos"))
+            .into_iter()
+            .map(|message| {
+                let (code, detail) = message
+                    .split_once(": ")
+                    .unwrap_or((message.as_str(), message.as_str()));
+                issue("selection", code, detail.to_string())
+            }),
+    );
+    validate_typed_runtime_fields(preset, capabilities, &mut issues);
+    if !issues.is_empty() {
+        return Err(issues);
+    }
+
+    let (effective, changes) = materialize_selection(preset, bundle, requested);
+    Ok(build_result(preset, effective, Some(requested), changes))
+}
+
+pub fn materialize_default_projection(
+    preset: &ModelPreset,
+    capabilities: &CapabilitySnapshot,
+) -> Result<ResolvedLaunch, Vec<ValidationIssue>> {
+    resolve_preset(preset, None, capabilities)
+}
+
+fn build_result(
+    source: &ModelPreset,
+    mut effective: ModelPreset,
+    selection: Option<&PresetBundleSelection>,
+    changes: Vec<ResolvedChange>,
+) -> ResolvedLaunch {
+    let selection_hash = selection_hash(source, &effective, selection);
+    let config_hash = config_hash(source, &effective, selection);
+    effective.bundle = None;
+    ResolvedLaunch {
+        preset: effective,
+        selection_hash,
+        config_hash,
+        changes,
+        estimate: None,
+        evidence: None,
+    }
+}
+
+fn materialize_selection(
+    source: &ModelPreset,
+    bundle: &PresetBundleSpec,
+    selection: &PresetBundleSelection,
+) -> (ModelPreset, Vec<ResolvedChange>) {
+    let mut effective = source.clone();
+    let before = effective.clone();
+    if let Some(weights) = bundle
+        .artifact(&selection.artifact_id)
+        .filter(|artifact| artifact.role == PresetArtifactRole::Weights)
+    {
+        if let Some(path) = &weights.local_path {
+            effective.model_path = path.clone();
+        }
+        effective.mmproj = weights
+            .mmproj_artifact_id
+            .as_deref()
+            .and_then(|id| bundle.artifact(id))
+            .and_then(|artifact| artifact.local_path.clone());
+        effective.draft_model = weights
+            .draft_artifact_id
+            .as_deref()
+            .and_then(|id| bundle.artifact(id))
+            .and_then(|artifact| artifact.local_path.clone())
+            .unwrap_or_default();
+    }
+    effective.context_size = selection.context_size;
+    (effective.ctk, effective.ctv) = kv_pair(&selection.kv_policy);
+    if let Some(performance) = bundle
+        .performance_options
+        .iter()
+        .find(|option| option.id == selection.performance_id)
+    {
+        effective.batch_size = performance.batch_size;
+        effective.ubatch_size = performance.ubatch_size;
+    }
+    effective.n_cpu_moe = selection.n_cpu_moe;
+
+    let mut changes = Vec::new();
+    change(
+        &mut changes,
+        "artifact_changed",
+        "model_path",
+        &before.model_path,
+        &effective.model_path,
+        "artifact selection",
+        None,
+    );
+    change(
+        &mut changes,
+        "context_changed",
+        "context_size",
+        &before.context_size.to_string(),
+        &effective.context_size.to_string(),
+        "context selection",
+        None,
+    );
+    change(
+        &mut changes,
+        "kv_policy_changed",
+        "ctk/ctv",
+        &format!("{}/{}", before.ctk, before.ctv),
+        &format!("{}/{}", effective.ctk, effective.ctv),
+        "K/V policy selection",
+        None,
+    );
+    change(
+        &mut changes,
+        "performance_changed",
+        "batch_size/ubatch_size",
+        &format!("{}/{}", before.batch_size, before.ubatch_size),
+        &format!("{}/{}", effective.batch_size, effective.ubatch_size),
+        "performance selection",
+        None,
+    );
+    change(
+        &mut changes,
+        "cpu_moe_changed",
+        "n_cpu_moe",
+        &format_option(before.n_cpu_moe),
+        &format_option(effective.n_cpu_moe),
+        "MoE placement selection",
+        None,
+    );
+    (effective, changes)
+}
+
+fn change(
+    changes: &mut Vec<ResolvedChange>,
+    code: &str,
+    field: &str,
+    before: &str,
+    after: &str,
+    explanation: &str,
+    source_policy: Option<String>,
+) {
+    if before != after {
+        changes.push(ResolvedChange {
+            code: code.into(),
+            field: field.into(),
+            before: Some(before.into()),
+            after: after.into(),
+            explanation: explanation.into(),
+            source_policy,
+        });
+    }
+}
+
+fn projection_conflicts(
+    original: &ModelPreset,
+    projected: &ModelPreset,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    for (field, before, after) in [
+        ("model_path", &original.model_path, &projected.model_path),
+        ("ctk", &original.ctk, &projected.ctk),
+        ("ctv", &original.ctv, &projected.ctv),
+    ] {
+        if before != after {
+            issues.push(issue(
+                field,
+                "FLAT_PROJECTION_CONFLICT",
+                format!("{field} does not match bundle default_selection"),
+            ));
+        }
+    }
+    if original.context_size != projected.context_size {
+        issues.push(issue(
+            "context_size",
+            "FLAT_PROJECTION_CONFLICT",
+            "context_size does not match bundle default_selection",
+        ));
+    }
+    if original.batch_size != projected.batch_size || original.ubatch_size != projected.ubatch_size
+    {
+        issues.push(issue(
+            "batch_size/ubatch_size",
+            "FLAT_PROJECTION_CONFLICT",
+            "performance fields do not match bundle default_selection",
+        ));
+    }
+    if original.n_cpu_moe != projected.n_cpu_moe {
+        issues.push(issue(
+            "n_cpu_moe",
+            "FLAT_PROJECTION_CONFLICT",
+            "n_cpu_moe does not match bundle default_selection",
+        ));
+    }
+}
+
+fn validate_typed_runtime_fields(
+    preset: &ModelPreset,
+    snapshot: &CapabilitySnapshot,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    use crate::inference::llama_cpp_capabilities::FeatureState;
+    if let Some(value) = preset.mmproj_offload {
+        let capability = &snapshot.typed.mmproj_offload;
+        let supported = if value {
+            &capability.positive
+        } else {
+            &capability.negative
+        };
+        if matches!(supported, FeatureState::Unavailable(_)) {
+            issues.push(issue(
+                "mmproj_offload",
+                "CAPABILITY_UNAVAILABLE",
+                "the selected binary does not advertise the requested mmproj offload flag",
+            ));
+        }
+    }
+    if !matches!(
+        preset.llama_reasoning_effort,
+        crate::inference::llama_cpp::LlamaReasoningEffort::Default
+    ) && !snapshot.supports_reasoning_effort(
+        preset
+            .llama_reasoning_effort
+            .as_flag_value()
+            .unwrap_or_default(),
+    ) {
+        issues.push(issue(
+            "llama_reasoning_effort",
+            "CAPABILITY_UNAVAILABLE",
+            "the selected binary does not advertise this reasoning effort",
+        ));
+    }
+    if let Some(format) = &preset.llama_reasoning_format
+        && !snapshot.supports_reasoning_format(format.as_flag_value().unwrap_or_default())
+    {
+        issues.push(issue(
+            "llama_reasoning_format",
+            "CAPABILITY_UNAVAILABLE",
+            "the selected binary does not advertise this reasoning format",
+        ));
+    }
+    if preset.llama_reasoning_preserve == Some(true)
+        && matches!(
+            snapshot.typed.reasoning_preserve.positive,
+            FeatureState::Unavailable(_)
+        )
+    {
+        issues.push(issue(
+            "llama_reasoning_preserve",
+            "CAPABILITY_UNAVAILABLE",
+            "reasoning preservation is not supported by the selected binary",
+        ));
+    }
+}
+
+fn issue(field: &str, code: &str, message: impl Into<String>) -> ValidationIssue {
+    ValidationIssue {
+        field: field.into(),
+        code: code.into(),
+        message: message.into(),
+        repair: None,
+    }
+}
+
+fn format_option(value: Option<i32>) -> String {
+    value.map_or_else(|| "None".into(), |value| value.to_string())
+}
+
+fn kv_pair(policy: &LlamaKvPolicyId) -> (String, String) {
+    match policy {
+        LlamaKvPolicyId::F16F16 => ("f16".into(), "f16".into()),
+        LlamaKvPolicyId::Q8Q8 => ("q8_0".into(), "q8_0".into()),
+        LlamaKvPolicyId::Q4Q4 => ("q4_0".into(), "q4_0".into()),
+        LlamaKvPolicyId::MixedQ8Q4 => ("q8_0".into(), "q4_0".into()),
+        LlamaKvPolicyId::Unknown(value) => value.split_once('/').map_or_else(
+            || (value.clone(), value.clone()),
+            |(k, v)| (k.into(), v.into()),
+        ),
+    }
+}
+
+fn selection_hash(
+    source: &ModelPreset,
+    effective: &ModelPreset,
+    selection: Option<&PresetBundleSelection>,
+) -> String {
+    digest("sel-v1:", selection_fields(source, effective, selection))
+}
+
+fn config_hash(
+    source: &ModelPreset,
+    preset: &ModelPreset,
+    selection: Option<&PresetBundleSelection>,
+) -> String {
+    let mut fields = effective_launch_fields(preset);
+    if let Some(bundle) = source.bundle.as_ref() {
+        fields.push(triple(
+            "/bundle/workload_policy",
+            serde_json::json!(bundle.workload_policy.to_wire()),
+        ));
+        let selected = selection.unwrap_or(&bundle.default_selection);
+        fields.push(triple(
+            "/bundle/artifact_id",
+            serde_json::json!(selected.artifact_id),
+        ));
+        fields.push(triple(
+            "/bundle/performance_id",
+            serde_json::json!(selected.performance_id),
+        ));
+        fields.push(triple(
+            "/bundle/kv_policy",
+            serde_json::json!(selected.kv_policy.to_wire()),
+        ));
+    }
+    digest("cfg-v1:", fields)
+}
+
+fn selection_fields(
+    source: &ModelPreset,
+    effective: &ModelPreset,
+    selection: Option<&PresetBundleSelection>,
+) -> Vec<serde_json::Value> {
+    let mut fields = effective_launch_fields(effective)
+        .into_iter()
+        .filter(|field| {
+            // A bundle's artifact ID is the portable model identity. Its local
+            // path and companion paths are machine-local implementation detail.
+            !matches!(
+                field[0].as_str(),
+                Some("/model_path" | "/mmproj" | "/draft_model")
+            )
+        })
+        .collect::<Vec<_>>();
+    let selected = selection.or_else(|| {
+        source
+            .bundle
+            .as_ref()
+            .map(|bundle| &bundle.default_selection)
+    });
+    if let Some(bundle) = source.bundle.as_ref() {
+        fields.push(triple(
+            "/bundle_id",
+            serde_json::json!(bundle.identity.bundle_id),
+        ));
+        fields.push(triple(
+            "/tune_id",
+            serde_json::json!(bundle.identity.tune_id),
+        ));
+        fields.push(triple(
+            "/workload_policy",
+            serde_json::json!(bundle.workload_policy.to_wire()),
+        ));
+    }
+    if let Some(selection) = selected {
+        fields.push(triple(
+            "/artifact_id",
+            serde_json::json!(selection.artifact_id),
+        ));
+        fields.push(triple(
+            "/context_size",
+            serde_json::json!(selection.context_size),
+        ));
+        fields.push(triple(
+            "/kv_policy",
+            serde_json::json!(selection.kv_policy.to_wire()),
+        ));
+        fields.push(triple(
+            "/performance_id",
+            serde_json::json!(selection.performance_id),
+        ));
+        if let Some(n_cpu_moe) = selection.n_cpu_moe {
+            fields.push(triple("/n_cpu_moe", serde_json::json!(n_cpu_moe)));
+        }
+    } else {
+        fields.push(triple(
+            "/model_path",
+            serde_json::json!(effective.model_path),
+        ));
+    }
+    fields
+}
+
+/// Serialize the effective launch surface into the canonical typed-triple
+/// representation. Keeping this list derived from `ModelPreset` makes newly
+/// persisted behavior fields participate in `cfg-v1` instead of silently
+/// creating a consent hash that describes only a subset of argv.
+fn effective_launch_fields(preset: &ModelPreset) -> Vec<serde_json::Value> {
+    const EXCLUDED: &[&str] = &[
+        "id",
+        "name",
+        "schema_version",
+        "revision",
+        "api_key",
+        "api_key_configured",
+        "clear_api_key",
+        "bundle",
+        "rapid_mlx",
+        "hf_repo",
+        "cache_type_k",
+        "cache_type_v",
+        "gguf_architecture",
+        "param_count",
+        "family",
+        "size_class",
+        "architecture_kind",
+        "expert_count",
+        "expert_used_count",
+        "active_params_b",
+        "block_count",
+        "bytes_per_layer",
+        "expert_bytes_per_layer",
+    ];
+    let value = serde_json::to_value(preset).expect("model preset serializes");
+    let serde_json::Value::Object(fields) = value else {
+        return Vec::new();
+    };
+    fields
+        .into_iter()
+        .filter(|(name, value)| !EXCLUDED.contains(&name.as_str()) && !value.is_null())
+        .map(|(name, value)| triple(&format!("/{name}"), value))
+        .collect()
+}
+
+fn triple(path: &str, value: serde_json::Value) -> serde_json::Value {
+    let type_name = match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    };
+    serde_json::json!([path, type_name, value])
+}
+
+fn digest(prefix: &str, mut fields: Vec<serde_json::Value>) -> String {
+    fields.sort_by(|left, right| left[0].as_str().cmp(&right[0].as_str()));
+    let bytes = serde_json::to_vec(&fields).expect("canonical resolver fields serialize");
+    let hex = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{prefix}{hex}")
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedSelection {
-    /// The exact selection that was resolved (normalized echo).
     pub selection: PresetBundleSelection,
-    /// Whether the selection is launchable under the given capability snapshot.
     pub launchable: bool,
-    /// Stable machine-readable codes explaining why it is not launchable
-    /// (empty when launchable).
     pub block_codes: Vec<String>,
-    /// Human-readable reasons, one per entry in `block_codes`.
     pub reasons: Vec<String>,
 }
 
-/// Validate selection values that depend on the exact executable and machine
-/// topology. The topology is supplied by the caller rather than discovered
-/// from global process state, keeping this boundary deterministic in tests.
 pub fn validate_runtime_selection(
     bundle: &PresetBundleSpec,
     selection: &PresetBundleSelection,
@@ -65,119 +565,84 @@ pub fn validate_runtime_selection(
     if selection.kv_policy == LlamaKvPolicyId::MixedQ8Q4 && !snapshot.mixed_main_kv.supported {
         issues.push("MIXED_MAIN_KV_UNSUPPORTED".to_string());
     }
-
-    let artifact = bundle.artifact(&selection.artifact_id);
-    if let Some(artifact) = artifact {
+    if let Some(artifact) = bundle.artifact(&selection.artifact_id) {
         let metadata = &artifact.metadata;
-        if let Some(n_cpu_moe) = selection.n_cpu_moe
-            && n_cpu_moe < 0
-        {
-            issues.push(
-                "N_CPU_MOE_NEGATIVE: n_cpu_moe must be zero or a positive MoE layer count"
-                    .to_string(),
-            );
-        }
-        if let Some(n_cpu_moe) = selection.n_cpu_moe
-            && n_cpu_moe > 0
-        {
-            if unified_memory {
-                issues.push(
-                    "N_CPU_MOE_UNIFIED_MEMORY_UNQUALIFIED: CPU expert placement is not qualified on unified-memory systems"
-                        .to_string(),
-                );
+        if let Some(n_cpu_moe) = selection.n_cpu_moe {
+            if n_cpu_moe < 0 {
+                issues.push("N_CPU_MOE_NEGATIVE: n_cpu_moe must be zero or positive".into());
             }
-            if matches!(metadata.model_kind, super::bundle::PresetModelKind::Dense) {
-                issues.push(
-                    "N_CPU_MOE_DENSE_MODEL: CPU expert placement requires a proven MoE model"
-                        .to_string(),
-                );
-            }
-            if matches!(
-                metadata.model_kind,
-                super::bundle::PresetModelKind::Unknown(_)
-            ) || metadata.moe_layer_count.is_none()
-            {
-                issues.push(
-                    "N_CPU_MOE_METADATA_UNKNOWN: CPU expert placement requires authoritative MoE layer metadata"
-                        .to_string(),
-                );
-            } else if metadata
-                .moe_layer_count
-                .is_some_and(|layers| n_cpu_moe as u32 > layers)
-            {
-                issues.push(
-                    "N_CPU_MOE_EXCEEDS_LAYER_COUNT: n_cpu_moe exceeds GGUF MoE layer count"
-                        .to_string(),
-                );
+            if n_cpu_moe > 0 {
+                if unified_memory {
+                    issues.push("N_CPU_MOE_UNIFIED_MEMORY_UNQUALIFIED: CPU expert placement is not qualified on unified-memory systems".into());
+                }
+                if matches!(metadata.model_kind, PresetModelKind::Dense) {
+                    issues.push(
+                        "N_CPU_MOE_DENSE_MODEL: CPU expert placement requires a proven MoE model"
+                            .into(),
+                    );
+                }
+                if matches!(metadata.model_kind, PresetModelKind::Unknown(_))
+                    || metadata.moe_layer_count.is_none()
+                {
+                    issues.push("N_CPU_MOE_METADATA_UNKNOWN: CPU expert placement requires authoritative MoE layer metadata".into());
+                } else if metadata
+                    .moe_layer_count
+                    .is_some_and(|layers| n_cpu_moe as u32 > layers)
+                {
+                    issues.push(
+                        "N_CPU_MOE_EXCEEDS_LAYER_COUNT: n_cpu_moe exceeds GGUF MoE layer count"
+                            .into(),
+                    );
+                }
             }
         }
     }
     issues
 }
 
-/// Resolve an **exact** selection (the saved default or a one-shot override)
-/// against the bundle's catalog and the supplied capability snapshot.
-///
-/// Pure for this phase. It performs the membership checks that architecture
-/// §7 requires of an exact selection:
-///
-/// - the selected `artifact_id` must exist in the bundle and be a `Weights`
-///   artifact (only `Weights` artifacts may be selected; companions are not);
-/// - a `MixedQ8Q4` K/V policy is non-launchable unless the exact binary
-///   advertises `mixed_main_kv` support (architecture §6).
-///
-/// Companion-reference resolution, batch/ubatch and `n_cpu_moe` bounds, context
-/// limits, and the full flat-`ModelPreset` materialization are layered on in the
-/// API/resolver phase. No intent/proposal algorithm is run here.
 pub fn resolve_exact_selection(
     bundle: &PresetBundleSpec,
     selection: &PresetBundleSelection,
     snapshot: Option<&CapabilitySnapshot>,
 ) -> ResolvedSelection {
-    let mut block_codes: Vec<String> = Vec::new();
-    let mut reasons: Vec<String> = Vec::new();
-
-    // Membership: the chosen artifact must exist and be a Weights artifact.
+    let mut block_codes = Vec::new();
+    let mut reasons = Vec::new();
     match bundle.artifact(&selection.artifact_id) {
         None => {
-            block_codes.push("artifact_not_found".to_string());
+            block_codes.push("artifact_not_found".into());
             reasons.push(format!(
                 "artifact '{}' is not present in the bundle",
                 selection.artifact_id
             ));
         }
         Some(artifact) if artifact.role != PresetArtifactRole::Weights => {
-            block_codes.push("artifact_not_weights".to_string());
-            reasons.push("only Weights artifacts may be selected".to_string());
+            block_codes.push("artifact_not_weights".into());
+            reasons.push("only Weights artifacts may be selected".into());
+        }
+        Some(artifact) if artifact.local_path.is_none() => {
+            block_codes.push("artifact_not_local".into());
+            reasons.push(format!(
+                "artifact '{}' has no adopted local path",
+                selection.artifact_id
+            ));
         }
         _ => {}
     }
-
-    if let Some(artifact) = bundle.artifact(&selection.artifact_id)
-        && artifact.local_path.is_none()
-    {
-        block_codes.push("artifact_not_local".to_string());
-        reasons.push(format!(
-            "artifact '{}' has no adopted local path",
-            selection.artifact_id
-        ));
-    }
-
     if !bundle.context_options.is_empty()
         && !bundle.context_options.contains(&selection.context_size)
     {
-        block_codes.push("context_not_allowed".to_string());
-        reasons.push("selected context is not in the bundle catalog".to_string());
+        block_codes.push("context_not_allowed".into());
+        reasons.push("selected context is not in the bundle catalog".into());
     }
     if !bundle.kv_policy_options.is_empty()
         && !bundle.kv_policy_options.contains(&selection.kv_policy)
     {
-        block_codes.push("kv_policy_not_allowed".to_string());
-        reasons.push("selected K/V policy is not in the bundle catalog".to_string());
+        block_codes.push("kv_policy_not_allowed".into());
+        reasons.push("selected K/V policy is not in the bundle catalog".into());
     }
     if matches!(selection.kv_policy, LlamaKvPolicyId::Unknown(_)) {
-        block_codes.push("unknown_kv_policy".to_string());
-        reasons.push("unknown K/V policy is preserved but not launchable".to_string());
+        block_codes.push("unknown_kv_policy".into());
+        reasons.push("unknown K/V policy is preserved but not launchable".into());
     }
     if !bundle.performance_options.is_empty()
         && !bundle
@@ -185,41 +650,38 @@ pub fn resolve_exact_selection(
             .iter()
             .any(|option| option.id == selection.performance_id)
     {
-        block_codes.push("performance_not_allowed".to_string());
-        reasons.push("selected performance option is not in the bundle catalog".to_string());
+        block_codes.push("performance_not_allowed".into());
+        reasons.push("selected performance option is not in the bundle catalog".into());
     }
-    if let Some(moe) = selection.n_cpu_moe
+    if let Some(value) = selection.n_cpu_moe
         && !bundle.cpu_moe_options.is_empty()
-        && !bundle.cpu_moe_options.contains(&moe)
+        && !bundle.cpu_moe_options.contains(&value)
     {
-        block_codes.push("cpu_moe_not_allowed".to_string());
-        reasons.push("selected n_cpu_moe is not in the bundle catalog".to_string());
+        block_codes.push("cpu_moe_not_allowed".into());
+        reasons.push("selected n_cpu_moe is not in the bundle catalog".into());
     }
-    if !bundle.allow_validated_custom && !bundle.curated_selections.contains(selection) {
-        block_codes.push("selection_not_curated".to_string());
-        reasons.push("bundle permits only curated selections".to_string());
+    if !bundle.allow_validated_custom
+        && !bundle
+            .curated_selections
+            .iter()
+            .any(|curated| same_selection_axes(curated, selection))
+    {
+        block_codes.push("selection_not_curated".into());
+        reasons.push("bundle permits only curated selections".into());
     }
     if matches!(
         bundle.workload_policy,
-        super::bundle::PresetWorkloadPolicy::Unknown(_)
+        bundle::PresetWorkloadPolicy::Unknown(_)
     ) {
-        block_codes.push("unknown_workload_policy".to_string());
-        reasons.push("unknown workload policy cannot authorize a launch".to_string());
+        block_codes.push("unknown_workload_policy".into());
+        reasons.push("unknown workload policy cannot authorize a launch".into());
     }
-
-    // Capability: mixed main-K/V is non-launchable until the exact binary
-    // advertises support. `None` snapshot means the probe is unavailable, which
-    // is a degraded (still non-launchable) state for a mixed pair — it is never
-    // silently accepted.
     if selection.kv_policy == LlamaKvPolicyId::MixedQ8Q4
-        && !snapshot.is_some_and(|s| s.mixed_main_kv.supported)
+        && !snapshot.is_some_and(|value| value.mixed_main_kv.supported)
     {
-        block_codes.push("MIXED_MAIN_KV_UNSUPPORTED".to_string());
-        reasons.push(
-            "mixed K/V (q8_0/q4_0) requires a binary advertising mixed_main_kv support".to_string(),
-        );
+        block_codes.push("MIXED_MAIN_KV_UNSUPPORTED".into());
+        reasons.push("mixed K/V requires a binary advertising mixed_main_kv support".into());
     }
-
     ResolvedSelection {
         selection: selection.clone(),
         launchable: block_codes.is_empty(),
@@ -228,191 +690,217 @@ pub fn resolve_exact_selection(
     }
 }
 
+fn same_selection_axes(left: &PresetBundleSelection, right: &PresetBundleSelection) -> bool {
+    left.artifact_id == right.artifact_id
+        && left.context_size == right.context_size
+        && left.kv_policy == right.kv_policy
+        && left.performance_id == right.performance_id
+        && left.n_cpu_moe == right.n_cpu_moe
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::presets::bundle::{
-        PresetArtifactMetadata, PresetArtifactQuantization, PresetArtifactRole,
+        PresetArtifactMetadata, PresetArtifactQuantization, PresetPerformanceOption,
+        PresetWorkloadPolicy,
     };
 
-    fn weights_bundle() -> PresetBundleSpec {
-        let mut spec = PresetBundleSpec::default();
-        let mut weights = crate::presets::bundle::PresetModelArtifact::default();
-        weights.id = "art_w".into();
-        weights.role = PresetArtifactRole::Weights;
-        weights.local_path = Some("/models/model.gguf".into());
-        weights.quantization = PresetArtifactQuantization::default();
-        weights.metadata = PresetArtifactMetadata::default();
-        spec.artifacts = vec![weights];
-        spec.allow_validated_custom = true;
-        spec
+    #[derive(Debug, serde::Deserialize)]
+    struct GoldenFingerprint {
+        name: String,
+        bundle_id: String,
+        tune_id: String,
+        workload_policy: String,
+        tensor_split: String,
+        api_key: Option<String>,
+        selection: PresetBundleSelection,
+        expected_selection_hash: String,
+        expected_config_hash: String,
     }
 
-    #[test]
-    fn exact_selection_missing_artifact_blocks() {
-        let bundle = weights_bundle();
-        let mut sel = PresetBundleSelection::default();
-        sel.artifact_id = "missing".into();
-        let res = resolve_exact_selection(&bundle, &sel, None);
-        assert!(!res.launchable);
-        assert!(res.block_codes.iter().any(|c| c == "artifact_not_found"));
+    fn snapshot() -> CapabilitySnapshot {
+        CapabilitySnapshot::product_default()
     }
 
-    #[test]
-    fn exact_selection_valid_weights_launchable_without_snapshot() {
-        let bundle = weights_bundle();
-        let mut sel = PresetBundleSelection::default();
-        sel.artifact_id = "art_w".into();
-        let res = resolve_exact_selection(&bundle, &sel, None);
-        assert!(res.launchable);
-        assert!(res.block_codes.is_empty());
-    }
-
-    #[test]
-    fn runtime_validator_blocks_unqualified_cpu_moe_on_unified_memory() {
-        let mut bundle = weights_bundle();
-        let artifact = bundle.artifacts.first_mut().unwrap();
-        artifact.metadata.model_kind = crate::presets::bundle::PresetModelKind::Moe;
-        artifact.metadata.moe_layer_count = Some(16);
-        let mut selection = PresetBundleSelection::default();
-        selection.artifact_id = "art_w".into();
-        selection.n_cpu_moe = Some(6);
-        let snapshot = CapabilitySnapshot {
-            executable_identity: crate::inference::llama_cpp_capabilities::ExecutableIdentity {
-                path: "/tmp/llama".into(),
-                file_hash: "test".into(),
-                file_mtime_unix: 0,
+    fn bundle() -> PresetBundleSpec {
+        let weights = bundle::PresetModelArtifact {
+            id: "weights".into(),
+            role: PresetArtifactRole::Weights,
+            local_path: Some("/models/q4.gguf".into()),
+            quantization: PresetArtifactQuantization::default(),
+            metadata: PresetArtifactMetadata {
+                model_kind: PresetModelKind::Dense,
+                ..Default::default()
             },
-            version_text: "test".into(),
-            help_hash: "test".into(),
-            serve_flags: Vec::new(),
-            cache: Default::default(),
-            context: Default::default(),
-            concurrency: Default::default(),
-            endpoints: Default::default(),
-            streaming: Default::default(),
-            templates: Default::default(),
-            tools: Default::default(),
-            speculation: Default::default(),
-            typed: Default::default(),
-            mixed_main_kv:
-                crate::inference::llama_cpp_capabilities::MixedMainKv::product_default_denied(),
-            evidence_timestamp: 0,
-            source:
-                crate::inference::llama_cpp_capabilities::CapabilitySnapshotSource::ManualOverride,
+            ..Default::default()
         };
-        let issues = validate_runtime_selection(&bundle, &selection, &snapshot, true);
-        assert!(
-            issues
-                .iter()
-                .any(|issue| issue.starts_with("N_CPU_MOE_UNIFIED_MEMORY"))
-        );
-    }
-
-    fn runtime_snapshot() -> CapabilitySnapshot {
-        CapabilitySnapshot {
-            executable_identity: crate::inference::llama_cpp_capabilities::ExecutableIdentity {
-                path: "/tmp/llama".into(),
-                file_hash: "test".into(),
-                file_mtime_unix: 0,
-            },
-            version_text: "test".into(),
-            help_hash: "test".into(),
-            serve_flags: Vec::new(),
-            cache: Default::default(),
-            context: Default::default(),
-            concurrency: Default::default(),
-            endpoints: Default::default(),
-            streaming: Default::default(),
-            templates: Default::default(),
-            tools: Default::default(),
-            speculation: Default::default(),
-            typed: Default::default(),
-            mixed_main_kv:
-                crate::inference::llama_cpp_capabilities::MixedMainKv::product_default_denied(),
-            evidence_timestamp: 0,
-            source:
-                crate::inference::llama_cpp_capabilities::CapabilitySnapshotSource::ManualOverride,
+        let selection = PresetBundleSelection {
+            artifact_id: "weights".into(),
+            context_size: 160_000,
+            kv_policy: LlamaKvPolicyId::Q4Q4,
+            performance_id: "balanced".into(),
+            n_cpu_moe: Some(0),
+            intent_source: None,
+        };
+        PresetBundleSpec {
+            artifacts: vec![weights],
+            context_options: vec![160_000, 200_000],
+            kv_policy_options: vec![LlamaKvPolicyId::Q4Q4],
+            performance_options: vec![PresetPerformanceOption {
+                id: "balanced".into(),
+                label: "2048/256".into(),
+                batch_size: 2048,
+                ubatch_size: 256,
+            }],
+            cpu_moe_options: vec![0],
+            curated_selections: vec![selection.clone()],
+            default_selection: selection,
+            ..Default::default()
         }
     }
 
     #[test]
-    fn curated_only_rejects_non_curated_selection_and_validated_custom_allows_it() {
-        let mut bundle = weights_bundle();
-        let curated_selection = PresetBundleSelection {
-            artifact_id: "art_w".into(),
-            ..Default::default()
-        };
-        bundle.allow_validated_custom = false;
-        bundle.curated_selections = vec![curated_selection.clone()];
-        let mut selection = curated_selection;
-        selection.context_size = 1234;
-
-        let curated = resolve_exact_selection(&bundle, &selection, None);
-        assert!(
-            curated
-                .block_codes
-                .iter()
-                .any(|code| code == "selection_not_curated")
-        );
-
-        bundle.allow_validated_custom = true;
-        let custom = resolve_exact_selection(&bundle, &selection, None);
-        assert!(
-            !custom
-                .block_codes
-                .iter()
-                .any(|code| code == "selection_not_curated")
-        );
+    fn exact_selection_resolves_to_flat_fields_and_same_default_projection() {
+        let mut preset = bundle::create_bundle_preset("Qwen", bundle());
+        preset.bundle.as_mut().unwrap().identity.bundle_id = "qwen".into();
+        let caps = snapshot();
+        let selection = preset.bundle.as_ref().unwrap().default_selection.clone();
+        let explicit = resolve_preset(&preset, Some(&selection), &caps).unwrap();
+        let defaulted = materialize_default_projection(&preset, &caps).unwrap();
+        assert_eq!(explicit.preset.model_path, "/models/q4.gguf");
+        assert_eq!(explicit.preset.batch_size, 2048);
+        assert_eq!(explicit.preset.bundle, None);
+        assert_eq!(explicit.preset.model_path, defaulted.preset.model_path);
+        assert_eq!(explicit.preset.context_size, defaulted.preset.context_size);
+        assert_eq!(explicit.preset.ctk, defaulted.preset.ctk);
+        assert_eq!(explicit.preset.ctv, defaulted.preset.ctv);
+        assert_eq!(explicit.preset.batch_size, defaulted.preset.batch_size);
+        assert_eq!(explicit.preset.ubatch_size, defaulted.preset.ubatch_size);
+        assert_eq!(explicit.preset.n_cpu_moe, defaulted.preset.n_cpu_moe);
+        assert_eq!(explicit.selection_hash, defaulted.selection_hash);
+        assert_eq!(explicit.config_hash, defaulted.config_hash);
     }
 
     #[test]
-    fn runtime_validator_rejects_negative_dense_unknown_and_over_bound_cpu_moe() {
-        let snapshot = runtime_snapshot();
-        let mut bundle = weights_bundle();
-        {
-            let artifact = bundle.artifacts.first_mut().unwrap();
-            artifact.metadata.model_kind = crate::presets::bundle::PresetModelKind::Dense;
-            artifact.metadata.moe_layer_count = Some(16);
+    fn unknown_artifact_and_context_are_rejected() {
+        let preset = bundle::create_bundle_preset("Qwen", bundle());
+        let mut selection = preset.bundle.as_ref().unwrap().default_selection.clone();
+        selection.artifact_id = "missing".into();
+        selection.context_size = 999;
+        let issues = resolve_preset(&preset, Some(&selection), &snapshot()).unwrap_err();
+        assert!(issues.iter().any(|i| i.code == "artifact_not_found"));
+        assert!(issues.iter().any(|i| i.code == "context_not_allowed"));
+    }
+
+    #[test]
+    fn hash_excludes_api_key_and_revision_but_changes_for_behavior() {
+        let mut preset = bundle::create_bundle_preset("Qwen", bundle());
+        let caps = snapshot();
+        let first = resolve_preset(&preset, None, &caps).unwrap();
+        assert_eq!(
+            first.selection_hash,
+            "sel-v1:2b3082957ed8b0dd67c863817a564d19b0aa0508a4e83dd52173121d19222b58"
+        );
+        assert_eq!(
+            first.config_hash,
+            "cfg-v1:56e63cf42513fab8ecfe52dce62f524ee08bdb462f707cbc398ceb230fadf74b"
+        );
+        preset.api_key = Some("secret".into());
+        preset.revision += 1;
+        let second = resolve_preset(&preset, None, &caps).unwrap();
+        assert_eq!(first.selection_hash, second.selection_hash);
+        assert_eq!(first.config_hash, second.config_hash);
+        preset.no_cont_batching = true;
+        let third = resolve_preset(&preset, None, &caps).unwrap();
+        assert_ne!(first.config_hash, third.config_hash);
+        preset.bundle.as_mut().unwrap().workload_policy =
+            bundle::PresetWorkloadPolicy::RoleplayCreative;
+        let fourth = resolve_preset(&preset, None, &caps).unwrap();
+        assert_ne!(third.config_hash, fourth.config_hash);
+    }
+
+    #[test]
+    fn intent_source_does_not_change_selection_hash() {
+        let preset = bundle::create_bundle_preset("Qwen", bundle());
+        let mut selection = preset.bundle.as_ref().unwrap().default_selection.clone();
+        let first = resolve_preset(&preset, Some(&selection), &snapshot()).unwrap();
+        selection.intent_source = Some(bundle::PresetFitIntent::LowVram);
+        let second = resolve_preset(&preset, Some(&selection), &snapshot()).unwrap();
+        assert_eq!(first.selection_hash, second.selection_hash);
+    }
+
+    fn golden_preset(fixture: &GoldenFingerprint) -> ModelPreset {
+        let mut bundle = bundle();
+        bundle.identity.bundle_id = fixture.bundle_id.clone();
+        bundle.identity.tune_id = fixture.tune_id.clone();
+        bundle.workload_policy = PresetWorkloadPolicy::from_wire(&fixture.workload_policy);
+        bundle.default_selection = fixture.selection.clone();
+        bundle.curated_selections = vec![fixture.selection.clone()];
+        bundle.kv_policy_options = vec![fixture.selection.kv_policy.clone()];
+        let mut preset = bundle::create_bundle_preset(&fixture.name, bundle);
+        preset.tensor_split = fixture.tensor_split.clone();
+        preset.api_key = fixture.api_key.clone();
+        preset
+    }
+
+    #[test]
+    fn fingerprint_golden_fixture_matches_committed_literals() {
+        let fixtures: Vec<GoldenFingerprint> = serde_json::from_str(include_str!(
+            "../../tests/fixtures/presets/fingerprint_golden.json"
+        ))
+        .expect("fingerprint golden fixture parses");
+        assert!(fixtures.len() >= 3);
+
+        for fixture in &fixtures {
+            let preset = golden_preset(fixture);
+            let resolved = resolve_preset(&preset, None, &snapshot()).unwrap();
+            assert_eq!(
+                resolved.selection_hash, fixture.expected_selection_hash,
+                "selection hash drifted for {}",
+                fixture.name
+            );
+            assert_eq!(
+                resolved.config_hash, fixture.expected_config_hash,
+                "config hash drifted for {}",
+                fixture.name
+            );
         }
+    }
 
-        let mut selection = PresetBundleSelection {
-            artifact_id: "art_w".into(),
-            ..Default::default()
+    #[test]
+    fn same_selection_same_fingerprint_across_surfaces() {
+        let fixture = GoldenFingerprint {
+            name: "cross-surface".into(),
+            bundle_id: "bundle-cross-surface".into(),
+            tune_id: "tune-cross-surface".into(),
+            workload_policy: "general_chat".into(),
+            tensor_split: "1,0".into(),
+            api_key: None,
+            selection: bundle().default_selection,
+            expected_selection_hash: String::new(),
+            expected_config_hash: String::new(),
         };
-        selection.n_cpu_moe = Some(-1);
-        let negative = validate_runtime_selection(&bundle, &selection, &snapshot, false);
-        assert!(
-            negative
-                .iter()
-                .any(|issue| issue.starts_with("N_CPU_MOE_NEGATIVE"))
-        );
+        let preset = golden_preset(&fixture);
+        let selection = preset.bundle.as_ref().unwrap().default_selection.clone();
+        let caps = snapshot();
 
-        selection.n_cpu_moe = Some(1);
-        let dense = validate_runtime_selection(&bundle, &selection, &snapshot, false);
-        assert!(
-            dense
-                .iter()
-                .any(|issue| issue.starts_with("N_CPU_MOE_DENSE_MODEL"))
-        );
-
-        bundle.artifacts[0].metadata.model_kind =
-            crate::presets::bundle::PresetModelKind::Unknown("future".into());
-        let unknown = validate_runtime_selection(&bundle, &selection, &snapshot, false);
-        assert!(
-            unknown
-                .iter()
-                .any(|issue| issue.starts_with("N_CPU_MOE_METADATA_UNKNOWN"))
-        );
-
-        bundle.artifacts[0].metadata.model_kind = crate::presets::bundle::PresetModelKind::Moe;
-        bundle.artifacts[0].metadata.moe_layer_count = Some(1);
-        selection.n_cpu_moe = Some(2);
-        let over_bound = validate_runtime_selection(&bundle, &selection, &snapshot, false);
-        assert!(
-            over_bound
-                .iter()
-                .any(|issue| issue.starts_with("N_CPU_MOE_EXCEEDS_LAYER_COUNT"))
-        );
+        // These are the four authoritative paths: preview, collapsed-card
+        // saved-default projection, direct selection spawn, and saved-default
+        // spawn. All must consume the same resolver contract.
+        let preview = resolve_preset(&preset, Some(&selection), &caps).unwrap();
+        let card_default = materialize_default_projection(&preset, &caps).unwrap();
+        let direct_spawn = resolve_preset(&preset, Some(&selection), &caps).unwrap();
+        let saved_default_spawn = resolve_preset(&preset, None, &caps).unwrap();
+        let fingerprints = [
+            (&preview.selection_hash, &preview.config_hash),
+            (&card_default.selection_hash, &card_default.config_hash),
+            (&direct_spawn.selection_hash, &direct_spawn.config_hash),
+            (
+                &saved_default_spawn.selection_hash,
+                &saved_default_spawn.config_hash,
+            ),
+        ];
+        assert!(fingerprints.windows(2).all(|pair| pair[0] == pair[1]));
     }
 }

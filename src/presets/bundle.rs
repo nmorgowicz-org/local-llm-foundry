@@ -867,6 +867,171 @@ pub fn create_bundle_preset(name: &str, bundle: PresetBundleSpec) -> ModelPreset
     preset
 }
 
+/// Convert one legacy flat preset into an explicit one-artifact bundle.
+///
+/// The conversion is intentionally explicit and conservative: it adopts only
+/// the paths and metadata already present on the preset, never groups by a
+/// filename or guesses another tune, and routes construction through the
+/// single v6 constructor so new bundles get the product fit policy.
+pub fn convert_flat_preset(source: &ModelPreset, name: &str) -> ModelPreset {
+    let weights_id = "artifact_weights".to_string();
+    let mut weights = PresetModelArtifact {
+        id: weights_id.clone(),
+        role: PresetArtifactRole::Weights,
+        display_name: if source.model_path.is_empty() {
+            "Weights".into()
+        } else {
+            std::path::Path::new(&source.model_path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("Weights")
+                .to_string()
+        },
+        local_path: (!source.model_path.is_empty()).then(|| source.model_path.clone()),
+        size_bytes: None,
+        digest: None,
+        quantization: PresetArtifactQuantization {
+            value: String::new(),
+            provenance: PresetQuantizationProvenance::FilenameHint,
+        },
+        metadata: PresetArtifactMetadata {
+            gguf_architecture: source.gguf_architecture.clone(),
+            model_kind: match source.architecture_kind.as_deref() {
+                Some("moe") | Some("hybrid_moe") => PresetModelKind::Moe,
+                Some("dense") => PresetModelKind::Dense,
+                Some(value) => PresetModelKind::Unknown(value.to_string()),
+                None => PresetModelKind::Unknown("unknown".into()),
+            },
+            block_count: source.block_count,
+            moe_layer_count: source.block_count,
+            native_context_limit: None,
+            metadata_digest: None,
+        },
+        ..Default::default()
+    };
+    let mut artifacts = vec![weights.clone()];
+    if let Some(path) = source.mmproj.clone().filter(|path| !path.is_empty()) {
+        let id = "artifact_mmproj".to_string();
+        weights.mmproj_artifact_id = Some(id.clone());
+        artifacts.push(PresetModelArtifact {
+            id,
+            role: PresetArtifactRole::Mmproj,
+            display_name: "Multimodal projector".into(),
+            local_path: Some(path),
+            ..Default::default()
+        });
+    }
+    if let Some(path) = (!source.draft_model.is_empty()).then(|| source.draft_model.clone()) {
+        let id = "artifact_draft".to_string();
+        weights.draft_artifact_id = Some(id.clone());
+        artifacts.push(PresetModelArtifact {
+            id,
+            role: PresetArtifactRole::Draft,
+            display_name: "Draft model".into(),
+            local_path: Some(path),
+            ..Default::default()
+        });
+    }
+    artifacts[0] = weights.clone();
+
+    let kv_policy = match (source.ctk.trim(), source.ctv.trim()) {
+        ("f16", "f16") => LlamaKvPolicyId::F16F16,
+        ("q8_0", "q8_0") => LlamaKvPolicyId::Q8Q8,
+        ("q4_0", "q4_0") => LlamaKvPolicyId::Q4Q4,
+        (k, v) => LlamaKvPolicyId::Unknown(format!("{k}/{v}")),
+    };
+    let mut context_options = vec![source.context_size];
+    context_options.retain(|value| *value > 0);
+    context_options.sort_unstable();
+    context_options.dedup();
+
+    let mut performance_options = Vec::new();
+    if source.batch_size > 0 && source.ubatch_size > 0 {
+        performance_options.push(PresetPerformanceOption {
+            id: "converted".into(),
+            label: format!("{} / {}", source.batch_size, source.ubatch_size),
+            batch_size: source.batch_size,
+            ubatch_size: source.ubatch_size,
+        });
+    } else {
+        for (id, batch_size, ubatch_size) in [
+            ("conservative", 512, 512),
+            ("balanced", 2048, 256),
+            ("throughput", 2048, 512),
+            ("large", 4096, 4096),
+        ] {
+            performance_options.push(PresetPerformanceOption {
+                id: id.into(),
+                label: format!("{batch_size} / {ubatch_size}"),
+                batch_size,
+                ubatch_size,
+            });
+        }
+    }
+    let performance_id = performance_options
+        .first()
+        .map(|option| option.id.clone())
+        .unwrap_or_else(|| "balanced".into());
+    let selection = PresetBundleSelection {
+        artifact_id: weights_id,
+        context_size: source.context_size,
+        kv_policy: kv_policy.clone(),
+        performance_id,
+        n_cpu_moe: source.n_cpu_moe,
+        intent_source: None,
+    };
+    let mut cpu_moe_options = vec![0];
+    if source.n_cpu_moe.is_some_and(|value| value > 0)
+        && matches!(weights.metadata.model_kind, PresetModelKind::Moe)
+    {
+        cpu_moe_options.push(source.n_cpu_moe.unwrap_or_default());
+    }
+    let bundle = PresetBundleSpec {
+        identity: PresetBundleIdentity {
+            bundle_id: format!("bundle_{}", crate::presets::next_id()),
+            tune_id: format!("tune_{}", crate::presets::next_id()),
+            display_name: name.to_string(),
+        },
+        artifacts,
+        context_options,
+        kv_policy_options: match kv_policy {
+            LlamaKvPolicyId::Unknown(_) | LlamaKvPolicyId::MixedQ8Q4 => Vec::new(),
+            known => vec![known],
+        },
+        performance_options,
+        cpu_moe_options,
+        curated_selections: vec![selection.clone()],
+        allow_validated_custom: true,
+        workload_policy: PresetWorkloadPolicy::CustomUnknown,
+        default_selection: selection,
+        ..Default::default()
+    };
+    let constructed = create_bundle_preset(name, bundle);
+    let mut converted = source.clone();
+    converted.id = constructed.id;
+    converted.name = name.to_string();
+    converted.schema_version = Some(6);
+    converted.revision = 1;
+    converted.bundle = constructed.bundle;
+    converted.fit_enabled = constructed.fit_enabled;
+    materialize_default_projection(&mut converted);
+    converted
+}
+
+/// Copy a bundle through the same server-owned constructor used for creation.
+pub fn copy_bundle_preset(source: &ModelPreset, name: &str) -> Option<ModelPreset> {
+    let bundle = source.bundle.clone()?;
+    let constructed = create_bundle_preset(name, bundle);
+    let mut copied = source.clone();
+    copied.id = constructed.id;
+    copied.name = name.to_string();
+    copied.schema_version = Some(6);
+    copied.revision = 1;
+    copied.fit_enabled = constructed.fit_enabled;
+    materialize_default_projection(&mut copied);
+    Some(copied)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Structural validation (pure; no binary lookup)
 // ─────────────────────────────────────────────────────────────────────────────
