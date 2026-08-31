@@ -1403,15 +1403,16 @@ Three properties of the CUDA sweep shape the search:
   lowering it is worth approximately one layer.
 A third capture on the same 5090 covers a **dense** model,
 `Qwen3.8-27B-...-Q4_K_M.gguf`, at the same `-c 200000` and K/V quantization.
-It confirms the probe is architecture-agnostic: `model` `16518`, `context`
+It confirms the probe is architecture-agnostic: `model` `15088`, `context`
 `6796`, `compute` `920` at `-ub 256` and `1333` at `-ub 1024`, host `790` and
 `1113`. Two things follow. The `context` term is `6796` MiB here against
 `2140` MiB for the 35B A3B at identical `-c` and K/V quantization, so KV
 footprint is an architecture property that no per-parameter rule of thumb
 predicts — precisely the quantity a formula estimator gets wrong. And the
-dense configuration needs `24234` MiB at `-ub 256`, so on a 16 GiB card it
-overshoots by `7850` MiB with no placement lever available; the useful output
-there is the shortfall and its remedies, not a proposal.
+dense configuration needs `22804` MiB at `-ub 256`, so on a 16 GiB card with
+the `1024` MiB reserve (`15360` usable) it overshoots by `7444` MiB with no
+placement lever available; the useful output there is the shortfall and its
+remedies, not a proposal.
 
 - **The 16 GiB case is the design target, and it lands between the sampled
   points.** Extrapolating the sweep at `-ub 256`, a 16 GiB card with the
