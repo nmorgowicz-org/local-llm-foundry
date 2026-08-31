@@ -1,10 +1,12 @@
 use warp::Filter;
 
 use super::common::{ApiCtx, check_api_token, unauthorized_api_token, with_app_config};
+use crate::config::AppConfig;
 use crate::inference::llama_cpp::ServerConfig;
 use crate::inference::rapid_mlx::RapidMlxConfig;
 use crate::inference::rapid_mlx::capabilities::{CacheDiagnosticParams, ExtraState};
 use crate::memory_availability::MemoryAvailabilityState;
+use crate::presets::validation::validate_main_kv_policy;
 use crate::state::{DoctorFinding, DoctorFindingType, DoctorSeverity, FixAction};
 
 pub fn routes(
@@ -25,7 +27,7 @@ pub fn routes(
                             unauthorized_api_token(),
                         ));
                     }
-                    let mut findings = collect_llama_findings(&state);
+                    let mut findings = collect_llama_findings(&state, &cfg).await;
                     findings.extend(collect_cache_findings(&state).await);
                     findings.extend(collect_reclaim_findings().await);
                     Ok(Box::new(warp::reply::json(&serde_json::json!({
@@ -38,18 +40,64 @@ pub fn routes(
         .boxed()
 }
 
-fn collect_llama_findings(state: &crate::state::AppState) -> Vec<DoctorFinding> {
-    state
+async fn collect_llama_findings(
+    state: &crate::state::AppState,
+    cfg: &AppConfig,
+) -> Vec<DoctorFinding> {
+    let Some(config) = state
         .server_config
         .lock()
         .ok()
         .and_then(|guard| guard.clone())
-        .map_or_else(Vec::new, |config| llama_config_findings(&config))
+    else {
+        return Vec::new();
+    };
+    let snapshot = doctor_capability_snapshot(cfg).await;
+    llama_config_findings(&config, snapshot.as_ref())
 }
 
-/// Cross-backend llama.cpp checks for the known tool-loop failure modes.
-fn llama_config_findings(config: &ServerConfig) -> Vec<DoctorFinding> {
+/// Fetch a fresh-or-cached llama.cpp capability snapshot for the K/V policy
+/// check below, mirroring `web::api::vram::llama_kv_capability_snapshot`.
+async fn doctor_capability_snapshot(
+    config: &AppConfig,
+) -> Option<crate::inference::llama_cpp_capabilities::CapabilitySnapshot> {
+    if !config.llama_server_path.is_file() {
+        return None;
+    }
+    let _ =
+        crate::inference::llama_cpp_capabilities::generate_snapshot(&config.llama_server_path)
+            .await;
+    crate::inference::llama_cpp_capabilities::ExecutableIdentity::from_path(
+        &config.llama_server_path,
+    )
+    .ok()
+    .and_then(|identity| crate::inference::llama_cpp_capabilities::cached_snapshot(&identity))
+}
+
+/// Cross-backend llama.cpp checks: the canonical mixed-K/V hard-gate policy
+/// (independent of tool calling), plus the known tool-loop failure modes
+/// gated on `tool_enabled`.
+fn llama_config_findings(
+    config: &ServerConfig,
+    snapshot: Option<&crate::inference::llama_cpp_capabilities::CapabilitySnapshot>,
+) -> Vec<DoctorFinding> {
     let mut findings = Vec::new();
+    // Canonical K/V (schema v5): empty means llama-server default (f16).
+    let k = config.ctk.trim();
+    let v = config.ctv.trim();
+
+    if let Some(snapshot) = snapshot
+        && let Some(issue) = validate_main_kv_policy(k, v, snapshot)
+    {
+        findings.push(DoctorFinding {
+            finding_type: DoctorFindingType::LlamaCpp,
+            severity: DoctorSeverity::Issue,
+            message: issue.message,
+            section: "llama.cpp cache".into(),
+            fix: None,
+        });
+    }
+
     let tool_enabled = config
         .tool_call_format
         .as_deref()
@@ -57,9 +105,6 @@ fn llama_config_findings(config: &ServerConfig) -> Vec<DoctorFinding> {
     if !tool_enabled {
         return findings;
     }
-    // Canonical K/V (schema v5): empty means llama-server default (f16).
-    let k = config.ctk.trim();
-    let v = config.ctv.trim();
     let low_k = !k.is_empty() && !is_q8_or_better(k);
     let low_v = !v.is_empty() && !is_q8_or_better(v);
     if low_k || low_v {
@@ -255,12 +300,80 @@ mod tests {
             ctk: "q4_0".into(),
             ..Default::default()
         };
-        let findings = llama_config_findings(&config);
+        let findings = llama_config_findings(&config, None);
         assert!(
             findings
                 .iter()
                 .any(|finding| finding.finding_type == DoctorFindingType::LlamaCpp)
         );
+    }
+
+    fn llama_capability_snapshot(
+        mixed_main_kv_supported: bool,
+    ) -> crate::inference::llama_cpp_capabilities::CapabilitySnapshot {
+        use crate::inference::llama_cpp_capabilities::{
+            CapabilitySnapshot, CapabilitySnapshotSource, ExecutableIdentity, MixedMainKv,
+        };
+        CapabilitySnapshot {
+            executable_identity: ExecutableIdentity {
+                path: "/tmp/llama-server".into(),
+                file_hash: "abc123".into(),
+                file_mtime_unix: 0,
+            },
+            version_text: String::new(),
+            help_hash: String::new(),
+            serve_flags: Vec::new(),
+            cache: Default::default(),
+            context: Default::default(),
+            concurrency: Default::default(),
+            endpoints: Default::default(),
+            streaming: Default::default(),
+            templates: Default::default(),
+            tools: Default::default(),
+            speculation: Default::default(),
+            mixed_main_kv: if mixed_main_kv_supported {
+                MixedMainKv {
+                    supported: true,
+                    reason: "build manifest proves support".into(),
+                    source: "build_manifest".into(),
+                }
+            } else {
+                MixedMainKv::product_default_denied()
+            },
+            evidence_timestamp: 0,
+            source: CapabilitySnapshotSource::AutoProbed,
+        }
+    }
+
+    #[test]
+    fn llama_mixed_kv_check_fires_independent_of_tool_enabled() {
+        let config = ServerConfig {
+            tool_call_format: None,
+            ctk: "q8_0".into(),
+            ctv: "q4_0".into(),
+            ..Default::default()
+        };
+        let snapshot = llama_capability_snapshot(false);
+        let findings = llama_config_findings(&config, Some(&snapshot));
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.finding_type == DoctorFindingType::LlamaCpp
+                    && finding.severity == DoctorSeverity::Issue)
+        );
+    }
+
+    #[test]
+    fn llama_mixed_kv_check_silent_when_binary_supports_pair() {
+        let config = ServerConfig {
+            tool_call_format: None,
+            ctk: "q8_0".into(),
+            ctv: "q4_0".into(),
+            ..Default::default()
+        };
+        let snapshot = llama_capability_snapshot(true);
+        let findings = llama_config_findings(&config, Some(&snapshot));
+        assert!(findings.is_empty());
     }
 
     #[test]
