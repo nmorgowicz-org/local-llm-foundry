@@ -805,6 +805,19 @@ mod tests {
             ctx.auth.clone(),
             "127.0.0.1".into(),
         );
+        let stale = warp::test::request()
+            .method("PUT")
+            .path("/api/presets/bundle-1")
+            .header("authorization", "Bearer test-token")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({
+                "expected_revision": 0,
+                "preset": preset.clone()
+            }))
+            .reply(&routes)
+            .await;
+        assert_eq!(stale.status(), warp::http::StatusCode::CONFLICT);
+
         let mut submitted = serde_json::to_value(&preset).unwrap();
         submitted["context_size"] = serde_json::json!(64_000);
         let response = warp::test::request()
@@ -821,6 +834,110 @@ mod tests {
         assert_eq!(response.status(), warp::http::StatusCode::BAD_REQUEST);
         assert_eq!(response.body()[0], b'{');
         assert_eq!(ctx.state.presets.lock().unwrap()[0].revision, 1);
+    }
+
+    #[tokio::test]
+    async fn destructive_routes_require_admin_confirmation_and_current_guards() {
+        let mut preset = ModelPreset::default();
+        preset.id = "preset-1".into();
+        preset.name = "Preset".into();
+        preset.revision = 1;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presets.json");
+        let ctx = test_context(vec![preset], path.clone());
+        let routes = crate::web::api::api_routes(
+            ctx.state.clone(),
+            ctx.config.clone(),
+            ctx.auth.clone(),
+            "127.0.0.1".into(),
+        );
+
+        let body = serde_json::json!({
+            "expected_revision": 1,
+            "confirmation": "DELETE PRESET"
+        });
+        let unauthorized = warp::test::request()
+            .method("DELETE")
+            .path("/api/presets/preset-1")
+            .header("content-type", "application/json")
+            .json(&body)
+            .reply(&routes)
+            .await;
+        assert_eq!(unauthorized.status(), warp::http::StatusCode::UNAUTHORIZED);
+
+        let wrong_token = warp::test::request()
+            .method("DELETE")
+            .path("/api/presets/preset-1")
+            .header("authorization", "Bearer test-token")
+            .header("content-type", "application/json")
+            .json(&body)
+            .reply(&routes)
+            .await;
+        assert_eq!(wrong_token.status(), warp::http::StatusCode::UNAUTHORIZED);
+
+        let stale = warp::test::request()
+            .method("DELETE")
+            .path("/api/presets/preset-1")
+            .header("authorization", "Bearer test-admin")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({
+                "expected_revision": 0,
+                "confirmation": "DELETE PRESET"
+            }))
+            .reply(&routes)
+            .await;
+        assert_eq!(stale.status(), warp::http::StatusCode::CONFLICT);
+        assert_eq!(ctx.state.presets.lock().unwrap().len(), 1);
+
+        let deleted = warp::test::request()
+            .method("DELETE")
+            .path("/api/presets/preset-1")
+            .header("authorization", "Bearer test-admin")
+            .header("content-type", "application/json")
+            .json(&body)
+            .reply(&routes)
+            .await;
+        assert_eq!(deleted.status(), warp::http::StatusCode::OK);
+        assert!(ctx.state.presets.lock().unwrap().is_empty());
+        let disk: Vec<ModelPreset> =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert!(disk.is_empty());
+
+        let reset_preset = ModelPreset {
+            id: "preset-2".into(),
+            revision: 1,
+            ..Default::default()
+        };
+        *ctx.state.presets.lock().unwrap() = vec![reset_preset];
+        let reset_body = serde_json::json!({
+            "expected_catalog_etag": "catalog-v1:stale",
+            "confirmation": "RESET PRESETS"
+        });
+        let reset_stale = warp::test::request()
+            .method("POST")
+            .path("/api/presets/reset")
+            .header("authorization", "Bearer test-admin")
+            .header("content-type", "application/json")
+            .json(&reset_body)
+            .reply(&routes)
+            .await;
+        assert_eq!(reset_stale.status(), warp::http::StatusCode::CONFLICT);
+        assert_eq!(ctx.state.presets.lock().unwrap()[0].id, "preset-2");
+
+        let current_etag = catalog_etag(&ctx.state.presets.lock().unwrap());
+        let reset = warp::test::request()
+            .method("POST")
+            .path("/api/presets/reset")
+            .header("authorization", "Bearer test-admin")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({
+                "expected_catalog_etag": current_etag,
+                "confirmation": "RESET PRESETS"
+            }))
+            .reply(&routes)
+            .await;
+        assert_eq!(reset.status(), warp::http::StatusCode::OK);
+        assert!(!ctx.state.presets.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

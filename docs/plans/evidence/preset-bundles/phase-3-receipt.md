@@ -22,18 +22,21 @@ Implementation commit: `c332e6da036cbbd468d5a2e6d5f5adaeba20f289`
 | Command | Result |
 | --- | --- |
 | `rtk cargo test presets::resolver::` | 6 passed |
-| `rtk cargo test web::api::preset_bundles` | 9 passed |
+| `rtk cargo test web::api::preset_bundles` | 10 passed |
 | `rtk cargo test --test auth_routing` | 39 passed |
 | `rtk cargo clippy -- -D warnings` | passed |
-| `rtk cargo test` | 1,422 passed, 14 ignored |
+| `rtk cargo test -- --test-threads=1` | 1,423 passed, 14 ignored |
 | `rtk npm run validate-js` | passed |
 | `rtk npm run lint` | passed |
 | `rtk git diff --check` | passed |
 | `rtk cargo build --release` | passed |
 | `rtk cargo fmt -- --check` | passed |
 
-The first parallel full-suite run had one calibration fixture failure; the
-test passed in isolation and the complete suite passed on the immediate rerun.
+The default parallel `rtk cargo test` run consistently exposes one unrelated
+calibration fixture failure (`post_apply_fake_runtime_persists_passed_validation`).
+That test passes in isolation, and the complete suite passes when serialized
+with `--test-threads=1`; this is recorded as a test-order/flakiness boundary,
+not attributed to the Phase 3 changes.
 
 ## Gates and known boundaries
 
