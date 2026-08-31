@@ -36,6 +36,24 @@ fn rapid_estimator_kv_quants(
     }
 }
 
+/// Fetch a fresh-or-cached llama.cpp capability snapshot for K/V policy
+/// checks, mirroring `calibration::executor::calibration_capability_snapshot`.
+async fn llama_kv_capability_snapshot(
+    config: &AppConfig,
+) -> Option<crate::inference::llama_cpp_capabilities::CapabilitySnapshot> {
+    if !config.llama_server_path.is_file() {
+        return None;
+    }
+    let _ =
+        crate::inference::llama_cpp_capabilities::generate_snapshot(&config.llama_server_path)
+            .await;
+    crate::inference::llama_cpp_capabilities::ExecutableIdentity::from_path(
+        &config.llama_server_path,
+    )
+    .ok()
+    .and_then(|identity| crate::inference::llama_cpp_capabilities::cached_snapshot(&identity))
+}
+
 // 7) POST /api/vram-estimate (architecture-aware breakdown)
 fn api_vram_estimate_breakdown(
     _state: AppState,
@@ -526,6 +544,27 @@ fn api_vram_estimate_breakdown(
                     serde_json::Value::Null
                 };
 
+                // Non-blocking K/V policy signal: llama.cpp vocabulary only, mirrors
+                // the hard-gate check enforced at launch/save time without rejecting
+                // the estimate itself. Rapid-MLX uses its own KV vocabulary (D31),
+                // so no policy applies there.
+                let kv_policy_json = if is_rapid_mlx {
+                    serde_json::Value::Null
+                } else {
+                    let issue = match llama_kv_capability_snapshot(&cfg).await {
+                        Some(snapshot) => {
+                            crate::presets::validation::validate_main_kv_policy(
+                                &ctk, &ctv, &snapshot,
+                            )
+                        }
+                        None => None,
+                    };
+                    serde_json::json!({
+                        "valid": issue.is_none(),
+                        "issue": issue,
+                    })
+                };
+
                 Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(
                     Box::new(warp::reply::json(&serde_json::json!({
                         "ok": true,
@@ -556,6 +595,7 @@ fn api_vram_estimate_breakdown(
                          "execution_policy": execution_policy_json,
                          "workload_scenario": workload_scenario_json,
                          "effective_kv_dtype": effective_kv_dtype_json,
+                         "kv_policy": kv_policy_json,
                          "prefill_step_size": if is_rapid_mlx {
                              serde_json::json!(prefill_step_size)
                          } else {
@@ -1576,6 +1616,43 @@ mod mlx_estimate_tests {
         assert_eq!(json["context_extension_required"], serde_json::json!(false));
         assert_eq!(json["prefill_step_size"], serde_json::json!(1536));
         assert!(json["weights_bytes"].as_u64().unwrap() > 0);
+        // Rapid-MLX has its own KV vocabulary (D31); the llama.cpp-only policy signal
+        // stays null on this backend rather than evaluating stale ctk/ctv defaults.
+        assert_eq!(json["kv_policy"], serde_json::Value::Null);
+    }
+
+    /// The llama.cpp (non-Rapid-MLX) backend carries a non-blocking `kv_policy` signal
+    /// mirroring the hard-gate check enforced at launch/save time
+    /// (`presets::validation::validate_main_kv_policy`), without rejecting the estimate
+    /// itself. With no llama-server binary available in the test config, the capability
+    /// snapshot lookup is skipped and the signal defaults to valid.
+    #[tokio::test]
+    async fn vram_estimate_reports_kv_policy_for_llama_cpp_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("model.gguf");
+        std::fs::write(&model_path, vec![0u8; 4096]).unwrap();
+
+        let body = serde_json::json!({
+            "model_path": model_path.to_string_lossy(),
+            "n_ctx": 4096,
+            "ctk": "q8_0",
+            "ctv": "q8_0",
+            "available_vram_bytes": 32u64 * 1024 * 1024 * 1024,
+        });
+        let response = warp::test::request()
+            .method("POST")
+            .path("/api/vram-estimate")
+            .header("authorization", "Bearer api-secret")
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .reply(&test_routes())
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(response.body()).unwrap();
+        assert_eq!(json["ok"], serde_json::json!(true));
+        assert_eq!(json["kv_policy"]["valid"], serde_json::json!(true));
+        assert_eq!(json["kv_policy"]["issue"], serde_json::Value::Null);
+        assert_eq!(json["effective_kv_dtype"], serde_json::Value::Null);
     }
 
     /// An MLX vision tower is packed inside the safetensors weights, so `model_size_bytes`
