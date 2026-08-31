@@ -285,11 +285,14 @@ fn api_delete_preset(
             let before = candidate.len();
             candidate.retain(|p| p.id != id);
             if candidate.len() == before {
-                return futures_util::future::ready(Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(
-                    Box::new(warp::reply::json(
+                return futures_util::future::ready(Ok::<
+                    Box<dyn warp::reply::Reply>,
+                    warp::Rejection,
+                >(Box::new(
+                    warp::reply::json(
                         &serde_json::json!({"ok": false, "error": "preset not found"}),
-                    )),
-                ));
+                    ),
+                )));
             }
             if let Err(error) = presets::save_presets(&state.presets_path, &candidate) {
                 return futures_util::future::ready(Ok::<

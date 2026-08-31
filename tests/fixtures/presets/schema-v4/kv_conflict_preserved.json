@@ -1,0 +1,12 @@
+{
+  "id": "v4-kv-conflict",
+  "name": "Legacy v4 with conflicting K/V",
+  "schema_version": 4,
+  "backend": "llama_cpp",
+  "model_path": "/models/conflict.gguf",
+  "context_size": 4096,
+  "ctk": "q8_0",
+  "ctv": "q8_0",
+  "cache_type_k": "f16",
+  "cache_type_v": "f16"
+}

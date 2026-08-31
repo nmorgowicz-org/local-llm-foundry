@@ -83,6 +83,9 @@ pub struct CapabilitySnapshot {
     pub tools: ToolCapabilities,
     /// Speculative decoding capabilities
     pub speculation: SpeculationCapabilities,
+    /// Mixed main-K/V support gate (`q8_0` K + `q4_0` V fused-attention pair).
+    /// Product default is `supported: false` until a trusted build manifest is integrated.
+    pub mixed_main_kv: MixedMainKv,
     pub evidence_timestamp: u64,
     pub source: CapabilitySnapshotSource,
 }
@@ -140,6 +143,31 @@ pub struct ToolCapabilities {
 pub struct SpeculationCapabilities {
     pub draft_model: FeatureState,
     pub ngram_spec: FeatureState,
+}
+
+/// Backend-owned mixed main-K/V support gate.
+///
+/// Only a trusted build manifest with exact SHA-256 binding may set `supported: true`.
+/// The only shipped provider (Phase 1b) sets `supported: false` unconditionally.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct MixedMainKv {
+    pub supported: bool,
+    /// Human-readable reason; load-bearing per invariant 17 — rendered in UI alongside the option.
+    pub reason: String,
+    /// How the value was determined: "product_default_denied", "build_manifest", etc.
+    pub source: String,
+}
+
+impl MixedMainKv {
+    /// Canonical product-default construction: rejected because we have no build
+    /// manifest binding to prove the fused-attention kernel property.
+    pub fn product_default_denied() -> Self {
+        Self {
+            supported: false,
+            reason: "Requires a llama.cpp build compiled with GGML_CUDA_FA_ALL_QUANTS advertising mixed main-K/V support through a product build manifest. Separate -ctk and -ctv value lists do not prove this kernel property.".into(),
+            source: "product_default_denied".into(),
+        }
+    }
 }
 
 impl CapabilitySnapshot {
@@ -219,6 +247,8 @@ pub async fn generate_snapshot(binary: &Path) -> Result<CapabilitySnapshot> {
         templates,
         tools,
         speculation,
+        // Phase 1b: only shipped provider — product default denied.
+        mixed_main_kv: MixedMainKv::product_default_denied(),
         evidence_timestamp: now,
         source: CapabilitySnapshotSource::AutoProbed,
     };
@@ -594,6 +624,7 @@ Options:
             templates: Default::default(),
             tools: Default::default(),
             speculation: Default::default(),
+            mixed_main_kv: MixedMainKv::product_default_denied(),
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::AutoProbed,
         };
@@ -628,6 +659,7 @@ Options:
             templates: Default::default(),
             tools: Default::default(),
             speculation: Default::default(),
+            mixed_main_kv: MixedMainKv::product_default_denied(),
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::AutoProbed,
         };
@@ -686,6 +718,7 @@ Options:
             templates: Default::default(),
             tools: Default::default(),
             speculation: Default::default(),
+            mixed_main_kv: MixedMainKv::product_default_denied(),
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::AutoProbed,
         };

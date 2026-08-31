@@ -589,6 +589,10 @@ Request body (full `ModelPreset` shape, all fields optional with defaults):
 
 All fields use `#[serde(default)]` for backward compatibility.
 
+**KV cache fields:**
+
+`ctk` and `ctv` (strings, default empty = llama-server default) are the canonical K/V cache-type fields (schema v5). Launch validation reads only these. `cache_type_k`/`cache_type_v` below are retained for read-compatibility only; new writes should use the canonical fields.
+
 **Spawn V2 extended fields** (added after initial preset schema):
 
 | Field | Type | Default | Notes |
@@ -598,8 +602,8 @@ All fields use `#[serde(default)]` for backward compatibility.
 | `mmproj` | Option<String> | null | Multimodal projector path |
 | `grammar` | Option<String> | null | Grammar constraint file |
 | `json_schema` | Option<String> | null | JSON schema constraint |
-| `cache_type_k` | Option<String> | null | KV cache type for keys |
-| `cache_type_v` | Option<String> | null | KV cache type for values |
+| `cache_type_k` | Option<String> | null | Deprecated: use `ctk`. Retained for backward compatibility |
+| `cache_type_v` | Option<String> | null | Deprecated: use `ctv`. Retained for backward compatibility |
 | `max_tokens` | Option<u64> | null | Max tokens limit |
 | `enable_thinking` | Option<bool> | null | Enable thinking mode |
 | `preserve_thinking` | Option<bool> | null | Preserve thinking content |

@@ -143,6 +143,10 @@ bytes/token = 2 (K+V) × n_layers × n_kv_heads × head_dim × bytes_per_elem
 - **Quantized KV requires flash attention** (`-fa on`) and **matching K/V types**
   (`-ctk q8_0 -ctv q8_0`) to stay on the fast fused kernel — mixed types silently
   fall back to a slow path.
+- Presets store KV types in the canonical `ctk`/`ctv` fields (the `-ctk`/`-ctv`
+  launch flags). Launch validation rejects the one build-gated mixed pair,
+  `q8_0/q4_0`, against the binary's capability snapshot, and refuses to let
+  `extra_args` reintroduce KV flags that would bypass the typed fields.
 
 ### Architecture caveats that change the math
 

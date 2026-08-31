@@ -2044,7 +2044,9 @@ Options:
         let snap = CapabilitySnapshot {
             executable_identity: identity1.clone(),
             rapid_mlx_version: "0.10.10".into(),
-            help_hash: hash_help("usage: rapid-mlx serve [options]\n  --model PATH\n  --port PORT\n"),
+            help_hash: hash_help(
+                "usage: rapid-mlx serve [options]\n  --model PATH\n  --port PORT\n",
+            ),
             serve_flags: vec!["--model".into(), "--port".into()],
             package_versions: vec![],
             installed_extras: InstalledExtras::default(),
@@ -2076,7 +2078,9 @@ Options:
         let snap = CapabilitySnapshot {
             executable_identity: identity.clone(),
             rapid_mlx_version: "0.10.10".into(),
-            help_hash: hash_help("usage: rapid-mlx serve [options]\n  --model PATH\n  --draft PATH\n"),
+            help_hash: hash_help(
+                "usage: rapid-mlx serve [options]\n  --model PATH\n  --draft PATH\n",
+            ),
             serve_flags: vec!["--model".into(), "--draft".into()],
             package_versions: vec![],
             installed_extras: InstalledExtras::default(),

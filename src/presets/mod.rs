@@ -4,6 +4,8 @@ use crate::inference::rapid_mlx::RapidMlxConfig;
 use anyhow::Result;
 use std::path::Path;
 
+pub mod validation;
+
 /// Current preset schema version (D32).
 /// v1: initial version with schema_version field; typed Rapid-MLX model_source
 ///     is authoritative; legacy model_path is read-migrated but never re-written.
@@ -11,7 +13,11 @@ use std::path::Path;
 ///     existing presets default to prefix_cache_enabled=false (safe default).
 /// v3: Phase 7A — all Phase 7 config fields (KV/cache, batching, GPU, Web UI, safety);
 ///     existing presets load with None/defaults (safe degraded mode).
-pub const PRESET_SCHEMA_VERSION: u32 = 4;
+/// v4: explicit llama.cpp load_mode alongside legacy no_mmap boolean.
+/// v5: canonical K/V — ctk/ctv become the single source of truth; cache_type_k/v
+///     remain as deprecated read-compat projections only. Conflicting pairs are
+///     preserved (never deleted) and surfaced as non-launchable via validation.
+pub const PRESET_SCHEMA_VERSION: u32 = 5;
 
 /// Forward-migrate a preset from any known version to current.
 /// Returns `true` if migration was applied, `false` if already current.
@@ -73,6 +79,15 @@ pub fn migrate_preset(preset: &mut ModelPreset) -> bool {
         preset.schema_version = Some(4);
         migrated = true;
     }
+    // v4 -> v5: canonical K/V — ctk/ctv become the single source of truth.
+    // `cache_type_k`/`cache_type_v` are retained as deprecated read-compat
+    // projections; conflicts are preserved and surfaced via validation.
+    if preset.schema_version.unwrap_or(4) < 5 {
+        validation::migrate_kv_fields(preset);
+        preset.schema_version = Some(5);
+        migrated = true;
+    }
+    // Safety net: any future version bump keeps tracking.
     if preset.schema_version.unwrap_or(0) < PRESET_SCHEMA_VERSION {
         preset.schema_version = Some(PRESET_SCHEMA_VERSION);
         migrated = true;
@@ -1221,5 +1236,67 @@ mod tests {
         assert!(rapid.embeddings.is_none());
         assert!(rapid.gpu_memory_utilization.is_none());
         assert!(rapid.sampling_mode.is_none());
+    }
+
+    // Phase 1b: fixture-driven K/V migration tests against the real legacy JSON
+    // corpus under tests/fixtures/presets/.
+
+    fn load_fixture(name: &str) -> ModelPreset {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("presets")
+            .join(name);
+        let contents = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read fixture {}: {e}", path.display()));
+        serde_json::from_str(&contents)
+            .unwrap_or_else(|e| panic!("failed to parse fixture {name}: {e}"))
+    }
+
+    #[test]
+    fn fixture_v4_deprecated_only_migrates_into_canonical_fields() {
+        let mut p = load_fixture("schema-v4/deprecated_k_and_v_only.json");
+        assert!(migrate_preset(&mut p));
+        assert_eq!(p.ctk, "q8_0");
+        assert_eq!(p.ctv, "q8_0");
+        assert_eq!(p.schema_version, Some(PRESET_SCHEMA_VERSION));
+        // Launch policy: clean (no conflict, known values).
+        assert!(crate::presets::validation::validate_llama_launch_policy(&p, None).is_empty());
+    }
+
+    #[test]
+    fn fixture_v4_both_equal_is_noop_migration() {
+        let mut p = load_fixture("schema-v4/both_fields_equal.json");
+        migrate_preset(&mut p);
+        assert_eq!(p.ctk, "f16");
+        assert_eq!(p.ctv, "f16");
+        assert_eq!(p.schema_version, Some(PRESET_SCHEMA_VERSION));
+        assert!(crate::presets::validation::validate_llama_launch_policy(&p, None).is_empty());
+    }
+
+    #[test]
+    fn fixture_v4_kv_conflict_is_preserved_not_deleted() {
+        let mut p = load_fixture("schema-v4/kv_conflict_preserved.json");
+        migrate_preset(&mut p);
+        // Both sides retained as-is — migration never guesses.
+        assert_eq!(p.ctk, "q8_0");
+        assert_eq!(p.ctv, "q8_0");
+        assert_eq!(p.cache_type_k.as_deref(), Some("f16"));
+        assert_eq!(p.cache_type_v.as_deref(), Some("f16"));
+        assert_eq!(p.schema_version, Some(PRESET_SCHEMA_VERSION));
+        // But validation marks it non-launchable until resolved.
+        let issues = crate::presets::validation::validate_llama_launch_policy(&p, None);
+        assert!(
+            issues.iter().any(|i| i.code == "KV_FIELD_CONFLICT"),
+            "conflicting K/V must be flagged, got: {:?}",
+            issues.iter().map(|i| i.code.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn fixture_v5_canonical_clean_is_launchable() {
+        let p = load_fixture("schema-v5/canonical_kv_clean.json");
+        assert_eq!(p.schema_version, Some(PRESET_SCHEMA_VERSION));
+        assert!(crate::presets::validation::validate_llama_launch_policy(&p, None).is_empty());
     }
 }

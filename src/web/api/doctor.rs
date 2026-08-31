@@ -57,14 +57,11 @@ fn llama_config_findings(config: &ServerConfig) -> Vec<DoctorFinding> {
     if !tool_enabled {
         return findings;
     }
-    let low_k = config
-        .cache_type_k
-        .as_deref()
-        .is_some_and(|value| !is_q8_or_better(value));
-    let low_v = config
-        .cache_type_v
-        .as_deref()
-        .is_some_and(|value| !is_q8_or_better(value));
+    // Canonical K/V (schema v5): empty means llama-server default (f16).
+    let k = config.ctk.trim();
+    let v = config.ctv.trim();
+    let low_k = !k.is_empty() && !is_q8_or_better(k);
+    let low_v = !v.is_empty() && !is_q8_or_better(v);
     if low_k || low_v {
         findings.push(DoctorFinding {
             finding_type: DoctorFindingType::LlamaCpp,
@@ -255,7 +252,7 @@ mod tests {
     fn llama_tool_cache_check_reports_below_q8() {
         let config = ServerConfig {
             tool_call_format: Some("json".into()),
-            cache_type_k: Some("q4_0".into()),
+            ctk: "q4_0".into(),
             ..Default::default()
         };
         let findings = llama_config_findings(&config);

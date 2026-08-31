@@ -375,13 +375,25 @@ fn api_spawn_wizard_import_launch_file(
                 }
 
                 match crate::llama::batch_import::import_launch_file(&file) {
-                    Ok(result) => Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                        warp::reply::json(&serde_json::json!({
-                            "ok": true,
-                            "preset": result.preset,
-                            "warnings": result.warnings
-                        })),
-                    )),
+                    Ok(mut result) => {
+                        // Phase 1b: route imported values through the shared
+                        // launch-policy validator so the importer cannot
+                        // silently produce a non-launchable preset.
+                        let issues = crate::presets::validation::validate_llama_launch_policy(
+                            &result.preset,
+                            None,
+                        );
+                        result
+                            .warnings
+                            .extend(issues.iter().map(|i| format!("{}: {}", i.code, i.message)));
+                        Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                            warp::reply::json(&serde_json::json!({
+                                "ok": true,
+                                "preset": result.preset,
+                                "warnings": result.warnings
+                            })),
+                        ))
+                    }
                     Err(e) => Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
                         warp::reply::json(&serde_json::json!({
                             "ok": false,

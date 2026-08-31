@@ -155,7 +155,21 @@ pub fn validate_preset_backend_config(preset: &ModelPreset) -> Result<()> {
             }
             Ok(())
         }
-        InferenceBackend::LlamaCpp => Ok(()),
+        InferenceBackend::LlamaCpp => {
+            let issues = crate::presets::validation::validate_llama_launch_policy(preset, None);
+            if !issues.is_empty() {
+                let codes: Vec<String> = issues
+                    .iter()
+                    .map(|i| format!("{} ({})", i.code, i.message))
+                    .collect();
+                anyhow::bail!(
+                    "llama.cpp preset '{}' failed launch validation: {}",
+                    preset.name,
+                    codes.join("; ")
+                );
+            }
+            Ok(())
+        }
     }
 }
 
@@ -361,11 +375,37 @@ pub async fn construct_adapter(
             // Capability claims must be tied to the exact selected llama-server
             // binary rather than the build bundled during development. Snapshot
             // generation is bounded; validation below remains the launch gate.
-            if app_config.llama_server_path.is_file() {
+            let snapshot = if app_config.llama_server_path.is_file() {
                 let _ = crate::inference::llama_cpp_capabilities::generate_snapshot(
                     &app_config.llama_server_path,
                 )
                 .await;
+                match crate::inference::llama_cpp_capabilities::ExecutableIdentity::from_path(
+                    &app_config.llama_server_path,
+                ) {
+                    Ok(identity) => {
+                        crate::inference::llama_cpp_capabilities::cached_snapshot(&identity)
+                    }
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
+            // Launch gate: binary-specific policy (e.g. mixed main-K/V) is
+            // enforced against the live snapshot before any process is spawned.
+            // Structural checks already ran at request construction time.
+            if let Some(snap) = &snapshot
+                && let Some(issue) = crate::presets::validation::validate_main_kv_policy(
+                    &config.ctk,
+                    &config.ctv,
+                    snap,
+                )
+            {
+                anyhow::bail!(
+                    "llama.cpp launch blocked: {} ({})",
+                    issue.code,
+                    issue.message
+                );
             }
             let gpu_env = state.gpu_env.lock().unwrap().clone();
             Ok(BackendAdapter::LlamaCpp(Arc::new(LlamaCppAdapter::new(

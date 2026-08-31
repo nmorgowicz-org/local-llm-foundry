@@ -175,6 +175,20 @@ impl CacheMode {
     }
 }
 
+/// Phase 1b: macOS llama.cpp has no `--cache-ram` support, so the value is
+/// forced to `Some(0)` there regardless of stored `cache_ram_mib` or
+/// `cache_mode`. On other platforms the configured resolution is returned
+/// unchanged. Resolving to `0` also suppresses `--cache-idle-slots`, which
+/// requires cache-ram to be nonzero.
+fn effective_cache_ram(configured_cache_ram_mib: Option<i32>, mode: CacheMode) -> Option<i32> {
+    let resolved = mode.resolve(configured_cache_ram_mib);
+    if cfg!(target_os = "macos") {
+        Some(0)
+    } else {
+        resolved
+    }
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ServerConfig {
     pub model_path: String,
@@ -798,7 +812,10 @@ impl LlamaCppAdapter {
     fn append_kv_cache_args(&self, cmd: &mut TokioCommand) {
         // Phase 6: resolve the effective cache_ram_mib through CacheMode before it drives
         // either --cache-idle-slots eligibility or --cache-ram itself.
-        let cache_ram_mib = self.config.cache_mode.resolve(self.config.cache_ram_mib);
+        // macOS has no --cache-ram support in llama.cpp; it is forced to 0
+        // regardless of stored cache_ram_mib or cache_mode, which also
+        // suppresses --cache-idle-slots via the eligibility gate below.
+        let cache_ram_mib = effective_cache_ram(self.config.cache_ram_mib, self.config.cache_mode);
 
         if let Some(v) = self.config.kv_unified {
             cmd.arg(if v { "--kv-unified" } else { "--no-kv-unified" });
@@ -1178,32 +1195,37 @@ mod tests {
         })
         .await;
 
+        let mut expected: Vec<&str> = vec![
+            "-m",
+            "/models/test.gguf",
+            "-ngl",
+            "all",
+            "-ctk",
+            "q8_0",
+            "-ctv",
+            "q8_0",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8080",
+            "--no-warmup",
+            "--jinja",
+            "--no-context-shift",
+            "--ctx-checkpoints",
+            "32",
+            "--keep",
+            "-1",
+            "-fa",
+            "on",
+            "--metrics",
+        ];
+        // macOS has no --cache-ram support; it is forced to 0 always.
+        if cfg!(target_os = "macos") {
+            expected.extend_from_slice(&["--cache-ram", "0"]);
+        }
         assert_eq!(
             args,
-            [
-                "-m",
-                "/models/test.gguf",
-                "-ngl",
-                "all",
-                "-ctk",
-                "q8_0",
-                "-ctv",
-                "q8_0",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "8080",
-                "--no-warmup",
-                "--jinja",
-                "--no-context-shift",
-                "--ctx-checkpoints",
-                "32",
-                "--keep",
-                "-1",
-                "-fa",
-                "on",
-                "--metrics",
-            ]
+            expected.iter().map(|s| s.to_string()).collect::<Vec<_>>()
         );
     }
 
@@ -1347,15 +1369,12 @@ mod tests {
         })
         .await;
 
-        let expected_tail = [
+        let mut expected_tail: Vec<&str> = vec![
             "--api-key",
             "secret",
             "--alias",
             "full-model",
             "--kv-unified",
-            "--cache-idle-slots",
-            "--cache-ram",
-            "2048",
             "--fit",
             "on",
             "--fit-target",
@@ -1364,7 +1383,21 @@ mod tests {
             "--log-colors",
             "off",
         ];
-        assert!(args.ends_with(&expected_tail.map(str::to_string)));
+        // On macOS, --cache-ram is forced to 0 and --cache-idle-slots is
+        // suppressed because it requires cache-ram to be nonzero.
+        if cfg!(target_os = "macos") {
+            expected_tail.splice(5..5, ["--cache-ram", "0"]);
+        } else {
+            expected_tail.splice(5..5, ["--cache-idle-slots", "--cache-ram", "2048"]);
+        }
+        assert!(
+            args.ends_with(
+                &expected_tail
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+            )
+        );
         for required in [
             "--no-mmap",
             "--mlock",
@@ -1394,14 +1427,62 @@ mod tests {
             })
             .await;
 
+            // macOS has no --cache-ram support; the value is forced to 0.
+            if cfg!(target_os = "macos") {
+                assert!(
+                    args.windows(2).any(|pair| pair == ["--cache-ram", "0"]),
+                    "macOS must emit --cache-ram 0, got {args:?}"
+                );
+                assert!(
+                    !args.iter().any(|arg| arg == "--cache-idle-slots"),
+                    "macOS must suppress --cache-idle-slots"
+                );
+            } else {
+                assert!(
+                    args.windows(2).any(|pair| {
+                        pair == ["--cache-ram", cache_ram_mib.to_string().as_str()]
+                    })
+                );
+                assert_eq!(
+                    args.iter().any(|arg| arg == "--cache-idle-slots"),
+                    idle_slot_cache_expected,
+                    "cache_ram_mib={cache_ram_mib}"
+                );
+            }
+        }
+    }
+
+    /// Plan §Phase 1b: a preset storing cache_ram_mib: Some(16384) must emit
+    /// `--cache-ram 0` on macOS and the configured value elsewhere, and the
+    /// macOS branch must also suppress --cache-idle-slots.
+    #[tokio::test]
+    async fn stored_cache_ram_16384_is_zeroed_on_macos_passthrough_elsewhere() {
+        let args = launch_args(ServerConfig {
+            model_path: "/models/test.gguf".into(),
+            cache_ram_mib: Some(16384),
+            cache_mode: CacheMode::Custom,
+            cache_idle_slots: Some(true),
+            ..Default::default()
+        })
+        .await;
+
+        if cfg!(target_os = "macos") {
             assert!(
-                args.windows(2)
-                    .any(|pair| { pair == ["--cache-ram", cache_ram_mib.to_string().as_str()] })
+                args.windows(2).any(|pair| pair == ["--cache-ram", "0"]),
+                "macOS must emit --cache-ram 0 regardless of stored value, got {args:?}"
             );
-            assert_eq!(
+            assert!(
+                !args.iter().any(|arg| arg == "--cache-idle-slots"),
+                "macOS must suppress --cache-idle-slots (it requires cache-ram)"
+            );
+        } else {
+            assert!(
+                args.windows(2).any(|pair| pair == ["--cache-ram", "16384"]),
+                "non-macOS must pass the configured value through, got {args:?}"
+            );
+            assert!(
                 args.iter().any(|arg| arg == "--cache-idle-slots"),
-                idle_slot_cache_expected,
-                "cache_ram_mib={cache_ram_mib}"
+                "non-macOS must keep --cache-idle-slots when cache-ram is nonzero"
             );
         }
     }
@@ -1410,6 +1491,22 @@ mod tests {
     fn cache_mode_custom_preserves_configured_value_untouched() {
         assert_eq!(CacheMode::Custom.resolve(Some(4096)), Some(4096));
         assert_eq!(CacheMode::Custom.resolve(None), None);
+    }
+
+    #[test]
+    fn effective_cache_ram_is_zero_on_macos_passthrough_elsewhere() {
+        // Direct helper test: on macOS the value is always 0 regardless of
+        // stored value or mode. On other platforms it passes through.
+        let result = effective_cache_ram(Some(16384), CacheMode::Custom);
+        if cfg!(target_os = "macos") {
+            assert_eq!(result, Some(0));
+            let result2 = effective_cache_ram(Some(-1), CacheMode::Off);
+            assert_eq!(result2, Some(0));
+        } else {
+            assert_eq!(result, Some(16384));
+            let result2 = effective_cache_ram(Some(4096), CacheMode::Auto);
+            assert_eq!(result2, Some(0));
+        }
     }
 
     #[test]
