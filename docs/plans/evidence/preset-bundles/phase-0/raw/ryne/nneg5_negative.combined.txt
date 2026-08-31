@@ -1,0 +1,12 @@
+** WARNING: connection is not using a post-quantum key exchange algorithm.
+** This session may be vulnerable to "store now, decrypt later" attacks.
+** The server may need to be upgraded. See https://openssh.com/pq.html
+error while handling argument "--n-cpu-moe": invalid value
+
+usage:
+-ncmoe, --n-cpu-moe N                   keep the Mixture of Experts (MoE) weights of the first N layers in the
+                                        CPU
+                                        (env: LLAMA_ARG_N_CPU_MOE)
+
+
+to show complete usage, run with -h

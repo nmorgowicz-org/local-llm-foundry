@@ -1,0 +1,1093 @@
+{
+  "$schema": "phase-0/fit-probe-output-fixtures",
+  "description": "Sanitized real llama-fit-params outputs for Phase 4b probe-parser and Phase 4c fit-search tests. Covers both backend output shapes (Metal with dedicated CPU_REPACK row, CUDA with host-model-column growth), the unit-step points around the 16 GiB placement boundary (ADR section 13), the dense-model architecture-agnostic check, and one parse-failure sample.",
+  "captured_with": "llama-fit-params --fit off -fitp on -lm none -lv 4 (plus per-fixture flags)",
+  "sources": {
+    "m5max": "Apple M5 Max (Metal), local machine",
+    "ryne": "RTX 5090 32GB (CUDA), remote Windows host over SSH"
+  },
+  "invariants_confirmed": [
+    "464 MiB per offloaded MoE layer, constant across both platforms (model-determined, not platform-determined)",
+    "Metal: device model column falls per layer; a stderr-only CPU_REPACK row rises by the same amount; Host model column stays flat",
+    "CUDA: device model column falls per layer; no CPU_REPACK row; Host model column carries the growth instead",
+    "Enabling offload (n=0->4 step) carries a one-time transition cost on top of the per-layer cost (98 MiB excess on first CUDA step)",
+    "ubatch is a real but second-order device lever: ~471 MiB device delta across ub 256->1024 (~one offloaded layer)",
+    "KV footprint is an architecture property, not a per-parameter rule of thumb: dense 27B context=6796 MiB vs MoE 35B context=2140 MiB at identical -c and K/V quant",
+    "16 GiB placement boundary lands between surveyed multiples of 4 (n=16 and n=20), first satisfied at n=18 -- unit-step fixtures are required, coarse survey points are not enough",
+    "The probe binary only rejects negative --n-cpu-moe values itself (CLI usage error, exit!=0); over-limit and dense-model+n-cpu-moe cases are silently accepted/ignored by the binary and MUST be rejected at the Rust preset-validation layer instead"
+  ],
+  "fixtures": [
+    {
+      "id": "m5max_n0",
+      "platform": "m5max",
+      "backend": "metal",
+      "output_shape": "metal_cpu_repack",
+      "model": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "n_cpu_moe": 0
+      },
+      "n_cpu_moe": 0,
+      "ub": null,
+      "synthesized": false,
+      "sampling": "survey",
+      "exit_code": 0,
+      "stdout_compact": "MTL0 20764 5182 826 \nHost 515 0 528 \n",
+      "stderr_table": "0.00.034.013 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.196.758 I common_memory_breakdown_print: | memory breakdown [MiB]  | total    free     self   model   context   compute    unaccounted |\n0.00.196.762 I common_memory_breakdown_print: |   - MTL0 (Apple M5 Max) | 57344 = 57280 + (26774 = 20764 +    5182 +     826) +      -26710 |\n0.00.196.762 I common_memory_breakdown_print: |   - Host                |                   1043 =   515 +       0 +     528                |\n",
+      "parsed": {
+        "MTL0 (Apple M5 Max)": {
+          "total": 57344,
+          "free": 57280,
+          "self": 26774,
+          "model": 20764,
+          "context": 5182,
+          "compute": 826,
+          "unaccounted": -26710
+        },
+        "Host": {
+          "total": 1043,
+          "model": 515,
+          "context": 0,
+          "self": 528
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "m5max_n12",
+      "platform": "m5max",
+      "backend": "metal",
+      "output_shape": "metal_cpu_repack",
+      "model": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "n_cpu_moe": 12
+      },
+      "n_cpu_moe": 12,
+      "ub": null,
+      "synthesized": false,
+      "sampling": "survey",
+      "exit_code": 0,
+      "stdout_compact": "MTL0 15196 5182 832 \nHost 515 0 641 \n",
+      "stderr_table": "0.00.032.094 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.213.723 I common_memory_breakdown_print: | memory breakdown [MiB]  | total    free     self   model   context   compute    unaccounted |\n0.00.213.726 I common_memory_breakdown_print: |   - MTL0 (Apple M5 Max) | 57344 = 57280 + (21212 = 15196 +    5182 +     832) +      -21148 |\n0.00.213.726 I common_memory_breakdown_print: |   - Host                |                   1156 =   515 +       0 +     641                |\n0.00.213.726 I common_memory_breakdown_print: |   - CPU_REPACK          |                   5568 =  5568 +       0 +       0                |\n",
+      "parsed": {
+        "MTL0 (Apple M5 Max)": {
+          "total": 57344,
+          "free": 57280,
+          "self": 21212,
+          "model": 15196,
+          "context": 5182,
+          "compute": 832,
+          "unaccounted": -21148
+        },
+        "Host": {
+          "total": 1156,
+          "model": 515,
+          "context": 0,
+          "self": 641
+        },
+        "CPU_REPACK": {
+          "total": 5568,
+          "model": 5568,
+          "context": 0,
+          "self": 0
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "m5max_n17",
+      "platform": "m5max",
+      "backend": "metal",
+      "output_shape": "metal_cpu_repack",
+      "model": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "n_cpu_moe": 17
+      },
+      "n_cpu_moe": 17,
+      "ub": null,
+      "synthesized": false,
+      "sampling": "unit_step",
+      "exit_code": 0,
+      "stdout_compact": "MTL0 12876 5182 832 \nHost 515 0 641 \n",
+      "stderr_table": "0.00.033.241 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.220.256 I common_memory_breakdown_print: | memory breakdown [MiB]  | total    free     self   model   context   compute    unaccounted |\n0.00.220.259 I common_memory_breakdown_print: |   - MTL0 (Apple M5 Max) | 57344 = 57280 + (18892 = 12876 +    5182 +     832) +      -18828 |\n0.00.220.260 I common_memory_breakdown_print: |   - Host                |                   1156 =   515 +       0 +     641                |\n0.00.220.260 I common_memory_breakdown_print: |   - CPU_REPACK          |                   7888 =  7888 +       0 +       0                |\n",
+      "parsed": {
+        "MTL0 (Apple M5 Max)": {
+          "total": 57344,
+          "free": 57280,
+          "self": 18892,
+          "model": 12876,
+          "context": 5182,
+          "compute": 832,
+          "unaccounted": -18828
+        },
+        "Host": {
+          "total": 1156,
+          "model": 515,
+          "context": 0,
+          "self": 641
+        },
+        "CPU_REPACK": {
+          "total": 7888,
+          "model": 7888,
+          "context": 0,
+          "self": 0
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "m5max_n18",
+      "platform": "m5max",
+      "backend": "metal",
+      "output_shape": "metal_cpu_repack",
+      "model": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "n_cpu_moe": 18
+      },
+      "n_cpu_moe": 18,
+      "ub": null,
+      "synthesized": false,
+      "sampling": "unit_step",
+      "exit_code": 0,
+      "stdout_compact": "MTL0 12412 5182 832 \nHost 515 0 641 \n",
+      "stderr_table": "0.00.032.643 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.222.102 I common_memory_breakdown_print: | memory breakdown [MiB]  | total    free     self   model   context   compute    unaccounted |\n0.00.222.106 I common_memory_breakdown_print: |   - MTL0 (Apple M5 Max) | 57344 = 57280 + (18428 = 12412 +    5182 +     832) +      -18364 |\n0.00.222.106 I common_memory_breakdown_print: |   - Host                |                   1156 =   515 +       0 +     641                |\n0.00.222.106 I common_memory_breakdown_print: |   - CPU_REPACK          |                   8352 =  8352 +       0 +       0                |\n",
+      "parsed": {
+        "MTL0 (Apple M5 Max)": {
+          "total": 57344,
+          "free": 57280,
+          "self": 18428,
+          "model": 12412,
+          "context": 5182,
+          "compute": 832,
+          "unaccounted": -18364
+        },
+        "Host": {
+          "total": 1156,
+          "model": 515,
+          "context": 0,
+          "self": 641
+        },
+        "CPU_REPACK": {
+          "total": 8352,
+          "model": 8352,
+          "context": 0,
+          "self": 0
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "m5max_n19",
+      "platform": "m5max",
+      "backend": "metal",
+      "output_shape": "metal_cpu_repack",
+      "model": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "n_cpu_moe": 19
+      },
+      "n_cpu_moe": 19,
+      "ub": null,
+      "synthesized": false,
+      "sampling": "unit_step",
+      "exit_code": 0,
+      "stdout_compact": "MTL0 11948 5182 832 \nHost 515 0 641 \n",
+      "stderr_table": "0.00.034.261 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.223.901 I common_memory_breakdown_print: | memory breakdown [MiB]  | total    free     self   model   context   compute    unaccounted |\n0.00.223.905 I common_memory_breakdown_print: |   - MTL0 (Apple M5 Max) | 57344 = 57280 + (17964 = 11948 +    5182 +     832) +      -17900 |\n0.00.223.905 I common_memory_breakdown_print: |   - Host                |                   1156 =   515 +       0 +     641                |\n0.00.223.905 I common_memory_breakdown_print: |   - CPU_REPACK          |                   8816 =  8816 +       0 +       0                |\n",
+      "parsed": {
+        "MTL0 (Apple M5 Max)": {
+          "total": 57344,
+          "free": 57280,
+          "self": 17964,
+          "model": 11948,
+          "context": 5182,
+          "compute": 832,
+          "unaccounted": -17900
+        },
+        "Host": {
+          "total": 1156,
+          "model": 515,
+          "context": 0,
+          "self": 641
+        },
+        "CPU_REPACK": {
+          "total": 8816,
+          "model": 8816,
+          "context": 0,
+          "self": 0
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "m5max_n20",
+      "platform": "m5max",
+      "backend": "metal",
+      "output_shape": "metal_cpu_repack",
+      "model": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "n_cpu_moe": 20
+      },
+      "n_cpu_moe": 20,
+      "ub": null,
+      "synthesized": false,
+      "sampling": "unit_step",
+      "exit_code": 0,
+      "stdout_compact": "MTL0 11484 5182 832 \nHost 515 0 641 \n",
+      "stderr_table": "0.00.030.009 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.221.575 I common_memory_breakdown_print: | memory breakdown [MiB]  | total    free     self   model   context   compute    unaccounted |\n0.00.221.579 I common_memory_breakdown_print: |   - MTL0 (Apple M5 Max) | 57344 = 57280 + (17500 = 11484 +    5182 +     832) +      -17436 |\n0.00.221.579 I common_memory_breakdown_print: |   - Host                |                   1156 =   515 +       0 +     641                |\n0.00.221.579 I common_memory_breakdown_print: |   - CPU_REPACK          |                   9280 =  9280 +       0 +       0                |\n",
+      "parsed": {
+        "MTL0 (Apple M5 Max)": {
+          "total": 57344,
+          "free": 57280,
+          "self": 17500,
+          "model": 11484,
+          "context": 5182,
+          "compute": 832,
+          "unaccounted": -17436
+        },
+        "Host": {
+          "total": 1156,
+          "model": 515,
+          "context": 0,
+          "self": 641
+        },
+        "CPU_REPACK": {
+          "total": 9280,
+          "model": 9280,
+          "context": 0,
+          "self": 0
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "m5max_n24",
+      "platform": "m5max",
+      "backend": "metal",
+      "output_shape": "metal_cpu_repack",
+      "model": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "n_cpu_moe": 24
+      },
+      "n_cpu_moe": 24,
+      "ub": null,
+      "synthesized": false,
+      "sampling": "survey",
+      "exit_code": 0,
+      "stdout_compact": "MTL0 9628 5182 832 \nHost 515 0 641 \n",
+      "stderr_table": "0.00.030.303 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.229.329 I common_memory_breakdown_print: | memory breakdown [MiB]  | total    free     self   model   context   compute    unaccounted |\n0.00.229.332 I common_memory_breakdown_print: |   - MTL0 (Apple M5 Max) | 57344 = 57280 + (15644 =  9628 +    5182 +     832) +      -15580 |\n0.00.229.332 I common_memory_breakdown_print: |   - Host                |                   1156 =   515 +       0 +     641                |\n0.00.229.332 I common_memory_breakdown_print: |   - CPU_REPACK          |                  11136 = 11136 +       0 +       0                |\n",
+      "parsed": {
+        "MTL0 (Apple M5 Max)": {
+          "total": 57344,
+          "free": 57280,
+          "self": 15644,
+          "model": 9628,
+          "context": 5182,
+          "compute": 832,
+          "unaccounted": -15580
+        },
+        "Host": {
+          "total": 1156,
+          "model": 515,
+          "context": 0,
+          "self": 641
+        },
+        "CPU_REPACK": {
+          "total": 11136,
+          "model": 11136,
+          "context": 0,
+          "self": 0
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "m5max_n36",
+      "platform": "m5max",
+      "backend": "metal",
+      "output_shape": "metal_cpu_repack",
+      "model": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "n_cpu_moe": 36
+      },
+      "n_cpu_moe": 36,
+      "ub": null,
+      "synthesized": false,
+      "sampling": "survey",
+      "exit_code": 0,
+      "stdout_compact": "MTL0 4026 5182 832 \nHost 515 0 641 \n",
+      "stderr_table": "0.00.032.924 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.240.407 I common_memory_breakdown_print: | memory breakdown [MiB]  | total    free     self   model   context   compute    unaccounted |\n0.00.240.411 I common_memory_breakdown_print: |   - MTL0 (Apple M5 Max) | 57344 = 57280 + (10042 =  4026 +    5182 +     832) +       -9978 |\n0.00.240.411 I common_memory_breakdown_print: |   - Host                |                   1156 =   515 +       0 +     641                |\n0.00.240.411 I common_memory_breakdown_print: |   - CPU_REPACK          |                  16738 = 16738 +       0 +       0                |\n",
+      "parsed": {
+        "MTL0 (Apple M5 Max)": {
+          "total": 57344,
+          "free": 57280,
+          "self": 10042,
+          "model": 4026,
+          "context": 5182,
+          "compute": 832,
+          "unaccounted": -9978
+        },
+        "Host": {
+          "total": 1156,
+          "model": 515,
+          "context": 0,
+          "self": 641
+        },
+        "CPU_REPACK": {
+          "total": 16738,
+          "model": 16738,
+          "context": 0,
+          "self": 0
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "n0_ub256",
+      "platform": "ryne",
+      "backend": "cuda",
+      "output_shape": "cuda_host_growth",
+      "model": "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "c": 200000,
+        "ctk": "q8_0",
+        "ctv": "q8_0",
+        "ctkd": "q4_0",
+        "ctvd": "q4_0",
+        "b": 2048,
+        "ub": 256,
+        "n_cpu_moe": 0
+      },
+      "n_cpu_moe": 0,
+      "ub": 256,
+      "synthesized": false,
+      "sampling": "survey",
+      "exit_code": 0,
+      "stdout_compact": "CUDA0 20798 2140 515 \nHost 515 0 102 \n",
+      "stderr_table": "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n0.00.171.009 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.776.966 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n0.00.776.971 I common_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32579 = 29854 + (23453 = 20798 +    2140 +     515) +      -20729 |\n0.00.776.971 I common_memory_breakdown_print: |   - Host               |                    617 =   515 +       0 +     102                |\n",
+      "parsed": {
+        "CUDA0 (RTX 5090)": {
+          "total": 32579,
+          "free": 29854,
+          "self": 23453,
+          "model": 20798,
+          "context": 2140,
+          "compute": 515,
+          "unaccounted": -20729
+        },
+        "Host": {
+          "total": 617,
+          "model": 515,
+          "context": 0,
+          "self": 102
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "n4_ub256",
+      "platform": "ryne",
+      "backend": "cuda",
+      "output_shape": "cuda_host_growth",
+      "model": "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "c": 200000,
+        "ctk": "q8_0",
+        "ctv": "q8_0",
+        "ctkd": "q4_0",
+        "ctvd": "q4_0",
+        "b": 2048,
+        "ub": 256,
+        "n_cpu_moe": 4
+      },
+      "n_cpu_moe": 4,
+      "ub": 256,
+      "synthesized": false,
+      "sampling": "survey",
+      "exit_code": 0,
+      "stdout_compact": "CUDA0 18844 2140 677 \nHost 2469 0 102 \n",
+      "stderr_table": "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n0.00.127.431 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.724.165 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n0.00.724.170 I common_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32579 = 29860 + (21662 = 18844 +    2140 +     677) +      -18943 |\n0.00.724.171 I common_memory_breakdown_print: |   - Host               |                   2571 =  2469 +       0 +     102                |\n",
+      "parsed": {
+        "CUDA0 (RTX 5090)": {
+          "total": 32579,
+          "free": 29860,
+          "self": 21662,
+          "model": 18844,
+          "context": 2140,
+          "compute": 677,
+          "unaccounted": -18943
+        },
+        "Host": {
+          "total": 2571,
+          "model": 2469,
+          "context": 0,
+          "self": 102
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "n8_ub256",
+      "platform": "ryne",
+      "backend": "cuda",
+      "output_shape": "cuda_host_growth",
+      "model": "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "c": 200000,
+        "ctk": "q8_0",
+        "ctv": "q8_0",
+        "ctkd": "q4_0",
+        "ctvd": "q4_0",
+        "b": 2048,
+        "ub": 256,
+        "n_cpu_moe": 8
+      },
+      "n_cpu_moe": 8,
+      "ub": 256,
+      "synthesized": false,
+      "sampling": "survey",
+      "exit_code": 0,
+      "stdout_compact": "CUDA0 16988 2140 677 \nHost 4325 0 102 \n",
+      "stderr_table": "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n0.00.124.356 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.740.498 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n0.00.740.504 I common_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32579 = 29848 + (19806 = 16988 +    2140 +     677) +      -17074 |\n0.00.740.505 I common_memory_breakdown_print: |   - Host               |                   4427 =  4325 +       0 +     102                |\n",
+      "parsed": {
+        "CUDA0 (RTX 5090)": {
+          "total": 32579,
+          "free": 29848,
+          "self": 19806,
+          "model": 16988,
+          "context": 2140,
+          "compute": 677,
+          "unaccounted": -17074
+        },
+        "Host": {
+          "total": 4427,
+          "model": 4325,
+          "context": 0,
+          "self": 102
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "n12_ub256",
+      "platform": "ryne",
+      "backend": "cuda",
+      "output_shape": "cuda_host_growth",
+      "model": "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "c": 200000,
+        "ctk": "q8_0",
+        "ctv": "q8_0",
+        "ctkd": "q4_0",
+        "ctvd": "q4_0",
+        "b": 2048,
+        "ub": 256,
+        "n_cpu_moe": 12
+      },
+      "n_cpu_moe": 12,
+      "ub": 256,
+      "synthesized": false,
+      "sampling": "survey",
+      "exit_code": 0,
+      "stdout_compact": "CUDA0 15132 2140 677 \nHost 6181 0 102 \n",
+      "stderr_table": "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n0.00.145.549 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.788.354 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n0.00.788.360 I common_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32579 = 29657 + (17950 = 15132 +    2140 +     677) +      -15028 |\n0.00.788.361 I common_memory_breakdown_print: |   - Host               |                   6283 =  6181 +       0 +     102                |\n",
+      "parsed": {
+        "CUDA0 (RTX 5090)": {
+          "total": 32579,
+          "free": 29657,
+          "self": 17950,
+          "model": 15132,
+          "context": 2140,
+          "compute": 677,
+          "unaccounted": -15028
+        },
+        "Host": {
+          "total": 6283,
+          "model": 6181,
+          "context": 0,
+          "self": 102
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "n16_ub256",
+      "platform": "ryne",
+      "backend": "cuda",
+      "output_shape": "cuda_host_growth",
+      "model": "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "c": 200000,
+        "ctk": "q8_0",
+        "ctv": "q8_0",
+        "ctkd": "q4_0",
+        "ctvd": "q4_0",
+        "b": 2048,
+        "ub": 256,
+        "n_cpu_moe": 16
+      },
+      "n_cpu_moe": 16,
+      "ub": 256,
+      "synthesized": false,
+      "sampling": "survey",
+      "exit_code": 0,
+      "stdout_compact": "CUDA0 13276 2140 677 \nHost 8037 0 102 \n",
+      "stderr_table": "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n0.00.125.532 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.750.483 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n0.00.750.487 I common_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32579 = 29860 + (16094 = 13276 +    2140 +     677) +      -13375 |\n0.00.750.488 I common_memory_breakdown_print: |   - Host               |                   8139 =  8037 +       0 +     102                |\n",
+      "parsed": {
+        "CUDA0 (RTX 5090)": {
+          "total": 32579,
+          "free": 29860,
+          "self": 16094,
+          "model": 13276,
+          "context": 2140,
+          "compute": 677,
+          "unaccounted": -13375
+        },
+        "Host": {
+          "total": 8139,
+          "model": 8037,
+          "context": 0,
+          "self": 102
+        }
+      },
+      "note": ""
+    },
+    {
+      "id": "n17_ub256",
+      "platform": "ryne",
+      "backend": "cuda",
+      "output_shape": "cuda_host_growth",
+      "model": "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "c": 200000,
+        "ctk": "q8_0",
+        "ctv": "q8_0",
+        "ctkd": "q4_0",
+        "ctvd": "q4_0",
+        "b": 2048,
+        "ub": 256,
+        "n_cpu_moe": 17
+      },
+      "n_cpu_moe": 17,
+      "ub": 256,
+      "synthesized": false,
+      "sampling": "unit_step",
+      "exit_code": 0,
+      "stdout_compact": "CUDA0 12812 2140 677 \nHost 8501 0 102 \n",
+      "stderr_table": "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n0.00.127.048 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.820.080 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n0.00.820.085 I common_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32579 = 29860 + (15630 = 12812 +    2140 +     677) +      -12911 |\n0.00.820.086 I common_memory_breakdown_print: |   - Host               |                   8603 =  8501 +       0 +     102                |\n",
+      "parsed": {
+        "CUDA0 (RTX 5090)": {
+          "total": 32579,
+          "free": 29860,
+          "self": 15630,
+          "model": 12812,
+          "context": 2140,
+          "compute": 677,
+          "unaccounted": -12911
+        },
+        "Host": {
+          "total": 8603,
+          "model": 8501,
+          "context": 0,
+          "self": 102
+        }
+      },
+      "note": "unit-step point around the 16 GiB placement boundary"
+    },
+    {
+      "id": "n18_ub256",
+      "platform": "ryne",
+      "backend": "cuda",
+      "output_shape": "cuda_host_growth",
+      "model": "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "c": 200000,
+        "ctk": "q8_0",
+        "ctv": "q8_0",
+        "ctkd": "q4_0",
+        "ctvd": "q4_0",
+        "b": 2048,
+        "ub": 256,
+        "n_cpu_moe": 18
+      },
+      "n_cpu_moe": 18,
+      "ub": 256,
+      "synthesized": false,
+      "sampling": "unit_step",
+      "exit_code": 0,
+      "stdout_compact": "CUDA0 12348 2140 677 \nHost 8965 0 102 \n",
+      "stderr_table": "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n0.00.139.661 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.01.080.166 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n0.01.080.172 I common_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32579 = 29579 + (15166 = 12348 +    2140 +     677) +      -12165 |\n0.01.080.173 I common_memory_breakdown_print: |   - Host               |                   9067 =  8965 +       0 +     102                |\n",
+      "parsed": {
+        "CUDA0 (RTX 5090)": {
+          "total": 32579,
+          "free": 29579,
+          "self": 15166,
+          "model": 12348,
+          "context": 2140,
+          "compute": 677,
+          "unaccounted": -12165
+        },
+        "Host": {
+          "total": 9067,
+          "model": 8965,
+          "context": 0,
+          "self": 102
+        }
+      },
+      "note": "unit-step point around the 16 GiB placement boundary"
+    },
+    {
+      "id": "n19_ub256",
+      "platform": "ryne",
+      "backend": "cuda",
+      "output_shape": "cuda_host_growth",
+      "model": "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "c": 200000,
+        "ctk": "q8_0",
+        "ctv": "q8_0",
+        "ctkd": "q4_0",
+        "ctvd": "q4_0",
+        "b": 2048,
+        "ub": 256,
+        "n_cpu_moe": 19
+      },
+      "n_cpu_moe": 19,
+      "ub": 256,
+      "synthesized": false,
+      "sampling": "unit_step",
+      "exit_code": 0,
+      "stdout_compact": "CUDA0 11884 2140 677 \nHost 9429 0 102 \n",
+      "stderr_table": "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n0.00.130.427 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.805.762 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n0.00.805.767 I common_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32579 = 29849 + (14702 = 11884 +    2140 +     677) +      -11971 |\n0.00.805.767 I common_memory_breakdown_print: |   - Host               |                   9531 =  9429 +       0 +     102                |\n",
+      "parsed": {
+        "CUDA0 (RTX 5090)": {
+          "total": 32579,
+          "free": 29849,
+          "self": 14702,
+          "model": 11884,
+          "context": 2140,
+          "compute": 677,
+          "unaccounted": -11971
+        },
+        "Host": {
+          "total": 9531,
+          "model": 9429,
+          "context": 0,
+          "self": 102
+        }
+      },
+      "note": "unit-step point around the 16 GiB placement boundary"
+    },
+    {
+      "id": "n20_ub256",
+      "platform": "ryne",
+      "backend": "cuda",
+      "output_shape": "cuda_host_growth",
+      "model": "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "c": 200000,
+        "ctk": "q8_0",
+        "ctv": "q8_0",
+        "ctkd": "q4_0",
+        "ctvd": "q4_0",
+        "b": 2048,
+        "ub": 256,
+        "n_cpu_moe": 20
+      },
+      "n_cpu_moe": 20,
+      "ub": 256,
+      "synthesized": false,
+      "sampling": "unit_step",
+      "exit_code": 0,
+      "stdout_compact": "CUDA0 11420 2140 677 \nHost 9893 0 102 \n",
+      "stderr_table": "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n0.00.132.113 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.762.992 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n0.00.762.996 I common_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32579 = 29469 + (14238 = 11420 +    2140 +     677) +      -11128 |\n0.00.762.996 I common_memory_breakdown_print: |   - Host               |                   9995 =  9893 +       0 +     102                |\n",
+      "parsed": {
+        "CUDA0 (RTX 5090)": {
+          "total": 32579,
+          "free": 29469,
+          "self": 14238,
+          "model": 11420,
+          "context": 2140,
+          "compute": 677,
+          "unaccounted": -11128
+        },
+        "Host": {
+          "total": 9995,
+          "model": 9893,
+          "context": 0,
+          "self": 102
+        }
+      },
+      "note": "unit-step point around the 16 GiB placement boundary"
+    },
+    {
+      "id": "n0_ub512",
+      "platform": "ryne",
+      "backend": "cuda",
+      "output_shape": "cuda_host_growth",
+      "model": "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "c": 200000,
+        "ctk": "q8_0",
+        "ctv": "q8_0",
+        "ctkd": "q4_0",
+        "ctvd": "q4_0",
+        "b": 2048,
+        "ub": 512,
+        "n_cpu_moe": 0
+      },
+      "n_cpu_moe": 0,
+      "ub": 512,
+      "synthesized": false,
+      "sampling": "survey",
+      "exit_code": 0,
+      "stdout_compact": "CUDA0 20798 2140 638 \nHost 515 0 203 \n",
+      "stderr_table": "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n0.00.127.756 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.734.921 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n0.00.734.925 I common_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32579 = 29860 + (23577 = 20798 +    2140 +     638) +      -20858 |\n0.00.734.926 I common_memory_breakdown_print: |   - Host               |                    719 =   515 +       0 +     203                |\n",
+      "parsed": {
+        "CUDA0 (RTX 5090)": {
+          "total": 32579,
+          "free": 29860,
+          "self": 23577,
+          "model": 20798,
+          "context": 2140,
+          "compute": 638,
+          "unaccounted": -20858
+        },
+        "Host": {
+          "total": 719,
+          "model": 515,
+          "context": 0,
+          "self": 203
+        }
+      },
+      "note": "ubatch second-order device-memory lever, n_cpu_moe held at 0"
+    },
+    {
+      "id": "n0_ub1024",
+      "platform": "ryne",
+      "backend": "cuda",
+      "output_shape": "cuda_host_growth",
+      "model": "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "c": 200000,
+        "ctk": "q8_0",
+        "ctv": "q8_0",
+        "ctkd": "q4_0",
+        "ctvd": "q4_0",
+        "b": 2048,
+        "ub": 1024,
+        "n_cpu_moe": 0
+      },
+      "n_cpu_moe": 0,
+      "ub": 1024,
+      "synthesized": false,
+      "sampling": "survey",
+      "exit_code": 0,
+      "stdout_compact": "CUDA0 20798 2140 986 \nHost 515 0 407 \n",
+      "stderr_table": "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n0.00.133.560 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.790.571 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n0.00.790.576 I common_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32579 = 29854 + (23924 = 20798 +    2140 +     986) +      -21200 |\n0.00.790.577 I common_memory_breakdown_print: |   - Host               |                    922 =   515 +       0 +     407                |\n",
+      "parsed": {
+        "CUDA0 (RTX 5090)": {
+          "total": 32579,
+          "free": 29854,
+          "self": 23924,
+          "model": 20798,
+          "context": 2140,
+          "compute": 986,
+          "unaccounted": -21200
+        },
+        "Host": {
+          "total": 922,
+          "model": 515,
+          "context": 0,
+          "self": 407
+        }
+      },
+      "note": "ubatch second-order device-memory lever, n_cpu_moe held at 0"
+    },
+    {
+      "id": "dense_q4_ub256",
+      "platform": "ryne",
+      "backend": "cuda",
+      "output_shape": "cuda_host_growth",
+      "model": "Qwen3.8-27B-Brainwaves-WFH-MTP-i1-Q4_K_M.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "c": 200000,
+        "ctk": "q8_0",
+        "ctv": "q8_0",
+        "ctkd": "q4_0",
+        "ctvd": "q4_0",
+        "b": 2048,
+        "ub": 256
+      },
+      "n_cpu_moe": null,
+      "ub": 256,
+      "synthesized": false,
+      "sampling": "survey",
+      "exit_code": 0,
+      "stdout_compact": "CUDA0 15088 6796 920 \nHost 682 0 108 \n",
+      "stderr_table": "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n0.00.132.966 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.730.936 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n0.00.730.940 I common_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32579 = 29681 + (22804 = 15088 +    6796 +     920) +      -19907 |\n0.00.730.941 I common_memory_breakdown_print: |   - Host               |                    790 =   682 +       0 +     108                |\n",
+      "parsed": {
+        "CUDA0 (RTX 5090)": {
+          "total": 32579,
+          "free": 29681,
+          "self": 22804,
+          "model": 15088,
+          "context": 6796,
+          "compute": 920,
+          "unaccounted": -19907
+        },
+        "Host": {
+          "total": 790,
+          "model": 682,
+          "context": 0,
+          "self": 108
+        }
+      },
+      "note": "dense model, no MoE layers; probe runs with no placement search per Phase 4d"
+    },
+    {
+      "id": "dense_q4_ub1024",
+      "platform": "ryne",
+      "backend": "cuda",
+      "output_shape": "cuda_host_growth",
+      "model": "Qwen3.8-27B-Brainwaves-WFH-MTP-i1-Q4_K_M.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "c": 200000,
+        "ctk": "q8_0",
+        "ctv": "q8_0",
+        "ctkd": "q4_0",
+        "ctvd": "q4_0",
+        "b": 2048,
+        "ub": 1024
+      },
+      "n_cpu_moe": null,
+      "ub": 1024,
+      "synthesized": false,
+      "sampling": "survey",
+      "exit_code": 0,
+      "stdout_compact": "CUDA0 15088 6796 1333 \nHost 682 0 431 \n",
+      "stderr_table": "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n0.00.150.149 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.01.175.708 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n0.01.175.717 I common_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32579 = 29462 + (23218 = 15088 +    6796 +    1333) +      -20101 |\n0.01.175.718 I common_memory_breakdown_print: |   - Host               |                   1113 =   682 +       0 +     431                |\n",
+      "parsed": {
+        "CUDA0 (RTX 5090)": {
+          "total": 32579,
+          "free": 29462,
+          "self": 23218,
+          "model": 15088,
+          "context": 6796,
+          "compute": 1333,
+          "unaccounted": -20101
+        },
+        "Host": {
+          "total": 1113,
+          "model": 682,
+          "context": 0,
+          "self": 431
+        }
+      },
+      "note": "dense model at ub=1024; confirms compute/host ubatch deltas are model-independent"
+    },
+    {
+      "id": "dense_ncpumoe_reject",
+      "platform": "ryne",
+      "backend": "cuda",
+      "output_shape": "cuda_host_growth",
+      "model": "Qwen3.8-27B-Brainwaves-WFH-MTP-i1-Q4_K_M.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "c": 200000,
+        "ctk": "q8_0",
+        "ctv": "q8_0",
+        "ctkd": "q4_0",
+        "ctvd": "q4_0",
+        "b": 2048,
+        "ub": 256,
+        "n_cpu_moe": 4
+      },
+      "n_cpu_moe": 4,
+      "ub": 256,
+      "synthesized": false,
+      "sampling": "survey",
+      "exit_code": 0,
+      "stdout_compact": "CUDA0 15088 6796 920 \nHost 682 0 108 \n",
+      "stderr_table": "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n0.00.119.989 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.00.796.186 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n0.00.796.190 I common_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32579 = 29682 + (22804 = 15088 +    6796 +     920) +      -19908 |\n0.00.796.191 I common_memory_breakdown_print: |   - Host               |                    790 =   682 +       0 +     108                |\n",
+      "parsed": {
+        "CUDA0 (RTX 5090)": {
+          "total": 32579,
+          "free": 29682,
+          "self": 22804,
+          "model": 15088,
+          "context": 6796,
+          "compute": 920,
+          "unaccounted": -19908
+        },
+        "Host": {
+          "total": 790,
+          "model": 682,
+          "context": 0,
+          "self": 108
+        }
+      },
+      "note": "binary silently ignores --n-cpu-moe on a dense model (no MoE layers to offload); exit=0, output identical to no-flag baseline. App-level validation must reject this combination itself -- the probe will not."
+    },
+    {
+      "id": "n999_overlimit",
+      "platform": "ryne",
+      "backend": "cuda",
+      "output_shape": "cuda_host_growth",
+      "model": "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "c": 200000,
+        "ctk": "q8_0",
+        "ctv": "q8_0",
+        "ctkd": "q4_0",
+        "ctvd": "q4_0",
+        "b": 2048,
+        "ub": 256,
+        "n_cpu_moe": 999
+      },
+      "n_cpu_moe": 999,
+      "ub": 256,
+      "synthesized": false,
+      "sampling": "edge_case",
+      "exit_code": 0,
+      "stdout_compact": "CUDA0 2038 2140 677 \nHost 19275 0 102 \n",
+      "stderr_table": "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\n0.00.124.128 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...\n0.02.175.497 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n0.02.175.502 I common_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32579 = 29849 + ( 4856 =  2038 +    2140 +     677) +       -2125 |\n0.02.175.502 I common_memory_breakdown_print: |   - Host               |                  19377 = 19275 +       0 +     102                |\n",
+      "parsed": {
+        "CUDA0 (RTX 5090)": {
+          "total": 32579,
+          "free": 29849,
+          "self": 4856,
+          "model": 2038,
+          "context": 2140,
+          "compute": 677,
+          "unaccounted": -2125
+        },
+        "Host": {
+          "total": 19377,
+          "model": 19275,
+          "context": 0,
+          "self": 102
+        }
+      },
+      "note": "binary silently clamps an out-of-range --n-cpu-moe to the model's max layer count; exit=0, no error. App-level validation must reject values above moe_layer_count itself -- the probe will not."
+    },
+    {
+      "id": "nneg5_negative",
+      "platform": "ryne",
+      "backend": "cuda",
+      "output_shape": "cli_usage_error",
+      "model": "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+      "flags": {
+        "fit": "off",
+        "fitp": "on",
+        "lm": "none",
+        "lv": 4,
+        "c": 200000,
+        "ctk": "q8_0",
+        "ctv": "q8_0",
+        "ctkd": "q4_0",
+        "ctvd": "q4_0",
+        "b": 2048,
+        "ub": 256,
+        "n_cpu_moe": -5
+      },
+      "n_cpu_moe": -5,
+      "ub": 256,
+      "synthesized": false,
+      "sampling": "edge_case",
+      "exit_code": 1,
+      "stdout_compact": "",
+      "stderr_table": "** WARNING: connection is not using a post-quantum key exchange algorithm.\n** This session may be vulnerable to \"store now, decrypt later\" attacks.\n** The server may need to be upgraded. See https://openssh.com/pq.html\nerror while handling argument \"--n-cpu-moe\": invalid value\n\nusage:\n-ncmoe, --n-cpu-moe N                   keep the Mixture of Experts (MoE) weights of the first N layers in the\n                                        CPU\n                                        (env: LLAMA_ARG_N_CPU_MOE)\n\n\nto show complete usage, run with -h\n",
+      "parsed": null,
+      "note": "THE PARSE-FAILURE SAMPLE. Binary rejects a negative --n-cpu-moe at CLI-parse time with a usage error before the memory-breakdown table is ever printed. This is the one case the probe itself rejects; Phase 4b's parser must treat exit!=0 / absent breakdown table as a hard failure, not attempt to parse a partial table."
+    }
+  ]
+}
