@@ -155,8 +155,22 @@ fn api_create_preset(
             presets::ensure_gguf_metadata(&mut preset);
 
             let mut presets = state.presets.lock().unwrap();
-            presets.push(preset.clone());
-            let _ = presets::save_presets(&state.presets_path, &presets);
+            let mut candidate = presets.clone();
+            candidate.push(preset.clone());
+            if let Err(error) = presets::save_presets(&state.presets_path, &candidate) {
+                return futures_util::future::ready(Ok::<
+                    Box<dyn warp::reply::Reply>,
+                    warp::Rejection,
+                >(Box::new(
+                    warp::reply::with_status(
+                        warp::reply::json(
+                            &serde_json::json!({"ok": false, "error": error.to_string()}),
+                        ),
+                        warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    ),
+                )));
+            }
+            *presets = candidate;
             futures_util::future::ready(Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(
                 Box::new(warp::reply::json(
                     &serde_json::json!({"ok": true, "preset": preset_for_api(preset)}),
@@ -221,9 +235,23 @@ fn api_update_preset(
                 presets::ensure_gguf_metadata(&mut updated);
 
                 let mut presets = state.presets.lock().unwrap();
-                if let Some(existing) = presets.iter_mut().find(|p| p.id == id) {
-                    *existing = updated.clone();
-                    let _ = presets::save_presets(&state.presets_path, &presets);
+                if let Some(idx) = presets.iter().position(|p| p.id == id) {
+                    let mut candidate = presets.clone();
+                    candidate[idx] = updated.clone();
+                    if let Err(error) = presets::save_presets(&state.presets_path, &candidate) {
+                        return futures_util::future::ready(Ok::<
+                            Box<dyn warp::reply::Reply>,
+                            warp::Rejection,
+                        >(Box::new(
+                            warp::reply::with_status(
+                                warp::reply::json(
+                                    &serde_json::json!({"ok": false, "error": error.to_string()}),
+                                ),
+                                warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            ),
+                        )));
+                    }
+                    *presets = candidate;
                     futures_util::future::ready(Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(
                         Box::new(warp::reply::json(
                             &serde_json::json!({"ok": true, "preset": preset_for_api(updated)}),
@@ -253,20 +281,33 @@ fn api_delete_preset(
                 return futures_util::future::ready(Ok(unauthorized_api_token()));
             }
             let mut presets = state.presets.lock().unwrap();
-            let before = presets.len();
-            presets.retain(|p| p.id != id);
-            if presets.len() < before {
-                let _ = presets::save_presets(&state.presets_path, &presets);
-                futures_util::future::ready(Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(
-                    Box::new(warp::reply::json(&serde_json::json!({"ok": true}))),
-                ))
-            } else {
-                futures_util::future::ready(Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(
+            let mut candidate = presets.clone();
+            let before = candidate.len();
+            candidate.retain(|p| p.id != id);
+            if candidate.len() == before {
+                return futures_util::future::ready(Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(
                     Box::new(warp::reply::json(
                         &serde_json::json!({"ok": false, "error": "preset not found"}),
                     )),
-                ))
+                ));
             }
+            if let Err(error) = presets::save_presets(&state.presets_path, &candidate) {
+                return futures_util::future::ready(Ok::<
+                    Box<dyn warp::reply::Reply>,
+                    warp::Rejection,
+                >(Box::new(
+                    warp::reply::with_status(
+                        warp::reply::json(
+                            &serde_json::json!({"ok": false, "error": error.to_string()}),
+                        ),
+                        warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    ),
+                )));
+            }
+            *presets = candidate;
+            futures_util::future::ready(Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(
+                Box::new(warp::reply::json(&serde_json::json!({"ok": true}))),
+            ))
         })
 }
 
@@ -283,9 +324,21 @@ fn api_reset_presets(
                 return futures_util::future::ready(Ok(unauthorized_api_token()));
             }
             let defaults = presets::default_presets();
+            if let Err(error) = presets::save_presets(&state.presets_path, &defaults) {
+                return futures_util::future::ready(Ok::<
+                    Box<dyn warp::reply::Reply>,
+                    warp::Rejection,
+                >(Box::new(
+                    warp::reply::with_status(
+                        warp::reply::json(
+                            &serde_json::json!({"ok": false, "error": error.to_string()}),
+                        ),
+                        warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    ),
+                )));
+            }
             let mut presets = state.presets.lock().unwrap();
             *presets = defaults;
-            let _ = presets::save_presets(&state.presets_path, &presets);
             futures_util::future::ready(Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(
                 Box::new(warp::reply::json(&serde_json::json!({"ok": true}))),
             ))
