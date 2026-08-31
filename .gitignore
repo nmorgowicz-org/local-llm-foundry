@@ -75,3 +75,4 @@ __pycache__/
 # machine-specific artifacts, and the evidence record cites them by path
 # knowing they will not survive a clean checkout.
 /tmp/
+.tokensave

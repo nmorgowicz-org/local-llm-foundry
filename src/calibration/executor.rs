@@ -1006,25 +1006,31 @@ async fn run_job(
         };
         let depths = vec![screen_workload.minimum_context.max(1)];
         let model_path_string = model_path.to_string_lossy().into_owned();
-        let bench = run_sweep_with_tokens_repetitions(
-            &bench_path,
-            &config.llama_server_cwd,
-            &model_path_string,
-            ngl,
-            flash_attn,
-            &ctk,
-            &ctv,
-            batch_size,
-            ubatch_size,
-            &depths,
-            candidate_preset.n_cpu_moe,
-            screen_workload.prompt_tokens,
-            screen_workload.generation_tokens,
-            QUICK_BENCH_REPETITIONS,
-        );
-        let result = tokio::select! {
-            result = bench => Some(result),
-            _ = runtime.cancel_notify.notified() => None,
+        let snapshot = calibration_capability_snapshot(&config).await;
+        let result = if let Some(error) = calibration_kv_policy_error(snapshot.as_ref(), &ctk, &ctv)
+        {
+            Some(Err(error))
+        } else {
+            let bench = run_sweep_with_tokens_repetitions(
+                &bench_path,
+                &config.llama_server_cwd,
+                &model_path_string,
+                ngl,
+                flash_attn,
+                &ctk,
+                &ctv,
+                batch_size,
+                ubatch_size,
+                &depths,
+                candidate_preset.n_cpu_moe,
+                screen_workload.prompt_tokens,
+                screen_workload.generation_tokens,
+                QUICK_BENCH_REPETITIONS,
+            );
+            tokio::select! {
+                result = bench => Some(result),
+                _ = runtime.cancel_notify.notified() => None,
+            }
         };
         if runtime.cancel.load(Ordering::Acquire) {
             let _ = finish_cancelled(&runtime);
@@ -1521,24 +1527,31 @@ pub async fn apply_with_validation(
         applied.ubatch_size
     };
     let depth = workload.minimum_context.clamp(1, 4096);
-    let measurement = match run_sweep_with_tokens_repetitions(
-        &bench_path,
-        &config.llama_server_cwd,
-        &model_path.to_string_lossy(),
-        ngl,
-        flash_attn,
-        &ctk,
-        &ctv,
-        batch_size,
-        ubatch_size,
-        &[depth],
-        applied.n_cpu_moe,
-        workload.prompt_tokens.min(512),
-        workload.generation_tokens.min(256),
-        QUICK_BENCH_REPETITIONS,
-    )
-    .await
+    let snapshot = calibration_capability_snapshot(config).await;
+    let sweep_result = if let Some(error) =
+        calibration_kv_policy_error(snapshot.as_ref(), &ctk, &ctv)
     {
+        Err(error)
+    } else {
+        run_sweep_with_tokens_repetitions(
+            &bench_path,
+            &config.llama_server_cwd,
+            &model_path.to_string_lossy(),
+            ngl,
+            flash_attn,
+            &ctk,
+            &ctv,
+            batch_size,
+            ubatch_size,
+            &[depth],
+            applied.n_cpu_moe,
+            workload.prompt_tokens.min(512),
+            workload.generation_tokens.min(256),
+            QUICK_BENCH_REPETITIONS,
+        )
+        .await
+    };
+    let measurement = match sweep_result {
         Ok(points) => measurement_from_points(points),
         Err(error) => CalibrationMeasurement {
             trial_id: result.candidate_id.clone(),
@@ -1707,6 +1720,27 @@ async fn run_preset_qualification(
     };
     server_config.parallel_slots = request.parallel_requests;
     server_config.benchmark_mode = true;
+    // Same launch gate as `construct_adapter`: binary-specific K/V policy must
+    // be enforced here too, since calibration builds its own adapter instead
+    // of going through the shared launch path.
+    let snapshot = ExecutableIdentity::from_path(&config.llama_server_path)
+        .ok()
+        .and_then(|identity| {
+            crate::inference::llama_cpp_capabilities::cached_snapshot(&identity)
+        });
+    if let Some(snap) = &snapshot
+        && let Some(issue) = presets::validation::validate_main_kv_policy(
+            &server_config.ctk,
+            &server_config.ctv,
+            snap,
+        )
+    {
+        bail!(
+            "llama.cpp calibration launch blocked: {} ({})",
+            issue.code,
+            issue.message
+        );
+    }
     let adapter = crate::inference::llama_cpp::LlamaCppAdapter::new(
         config.clone(),
         *server_config,
@@ -1812,25 +1846,32 @@ async fn run_candidate_measurement(
     };
     let depths = vec![workload.minimum_context.max(1)];
     let model_path_string = model_path.to_string_lossy().into_owned();
-    let bench = run_sweep_with_tokens_repetitions(
-        bench_path,
-        &config.llama_server_cwd,
-        &model_path_string,
-        ngl,
-        flash_attn,
-        &ctk,
-        &ctv,
-        batch_size,
-        ubatch_size,
-        &depths,
-        candidate_preset.n_cpu_moe,
-        workload.prompt_tokens,
-        workload.generation_tokens,
-        repetitions,
-    );
-    let result = tokio::select! {
-        result = bench => Some(result),
-        _ = runtime.cancel_notify.notified() => None,
+    let snapshot = calibration_capability_snapshot(config).await;
+    let result = if let Some(error) =
+        calibration_kv_policy_error(snapshot.as_ref(), &ctk, &ctv)
+    {
+        Some(Err(error))
+    } else {
+        let bench = run_sweep_with_tokens_repetitions(
+            bench_path,
+            &config.llama_server_cwd,
+            &model_path_string,
+            ngl,
+            flash_attn,
+            &ctk,
+            &ctv,
+            batch_size,
+            ubatch_size,
+            &depths,
+            candidate_preset.n_cpu_moe,
+            workload.prompt_tokens,
+            workload.generation_tokens,
+            repetitions,
+        );
+        tokio::select! {
+            result = bench => Some(result),
+            _ = runtime.cancel_notify.notified() => None,
+        }
     }?;
     if runtime.cancel.load(Ordering::Acquire) {
         return None;
@@ -2201,6 +2242,44 @@ fn calibration_flash_attn(preset: &ModelPreset) -> &'static str {
         "off" | "0" | "false" => "off",
         _ => "auto",
     }
+}
+
+/// Refresh and fetch the live capability snapshot for the configured
+/// llama-server binary, mirroring the launch gate in
+/// `inference::launch::construct_adapter`. Every calibration path that
+/// spawns llama-server for a bench sweep must consult this before launch so
+/// the K/V policy cannot fork across call sites.
+async fn calibration_capability_snapshot(
+    config: &AppConfig,
+) -> Option<crate::inference::llama_cpp_capabilities::CapabilitySnapshot> {
+    if !config.llama_server_path.is_file() {
+        return None;
+    }
+    let _ =
+        crate::inference::llama_cpp_capabilities::generate_snapshot(&config.llama_server_path)
+            .await;
+    ExecutableIdentity::from_path(&config.llama_server_path)
+        .ok()
+        .and_then(|identity| crate::inference::llama_cpp_capabilities::cached_snapshot(&identity))
+}
+
+/// Build the same "launch blocked" message `construct_adapter` returns when
+/// the live snapshot rejects this K/V pair. `None` means the launch may
+/// proceed. Returns `String` (not `anyhow::Error`) to match
+/// `run_sweep_with_tokens_repetitions`'s error type, so callers can route
+/// this through the same handling as a bench-sweep failure and apply-time
+/// rollback still triggers.
+fn calibration_kv_policy_error(
+    snapshot: Option<&crate::inference::llama_cpp_capabilities::CapabilitySnapshot>,
+    ctk: &str,
+    ctv: &str,
+) -> Option<String> {
+    let snap = snapshot?;
+    let issue = presets::validation::validate_main_kv_policy(ctk, ctv, snap)?;
+    Some(format!(
+        "llama.cpp calibration launch blocked: {} ({})",
+        issue.code, issue.message
+    ))
 }
 
 fn calibration_baseline(
