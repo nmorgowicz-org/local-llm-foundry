@@ -44,9 +44,8 @@ async fn llama_kv_capability_snapshot(
     if !config.llama_server_path.is_file() {
         return None;
     }
-    let _ =
-        crate::inference::llama_cpp_capabilities::generate_snapshot(&config.llama_server_path)
-            .await;
+    let _ = crate::inference::llama_cpp_capabilities::generate_snapshot(&config.llama_server_path)
+        .await;
     crate::inference::llama_cpp_capabilities::ExecutableIdentity::from_path(
         &config.llama_server_path,
     )

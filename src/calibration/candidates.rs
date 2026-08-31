@@ -491,6 +491,7 @@ mod tests {
             templates: TemplateCapabilities::default(),
             tools: ToolCapabilities::default(),
             speculation: SpeculationCapabilities::default(),
+            typed: Default::default(),
             mixed_main_kv: MixedMainKv::product_default_denied(),
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::ManualOverride,

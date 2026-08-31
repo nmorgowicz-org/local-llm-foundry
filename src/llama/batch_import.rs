@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::inference::llama_cpp::LoadMode;
+use crate::inference::llama_cpp::{LlamaReasoningEffort, LlamaReasoningFormat, LoadMode};
 use crate::presets::ModelPreset;
 
 /// Parsed result from an imported launch script.
@@ -303,6 +303,10 @@ fn build_preset_from_args(args: &[String]) -> ModelPreset {
     let mut fit_ctx: Option<u32> = None;
     let mut fit_target: Option<String> = None;
     let mut fit_print: Option<bool> = None;
+    let mut mmproj_offload: Option<bool> = None;
+    let mut llama_reasoning_effort = LlamaReasoningEffort::Default;
+    let mut llama_reasoning_format: Option<LlamaReasoningFormat> = None;
+    let mut llama_reasoning_preserve: Option<bool> = None;
     let mut prio: Option<i32> = None;
     let mut prio_batch: Option<i32> = None;
     let mut extra_args = String::new();
@@ -625,6 +629,54 @@ fn build_preset_from_args(args: &[String]) -> ModelPreset {
                     continue;
                 }
             }
+            "--mmproj-offload" => {
+                mmproj_offload = Some(true);
+                i += 1;
+                continue;
+            }
+            "--no-mmproj-offload" => {
+                mmproj_offload = Some(false);
+                i += 1;
+                continue;
+            }
+            "--reasoning-effort" => {
+                if i + 1 < args.len() {
+                    llama_reasoning_effort = match args[i + 1].as_str() {
+                        "default" => LlamaReasoningEffort::Default,
+                        "minimal" => LlamaReasoningEffort::Minimal,
+                        "low" => LlamaReasoningEffort::Low,
+                        "medium" => LlamaReasoningEffort::Medium,
+                        "high" => LlamaReasoningEffort::High,
+                        "xhigh" => LlamaReasoningEffort::Xhigh,
+                        "max" => LlamaReasoningEffort::Max,
+                        value => LlamaReasoningEffort::Unknown(value.to_string()),
+                    };
+                    i += 2;
+                    continue;
+                }
+            }
+            "--reasoning-format" => {
+                if i + 1 < args.len() {
+                    llama_reasoning_format = Some(match args[i + 1].as_str() {
+                        "none" => LlamaReasoningFormat::None,
+                        "deepseek" => LlamaReasoningFormat::Deepseek,
+                        "deepseek-legacy" => LlamaReasoningFormat::DeepseekLegacy,
+                        value => LlamaReasoningFormat::Unknown(value.to_string()),
+                    });
+                    i += 2;
+                    continue;
+                }
+            }
+            "--reasoning-preserve" => {
+                llama_reasoning_preserve = Some(true);
+                i += 1;
+                continue;
+            }
+            "--no-reasoning-preserve" => {
+                llama_reasoning_preserve = Some(false);
+                i += 1;
+                continue;
+            }
             "--prio" => {
                 if i + 1 < args.len() {
                     let _ = args[i + 1].parse::<i32>().map(|v| {
@@ -732,6 +784,7 @@ fn build_preset_from_args(args: &[String]) -> ModelPreset {
         id: crate::presets::next_id(),
         name,
         schema_version: None,
+        revision: 0,
         model_path,
         context_size,
         ctk: ctk.unwrap_or_default(),
@@ -813,6 +866,13 @@ fn build_preset_from_args(args: &[String]) -> ModelPreset {
         fit_ctx,
         fit_target,
         fit_print,
+        // Batch import produces flat legacy-shaped presets, not bundles.
+        // Only `bundle::create_bundle_preset` is allowed to set `bundle`.
+        bundle: None,
+        mmproj_offload,
+        llama_reasoning_effort,
+        llama_reasoning_format,
+        llama_reasoning_preserve,
         seed: None,
         system_prompt_file: String::new(),
         extra_args: extra_args.trim().to_string(),
@@ -965,6 +1025,44 @@ llama-server -m model.gguf -c 4096
         // importer hardcode a choice for the user.
         assert!(result.preset.ctk.trim().is_empty());
         assert!(result.preset.ctv.trim().is_empty());
+    }
+
+    #[test]
+    fn test_parse_phase2_typed_llama_flags() {
+        let script = r#"
+llama-server -m model.gguf --mmproj-offload --reasoning-effort xhigh --reasoning-format deepseek-legacy --reasoning-preserve
+"#;
+        let result = parse_launch_script(script, "linux").unwrap();
+        assert_eq!(result.preset.mmproj_offload, Some(true));
+        assert_eq!(
+            result.preset.llama_reasoning_effort,
+            LlamaReasoningEffort::Xhigh
+        );
+        assert_eq!(
+            result.preset.llama_reasoning_format,
+            Some(LlamaReasoningFormat::DeepseekLegacy)
+        );
+        assert_eq!(result.preset.llama_reasoning_preserve, Some(true));
+        assert!(result.preset.extra_args.trim().is_empty());
+    }
+
+    #[test]
+    fn test_parse_phase2_negative_and_unknown_typed_flags() {
+        let script = r#"
+llama-server -m model.gguf --no-mmproj-offload --reasoning-effort future --reasoning-format future-format --no-reasoning-preserve
+"#;
+        let result = parse_launch_script(script, "linux").unwrap();
+        assert_eq!(result.preset.mmproj_offload, Some(false));
+        assert!(matches!(
+            result.preset.llama_reasoning_effort,
+            LlamaReasoningEffort::Unknown(value) if value == "future"
+        ));
+        assert!(matches!(
+            result.preset.llama_reasoning_format,
+            Some(LlamaReasoningFormat::Unknown(value)) if value == "future-format"
+        ));
+        assert_eq!(result.preset.llama_reasoning_preserve, Some(false));
+        assert!(result.preset.extra_args.trim().is_empty());
     }
 
     #[test]

@@ -64,9 +64,8 @@ async fn doctor_capability_snapshot(
     if !config.llama_server_path.is_file() {
         return None;
     }
-    let _ =
-        crate::inference::llama_cpp_capabilities::generate_snapshot(&config.llama_server_path)
-            .await;
+    let _ = crate::inference::llama_cpp_capabilities::generate_snapshot(&config.llama_server_path)
+        .await;
     crate::inference::llama_cpp_capabilities::ExecutableIdentity::from_path(
         &config.llama_server_path,
     )
@@ -331,6 +330,7 @@ mod tests {
             templates: Default::default(),
             tools: Default::default(),
             speculation: Default::default(),
+            typed: Default::default(),
             mixed_main_kv: if mixed_main_kv_supported {
                 MixedMainKv {
                     supported: true,
@@ -355,12 +355,10 @@ mod tests {
         };
         let snapshot = llama_capability_snapshot(false);
         let findings = llama_config_findings(&config, Some(&snapshot));
-        assert!(
-            findings
-                .iter()
-                .any(|finding| finding.finding_type == DoctorFindingType::LlamaCpp
-                    && finding.severity == DoctorSeverity::Issue)
-        );
+        assert!(findings.iter().any(
+            |finding| finding.finding_type == DoctorFindingType::LlamaCpp
+                && finding.severity == DoctorSeverity::Issue
+        ));
     }
 
     #[test]

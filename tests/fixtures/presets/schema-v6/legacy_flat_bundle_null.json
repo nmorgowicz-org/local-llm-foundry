@@ -1,0 +1,15 @@
+{
+  "id": "v6-legacy-flat",
+  "name": "Legacy flat preset",
+  "schema_version": 6,
+  "revision": 1,
+  "backend": "llama_cpp",
+  "model_path": "/models/legacy.gguf",
+  "context_size": 4096,
+  "ctk": "f16",
+  "ctv": "f16",
+  "batch_size": 0,
+  "ubatch_size": 0,
+  "fit_enabled": null,
+  "bundle": null
+}

@@ -10,6 +10,7 @@ use crate::config::AppConfig;
 use crate::gpu::env::{GpuEnv, build_nvidia_env, build_rocm_env};
 use crate::inference::InferenceBackend;
 use crate::inference::capabilities::CapabilitySet;
+use crate::inference::llama_cpp_capabilities::{CapabilitySnapshot, FeatureState};
 use crate::inference::metrics::{HealthState, InferenceMetricsSnapshot};
 use crate::inference::supervisor::SupervisedLaunch;
 use crate::llama::metrics::{parse_prometheus_metrics, parse_slot_metrics};
@@ -143,6 +144,161 @@ impl LoadMode {
             Self::None => Self::Mlock,
             other => other,
         }
+    }
+}
+
+/// Typed llama.cpp reasoning-effort value (Phase 2).
+///
+/// Separate from Rapid-MLX `reasoning_effort` (request-default field with
+/// different runtime meaning). The `Default` variant is the runtime/template
+/// default and emits **no** `--reasoning-effort` argument; only an explicit
+/// non-default level is emitted. `Unknown(s)` preserves an unrecognized future
+/// level verbatim (round-trips unchanged through save/edit/save) and remains
+/// non-launchable. Bounded open-string serde per architecture §9/§10.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum LlamaReasoningEffort {
+    #[default]
+    Default,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+    /// Unknown future effort level — preserved verbatim, non-launchable.
+    Unknown(String),
+}
+
+impl LlamaReasoningEffort {
+    /// The exact `--reasoning-effort` flag value to emit, or `None` for the
+    /// runtime/template default (and for `Unknown`, which is non-launchable).
+    pub fn as_flag_value(&self) -> Option<&str> {
+        match self {
+            Self::Default => None,
+            Self::Minimal => Some("minimal"),
+            Self::Low => Some("low"),
+            Self::Medium => Some("medium"),
+            Self::High => Some("high"),
+            Self::Xhigh => Some("xhigh"),
+            Self::Max => Some("max"),
+            Self::Unknown(_) => None,
+        }
+    }
+
+    /// Parse a wire/stored string into the enum, preserving unknown values.
+    fn from_wire(s: &str) -> Self {
+        match s {
+            "default" => Self::Default,
+            "minimal" => Self::Minimal,
+            "low" => Self::Low,
+            "medium" => Self::Medium,
+            "high" => Self::High,
+            "xhigh" => Self::Xhigh,
+            "max" => Self::Max,
+            _ => Self::Unknown(s.to_string()),
+        }
+    }
+
+    /// The exact wire string (known variant name, or the preserved raw value).
+    fn to_wire(&self) -> &str {
+        match self {
+            Self::Default => "default",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+            Self::Unknown(s) => s,
+        }
+    }
+}
+
+impl serde::Serialize for LlamaReasoningEffort {
+    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        s.serialize_str(self.to_wire())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for LlamaReasoningEffort {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(d)?;
+        Ok(Self::from_wire(&s))
+    }
+}
+
+/// Typed llama.cpp reasoning-format value (Phase 2).
+///
+/// `None` (the outer Option on the field) means runtime default/auto — no
+/// argument is emitted. Explicit known variants come from exact runtime
+/// capability evidence; observed explicit values are `none`, `deepseek`,
+/// `deepseek-legacy`. `Unknown(s)` preserves unrecognized future values
+/// verbatim but remains non-launchable.
+///
+/// Architecture §9: never emit `--reasoning-format auto` unless a future
+/// exact binary advertises `auto` as an accepted explicit value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LlamaReasoningFormat {
+    None,
+    Deepseek,
+    DeepseekLegacy,
+    /// Unknown future format — preserved, non-launchable.
+    Unknown(String),
+}
+
+impl LlamaReasoningFormat {
+    /// The exact `--reasoning-format` flag value to emit for an explicit format
+    /// variant. Returns `None` for `Unknown` (non-launchable).
+    pub fn as_flag_value(&self) -> Option<&str> {
+        match self {
+            Self::None => Some("none"),
+            Self::Deepseek => Some("deepseek"),
+            Self::DeepseekLegacy => Some("deepseek-legacy"),
+            Self::Unknown(_) => None,
+        }
+    }
+
+    fn from_wire(s: &str) -> Self {
+        match s {
+            "none" => Self::None,
+            "deepseek" => Self::Deepseek,
+            "deepseek-legacy" => Self::DeepseekLegacy,
+            _ => Self::Unknown(s.to_string()),
+        }
+    }
+
+    fn to_wire(&self) -> &str {
+        match self {
+            Self::None => "none",
+            Self::Deepseek => "deepseek",
+            Self::DeepseekLegacy => "deepseek-legacy",
+            Self::Unknown(s) => s,
+        }
+    }
+}
+
+impl serde::Serialize for LlamaReasoningFormat {
+    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        s.serialize_str(self.to_wire())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for LlamaReasoningFormat {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(d)?;
+        Ok(Self::from_wire(&s))
     }
 }
 
@@ -314,6 +470,36 @@ pub struct ServerConfig {
     pub image_min_tokens: Option<u32>,
     #[serde(default)]
     pub image_max_tokens: Option<u32>,
+    /// Phase 2: multimodal-projector GPU offload (architecture §9).
+    /// `None` = exact runtime default (no arg); `Some(true)` = emit the
+    /// positive flag when supported; `Some(false)` = emit `--no-mmproj-offload`
+    /// when supported. Emission is capability-gated.
+    #[serde(default)]
+    pub mmproj_offload: Option<bool>,
+    /// Phase 2: typed llama.cpp reasoning-effort level (architecture §9).
+    /// Distinct from Rapid-MLX `reasoning_effort`. `Default`/`Unknown` emit no
+    /// argument; explicit levels emit `--reasoning-effort <level>` when
+    /// supported.
+    #[serde(default)]
+    pub llama_reasoning_effort: LlamaReasoningEffort,
+    /// Phase 2: typed llama.cpp reasoning format (architecture §9).
+    /// `None` = runtime default/auto (no arg); explicit values emit
+    /// `--reasoning-format <value>` when supported. Never emits `auto`.
+    #[serde(default)]
+    pub llama_reasoning_format: Option<LlamaReasoningFormat>,
+    /// Phase 2: preserve the reasoning trace across the full history
+    /// (architecture §9). Valueless flag — `Some(true)` emits
+    /// `--reasoning-preserve`, `Some(false)` emits nothing (unless the snapshot
+    /// advertises `--no-reasoning-preserve`, in which case it emits that),
+    /// `None` emits nothing. Requires binary support plus a compatible
+    /// reasoning mode. Distinct from `preserve_thinking`.
+    #[serde(default)]
+    pub llama_reasoning_preserve: Option<bool>,
+    /// Internal launch envelope for Phase 2 runtime validation. It is not
+    /// serialized into API/session payloads; persisted presets remain the
+    /// source of truth for bundle data.
+    #[serde(skip)]
+    pub bundle: Option<crate::presets::bundle::PresetBundleSpec>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -344,6 +530,7 @@ pub struct LlamaCppAdapter {
     pub app_config: AppConfig,
     pub config: ServerConfig,
     gpu_env: GpuEnv,
+    capabilities: Option<CapabilitySnapshot>,
     previous_counters: Mutex<Option<CounterSnapshot>>,
     previous_counter_session: Mutex<Option<String>>,
 }
@@ -351,10 +538,20 @@ pub struct LlamaCppAdapter {
 #[allow(dead_code)]
 impl LlamaCppAdapter {
     pub fn new(app_config: AppConfig, config: ServerConfig, gpu_env: GpuEnv) -> Self {
+        Self::new_with_capabilities(app_config, config, gpu_env, None)
+    }
+
+    pub fn new_with_capabilities(
+        app_config: AppConfig,
+        config: ServerConfig,
+        gpu_env: GpuEnv,
+        capabilities: Option<CapabilitySnapshot>,
+    ) -> Self {
         Self {
             app_config,
             config,
             gpu_env,
+            capabilities,
             previous_counters: Mutex::new(None),
             previous_counter_session: Mutex::new(None),
         }
@@ -432,6 +629,7 @@ impl LlamaCppAdapter {
     }
 
     pub async fn build_launch(&self) -> Result<SupervisedLaunch> {
+        self.validate_typed_capabilities()?;
         let mut cmd = TokioCommand::new(&self.app_config.llama_server_path);
         crate::platform::no_window_tokio(&mut cmd);
         cmd.current_dir(&self.app_config.llama_server_cwd);
@@ -737,6 +935,35 @@ impl LlamaCppAdapter {
             cmd.arg("--reasoning-budget-message").arg(msg);
         }
 
+        if let Some(value) = self.config.mmproj_offload {
+            cmd.arg(if value {
+                "--mmproj-offload"
+            } else {
+                "--no-mmproj-offload"
+            });
+        }
+        if let Some(value) = self.config.llama_reasoning_effort.as_flag_value() {
+            cmd.arg("--reasoning-effort").arg(value);
+        }
+        if let Some(value) = self
+            .config
+            .llama_reasoning_format
+            .as_ref()
+            .and_then(LlamaReasoningFormat::as_flag_value)
+        {
+            cmd.arg("--reasoning-format").arg(value);
+        }
+        if self.config.llama_reasoning_preserve == Some(true) {
+            cmd.arg("--reasoning-preserve");
+        } else if self.config.llama_reasoning_preserve == Some(false)
+            && self
+                .capabilities
+                .as_ref()
+                .is_some_and(|caps| caps.supports_flag("--no-reasoning-preserve"))
+        {
+            cmd.arg("--no-reasoning-preserve");
+        }
+
         cmd.arg("--metrics");
 
         if let Some(ref mp) = self.config.mmproj
@@ -807,6 +1034,90 @@ impl LlamaCppAdapter {
                 }
             ),
         })
+    }
+
+    fn validate_typed_capabilities(&self) -> Result<()> {
+        let has_typed_value = self.config.mmproj_offload.is_some()
+            || !matches!(
+                &self.config.llama_reasoning_effort,
+                LlamaReasoningEffort::Default
+            )
+            || self.config.llama_reasoning_format.is_some()
+            || self.config.llama_reasoning_preserve.is_some();
+        if !has_typed_value {
+            return Ok(());
+        }
+
+        let caps = self.capabilities.as_ref().ok_or_else(|| {
+            anyhow!(
+                "typed llama.cpp launch settings require a capability snapshot for the exact binary"
+            )
+        })?;
+
+        if let Some(value) = self.config.mmproj_offload {
+            let flag = if value {
+                "--mmproj-offload"
+            } else {
+                "--no-mmproj-offload"
+            };
+            if !caps.supports_flag(flag) {
+                anyhow::bail!("typed llama.cpp setting is unsupported: {flag}");
+            }
+        }
+
+        match &self.config.llama_reasoning_effort {
+            LlamaReasoningEffort::Default => {}
+            LlamaReasoningEffort::Unknown(value) => anyhow::bail!(
+                "unknown llama.cpp reasoning effort '{value}' is preserved but not launchable"
+            ),
+            value => {
+                let flag_value = value
+                    .as_flag_value()
+                    .expect("known effort has a flag value");
+                if !caps.supports_reasoning_effort(flag_value) {
+                    anyhow::bail!(
+                        "llama.cpp reasoning effort '{flag_value}' is unavailable in the exact binary"
+                    );
+                }
+            }
+        }
+
+        if let Some(format) = &self.config.llama_reasoning_format {
+            let value = format.as_flag_value().ok_or_else(|| {
+                anyhow!("unknown llama.cpp reasoning format is preserved but not launchable")
+            })?;
+            if !caps.supports_reasoning_format(value) {
+                anyhow::bail!(
+                    "llama.cpp reasoning format '{value}' is unavailable in the exact binary"
+                );
+            }
+        }
+
+        if let Some(preserve) = self.config.llama_reasoning_preserve {
+            let flag = if preserve {
+                "--reasoning-preserve"
+            } else {
+                "--no-reasoning-preserve"
+            };
+            if !caps.supports_flag(flag) {
+                anyhow::bail!("typed llama.cpp setting is unsupported: {flag}");
+            }
+            if preserve && self.config.reasoning.as_deref().is_none_or(str::is_empty) {
+                anyhow::bail!(
+                    "native reasoning preservation requires an explicit compatible reasoning mode"
+                );
+            }
+            if preserve {
+                match caps.reasoning_preserve_template_compatibility() {
+                    FeatureState::Available => {}
+                    FeatureState::Unavailable(reason) => {
+                        anyhow::bail!("native reasoning preservation is blocked: {reason}")
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn append_kv_cache_args(&self, cmd: &mut TokioCommand) {
@@ -1150,6 +1461,66 @@ mod tests {
             .collect()
     }
 
+    fn typed_capabilities(flags: &[&str]) -> CapabilitySnapshot {
+        let mut capabilities = CapabilitySnapshot {
+            executable_identity: crate::inference::llama_cpp_capabilities::ExecutableIdentity {
+                path: "/tmp/llama-server".into(),
+                file_hash: "phase2-test".into(),
+                file_mtime_unix: 0,
+            },
+            version_text: "test".into(),
+            help_hash: "test-help".into(),
+            serve_flags: flags.iter().map(|flag| (*flag).to_string()).collect(),
+            cache: Default::default(),
+            context: Default::default(),
+            concurrency: Default::default(),
+            endpoints: Default::default(),
+            streaming: Default::default(),
+            templates: Default::default(),
+            tools: Default::default(),
+            speculation: Default::default(),
+            typed: Default::default(),
+            mixed_main_kv:
+                crate::inference::llama_cpp_capabilities::MixedMainKv::product_default_denied(),
+            evidence_timestamp: 0,
+            source:
+                crate::inference::llama_cpp_capabilities::CapabilitySnapshotSource::ManualOverride,
+        };
+        capabilities.typed.reasoning_preserve_template = FeatureState::Unavailable(
+            "template compatibility for native reasoning preservation is not verified".into(),
+        );
+        capabilities
+    }
+
+    async fn launch_args_with_capabilities(
+        config: ServerConfig,
+        capabilities: CapabilitySnapshot,
+    ) -> anyhow::Result<Vec<String>> {
+        let config_dir = tempfile::tempdir().unwrap();
+        let args = crate::cli::AppArgs::parse_from([
+            "llama-monitor",
+            "--config-dir",
+            config_dir.path().to_str().unwrap(),
+            "--llama-server-path",
+            "llama-server",
+            "--gpu-backend",
+            "none",
+        ]);
+        let adapter = LlamaCppAdapter::new_with_capabilities(
+            AppConfig::from_args(args),
+            config,
+            GpuEnv::default(),
+            Some(capabilities),
+        );
+        Ok(adapter
+            .build_launch()
+            .await?
+            .args
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect())
+    }
+
     #[test]
     fn readiness_uses_loopback_for_wildcard_bind_hosts() {
         assert_eq!(readiness_host(None), "127.0.0.1");
@@ -1310,6 +1681,166 @@ mod tests {
 
         assert!(!args.iter().any(|a| a == "-ctk"));
         assert!(!args.iter().any(|a| a == "-ctv"));
+    }
+
+    #[tokio::test]
+    async fn phase2_typed_reasoning_and_mmproj_flags_emit_exact_argv() {
+        let capabilities = typed_capabilities(&[
+            "--mmproj-offload",
+            "--no-mmproj-offload",
+            "--reasoning-effort",
+            "--reasoning-format",
+            "--reasoning-preserve",
+            "--no-reasoning-preserve",
+        ]);
+        let args = launch_args_with_capabilities(
+            ServerConfig {
+                model_path: "/models/test.gguf".into(),
+                port: 8080,
+                mmproj_offload: Some(true),
+                llama_reasoning_effort: LlamaReasoningEffort::High,
+                llama_reasoning_format: Some(LlamaReasoningFormat::None),
+                llama_reasoning_preserve: Some(false),
+                ..Default::default()
+            },
+            capabilities,
+        )
+        .await
+        .unwrap();
+        assert!(args.iter().any(|arg| arg == "--mmproj-offload"));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--reasoning-effort", "high"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--reasoning-format", "none"])
+        );
+        assert!(args.iter().any(|arg| arg == "--no-reasoning-preserve"));
+        assert!(!args.iter().any(|arg| arg == "auto"));
+        assert!(!args.iter().any(|arg| arg == "true"));
+        assert!(!args.iter().any(|arg| arg == "false"));
+    }
+
+    #[tokio::test]
+    async fn phase2_typed_values_fail_closed_without_capability_evidence() {
+        let adapter = LlamaCppAdapter::new(
+            AppConfig::from_args(crate::cli::AppArgs::parse_from([
+                "llama-monitor",
+                "--config-dir",
+                tempfile::tempdir().unwrap().path().to_str().unwrap(),
+                "--llama-server-path",
+                "llama-server",
+                "--gpu-backend",
+                "none",
+            ])),
+            ServerConfig {
+                model_path: "/models/test.gguf".into(),
+                port: 8080,
+                llama_reasoning_effort: LlamaReasoningEffort::Low,
+                ..Default::default()
+            },
+            GpuEnv::default(),
+        );
+        let error = adapter.build_launch().await.unwrap_err().to_string();
+        assert!(error.contains("capability snapshot"));
+    }
+
+    #[tokio::test]
+    async fn phase2_reasoning_preserve_requires_qualified_template_support() {
+        let capabilities = typed_capabilities(&["--reasoning-preserve"]);
+        let error = launch_args_with_capabilities(
+            ServerConfig {
+                model_path: "/models/test.gguf".into(),
+                port: 8080,
+                reasoning: Some("on".into()),
+                llama_reasoning_preserve: Some(true),
+                ..Default::default()
+            },
+            capabilities,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("template compatibility"), "{error}");
+    }
+
+    #[test]
+    fn phase2_reasoning_effort_values_round_trip_through_serde() {
+        for wire in [
+            "default", "minimal", "low", "medium", "high", "xhigh", "max",
+        ] {
+            let encoded = format!("\"{wire}\"");
+            let value: LlamaReasoningEffort = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(serde_json::to_string(&value).unwrap(), encoded);
+        }
+    }
+
+    #[test]
+    fn phase2_unknown_reasoning_values_round_trip_but_remain_unknown() {
+        let effort: LlamaReasoningEffort = serde_json::from_str("\"future\"").unwrap();
+        let format: LlamaReasoningFormat = serde_json::from_str("\"future-format\"").unwrap();
+        assert!(matches!(&effort, LlamaReasoningEffort::Unknown(value) if value == "future"));
+        assert!(
+            matches!(&format, LlamaReasoningFormat::Unknown(value) if value == "future-format")
+        );
+        assert_eq!(serde_json::to_string(&effort).unwrap(), "\"future\"");
+        assert_eq!(serde_json::to_string(&format).unwrap(), "\"future-format\"");
+    }
+
+    #[tokio::test]
+    async fn phase2_mmproj_none_and_false_have_distinct_argv_behavior() {
+        let absent = launch_args(ServerConfig {
+            model_path: "/models/test.gguf".into(),
+            ..Default::default()
+        })
+        .await;
+        assert!(!absent.iter().any(|arg| arg == "--mmproj-offload"));
+        assert!(!absent.iter().any(|arg| arg == "--no-mmproj-offload"));
+
+        let disabled = launch_args_with_capabilities(
+            ServerConfig {
+                model_path: "/models/test.gguf".into(),
+                mmproj_offload: Some(false),
+                ..Default::default()
+            },
+            typed_capabilities(&["--no-mmproj-offload"]),
+        )
+        .await
+        .unwrap();
+        assert!(disabled.iter().any(|arg| arg == "--no-mmproj-offload"));
+        assert!(!disabled.iter().any(|arg| arg == "--mmproj-offload"));
+    }
+
+    #[tokio::test]
+    async fn phase2_outer_none_reasoning_format_emits_no_auto_argument() {
+        let args = launch_args(ServerConfig {
+            model_path: "/models/test.gguf".into(),
+            llama_reasoning_format: None,
+            ..Default::default()
+        })
+        .await;
+        assert!(!args.iter().any(|arg| arg == "--reasoning-format"));
+        assert!(!args.iter().any(|arg| arg == "auto"));
+    }
+
+    #[tokio::test]
+    async fn phase2_unknown_reasoning_format_fails_closed_at_launch() {
+        let error = launch_args_with_capabilities(
+            ServerConfig {
+                model_path: "/models/test.gguf".into(),
+                llama_reasoning_format: Some(LlamaReasoningFormat::Unknown("future".into())),
+                ..Default::default()
+            },
+            typed_capabilities(&["--reasoning-format"]),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("unknown llama.cpp reasoning format"),
+            "{error}"
+        );
     }
 
     #[tokio::test]

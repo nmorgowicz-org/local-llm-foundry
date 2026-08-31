@@ -1,0 +1,13 @@
+{
+  "mmproj_offload": {"absent": null, "enabled": true, "disabled": false},
+  "llama_reasoning_effort": ["default", "minimal", "low", "medium", "high", "xhigh", "max"],
+  "llama_reasoning_format": [null, "none", "deepseek", "deepseek-legacy"],
+  "llama_reasoning_preserve": {"absent": null, "disabled": false, "enabled": true},
+  "argv_rules": {
+    "default_effort": [],
+    "default_format": [],
+    "preserve_enabled": ["--reasoning-preserve"],
+    "preserve_disabled": ["--no-reasoning-preserve"],
+    "never": ["--reasoning-format", "auto"]
+  }
+}

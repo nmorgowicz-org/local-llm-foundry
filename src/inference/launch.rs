@@ -112,6 +112,12 @@ pub fn request_from_api_payload(payload: &serde_json::Value) -> Result<LocalLaun
 }
 
 pub fn validate_preset_backend_config(preset: &ModelPreset) -> Result<()> {
+    if preset.bundle.is_some() && preset.backend != InferenceBackend::LlamaCpp {
+        anyhow::bail!(
+            "preset '{}' contains a llama.cpp bundle but is not a llama.cpp preset",
+            preset.name
+        );
+    }
     match preset.backend {
         InferenceBackend::LlamaCpp if preset.rapid_mlx.is_some() => anyhow::bail!(
             "llama_cpp preset '{}' must not include rapid_mlx configuration",
@@ -168,6 +174,14 @@ pub fn validate_preset_backend_config(preset: &ModelPreset) -> Result<()> {
                     codes.join("; ")
                 );
             }
+            let bundle_issues = crate::presets::bundle::validate_bundle_structural(preset);
+            if !bundle_issues.is_empty() {
+                anyhow::bail!(
+                    "llama.cpp preset '{}' failed bundle validation: {}",
+                    preset.name,
+                    bundle_issues.join("; ")
+                );
+            }
             Ok(())
         }
     }
@@ -177,7 +191,14 @@ pub fn request_from_preset(
     preset: &ModelPreset,
     port_override: Option<u16>,
 ) -> Result<LocalLaunchRequest> {
-    validate_preset_backend_config(preset)?;
+    // Bundle defaults are an explicit compatibility projection. Keep the
+    // persisted bundle authoritative while giving the existing launcher the
+    // ordinary flat request it already understands.
+    let mut preset = preset.clone();
+    if preset.bundle.is_some() {
+        crate::presets::bundle::materialize_default_projection(&mut preset);
+    }
+    validate_preset_backend_config(&preset)?;
     match preset.backend {
         InferenceBackend::RapidMlx => {
             let mut config = preset.rapid_mlx.clone().ok_or_else(|| {
@@ -301,6 +322,11 @@ pub fn request_from_preset(
             reasoning: preset.reasoning.clone(),
             reasoning_budget: preset.reasoning_budget,
             reasoning_budget_message: preset.reasoning_budget_message.clone(),
+            mmproj_offload: preset.mmproj_offload,
+            llama_reasoning_effort: preset.llama_reasoning_effort.clone(),
+            llama_reasoning_format: preset.llama_reasoning_format.clone(),
+            llama_reasoning_preserve: preset.llama_reasoning_preserve,
+            bundle: preset.bundle.clone(),
             image_min_tokens: preset.image_min_tokens,
             image_max_tokens: preset.image_max_tokens,
             ..Default::default()
@@ -407,12 +433,50 @@ pub async fn construct_adapter(
                     issue.message
                 );
             }
+            if (config.ctk.eq_ignore_ascii_case("q8_0") && config.ctv.eq_ignore_ascii_case("q4_0"))
+                && snapshot.is_none()
+            {
+                anyhow::bail!(
+                    "llama.cpp launch blocked: capability probe unavailable for mixed main K/V"
+                );
+            }
             let gpu_env = state.gpu_env.lock().unwrap().clone();
-            Ok(BackendAdapter::LlamaCpp(Arc::new(LlamaCppAdapter::new(
-                app_config.clone(),
-                config.as_ref().clone(),
-                gpu_env,
-            ))))
+            if let Some(bundle) = &config.bundle {
+                match &snapshot {
+                    Some(snapshot) => {
+                        let issues = crate::presets::resolver::validate_runtime_selection(
+                            bundle,
+                            &bundle.default_selection,
+                            snapshot,
+                            cfg!(target_os = "macos"),
+                        );
+                        if !issues.is_empty() {
+                            anyhow::bail!(
+                                "llama.cpp bundle launch blocked by runtime validation: {}",
+                                issues.join("; ")
+                            );
+                        }
+                    }
+                    None if bundle
+                        .default_selection
+                        .n_cpu_moe
+                        .is_some_and(|value| value > 0) =>
+                    {
+                        anyhow::bail!(
+                            "llama.cpp bundle launch blocked: capability probe unavailable for n_cpu_moe validation"
+                        );
+                    }
+                    None => {}
+                }
+            }
+            Ok(BackendAdapter::LlamaCpp(Arc::new(
+                LlamaCppAdapter::new_with_capabilities(
+                    app_config.clone(),
+                    config.as_ref().clone(),
+                    gpu_env,
+                    snapshot,
+                ),
+            )))
         }
         LocalLaunchRequest::RapidMlx(config) => {
             crate::inference::rapid_mlx::ensure_local_platform_supported()?;

@@ -1,0 +1,90 @@
+{
+  "id": "v6-q4-q5",
+  "name": "Q4/Q5 exact tune",
+  "schema_version": 6,
+  "revision": 1,
+  "backend": "llama_cpp",
+  "fit_enabled": false,
+  "bundle": {
+    "identity": {
+      "bundle_id": "bundle_q4q5",
+      "tune_id": "tune_q4q5_20260831",
+      "display_name": "Q4/Q5 exact tune"
+    },
+    "artifacts": [
+      {
+        "id": "weights-q4",
+        "role": "weights",
+        "display_name": "Model Q4_K_M",
+        "local_path": "/models/model-q4.gguf",
+        "hf_origin": {
+          "repo_id": "org/model",
+          "remote_path": "model-q4.gguf",
+          "revision": "0123456789abcdef",
+          "evidence": "download_provenance",
+          "confidence": 1.0,
+          "reason": "download sidecar",
+          "user_confirmed": true
+        },
+        "size_bytes": 123456789,
+        "digest": {
+          "algorithm": "sha256",
+          "value": "header-digest",
+          "coverage": "bounded_gguf_header",
+          "provenance": "fixture"
+        },
+        "quantization": {
+          "value": "q4_k_m",
+          "provenance": "gguf_metadata"
+        },
+        "metadata": {
+          "gguf_architecture": "qwen3",
+          "model_kind": "moe",
+          "block_count": 40,
+          "moe_layer_count": 16,
+          "native_context_limit": 262144,
+          "metadata_digest": "metadata-digest"
+        },
+        "mmproj_artifact_id": "projector",
+        "draft_artifact_id": "draft"
+      },
+      {
+        "id": "projector",
+        "role": "mmproj",
+        "display_name": "Vision projector",
+        "local_path": "/models/mmproj.gguf"
+      },
+      {
+        "id": "draft",
+        "role": "draft",
+        "display_name": "Draft model",
+        "local_path": "/models/draft.gguf"
+      }
+    ],
+    "context_options": [160000, 200000, 262144],
+    "kv_policy_options": ["f16_f16", "q8_0_q8_0", "q4_0_q4_0"],
+    "performance_options": [
+      {"id": "balanced", "label": "2048 / 256", "batch_size": 2048, "ubatch_size": 256},
+      {"id": "full", "label": "4096 / 4096", "batch_size": 4096, "ubatch_size": 4096}
+    ],
+    "cpu_moe_options": [0, 6, 16],
+    "curated_selections": [
+      {
+        "artifact_id": "weights-q4",
+        "context_size": 200000,
+        "kv_policy": "q4_0_q4_0",
+        "performance_id": "balanced",
+        "n_cpu_moe": 0
+      }
+    ],
+    "allow_validated_custom": true,
+    "workload_policy": "general_chat",
+    "default_selection": {
+      "artifact_id": "weights-q4",
+      "context_size": 200000,
+      "kv_policy": "q4_0_q4_0",
+      "performance_id": "balanced",
+      "n_cpu_moe": 0
+    }
+  }
+}

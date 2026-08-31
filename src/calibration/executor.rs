@@ -1528,29 +1528,28 @@ pub async fn apply_with_validation(
     };
     let depth = workload.minimum_context.clamp(1, 4096);
     let snapshot = calibration_capability_snapshot(config).await;
-    let sweep_result = if let Some(error) =
-        calibration_kv_policy_error(snapshot.as_ref(), &ctk, &ctv)
-    {
-        Err(error)
-    } else {
-        run_sweep_with_tokens_repetitions(
-            &bench_path,
-            &config.llama_server_cwd,
-            &model_path.to_string_lossy(),
-            ngl,
-            flash_attn,
-            &ctk,
-            &ctv,
-            batch_size,
-            ubatch_size,
-            &[depth],
-            applied.n_cpu_moe,
-            workload.prompt_tokens.min(512),
-            workload.generation_tokens.min(256),
-            QUICK_BENCH_REPETITIONS,
-        )
-        .await
-    };
+    let sweep_result =
+        if let Some(error) = calibration_kv_policy_error(snapshot.as_ref(), &ctk, &ctv) {
+            Err(error)
+        } else {
+            run_sweep_with_tokens_repetitions(
+                &bench_path,
+                &config.llama_server_cwd,
+                &model_path.to_string_lossy(),
+                ngl,
+                flash_attn,
+                &ctk,
+                &ctv,
+                batch_size,
+                ubatch_size,
+                &[depth],
+                applied.n_cpu_moe,
+                workload.prompt_tokens.min(512),
+                workload.generation_tokens.min(256),
+                QUICK_BENCH_REPETITIONS,
+            )
+            .await
+        };
     let measurement = match sweep_result {
         Ok(points) => measurement_from_points(points),
         Err(error) => CalibrationMeasurement {
@@ -1725,9 +1724,7 @@ async fn run_preset_qualification(
     // of going through the shared launch path.
     let snapshot = ExecutableIdentity::from_path(&config.llama_server_path)
         .ok()
-        .and_then(|identity| {
-            crate::inference::llama_cpp_capabilities::cached_snapshot(&identity)
-        });
+        .and_then(|identity| crate::inference::llama_cpp_capabilities::cached_snapshot(&identity));
     if let Some(snap) = &snapshot
         && let Some(issue) = presets::validation::validate_main_kv_policy(
             &server_config.ctk,
@@ -1741,10 +1738,11 @@ async fn run_preset_qualification(
             issue.message
         );
     }
-    let adapter = crate::inference::llama_cpp::LlamaCppAdapter::new(
+    let adapter = crate::inference::llama_cpp::LlamaCppAdapter::new_with_capabilities(
         config.clone(),
         *server_config,
         crate::gpu::env::GpuEnv::default(),
+        snapshot,
     );
     let launch = adapter.build_launch().await?;
     server_qualification::run_managed_server_with_capabilities(launch, request, capabilities).await
@@ -1847,9 +1845,7 @@ async fn run_candidate_measurement(
     let depths = vec![workload.minimum_context.max(1)];
     let model_path_string = model_path.to_string_lossy().into_owned();
     let snapshot = calibration_capability_snapshot(config).await;
-    let result = if let Some(error) =
-        calibration_kv_policy_error(snapshot.as_ref(), &ctk, &ctv)
-    {
+    let result = if let Some(error) = calibration_kv_policy_error(snapshot.as_ref(), &ctk, &ctv) {
         Some(Err(error))
     } else {
         let bench = run_sweep_with_tokens_repetitions(
@@ -2255,9 +2251,8 @@ async fn calibration_capability_snapshot(
     if !config.llama_server_path.is_file() {
         return None;
     }
-    let _ =
-        crate::inference::llama_cpp_capabilities::generate_snapshot(&config.llama_server_path)
-            .await;
+    let _ = crate::inference::llama_cpp_capabilities::generate_snapshot(&config.llama_server_path)
+        .await;
     ExecutableIdentity::from_path(&config.llama_server_path)
         .ok()
         .and_then(|identity| crate::inference::llama_cpp_capabilities::cached_snapshot(&identity))

@@ -83,11 +83,40 @@ pub struct CapabilitySnapshot {
     pub tools: ToolCapabilities,
     /// Speculative decoding capabilities
     pub speculation: SpeculationCapabilities,
+    /// Typed evidence for Phase 2 llama.cpp-native options. Unlike a raw
+    /// substring check, this records both forms and the accepted value set.
+    #[serde(default)]
+    pub typed: TypedLlamaCapabilities,
     /// Mixed main-K/V support gate (`q8_0` K + `q4_0` V fused-attention pair).
     /// Product default is `supported: false` until a trusted build manifest is integrated.
     pub mixed_main_kv: MixedMainKv,
     pub evidence_timestamp: u64,
     pub source: CapabilitySnapshotSource,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct EnumCapability {
+    pub supported: FeatureState,
+    #[serde(default)]
+    pub accepted_values: Vec<String>,
+    pub default_value: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct BooleanFlagCapability {
+    pub positive: FeatureState,
+    pub negative: FeatureState,
+    pub default_value: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct TypedLlamaCapabilities {
+    pub mmproj_offload: BooleanFlagCapability,
+    pub reasoning_effort: EnumCapability,
+    pub reasoning_format: EnumCapability,
+    pub reasoning_preserve: BooleanFlagCapability,
+    /// Help advertises the flag, but does not prove template support.
+    pub reasoning_preserve_template: FeatureState,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -171,6 +200,47 @@ impl MixedMainKv {
 }
 
 impl CapabilitySnapshot {
+    /// Whether the exact binary advertised a flag in its bounded `--help`
+    /// probe. This is deliberately the only generic flag lookup used by typed
+    /// launch validation; callers must still apply the option-specific policy.
+    pub fn supports_flag(&self, flag: &str) -> bool {
+        self.serve_flags.iter().any(|candidate| candidate == flag)
+    }
+
+    /// Current llama.cpp reasoning-effort values observed by the product
+    /// contract. Help proves the flag exists; the typed enum still rejects an
+    /// unknown stored value before launch.
+    pub fn supports_reasoning_effort(&self, value: &str) -> bool {
+        self.supports_flag("--reasoning-effort")
+            && (self.typed.reasoning_effort.accepted_values.is_empty()
+                || self
+                    .typed
+                    .reasoning_effort
+                    .accepted_values
+                    .iter()
+                    .any(|candidate| candidate == value))
+    }
+
+    /// Current explicit reasoning-format values observed by the product
+    /// contract. `auto` is intentionally absent: no argument means auto.
+    pub fn supports_reasoning_format(&self, value: &str) -> bool {
+        self.supports_flag("--reasoning-format")
+            && (self.typed.reasoning_format.accepted_values.is_empty()
+                || self
+                    .typed
+                    .reasoning_format
+                    .accepted_values
+                    .iter()
+                    .any(|candidate| candidate == value))
+    }
+
+    /// The current product has no authoritative template capability contract
+    /// for native reasoning preservation. Keep this fail-closed until a
+    /// bounded template inspection rule is qualified with fixtures.
+    pub fn reasoning_preserve_template_compatibility(&self) -> FeatureState {
+        self.typed.reasoning_preserve_template.clone()
+    }
+
     pub fn is_valid_for(&self, current: &ExecutableIdentity) -> bool {
         self.executable_identity.path == current.path
             && self.executable_identity.file_hash == current.file_hash
@@ -228,6 +298,7 @@ pub async fn generate_snapshot(binary: &Path) -> Result<CapabilitySnapshot> {
     let templates = derive_template_capabilities(&flags);
     let tools = derive_tool_capabilities(&flags);
     let speculation = derive_speculation_capabilities(&flags);
+    let typed = derive_typed_capabilities(&flags, &help_text);
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -247,6 +318,7 @@ pub async fn generate_snapshot(binary: &Path) -> Result<CapabilitySnapshot> {
         templates,
         tools,
         speculation,
+        typed,
         // Phase 1b: only shipped provider — product default denied.
         mixed_main_kv: MixedMainKv::product_default_denied(),
         evidence_timestamp: now,
@@ -255,6 +327,74 @@ pub async fn generate_snapshot(binary: &Path) -> Result<CapabilitySnapshot> {
 
     cache_snapshot(snapshot.clone());
     Ok(snapshot)
+}
+
+fn derive_typed_capabilities(flags: &[String], help_text: &str) -> TypedLlamaCapabilities {
+    let has = |flag: &str| flag_state(flags, flag);
+    let default_value = |flag: &str| help_default(help_text, flag);
+    TypedLlamaCapabilities {
+        mmproj_offload: BooleanFlagCapability {
+            positive: has("--mmproj-offload"),
+            negative: has("--no-mmproj-offload"),
+            default_value: default_value("--mmproj-offload").and_then(|value| {
+                match value.as_str() {
+                    "enabled" | "true" => Some(true),
+                    "disabled" | "false" => Some(false),
+                    _ => None,
+                }
+            }),
+        },
+        reasoning_effort: EnumCapability {
+            supported: has("--reasoning-effort"),
+            accepted_values: if flags.iter().any(|flag| flag == "--reasoning-effort") {
+                ["minimal", "low", "medium", "high", "xhigh", "max"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            default_value: default_value("--reasoning-effort"),
+        },
+        reasoning_format: EnumCapability {
+            supported: has("--reasoning-format"),
+            accepted_values: if flags.iter().any(|flag| flag == "--reasoning-format") {
+                ["none", "deepseek", "deepseek-legacy"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            default_value: default_value("--reasoning-format"),
+        },
+        reasoning_preserve: BooleanFlagCapability {
+            positive: has("--reasoning-preserve"),
+            negative: has("--no-reasoning-preserve"),
+            default_value: default_value("--reasoning-preserve").and_then(|value| {
+                match value.as_str() {
+                    "enabled" | "true" => Some(true),
+                    "disabled" | "false" => Some(false),
+                    _ => None,
+                }
+            }),
+        },
+        reasoning_preserve_template: FeatureState::Unavailable(
+            "template compatibility for native reasoning preservation is not verified".into(),
+        ),
+    }
+}
+
+fn help_default(help_text: &str, flag: &str) -> Option<String> {
+    help_text.lines().find_map(|line| {
+        if !line.split([',', ' ']).any(|token| token == flag) {
+            return None;
+        }
+        let marker = "(default:";
+        let start = line.find(marker)? + marker.len();
+        let value = line[start..].split(')').next()?.trim();
+        (!value.is_empty()).then(|| value.to_string())
+    })
 }
 
 fn recognizable_version_line(text: &str) -> Option<String> {
@@ -526,6 +666,34 @@ mod tests {
     }
 
     #[test]
+    fn typed_capability_evidence_records_forms_values_and_defaults() {
+        let help = "Options:\n  --mmproj-offload, --no-mmproj-offload (default: enabled)\n  --reasoning-format FORMAT\n  --reasoning-effort LEVEL\n  --reasoning-preserve, --no-reasoning-preserve (default: template default)";
+        let flags = extract_flags(help);
+        let typed = derive_typed_capabilities(&flags, help);
+        assert!(matches!(
+            typed.mmproj_offload.positive,
+            FeatureState::Available
+        ));
+        assert!(matches!(
+            typed.mmproj_offload.negative,
+            FeatureState::Available
+        ));
+        assert_eq!(typed.mmproj_offload.default_value, Some(true));
+        assert_eq!(
+            typed.reasoning_effort.accepted_values,
+            vec!["minimal", "low", "medium", "high", "xhigh", "max"]
+        );
+        assert_eq!(
+            typed.reasoning_format.accepted_values,
+            vec!["none", "deepseek", "deepseek-legacy"]
+        );
+        assert!(matches!(
+            typed.reasoning_preserve_template,
+            FeatureState::Unavailable(_)
+        ));
+    }
+
+    #[test]
     fn version_probe_accepts_help_without_a_version_banner() {
         let help = "Usage: llama-server [OPTIONS]\nOptions:\n  --model PATH\n  --load-mode MODE";
         assert_eq!(recognizable_version_line(help), None);
@@ -624,6 +792,7 @@ Options:
             templates: Default::default(),
             tools: Default::default(),
             speculation: Default::default(),
+            typed: Default::default(),
             mixed_main_kv: MixedMainKv::product_default_denied(),
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::AutoProbed,
@@ -659,6 +828,7 @@ Options:
             templates: Default::default(),
             tools: Default::default(),
             speculation: Default::default(),
+            typed: Default::default(),
             mixed_main_kv: MixedMainKv::product_default_denied(),
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::AutoProbed,
@@ -718,6 +888,7 @@ Options:
             templates: Default::default(),
             tools: Default::default(),
             speculation: Default::default(),
+            typed: Default::default(),
             mixed_main_kv: MixedMainKv::product_default_denied(),
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::AutoProbed,
