@@ -146,7 +146,6 @@ impl CapabilitySnapshot {
     pub fn is_valid_for(&self, current: &ExecutableIdentity) -> bool {
         self.executable_identity.path == current.path
             && self.executable_identity.file_hash == current.file_hash
-            && self.help_hash == hash_help(&self.serve_flags.join(" "))
     }
 
     pub fn fingerprint(&self) -> String {
@@ -579,10 +578,13 @@ Options:
             file_hash: "def456".into(),
             file_mtime_unix: 2000,
         };
+        // help_hash is deliberately built from raw --help text, not from
+        // `serve_flags.join(" ")`, so this test cannot pass against the
+        // help_hash-re-derivation bug by accident.
         let snap = CapabilitySnapshot {
             executable_identity: identity1.clone(),
             version_text: "b10068".into(),
-            help_hash: hash_help("--host --port"),
+            help_hash: hash_help("usage: llama-server [options]\n  --host HOST\n  --port PORT\n"),
             serve_flags: vec!["--host".into(), "--port".into()],
             cache: Default::default(),
             context: Default::default(),
@@ -597,6 +599,53 @@ Options:
         };
         assert!(snap.is_valid_for(&identity1));
         assert!(!snap.is_valid_for(&identity2));
+    }
+
+    #[test]
+    fn cached_snapshot_hits_for_unchanged_executable_identity() {
+        // Regression test for the help_hash re-derivation bug: is_valid_for
+        // used to recompute help_hash from serve_flags.join(" ") at lookup
+        // time and compare it against a hash stored from real raw --help
+        // text at probe time. Those two strings differ for every real probe,
+        // so every lookup missed the cache even for an unchanged binary.
+        let identity = ExecutableIdentity {
+            path: "/tmp/llama-server-cache-hit-test".into(),
+            file_hash: "unchanged-hash".into(),
+            file_mtime_unix: 1000,
+        };
+        let snap = CapabilitySnapshot {
+            executable_identity: identity.clone(),
+            version_text: "b10068".into(),
+            help_hash: hash_help(
+                "usage: llama-server [options]\n  --host HOST\n  --cache-reuse N\n",
+            ),
+            serve_flags: vec!["--host".into(), "--cache-reuse".into()],
+            cache: Default::default(),
+            context: Default::default(),
+            concurrency: Default::default(),
+            endpoints: Default::default(),
+            streaming: Default::default(),
+            templates: Default::default(),
+            tools: Default::default(),
+            speculation: Default::default(),
+            evidence_timestamp: 0,
+            source: CapabilitySnapshotSource::AutoProbed,
+        };
+        cache_snapshot(snap);
+        assert!(
+            cached_snapshot(&identity).is_some(),
+            "unchanged executable identity must hit the cache without re-probing"
+        );
+
+        let changed_identity = ExecutableIdentity {
+            path: "/tmp/llama-server-cache-hit-test".into(),
+            file_hash: "changed-hash".into(),
+            file_mtime_unix: 2000,
+        };
+        assert!(
+            cached_snapshot(&changed_identity).is_none(),
+            "a changed file_hash must still miss the cache and re-probe"
+        );
     }
 
     #[test]
