@@ -30,6 +30,7 @@ import scenarioRapidPreset from './scenarios/presets/rapid-preset.mjs';
 import scenarioEvidenceDrawer from './scenarios/presets/evidence-drawer.mjs';
 import scenarioCommunitySources from './scenarios/presets/community-sources.mjs';
 import scenarioDiscussions from './scenarios/presets/discussions.mjs';
+import scenarioPresetBundleEditor from './scenarios/presets/preset-bundle-editor.mjs';
 import scenarioSpawnWizard from './scenarios/wizard-llamacpp/spawn-wizard.mjs';
 import scenarioSpawnWizardProBaseline from './scenarios/wizard-llamacpp/spawn-wizard-pro-baseline.mjs';
 import scenarioSpawnWizardLaunchFullConfig from './scenarios/wizard-llamacpp/spawn-wizard-launch-full-config.mjs';
@@ -214,6 +215,7 @@ export const SCENARIOS = {
     'models-v2': { run: scenarioModelsV2, setup: () => ({ extraArgs: seedModelsDirFixture() }), category: 'models', runtime: 'neutral' },
     'model-discovery': { run: scenarioModelDiscovery, category: 'models', runtime: 'neutral' },
     'preset-editor': { run: scenarioPresetEditor, category: 'presets', runtime: 'neutral' },
+    'preset-bundle-editor': { run: scenarioPresetBundleEditor, category: 'presets', runtime: 'llamacpp-local' },
     'calibration': {
         run: scenarioCalibration,
         setup: () => ({ extraArgs: seedCalibrationCapturePreset() }),

@@ -705,11 +705,11 @@ Response:
 ### `PUT /api/presets/{id}`
 Auth: api-token.
 Updates the preset matched by the path `id`. Accepts the same `ModelPreset`
-shape as POST. A bundled preset must be sent as
-`{"expected_revision": <revision>, "preset": <model-preset>}`; the submitted
-flat projection must agree with `bundle.default_selection`. The server assigns
-the next revision and returns `409` for a stale revision or `400` for a
-projection conflict.
+shape as POST. Updates must be sent as
+`{"expected_revision": <revision>, "preset": <model-preset>}` for both flat
+and bundled presets. The submitted flat projection must agree with
+`bundle.default_selection`; the server assigns the next revision and returns
+`409` for a stale revision or `400` for a projection conflict.
 
 ### `POST /api/presets/{id}/copy`
 Auth: api-token.
@@ -734,13 +734,26 @@ future bounded conversion options.
 {"expected_revision": 1, "conversion": {}}
 ```
 
+The Preset Editor uses this operation for an explicit legacy conversion. The
+result contains one confirmed weights artifact, `CustomUnknown` workload
+policy, one curated default selection, and only concrete nonzero batch/
+micro-batch choices. Additional Q4/Q5 or companion artifacts are added one at
+a time after GGUF metadata is checked; similarly named files are never grouped
+automatically. Duplicate local paths and duplicate HF repo/file/revision
+coordinates are rejected.
+
 ### `DELETE /api/presets/{id}`
 Auth: db-admin-token. Requires the exact confirmation string and the current
 preset revision.
 
 ```json
-{ "expected_revision": 2, "confirmation": "DELETE PRESET" }
+{ "expected_revision": 2, "expected_catalog_etag": "catalog-v1:<sha256>", "confirmation": "DELETE PRESET" }
 ```
+
+`expected_catalog_etag` is optional for compatibility but the editor fetches a
+fresh value immediately before showing the confirmation prompt. A stale value
+returns `409` and makes no change. Successful deletion also removes the preset
+from saved collections.
 
 ### `POST /api/presets/reset`
 Auth: db-admin-token. Requires the current catalog etag and the exact

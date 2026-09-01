@@ -98,6 +98,48 @@ test.describe('Phase 5 llama.cpp preset editor parity', () => {
     expect(bundle.value).toBe('agentic_tools');
   });
 
+  test('variants editor keeps explicit artifacts and launch choices together', async ({ page }) => {
+    await openEditor(page, {
+      bundle: {
+        identity: { bundle_id: 'bundle-q4q5', tune_id: 'tune-1', display_name: 'Q4/Q5 exact tune' },
+        artifacts: [
+          { id: 'weights-q4', role: 'weights', display_name: 'Model Q4_K_M', local_path: '/models/q4.gguf', quantization: { value: 'q4_k_m', provenance: 'gguf_metadata' }, metadata: { gguf_architecture: 'qwen3', model_kind: 'moe', block_count: 40 } },
+          { id: 'weights-q5', role: 'weights', display_name: 'Model Q5_K_M', local_path: '/models/q5.gguf', quantization: { value: 'q5_k_m', provenance: 'gguf_metadata' }, metadata: { gguf_architecture: 'qwen3', model_kind: 'moe', block_count: 40 } },
+        ],
+        context_options: [160000, 200000],
+        kv_policy_options: ['q4_0_q4_0', 'q8_0_q8_0'],
+        performance_options: [{ id: 'balanced', label: '2048 / 256', batch_size: 2048, ubatch_size: 256 }],
+        cpu_moe_options: [0, 6],
+        curated_selections: [],
+        allow_validated_custom: true,
+        workload_policy: 'general_chat',
+        default_selection: { artifact_id: 'weights-q5', context_size: 200000, kv_policy: 'q4_0_q4_0', performance_id: 'balanced', n_cpu_moe: 6 },
+      },
+    });
+    await page.locator('.preset-nav-item[data-section="variants"]').click();
+    await expect(page.locator('#preset-bundle-editor')).toBeVisible();
+    await expect(page.locator('#preset-bundle-artifacts .preset-bundle-artifact')).toHaveCount(2);
+    await expect(page.locator('#modal-bundle-artifact')).toHaveValue('weights-q5');
+    await expect(page.locator('#modal-bundle-context')).toHaveValue('200000');
+    await expect(page.locator('#modal-bundle-performance')).toHaveValue('balanced');
+    await expect(page.locator('#preset-bundle-moe-wrap')).toBeVisible();
+    await expect(page.locator('#modal-bundle-cpu-moe')).toHaveValue('6');
+  });
+
+  test('dense bundle artifacts do not expose CPU MoE choices', async ({ page }) => {
+    await openEditor(page, {
+      bundle: {
+        artifacts: [{ id: 'weights', role: 'weights', display_name: 'Dense', local_path: '/models/dense.gguf', metadata: { gguf_architecture: 'llama', model_kind: 'dense', block_count: 32 } }],
+        context_options: [8192], kv_policy_options: ['f16_f16'],
+        performance_options: [{ id: 'default', label: '512 / 512', batch_size: 512, ubatch_size: 512 }],
+        cpu_moe_options: [0], allow_validated_custom: true, workload_policy: 'general_chat',
+        default_selection: { artifact_id: 'weights', context_size: 8192, kv_policy: 'f16_f16', performance_id: 'default', n_cpu_moe: 0 },
+      },
+    });
+    await page.locator('.preset-nav-item[data-section="variants"]').click();
+    await expect(page.locator('#preset-bundle-moe-wrap')).toBeHidden();
+  });
+
   test('preset payload does not overwrite spawn sampling values a second time', async ({ page }) => {
     await page.goto('/');
     await page.waitForSelector('html.modules-ready');

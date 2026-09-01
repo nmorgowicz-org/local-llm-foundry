@@ -3203,3 +3203,22 @@ details.mlx-native-group:not([open]) > .mlx-native-group-header {
 [data-theme="light"] .chat-template-lifecycle-discussion-item {
     border-bottom-color: rgba(0,0,0,0.08);
 }
+
+/* Explicit model-bundle editor */
+.preset-bundle-empty { padding: 16px; border: 1px solid var(--border-subtle); border-radius: 10px; background: color-mix(in srgb, var(--color-accent) 5%, transparent); }
+.preset-bundle-empty p { margin: 7px 0 12px; color: var(--color-text-muted); line-height: 1.5; }
+.preset-bundle-policy { margin-bottom: 12px; }
+.preset-bundle-artifacts { display: flex; flex-direction: column; gap: 7px; margin-bottom: 14px; }
+.preset-bundle-artifact { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 8px; background: color-mix(in srgb, var(--color-bg-elevated) 70%, transparent); }
+.preset-bundle-artifact-info { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.preset-bundle-artifact-info strong, .preset-bundle-artifact-info span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preset-bundle-artifact-info span { color: var(--color-text-muted); font-size: 0.74rem; }
+.preset-bundle-add-row { align-items: end; }
+.preset-bundle-add-action { align-self: end; }
+.preset-bundle-add-action button { width: 100%; min-height: 36px; }
+[data-theme="light"] .preset-bundle-empty { background: color-mix(in srgb, var(--color-accent) 6%, white); }
+[data-theme="light"] .preset-bundle-artifact { background: rgba(255,255,255,0.75); }
+@media (max-width: 700px) {
+    .preset-bundle-add-row { grid-template-columns: 1fr; }
+    .preset-bundle-artifact { align-items: flex-start; }
+}

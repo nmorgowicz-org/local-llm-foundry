@@ -599,6 +599,8 @@ impl PresetBundleSpec {
         // Artifact ID uniqueness across all roles.
         {
             let mut seen = std::collections::HashSet::new();
+            let mut local_paths = std::collections::HashSet::new();
+            let mut hf_coordinates = std::collections::HashSet::new();
             for a in &self.artifacts {
                 if a.id.trim().is_empty() {
                     issues.push("EMPTY_ARTIFACT_ID: every artifact must have an id".to_string());
@@ -609,7 +611,46 @@ impl PresetBundleSpec {
                         a.id
                     ));
                 }
+                if let Some(path) = a
+                    .local_path
+                    .as_deref()
+                    .filter(|path| !path.trim().is_empty())
+                    && !local_paths.insert(path)
+                {
+                    issues.push(format!(
+                        "DUPLICATE_ARTIFACT_PATH: local artifact path '{}' appears more than once",
+                        path
+                    ));
+                }
+                if let Some(origin) = &a.hf_origin {
+                    let coordinate = (
+                        origin.repo_id.as_str(),
+                        origin.remote_path.as_str(),
+                        origin.revision.as_deref().unwrap_or_default(),
+                    );
+                    if !hf_coordinates.insert(coordinate) {
+                        issues.push(format!(
+                            "DUPLICATE_HF_COORDINATE: HF artifact '{}:{}@{}' appears more than once",
+                            origin.repo_id,
+                            origin.remote_path,
+                            origin.revision.as_deref().unwrap_or("default")
+                        ));
+                    }
+                }
             }
+        }
+
+        if self
+            .artifacts
+            .iter()
+            .filter(|a| matches!(a.role, PresetArtifactRole::Weights))
+            .count()
+            == 0
+        {
+            issues.push(
+                "NO_WEIGHTS_ARTIFACT: bundle must contain at least one weights artifact"
+                    .to_string(),
+            );
         }
 
         // Companion references must resolve within the same bundle.
@@ -1094,6 +1135,76 @@ pub fn validate_bundle_structural(preset: &ModelPreset) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_conversion_preserves_unknown_workload_and_uses_concrete_performance_choices() {
+        let source = ModelPreset {
+            name: "Legacy MoE".into(),
+            model_path: "/models/legacy-q4.gguf".into(),
+            context_size: 32_000,
+            ctk: "f16".into(),
+            ctv: "f16".into(),
+            batch_size: 0,
+            ubatch_size: 0,
+            architecture_kind: Some("moe".into()),
+            block_count: Some(48),
+            n_cpu_moe: Some(8),
+            ..Default::default()
+        };
+        let converted = convert_flat_preset(&source, "Legacy MoE");
+        let bundle = converted.bundle.expect("conversion creates a bundle");
+        assert_eq!(bundle.workload_policy.to_wire(), "custom_unknown");
+        assert!(bundle.allow_validated_custom);
+        assert_eq!(bundle.curated_selections.len(), 1);
+        assert!(
+            bundle
+                .performance_options
+                .iter()
+                .all(|option| { option.batch_size > 0 && option.ubatch_size > 0 })
+        );
+        assert_eq!(bundle.cpu_moe_options, vec![0, 8]);
+        assert_eq!(bundle.default_selection.context_size, 32_000);
+    }
+
+    #[test]
+    fn structural_validation_rejects_duplicate_artifact_paths_and_hf_coordinates() {
+        let origin = PresetHfOrigin {
+            repo_id: "org/model".into(),
+            remote_path: "q4.gguf".into(),
+            ..Default::default()
+        };
+        let mut bundle = PresetBundleSpec {
+            artifacts: vec![
+                PresetModelArtifact {
+                    id: "weights-a".into(),
+                    role: PresetArtifactRole::Weights,
+                    local_path: Some("/models/same.gguf".into()),
+                    hf_origin: Some(origin.clone()),
+                    ..Default::default()
+                },
+                PresetModelArtifact {
+                    id: "weights-b".into(),
+                    role: PresetArtifactRole::Weights,
+                    local_path: Some("/models/same.gguf".into()),
+                    hf_origin: Some(origin),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        bundle.default_selection.artifact_id = "weights-a".into();
+        let issues = bundle.structural_issues();
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.starts_with("DUPLICATE_ARTIFACT_PATH"))
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.starts_with("DUPLICATE_HF_COORDINATE"))
+        );
+    }
 
     fn valid_bundle() -> PresetBundleSpec {
         let weights = PresetModelArtifact {

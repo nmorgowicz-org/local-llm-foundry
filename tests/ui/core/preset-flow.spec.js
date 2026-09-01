@@ -124,12 +124,21 @@ async function installPresetMocks(page, options = {}) {
     });
   });
 
-  await page.route(/\/api\/presets/, async route => {
+  await page.route(/\/api\/(?:presets|preset-cards)/, async route => {
     const request = route.request();
     const url = new URL(request.url());
     const method = request.method();
     const parts = url.pathname.split('/').filter(Boolean);
     const id = parts.length === 3 ? decodeURIComponent(parts[2]) : '';
+
+    if (url.pathname === '/api/preset-cards' && method === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ cards: [], catalog_etag: 'catalog-v1:test' }),
+      });
+      return;
+    }
 
     if (url.pathname === '/api/presets' && method === 'GET') {
       await route.fulfill({
@@ -144,6 +153,21 @@ async function installPresetMocks(page, options = {}) {
       state.postCount += 1;
       const body = request.postDataJSON();
       const created = { ...body, id: body.id || (body.name === 'Wizard preset' ? 'wizard-id' : `copy-${state.postCount}`) };
+      state.presets.push(created);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, preset: created }),
+      });
+      return;
+    }
+
+    if (url.pathname.endsWith('/copy') && method === 'POST') {
+      state.postCount += 1;
+      const body = request.postDataJSON();
+      const sourceId = parts[2];
+      const source = state.presets.find(p => p.id === sourceId);
+      const created = { ...source, name: body.new_name, id: `copy-${state.postCount}`, revision: 1 };
       state.presets.push(created);
       await route.fulfill({
         status: 200,

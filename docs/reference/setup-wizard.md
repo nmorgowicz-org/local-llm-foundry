@@ -327,6 +327,17 @@ to Launch.
 
 - **Save as Preset** — stores all parameters for quick reuse from the setup screen
 - Presets can be saved for different models or configurations
+- The Preset Editor's **Model variants** section can convert a legacy profile
+  into one explicitly managed bundle. Add each exact GGUF artifact separately;
+  the editor checks GGUF metadata and asks for confirmation when a candidate
+  does not match the existing tune. It never groups files from a shared name or
+  family automatically.
+- A bundle keeps the selected weights artifact, context, named K/V policy,
+  concrete batch/micro-batch pair, and (for proven MoE models) CPU expert
+  placement as one saved default. Dense models do not offer CPU MoE choices.
+- Saving an edited preset is revision-checked. Copy, delete, and reset actions
+  use the same current revision/catalog guards, so a stale editor cannot
+  overwrite a newer selection.
 - Saving is optional — click Next to go straight to launch
 - Rapid-MLX presets retain shared sampling and non-secret access values, including host,
   port, temperature, top-p/top-k/min-p, penalties, max tokens, and seed. An API key is

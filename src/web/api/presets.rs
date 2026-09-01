@@ -17,6 +17,7 @@ use super::{
 #[serde(default)]
 struct DeletePresetRequest {
     expected_revision: Option<u64>,
+    expected_catalog_etag: Option<String>,
     confirmation: Option<String>,
 }
 
@@ -272,14 +273,14 @@ fn api_update_preset(
                         ),
                     )));
                 };
-                if current.bundle.is_some() && expected_revision.is_none() {
+                let Some(expected_revision) = expected_revision else {
                     return futures_util::future::ready(Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
                         warp::reply::with_status(
-                            warp::reply::json(&serde_json::json!({"ok": false, "code": "expected_revision_required", "error": "expected_revision is required for bundled presets"})),
+                            warp::reply::json(&serde_json::json!({"ok": false, "code": "expected_revision_required", "error": "expected_revision is required"})),
                             warp::http::StatusCode::BAD_REQUEST,
                         ),
                     )));
-                }
+                };
                 if current.bundle.is_some()
                     && let Some(field) = bundle_projection_conflict(&updated)
                 {
@@ -296,9 +297,7 @@ fn api_update_preset(
                         warp::http::StatusCode::BAD_REQUEST,
                     ))));
                 }
-                if let Some(expected_revision) = expected_revision
-                    && expected_revision != current.revision
-                {
+                if expected_revision != current.revision {
                     return futures_util::future::ready(Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
                         warp::reply::with_status(
                             warp::reply::json(&serde_json::json!({"ok": false, "code": "revision_conflict", "error": "preset revision is stale", "revision": current.revision, "catalog_etag": super::preset_bundles::catalog_etag(&catalog)})),
@@ -330,9 +329,7 @@ fn api_update_preset(
                             ),
                         )));
                     }
-                    updated.revision = expected_revision
-                        .map(|_| current.revision + 1)
-                        .unwrap_or(current.revision);
+                    updated.revision = current.revision + 1;
                     let mut candidate = presets.clone();
                     candidate[idx] = updated.clone();
                     if let Err(error) = presets::save_presets(&state.presets_path, &candidate) {
@@ -387,15 +384,25 @@ fn api_delete_preset(
                     ),
                 )));
             };
-            if request.confirmation.as_deref() != Some("DELETE PRESET") {
+                if request.confirmation.as_deref() != Some("DELETE PRESET") {
                 return futures_util::future::ready(Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
                     warp::reply::with_status(
                         warp::reply::json(&serde_json::json!({"ok": false, "code": "confirmation_required", "error": "confirmation must be DELETE PRESET"})),
                         warp::http::StatusCode::BAD_REQUEST,
                     ),
-                )));
-            }
-            let mut presets = state.presets.lock().unwrap();
+                    )));
+                }
+                let mut presets = state.presets.lock().unwrap();
+                if let Some(expected_etag) = request.expected_catalog_etag.as_deref()
+                    && expected_etag != super::preset_bundles::catalog_etag(&presets)
+                {
+                    return futures_util::future::ready(Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                        warp::reply::with_status(
+                            warp::reply::json(&serde_json::json!({"ok": false, "code": "catalog_conflict", "error": "catalog is stale", "catalog_etag": super::preset_bundles::catalog_etag(&presets)})),
+                            warp::http::StatusCode::CONFLICT,
+                        ),
+                    )));
+                }
             let Some(current) = presets.iter().find(|preset| preset.id == id) else {
                 return futures_util::future::ready(Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
                     warp::reply::with_status(
@@ -414,7 +421,7 @@ fn api_delete_preset(
             }
             let mut candidate = presets.clone();
             candidate.retain(|p| p.id != id);
-            if let Err(error) = presets::save_presets(&state.presets_path, &candidate) {
+                if let Err(error) = presets::save_presets(&state.presets_path, &candidate) {
                 return futures_util::future::ready(Ok::<
                     Box<dyn warp::reply::Reply>,
                     warp::Rejection,
@@ -426,9 +433,27 @@ fn api_delete_preset(
                         warp::http::StatusCode::INTERNAL_SERVER_ERROR,
                     ),
                 )));
-            }
-            *presets = candidate;
-            let etag = super::preset_bundles::catalog_etag(&presets);
+                }
+                *presets = candidate;
+                let mut collections = state.preset_collections.lock().unwrap();
+                for collection in &mut collections.collections {
+                    collection.preset_ids.retain(|preset_id| preset_id != &id);
+                }
+                if !state.model_tags_path.as_os_str().is_empty() {
+                    let collection_dir = state
+                        .model_tags_path
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .to_path_buf();
+                    if let Err(error) =
+                        crate::collections::save_collections(&collection_dir, &collections)
+                    {
+                        eprintln!(
+                            "[warn] preset {id} deleted but collection cleanup could not be persisted: {error}"
+                        );
+                    }
+                }
+                let etag = super::preset_bundles::catalog_etag(&presets);
             futures_util::future::ready(Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(
                 Box::new(warp::reply::json(&serde_json::json!({"ok": true, "catalog_etag": etag}))),
             ))

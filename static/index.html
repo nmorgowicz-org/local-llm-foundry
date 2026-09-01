@@ -2620,6 +2620,11 @@
                         <span class="pni-dot" style="--dot-color: rgba(99,102,241,0.8)"></span>
                         <span class="pni-label">Model</span>
                     </button>
+                    <button type="button" class="preset-nav-item" role="tab" aria-pressed="false" data-section="variants">
+                        <svg class="pni-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                        <span class="pni-dot" style="--dot-color: rgba(20,184,166,0.8)"></span>
+                        <span class="pni-label">Variants</span>
+                    </button>
                     <button type="button" class="preset-nav-item" role="tab" aria-pressed="false" data-section="context">
                         <svg class="pni-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
                         <span class="pni-dot" style="--dot-color: rgba(6,182,212,0.8)"></span>
@@ -2755,7 +2760,75 @@
                     </div>
                 </div>
 
-                    <!-- 2: Context & KV Cache -->
+                    <!-- 2: Model variants and exact launch choices -->
+                    <div class="preset-editor-section" data-section="variants">
+                        <div class="pe-section-header">
+                            <span class="pe-section-accent" style="--accent: rgba(20,184,166,0.7)"></span>
+                            <div>
+                                <h3 class="pe-section-title">Model variants</h3>
+                                <p class="pe-section-desc">Keep exact artifacts and reproducible launch choices together</p>
+                            </div>
+                        </div>
+                        <div class="pe-section-body">
+                            <div id="preset-bundle-empty" class="preset-bundle-empty">
+                                <strong>This preset is a legacy single-artifact profile.</strong>
+                                <p>Convert it to manage explicitly confirmed model artifacts, context, K/V, batch, and MoE choices. Conversion does not group it with similarly named files.</p>
+                                <button type="button" class="btn-sm btn-preset" id="preset-convert-bundle">Convert to managed bundle</button>
+                            </div>
+                            <div id="preset-bundle-editor" hidden>
+                                <div class="pe-field-hint preset-bundle-policy">Bundle membership is explicit. Suggested metadata is provisional until you confirm each artifact.</div>
+                                <div id="preset-bundle-artifacts" class="preset-bundle-artifacts"></div>
+                                <div class="pe-row pe-row-3 preset-bundle-add-row">
+                                    <div class="pe-field">
+                                        <label class="pe-label" for="modal-bundle-artifact-path">Add artifact path</label>
+                                        <div class="pe-input-row">
+                                            <input type="text" class="pe-input" id="modal-bundle-artifact-path" placeholder="/path/to/variant.gguf">
+                                            <button type="button" class="btn-sm btn-preset" id="preset-bundle-browse" title="Browse for a GGUF artifact">Browse</button>
+                                        </div>
+                                    </div>
+                                    <div class="pe-field">
+                                        <label class="pe-label" for="modal-bundle-artifact-role">Artifact role</label>
+                                        <select class="pe-select" id="modal-bundle-artifact-role">
+                                            <option value="weights">Weights</option>
+                                            <option value="mmproj">Multimodal projector</option>
+                                            <option value="draft">Draft model</option>
+                                        </select>
+                                    </div>
+                                    <div class="pe-field preset-bundle-add-action">
+                                        <label class="pe-label">&nbsp;</label>
+                                        <button type="button" class="btn-sm btn-preset" id="preset-bundle-add">Confirm and add artifact</button>
+                                    </div>
+                                </div>
+                                <div class="pe-field-hint" id="modal-bundle-artifact-warning" role="alert"></div>
+                                <div class="pe-field">
+                                    <label class="pe-label" for="modal-bundle-artifact">Selected weights artifact</label>
+                                    <select class="pe-select" id="modal-bundle-artifact"></select>
+                                    <div class="pe-field-hint" id="modal-bundle-artifact-meta"></div>
+                                </div>
+                                <div class="pe-row pe-row-3">
+                                    <div class="pe-field">
+                                        <label class="pe-label" for="modal-bundle-context">Context choice</label>
+                                        <select class="pe-select" id="modal-bundle-context"></select>
+                                    </div>
+                                    <div class="pe-field">
+                                        <label class="pe-label" for="modal-bundle-kv">K/V policy</label>
+                                        <select class="pe-select" id="modal-bundle-kv"></select>
+                                    </div>
+                                    <div class="pe-field">
+                                        <label class="pe-label" for="modal-bundle-performance">Batch / micro-batch</label>
+                                        <select class="pe-select" id="modal-bundle-performance"></select>
+                                    </div>
+                                </div>
+                                <div class="pe-field" id="preset-bundle-moe-wrap" hidden>
+                                    <label class="pe-label" for="modal-bundle-cpu-moe">CPU MoE placement</label>
+                                    <select class="pe-select" id="modal-bundle-cpu-moe"></select>
+                                    <div class="pe-field-hint">Dense artifacts do not expose CPU MoE choices.</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 3: Context & KV Cache -->
                     <div class="preset-editor-section" data-section="context">
                         <div class="pe-section-header">
                             <span class="pe-section-accent" style="--accent: rgba(6,182,212,0.7)"></span>

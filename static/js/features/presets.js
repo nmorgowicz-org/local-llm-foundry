@@ -42,6 +42,7 @@ let newPresetSeed = null;
 let _presetRapidMlxPrefillExplicit = false;
 let _presetEditorNavInitialized = false;
 let _llamaCapabilitiesPromise = null;
+let _presetBundleDraft = null;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -234,6 +235,263 @@ export function presetModelSource(preset) {
 function _currentModalPreset() {
     const id = document.getElementById('modal-preset-id')?.value;
     return id ? (sessionState.presets.find(p => p.id === id) || {}) : (newPresetSeed || {});
+}
+
+function bundleClone(value) {
+    return value ? structuredClone(value) : null;
+}
+
+function bundleArtifactLabel(artifact) {
+    const quant = artifact.quantization?.value ? ` · ${artifact.quantization.value}` : '';
+    const role = artifact.role || 'weights';
+    return `${artifact.display_name || artifact.local_path || artifact.id || 'Artifact'}${quant} · ${role}`;
+}
+
+function bundleMetadataFromResponse(data) {
+    const modelKind = data.expert_count || data.expert_used_count ? 'moe' : 'dense';
+    return {
+        gguf_architecture: data.architecture || null,
+        model_kind: modelKind,
+        block_count: data.block_count || null,
+        moe_layer_count: data.expert_count ? (data.block_count || null) : null,
+        native_context_limit: data.context_length || null,
+        metadata_digest: null,
+    };
+}
+
+function quantizationHint(path) {
+    const match = path.match(/(?:^|[-_.])(q(?:2|3|4|5|6|8)(?:[_-](?:k[_-])?(?:s|m|l|xl)|[_-]0|[_-]1)?)(?:[-_.]|$)/i);
+    return match ? match[1].toLowerCase().replaceAll('-', '_') : '';
+}
+
+function selectedBundleArtifact() {
+    if (!_presetBundleDraft) return null;
+    return (_presetBundleDraft.artifacts || []).find(a => a.id === _presetBundleDraft.default_selection?.artifact_id) || null;
+}
+
+function updateBundleSelectionFromEditor() {
+    if (!_presetBundleDraft) return;
+    const selected = _presetBundleDraft.default_selection || {};
+    const value = id => document.getElementById(id)?.value || '';
+    const number = id => {
+        const n = Number(value(id));
+        return Number.isFinite(n) ? n : null;
+    };
+    selected.artifact_id = value('modal-bundle-artifact');
+    const context = number('modal-bundle-context');
+    if (context != null) selected.context_size = context;
+    selected.kv_policy = value('modal-bundle-kv') || selected.kv_policy;
+    selected.performance_id = value('modal-bundle-performance') || selected.performance_id;
+    const moe = number('modal-bundle-cpu-moe');
+    selected.n_cpu_moe = moe == null || moe === 0 ? (moe === 0 ? 0 : null) : moe;
+    _presetBundleDraft.default_selection = selected;
+    if (selected.context_size) setVal('modal-context-size', selected.context_size);
+    const kvPair = { f16_f16: ['f16', 'f16'], q8_0_q8_0: ['q8_0', 'q8_0'], q4_0_q4_0: ['q4_0', 'q4_0'], q8_0_q4_0: ['q8_0', 'q4_0'] }[selected.kv_policy];
+    if (kvPair) {
+        setOpt('modal-ctk', kvPair[0]);
+        setOpt('modal-ctv', kvPair[1]);
+    }
+    const performance = (_presetBundleDraft.performance_options || []).find(option => option.id === selected.performance_id);
+    if (performance) {
+        setVal('modal-batch-size', performance.batch_size);
+        setVal('modal-ubatch-size', performance.ubatch_size);
+    }
+    setVal('modal-n-cpu-moe', selected.n_cpu_moe ?? '');
+    const artifact = selectedBundleArtifact();
+    if (artifact?.local_path) setVal('modal-model-path', artifact.local_path);
+    if (artifact?.mmproj_artifact_id) {
+        const mmproj = _presetBundleDraft.artifacts.find(item => item.id === artifact.mmproj_artifact_id);
+        if (mmproj?.local_path) setVal('modal-mmproj', mmproj.local_path);
+    }
+    if (artifact?.draft_artifact_id) {
+        const draft = _presetBundleDraft.artifacts.find(item => item.id === artifact.draft_artifact_id);
+        if (draft?.local_path) setVal('modal-draft-model', draft.local_path);
+    }
+    if (artifact?.metadata?.model_kind) {
+        const hint = document.getElementById('modal-bundle-artifact-meta');
+        if (hint) hint.textContent = `${artifact.metadata.gguf_architecture || 'Unknown architecture'} · ${artifact.metadata.model_kind}${artifact.metadata.block_count ? ` · ${artifact.metadata.block_count} layers` : ''}`;
+    }
+}
+
+function renderPresetBundleEditor() {
+    const section = document.querySelector('.preset-editor-section[data-section="variants"]');
+    if (!section) return;
+    const empty = section.querySelector('#preset-bundle-empty');
+    const body = section.querySelector('#preset-bundle-editor');
+    if (!_presetBundleDraft) {
+        if (empty) empty.hidden = false;
+        if (body) body.hidden = true;
+        return;
+    }
+    if (empty) empty.hidden = true;
+    if (body) body.hidden = false;
+    const artifacts = _presetBundleDraft.artifacts || [];
+    const artifactList = section.querySelector('#preset-bundle-artifacts');
+    if (artifactList) {
+        artifactList.replaceChildren(...artifacts.map(artifact => {
+            const row = document.createElement('div');
+            row.className = 'preset-bundle-artifact';
+            row.dataset.artifactId = artifact.id;
+            const info = document.createElement('div');
+            info.className = 'preset-bundle-artifact-info';
+            const title = document.createElement('strong');
+            title.textContent = bundleArtifactLabel(artifact);
+            const path = document.createElement('span');
+            path.textContent = artifact.local_path || 'Not adopted locally';
+            info.append(title, path);
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'btn-sm btn-preset preset-bundle-remove';
+            remove.dataset.artifactId = artifact.id;
+            remove.textContent = 'Remove';
+            remove.disabled = artifact.id === _presetBundleDraft.default_selection?.artifact_id;
+            remove.title = remove.disabled ? 'Select a replacement artifact before removing the active one' : 'Remove this artifact';
+            row.append(info, remove);
+            return row;
+        }));
+    }
+    const weights = artifacts.filter(a => a.role === 'weights');
+    const artifactSelect = section.querySelector('#modal-bundle-artifact');
+    if (artifactSelect) {
+        replaceOptions(artifactSelect, weights.map(a => ({ value: a.id, label: bundleArtifactLabel(a) })), _presetBundleDraft.default_selection?.artifact_id);
+    }
+    const contextSelect = section.querySelector('#modal-bundle-context');
+    if (contextSelect) replaceOptions(contextSelect, (_presetBundleDraft.context_options || []).map(v => ({ value: v, label: `${v.toLocaleString()} tokens` })), _presetBundleDraft.default_selection?.context_size);
+    const kvSelect = section.querySelector('#modal-bundle-kv');
+    if (kvSelect) replaceOptions(kvSelect, (_presetBundleDraft.kv_policy_options || []).map(v => ({ value: v, label: v.replaceAll('_', ' / ') })), _presetBundleDraft.default_selection?.kv_policy);
+    const performanceSelect = section.querySelector('#modal-bundle-performance');
+    if (performanceSelect) replaceOptions(performanceSelect, (_presetBundleDraft.performance_options || []).map(option => ({ value: option.id, label: option.label || `${option.batch_size} / ${option.ubatch_size}` })), _presetBundleDraft.default_selection?.performance_id);
+    const selected = selectedBundleArtifact();
+    const moeWrap = section.querySelector('#preset-bundle-moe-wrap');
+    const moeSelect = section.querySelector('#modal-bundle-cpu-moe');
+    const isMoe = selected?.metadata?.model_kind === 'moe' || selected?.metadata?.model_kind === 'hybrid_moe';
+    if (moeWrap) {
+        moeWrap.hidden = !isMoe;
+        if (isMoe) moeWrap.style.removeProperty('display');
+        else moeWrap.style.setProperty('display', 'none', 'important');
+    }
+    if (moeSelect && isMoe) replaceOptions(moeSelect, (_presetBundleDraft.cpu_moe_options || []).map(v => ({ value: v, label: v === 0 ? 'All experts on GPU (0)' : `${v} expert layers on CPU` })), _presetBundleDraft.default_selection?.n_cpu_moe ?? 0);
+    const meta = section.querySelector('#modal-bundle-artifact-meta');
+    if (meta && selected) meta.textContent = `${selected.metadata?.gguf_architecture || 'Unknown architecture'} · ${selected.metadata?.model_kind || 'unknown'}${selected.metadata?.block_count ? ` · ${selected.metadata.block_count} layers` : ''}`;
+    updateBundleSelectionFromEditor();
+}
+
+async function freshPresetCatalogEtag() {
+    const response = await fetch('/api/preset-cards', { headers: window.authHeaders ? window.authHeaders() : {} });
+    if (!response.ok) throw new Error(`Catalog unavailable (HTTP ${response.status})`);
+    const data = await response.json();
+    return data.catalog_etag || null;
+}
+
+async function convertCurrentPresetToBundle() {
+    const id = document.getElementById('modal-preset-id')?.value;
+    const current = sessionState.presets.find(preset => preset.id === id);
+    if (!id || !current || current.bundle) return;
+    const confirmed = await showConfirmDialog(
+        'Convert to managed bundle',
+        'This creates one explicitly managed artifact from the current preset. Files with similar names are not grouped automatically.',
+        'Convert'
+    );
+    if (!confirmed) return;
+    try {
+        const response = await fetch(`/api/presets/${encodeURIComponent(id)}/convert-to-bundle`, {
+            method: 'POST',
+            headers: { ...(window.authHeaders ? window.authHeaders() : {}), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expected_revision: current.revision, conversion: {} }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        await loadPresets(id);
+        _presetBundleDraft = bundleClone(data.preset?.bundle || sessionState.presets.find(p => p.id === id)?.bundle);
+        renderPresetBundleEditor();
+        showToast('Preset converted to a managed bundle', 'success');
+    } catch (error) {
+        showToast(`Bundle conversion failed: ${error.message || error}`, 'error');
+    }
+}
+
+async function addBundleArtifact() {
+    if (!_presetBundleDraft) return;
+    const pathEl = document.getElementById('modal-bundle-artifact-path');
+    const role = document.getElementById('modal-bundle-artifact-role')?.value || 'weights';
+    const path = pathEl?.value.trim() || '';
+    const warning = document.getElementById('modal-bundle-artifact-warning');
+    if (!path) {
+        if (warning) warning.textContent = 'Choose a local GGUF artifact first.';
+        return;
+    }
+    if ((_presetBundleDraft.artifacts || []).some(artifact => artifact.local_path === path)) {
+        if (warning) warning.textContent = 'That local artifact is already in this bundle.';
+        return;
+    }
+    const headers = { ...(window.authHeaders ? window.authHeaders() : {}), 'Content-Type': 'application/json' };
+    let metadata;
+    try {
+        const response = await fetch('/api/models/gguf-meta', { method: 'POST', headers, body: JSON.stringify({ model_path: path }) });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        metadata = bundleMetadataFromResponse(data);
+    } catch (error) {
+        if (warning) warning.textContent = `GGUF metadata could not be verified: ${error.message || error}`;
+        return;
+    }
+    const existingWeights = (_presetBundleDraft.artifacts || []).find(artifact => artifact.role === 'weights');
+    const mismatch = existingWeights && role === 'weights' && (
+        (existingWeights.metadata?.gguf_architecture && metadata.gguf_architecture && existingWeights.metadata.gguf_architecture !== metadata.gguf_architecture)
+        || (existingWeights.metadata?.block_count && metadata.block_count && existingWeights.metadata.block_count !== metadata.block_count)
+    );
+    if (mismatch) {
+        const message = `GGUF metadata does not match the existing tune (${existingWeights.metadata.gguf_architecture || 'unknown'} / ${existingWeights.metadata.block_count || '?'} layers versus ${metadata.gguf_architecture || 'unknown'} / ${metadata.block_count || '?'} layers). Add it only if you have confirmed this is the same exact tune.`;
+        if (warning) warning.textContent = message;
+        if (!await showConfirmDialog('Metadata mismatch', message, 'Add artifact anyway')) return;
+    }
+    const id = `artifact_${crypto.randomUUID()}`;
+    const filename = path.split(/[\\/]/).pop() || 'Artifact';
+    const artifact = {
+        id,
+        role,
+        display_name: filename,
+        local_path: path,
+        hf_origin: null,
+        size_bytes: null,
+        digest: null,
+        quantization: { value: quantizationHint(filename), provenance: 'filename_hint' },
+        metadata,
+        mmproj_artifact_id: null,
+        draft_artifact_id: null,
+        extensions: {},
+    };
+    _presetBundleDraft.artifacts = [...(_presetBundleDraft.artifacts || []), artifact];
+    if (role === 'mmproj' || role === 'draft') {
+        const weights = _presetBundleDraft.artifacts.find(item => item.role === 'weights');
+        if (weights) weights[role === 'mmproj' ? 'mmproj_artifact_id' : 'draft_artifact_id'] = id;
+    }
+    if (role === 'weights' && !_presetBundleDraft.default_selection?.artifact_id) {
+        _presetBundleDraft.default_selection.artifact_id = id;
+    }
+    if (warning) warning.textContent = 'Artifact metadata verified. Review the bundle and save to persist it.';
+    if (pathEl) pathEl.value = '';
+    renderPresetBundleEditor();
+}
+
+function removeBundleArtifact(artifactId) {
+    if (!_presetBundleDraft) return;
+    const artifact = _presetBundleDraft.artifacts.find(item => item.id === artifactId);
+    if (!artifact) return;
+    if (artifactId === _presetBundleDraft.default_selection?.artifact_id) {
+        const replacement = _presetBundleDraft.artifacts.find(item => item.role === 'weights' && item.id !== artifactId);
+        if (!replacement) {
+            showToast('Select a replacement weights artifact before removing the active one.', 'warn');
+            return;
+        }
+        _presetBundleDraft.default_selection.artifact_id = replacement.id;
+    }
+    _presetBundleDraft.artifacts = _presetBundleDraft.artifacts.filter(item => item.id !== artifactId);
+    for (const item of _presetBundleDraft.artifacts) {
+        if (item.mmproj_artifact_id === artifactId) item.mmproj_artifact_id = null;
+        if (item.draft_artifact_id === artifactId) item.draft_artifact_id = null;
+    }
+    renderPresetBundleEditor();
 }
 
 export function syncSelectedPresetSelection(presetId, options = {}) {
@@ -1432,6 +1690,7 @@ export function openPresetModal(mode, section, seedPreset = null) {
         const id = document.getElementById('preset-select').value;
         const p = sessionState.presets.find(pr => pr.id === id);
         if (!p) { showToast('No preset selected', 'warn'); return; }
+        _presetBundleDraft = bundleClone(p.bundle);
         title.textContent = 'Edit Preset';
         if (subtitle) {
             subtitle.textContent = 'Model profile';
@@ -1684,6 +1943,7 @@ export function openPresetModal(mode, section, seedPreset = null) {
         if (workloadWrap) workloadWrap.style.display = p.bundle ? '' : 'none';
         setOpt('modal-workload-policy', p.bundle?.workload_policy || 'general_chat');
     } else {
+        _presetBundleDraft = bundleClone(newPresetSeed?.bundle);
         title.textContent = 'New Preset';
         if (subtitle) {
             subtitle.textContent = newPresetSeed?.backend === 'rapid_mlx'
@@ -1750,6 +2010,15 @@ export function openPresetModal(mode, section, seedPreset = null) {
         if (calibrateBtn) calibrateBtn.style.display = 'none';
     }
 
+    const variantsNav = modal.querySelector('.preset-nav-item[data-section="variants"]');
+    const variantsSection = modal.querySelector('.preset-editor-section[data-section="variants"]');
+    const supportsBundles = newPresetSeed?.backend !== 'rapid_mlx'
+        && _currentModalPreset()?.backend !== 'rapid_mlx';
+    if (variantsNav) variantsNav.hidden = !supportsBundles;
+    if (variantsSection) variantsSection.hidden = !supportsBundles;
+    const convertButton = modal.querySelector('#preset-convert-bundle');
+    if (convertButton) convertButton.hidden = !supportsBundles || !document.getElementById('modal-preset-id')?.value;
+    renderPresetBundleEditor();
     modal.classList.add('open');
     // Navigate to specified section, or reset to first section
     const targetSection = section || 'model';
@@ -1784,6 +2053,7 @@ export function openPresetModal(mode, section, seedPreset = null) {
 export function closePresetModal() {
     document.getElementById('preset-modal').classList.remove('open');
     newPresetSeed = null;
+    _presetBundleDraft = null;
 }
 
 // ── Presets Panel ──────────────────────────────────────────────────────────────
@@ -2763,6 +3033,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function _buildFormPreset(existing) {
+    updateBundleSelectionFromEditor();
     if (existing.backend === 'rapid_mlx') {
         const rapidPort = intOrNull('modal-port');
         return {
@@ -2966,10 +3237,10 @@ function _buildFormPreset(existing) {
         spec_draft_p_split: floatOrNull('modal-spec-draft-p-split'),
         image_min_tokens: intOrNull('modal-image-min-tokens'),
         image_max_tokens: intOrNull('modal-image-max-tokens'),
-        ...(existing.bundle ? {
+        ...(_presetBundleDraft ? {
             bundle: {
-                ...existing.bundle,
-                workload_policy: strVal('modal-workload-policy') || existing.bundle.workload_policy || 'general_chat',
+                ..._presetBundleDraft,
+                workload_policy: strVal('modal-workload-policy') || _presetBundleDraft.workload_policy || 'general_chat',
             },
         } : {}),
     };
@@ -3057,6 +3328,15 @@ function _buildChangeSummary(existing, incoming) {
                 changes.push({ label: RAPID_CHANGE_LABELS[key], from: fPrev, to: fNext });
             }
         }
+    }
+    const prevBundle = existing?.bundle ? JSON.stringify(existing.bundle) : '';
+    const nextBundle = incoming?.bundle ? JSON.stringify(incoming.bundle) : '';
+    if (prevBundle !== nextBundle) {
+        changes.push({
+            label: 'Model variants and launch choices',
+            from: existing?.bundle ? `${existing.bundle.artifacts?.length || 0} artifacts` : 'single artifact',
+            to: incoming?.bundle ? `${incoming.bundle.artifacts?.length || 0} artifacts` : 'single artifact',
+        });
     }
     return changes;
 }
@@ -3166,7 +3446,7 @@ export async function savePreset(event) {
                 headers: window.authHeaders
                     ? { ...window.authHeaders(), 'Content-Type': 'application/json' }
                     : { 'Content-Type': 'application/json' },
-                body: JSON.stringify(preset),
+                body: JSON.stringify({ ...preset, expected_revision: existing.revision ?? 1 }),
             });
             if (!resp.ok) {
                 const err = await resp.text().catch(() => 'Unknown error');
@@ -3229,17 +3509,13 @@ async function duplicatePresetById(id, options = {}) {
     const p = sessionState.presets.find(pr => pr.id === id);
     if (!p) { showToast('No preset selected', 'warn'); return; }
 
-    const copy = Object.assign({}, p);
-    delete copy.id;
-    copy.name = buildDuplicatePresetName(p.name);
-
     try {
-        const resp = await fetch('/api/presets', {
+        const resp = await fetch('/api/presets/' + encodeURIComponent(id) + '/copy', {
             method: 'POST',
             headers: window.authHeaders
                 ? { ...window.authHeaders(), 'Content-Type': 'application/json' }
                 : { 'Content-Type': 'application/json' },
-            body: JSON.stringify(copy),
+            body: JSON.stringify({ expected_revision: p.revision ?? 1, new_name: buildDuplicatePresetName(p.name) }),
         });
         if (!resp.ok) {
             const err = await resp.text().catch(() => 'Unknown error');
@@ -3264,13 +3540,21 @@ export async function deletePreset() {
     const p = sessionState.presets.find(pr => pr.id === id);
     if (!p) { showToast('No preset selected', 'warn'); return; }
 
+    let catalogEtag;
+    try {
+        catalogEtag = await freshPresetCatalogEtag();
+    } catch (error) {
+        showToast(`Delete cancelled: ${error.message || error}`, 'error');
+        return;
+    }
     const confirmed = await _showConfirm('Delete preset', 'Delete preset "' + escapeHtml(p.name) + '"? This cannot be undone.');
     if (!confirmed) return;
 
     try {
         const resp = await fetch('/api/presets/' + encodeURIComponent(id), {
             method: 'DELETE',
-            headers: window.authHeaders ? window.authHeaders() : {},
+            headers: { ...(window.authHeaders ? window.authHeaders() : {}), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expected_revision: p.revision ?? 1, expected_catalog_etag: catalogEtag, confirmation: 'DELETE PRESET' }),
         });
         if (!resp.ok) {
             const err = await resp.text().catch(() => 'Unknown error');
@@ -3285,6 +3569,13 @@ export async function deletePreset() {
 }
 
 export async function resetPresets() {
+    let catalogEtag;
+    try {
+        catalogEtag = await freshPresetCatalogEtag();
+    } catch (error) {
+        showToast(`Reset cancelled: ${error.message || error}`, 'error');
+        return;
+    }
     const ok = await showConfirmDialog(
         'Reset presets',
         'Reset all presets to built-in defaults? Custom presets will be removed.',
@@ -3294,7 +3585,8 @@ export async function resetPresets() {
     try {
         const resp = await fetch('/api/presets/reset', {
             method: 'POST',
-            headers: window.authHeaders ? window.authHeaders() : {},
+            headers: { ...(window.authHeaders ? window.authHeaders() : {}), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expected_catalog_etag: catalogEtag, confirmation: 'RESET PRESETS' }),
         });
         if (!resp.ok) {
             const err = await resp.text().catch(() => 'Unknown error');
@@ -3786,6 +4078,19 @@ export function initPresets() {
     document.getElementById('preset-modal-cancel')?.addEventListener('click', closePresetModal);
     document.getElementById('preset-modal-back')?.addEventListener('click', _hideSummary);
     document.getElementById('preset-vram-auto-size')?.addEventListener('click', autoSizePreset);
+    document.getElementById('preset-convert-bundle')?.addEventListener('click', convertCurrentPresetToBundle);
+    document.getElementById('preset-bundle-add')?.addEventListener('click', addBundleArtifact);
+    document.getElementById('preset-bundle-browse')?.addEventListener('click', () => openModelFileBrowser('modal-bundle-artifact-path', 'gguf', null, 'model'));
+    document.querySelector('.preset-editor-section[data-section="variants"]')?.addEventListener('change', event => {
+        if (event.target.matches('#modal-bundle-artifact, #modal-bundle-context, #modal-bundle-kv, #modal-bundle-performance, #modal-bundle-cpu-moe')) {
+            updateBundleSelectionFromEditor();
+            renderPresetBundleEditor();
+        }
+    });
+    document.querySelector('.preset-editor-section[data-section="variants"]')?.addEventListener('click', event => {
+        const remove = event.target.closest('.preset-bundle-remove');
+        if (remove) removeBundleArtifact(remove.dataset.artifactId);
+    });
 
     // Chat Template Manage modal — shared with the Spawn Wizard(s) via chat-template-panel.js.
     bindChatTemplateManageModalChrome();
@@ -3820,6 +4125,13 @@ export function initPresets() {
         const id = document.getElementById('modal-preset-id').value;
         const p = sessionState.presets.find(pr => pr.id === id);
         if (!p) { showToast('No preset selected', 'warn'); return; }
+        let catalogEtag;
+        try {
+            catalogEtag = await freshPresetCatalogEtag();
+        } catch (error) {
+            showToast(`Delete cancelled: ${error.message || error}`, 'error');
+            return;
+        }
         const ok = await showConfirmDialog(
             'Delete preset',
             `Delete preset "${p.name}"? This cannot be undone.`,
@@ -3829,7 +4141,8 @@ export function initPresets() {
         try {
             const resp = await fetch('/api/presets/' + encodeURIComponent(id), {
                 method: 'DELETE',
-                headers: window.authHeaders ? window.authHeaders() : {},
+                headers: { ...(window.authHeaders ? window.authHeaders() : {}), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ expected_revision: p.revision ?? 1, expected_catalog_etag: catalogEtag, confirmation: 'DELETE PRESET' }),
             });
             if (!resp.ok) {
                 const err = await resp.text().catch(() => 'Unknown error');
