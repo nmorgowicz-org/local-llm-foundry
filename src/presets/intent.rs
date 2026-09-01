@@ -406,7 +406,7 @@ mod tests {
         PresetDigestCoverage,
     };
 
-    fn context(unified: bool, moe: bool) -> (ModelPreset, CapabilitySnapshot) {
+    fn context(_unified: bool, moe: bool) -> (ModelPreset, CapabilitySnapshot) {
         let mut artifact = crate::presets::bundle::PresetModelArtifact {
             id: "q4".into(),
             role: PresetArtifactRole::Weights,
