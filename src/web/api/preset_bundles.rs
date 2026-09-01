@@ -99,6 +99,9 @@ fn api_get_preset_cards(
                 warp::reply::json(&serde_json::json!({
                     "cards": cards,
                     "catalog_etag": etag,
+                    // Architecture invariant 16: the render kill-switch reaches
+                    // the UI only as a closed enum, resolved server-side.
+                    "preset_bundle_ui": cfg.preset_bundle_ui.to_wire(),
                 })),
             )))
         })

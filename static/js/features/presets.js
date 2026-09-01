@@ -767,8 +767,10 @@ export async function loadPresets(selectId) {
     const sel = document.getElementById('preset-select');
     sel.innerHTML = '';
     sessionState.presets.forEach(p => {
-        // Skip built-in/example presets that have no model (they are templates, not usable)
-        if (!presetModelSource(p)) return;
+        // Skip built-in/example presets that have no model (they are templates, not usable).
+        // Bundle presets stay even when their selected artifact has no local file yet:
+        // the card degrades to "Set up model" and the bundle is a real preset, not a template.
+        if (!presetModelSource(p) && !p.bundle) return;
         const opt = document.createElement('option');
         opt.value = p.id;
         opt.textContent = p.name;

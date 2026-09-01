@@ -40,6 +40,76 @@ function rapidPreset(id = 'rapid', name = 'Rapid model') {
   };
 }
 
+// A v6 preset bundle: two weights artifacts (Q4/Q5) that differ only by
+// quantization. The flat fields mirror what the server's
+// `materialize_default_projection` would have written for `default_selection`,
+// so the legacy one-artifact adapter renders from real data rather than a
+// hand-tuned shape that only exists in this file.
+function bundlePreset(id = 'bundled', name = 'Bundled preset', overrides = {}) {
+  return {
+    ...preset(id, name, '/models/qwen3-27b-q4_k_m.gguf'),
+    context_size: 200704,
+    ctk: 'q8_0',
+    ctv: 'q8_0',
+    batch_size: 2048,
+    ubatch_size: 512,
+    n_cpu_moe: 0,
+    revision: 7,
+    bundle: {
+      identity: {
+        bundle_id: 'qwen3-27b',
+        tune_id: 'brainwaves-wfh',
+        display_name: 'Qwen3.8 27B · Brainwaves WFH',
+      },
+      artifacts: [
+        {
+          id: 'art-q4',
+          role: 'weights',
+          display_name: 'Qwen3.8-27B-Q4_K_M.gguf',
+          local_path: '/models/qwen3-27b-q4_k_m.gguf',
+          hf_origin: null,
+          size_bytes: 17179869184,
+          digest: null,
+          quantization: { value: 'q4_k_m', provenance: 'filename' },
+          metadata: {},
+          extra: {},
+        },
+        {
+          id: 'art-q5',
+          role: 'weights',
+          display_name: 'Qwen3.8-27B-Q5_K_M.gguf',
+          local_path: '/models/qwen3-27b-q5_k_m.gguf',
+          hf_origin: null,
+          size_bytes: 20401094656,
+          digest: null,
+          quantization: { value: 'q5_k_m', provenance: 'filename' },
+          metadata: {},
+          extra: {},
+        },
+      ],
+      kv_policies: ['f16_f16', 'q8_0_q8_0', 'q4_0_q4_0'],
+      performance_options: [
+        { id: 'quality', label: 'Quality first', batch_size: 2048, ubatch_size: 512 },
+        { id: 'balanced', label: 'Balanced', batch_size: 512, ubatch_size: 512 },
+      ],
+      n_cpu_moe_options: [0, 8, 16],
+      selections: [],
+      workload_policy: {},
+      // No `intent_source`: this is an exact selection, not a fit intent.
+      default_selection: {
+        artifact_id: 'art-q4',
+        context_size: 200704,
+        kv_policy: 'q8_0_q8_0',
+        performance_id: 'quality',
+        n_cpu_moe: 0,
+      },
+      extra: {},
+      ...(overrides.bundle || {}),
+    },
+    ...(overrides.preset || {}),
+  };
+}
+
 async function installPresetMocks(page, options = {}) {
   const state = {
     presets: [...(options.presets || [preset('original', 'Original'), preset('other', 'Other')])],
@@ -48,6 +118,9 @@ async function installPresetMocks(page, options = {}) {
     putCount: 0,
     spawnPayloads: [],
     attachPayloads: [],
+    resolvePayloads: [],
+    selectionPayloads: [],
+    cardsRequests: 0,
   };
 
   await page.route('**/api/settings', route => route.fulfill({
@@ -103,6 +176,20 @@ async function installPresetMocks(page, options = {}) {
 
   await page.route('**/api/sessions/spawn', async route => {
     state.spawnPayloads.push(route.request().postDataJSON());
+    if (options.spawnConflictOnce && state.spawnPayloads.length === 1) {
+      // The saved selection moved under us; the server bumped the revision.
+      state.presets = state.presets.map(p => (p.bundle ? { ...p, revision: (p.revision || 0) + 1 } : p));
+      await route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: false,
+          error: 'revision_conflict',
+          current_revision: state.presets.find(p => p.bundle)?.revision || 0,
+        }),
+      });
+      return;
+    }
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -124,6 +211,61 @@ async function installPresetMocks(page, options = {}) {
     });
   });
 
+  const unifiedMemory = options.unifiedMemory !== false;
+
+  await page.route('**/metrics/system', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ ram_total_gb: 128, ram_used_gb: 40, memory_reclaimable_gb: 8 }),
+  }));
+
+  await page.route('**/metrics/gpu', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify(unifiedMemory
+      ? { gpus: [{ vram_total_mb: 131072, vram_used_mb: 40960, metal_gpu_limit_mb: 114688 }] }
+      : { gpus: [{ vram_total_mb: 24576, vram_used_mb: 2048 }] }),
+  }));
+
+  await page.route('**/api/system/metal-gpu-limit', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ ok: true, limit_mb: unifiedMemory ? 114688 : 0 }),
+  }));
+
+  await page.route('**/api/llama-binary/platform-info', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ ok: true, auto_backend: unifiedMemory ? 'metal' : 'cuda' }),
+  }));
+
+  // Architecture invariant 19: the card's availability line must come from a
+  // live read of this endpoint, never a value frozen at save time.
+  await page.route('**/api/memory-availability', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      ok: true,
+      snapshot: {
+        current_safe_availability_bytes: options.availabilityBytes ?? 29_000_000_000,
+        configured_ceiling_bytes: 120_259_084_288,
+        total_unified_bytes: 137_438_953_472,
+      },
+    }),
+  }));
+
+  await page.route('**/api/vram-estimate', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      ok: true,
+      total_bytes: 26_300_000_000,
+      weights_bytes: 17_179_869_184,
+      kv_cache_bytes: 8_000_000_000,
+      overhead_bytes: 1_120_130_816,
+    }),
+  }));
+
   await page.route(/\/api\/(?:presets|preset-cards)/, async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -132,10 +274,61 @@ async function installPresetMocks(page, options = {}) {
     const id = parts.length === 3 ? decodeURIComponent(parts[2]) : '';
 
     if (url.pathname === '/api/preset-cards' && method === 'GET') {
+      state.cardsRequests += 1;
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ cards: [], catalog_etag: 'catalog-v1:test' }),
+        body: JSON.stringify({
+          cards: state.presets.map(p => ({
+            id: p.id,
+            name: p.name,
+            revision: p.revision || 0,
+            artifacts: (p.bundle?.artifacts || []).map(a => ({
+              id: a.id,
+              role: a.role,
+              display_name: a.display_name,
+              available: a.local_path != null,
+              quantization: a.quantization.value,
+            })),
+          })),
+          catalog_etag: 'catalog-v1:test',
+          // Architecture invariant 16: the render kill-switch reaches the UI
+          // only as a closed enum resolved server-side.
+          preset_bundle_ui: options.presetBundleUi || 'bundled',
+        }),
+      });
+      return;
+    }
+
+    if (url.pathname.endsWith('/resolve') && method === 'POST') {
+      state.resolvePayloads.push(request.postDataJSON());
+      const source = state.presets.find(p => p.id === parts[2]);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          selection: source?.bundle?.default_selection || null,
+          changes: [],
+          estimate: null,
+          capability_reasons: [],
+          evidence: null,
+          selection_hash: 'sel-v1:test',
+          resolved_config_hash: 'cfg-v1:test',
+          revision: source?.revision || 0,
+        }),
+      });
+      return;
+    }
+
+    if (url.pathname.endsWith('/selection') && method === 'PATCH') {
+      state.selectionPayloads.push(request.postDataJSON());
+      const index = state.presets.findIndex(p => p.id === parts[2]);
+      if (index >= 0) state.presets[index] = { ...state.presets[index], revision: (state.presets[index].revision || 0) + 1 };
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, revision: state.presets[index]?.revision || 0 }),
       });
       return;
     }
@@ -446,5 +639,175 @@ test.describe('preset flow', () => {
       api_key: 'attach-transient',
       backend: 'llama_cpp',
     });
+  });
+
+  // ── Phase 8a: compact preset-bundle launch card ────────────────────────────
+
+  test('a two-artifact bundle renders one card with the tune title and saved selection chips', async ({ page }) => {
+    await installPresetMocks(page, { presets: [bundlePreset()] });
+    await boot(page);
+
+    // Q4 and Q5 are alternatives within one bundle, not two launchable presets.
+    // The grid always appends a "New model" onboarding affordance (launch-card--new)
+    // when few presets exist, so count only real preset cards.
+    const cards = page.locator('#setup-launch-grid .launch-card:not(.launch-card--new)');
+    await expect(cards).toHaveCount(1);
+
+    const card = cards.first();
+    await expect(card).toHaveAttribute('data-bundle-id', 'qwen3-27b');
+    await expect(card).toHaveAttribute('data-revision', '7');
+    await expect(card.locator('.launch-card-name')).toHaveText('Qwen3.8 27B · Brainwaves WFH');
+    await expect(card.locator('.launch-card-tune')).toHaveText('Quality first');
+
+    // Chips summarize the saved default selection, not the bundle's options.
+    const chips = card.locator('.launch-card-chips .launch-chip');
+    await expect(chips).toHaveText([/196k context/, /q8_0\/q8_0/, /Q4_K_M/]);
+
+    // The collapsed card never exposes the resolved-config hash (drawer only).
+    await expect(card).not.toContainText('cfg-v1:');
+  });
+
+  test('starting a bundle sends only the preset id and expected revision', async ({ page }) => {
+    const state = await installPresetMocks(page, { presets: [bundlePreset()], spawnPort: 9123 });
+    await boot(page);
+
+    await page.locator('.launch-card[data-preset-id="bundled"] .launch-card-btn-start').click();
+
+    await expect.poll(() => state.spawnPayloads.length).toBe(1);
+    // Resolve-and-launch is server-owned: the client must not ship a selection.
+    expect(state.spawnPayloads[0]).toEqual({ preset_id: 'bundled', expected_revision: 7 });
+    expect(state.resolvePayloads).toHaveLength(0);
+  });
+
+  test('a revision conflict re-renders and re-asks instead of retrying', async ({ page }) => {
+    const state = await installPresetMocks(page, {
+      presets: [bundlePreset()],
+      spawnPort: 9123,
+      spawnConflictOnce: true,
+    });
+    await boot(page);
+
+    const card = page.locator('.launch-card[data-preset-id="bundled"]');
+    await card.locator('.launch-card-btn-start').click();
+
+    await expect(page.locator('.toast').filter({ hasText: /changed/i })).toBeVisible();
+    // One shot only — no silent retry with the stale revision.
+    await expect.poll(() => state.spawnPayloads.length).toBe(1);
+    await expect(card).toHaveAttribute('data-revision', '8');
+
+    // The user re-asks explicitly, and the fresh revision goes out.
+    await card.locator('.launch-card-btn-start').click();
+    await expect.poll(() => state.spawnPayloads.length).toBe(2);
+    expect(state.spawnPayloads[1]).toEqual({ preset_id: 'bundled', expected_revision: 8 });
+  });
+
+  test('a bundle whose selected artifact has no local file degrades to setup before spawning', async ({ page }) => {
+    const state = await installPresetMocks(page, {
+      presets: [bundlePreset('bundled', 'Bundled preset', {
+        preset: { model_path: '' },
+        bundle: {
+          artifacts: [{
+            id: 'art-q4',
+            role: 'weights',
+            display_name: 'Qwen3.8-27B-Q4_K_M.gguf',
+            local_path: null,
+            hf_origin: 'Qwen/Qwen3.8-27B-GGUF',
+            size_bytes: 17179869184,
+            digest: null,
+            quantization: { value: 'q4_k_m', provenance: 'filename' },
+            metadata: {},
+            extra: {},
+          }],
+        },
+      })],
+    });
+    await boot(page);
+
+    const start = page.locator('.launch-card[data-preset-id="bundled"] .launch-card-btn-start');
+    await expect(start).toHaveClass(/launch-card-btn-start--configure/);
+    await expect(start).toHaveText(/Set up model/);
+
+    await start.click();
+    await expect(page).toHaveURL(/\/spawn/);
+    expect(state.spawnPayloads).toHaveLength(0);
+  });
+
+  test('the availability line comes from a live read on unified memory', async ({ page }) => {
+    await installPresetMocks(page, { presets: [bundlePreset()], unifiedMemory: true });
+    await boot(page);
+
+    const vram = page.locator('.launch-card[data-preset-id="bundled"] .launch-card-vram');
+    await expect(vram).not.toHaveClass(/launch-card-vram--loading/);
+    // Architecture invariant 19: the verdict carries the timestamp of the read
+    // it was computed against, so a stale card is visibly stale.
+    const readAt = await vram.getAttribute('data-availability-read-at');
+    expect(readAt).toBeTruthy();
+    expect(Number.isNaN(Date.parse(readAt))).toBe(false);
+  });
+
+  test('the availability line comes from the same live read on discrete VRAM', async ({ page }) => {
+    await installPresetMocks(page, { presets: [bundlePreset()], unifiedMemory: false });
+    await boot(page);
+
+    const vram = page.locator('.launch-card[data-preset-id="bundled"] .launch-card-vram');
+    await expect(vram).not.toHaveClass(/launch-card-vram--loading/);
+    // The discrete branch used to derive availability from /metrics/gpu alone.
+    const readAt = await vram.getAttribute('data-availability-read-at');
+    expect(readAt).toBeTruthy();
+    expect(Number.isNaN(Date.parse(readAt))).toBe(false);
+  });
+
+  test('a one-artifact bundle renders through the same card as a flat preset', async ({ page }) => {
+    const state = await installPresetMocks(page, {
+      presets: [
+        bundlePreset('single', 'Single artifact', {
+          bundle: {
+            artifacts: [{
+              id: 'art-q4',
+              role: 'weights',
+              display_name: 'Qwen3.8-27B-Q4_K_M.gguf',
+              local_path: '/models/qwen3-27b-q4_k_m.gguf',
+              hf_origin: null,
+              size_bytes: 17179869184,
+              digest: null,
+              quantization: { value: 'q4_k_m', provenance: 'filename' },
+              metadata: {},
+              extra: {},
+            }],
+          },
+        }),
+        preset('flat', 'Flat preset'),
+      ],
+    });
+    await boot(page);
+
+    await expect(page.locator('#setup-launch-grid .launch-card:not(.launch-card--new)')).toHaveCount(2);
+    const bundled = page.locator('.launch-card[data-preset-id="single"]');
+    await expect(bundled.locator('.launch-card-btn-configure')).toBeVisible();
+
+    // The flat preset keeps its legacy payload exactly.
+    await page.locator('.launch-card[data-preset-id="flat"] .launch-card-btn-start').click();
+    await expect.poll(() => state.spawnPayloads.length).toBe(1);
+    expect(state.spawnPayloads[0]).toEqual({ preset_id: 'flat' });
+  });
+
+  test('the legacy render flag flattens a bundle through the legacy card path', async ({ page }) => {
+    const state = await installPresetMocks(page, {
+      presets: [bundlePreset()],
+      presetBundleUi: 'legacy',
+    });
+    await boot(page);
+
+    const card = page.locator('.launch-card[data-preset-id="bundled"]');
+    // Legacy mode is the pre-bundle card: preset name, Edit, no bundle affordances.
+    await expect(card.locator('.launch-card-name')).toHaveText('Bundled preset');
+    await expect(card.locator('.launch-card-btn-edit')).toBeVisible();
+    await expect(card.locator('.launch-card-btn-configure')).toHaveCount(0);
+    await expect(card.locator('.launch-card-tune')).toHaveCount(0);
+
+    // ...and the legacy start payload, with no revision handshake.
+    await card.locator('.launch-card-btn-start').click();
+    await expect.poll(() => state.spawnPayloads.length).toBe(1);
+    expect(state.spawnPayloads[0]).toEqual({ preset_id: 'bundled' });
   });
 });

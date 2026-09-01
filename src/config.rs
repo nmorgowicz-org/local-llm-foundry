@@ -458,6 +458,67 @@ pub fn clear_auth_config(config_dir: &std::path::Path) -> std::io::Result<bool> 
     Ok(true)
 }
 
+/// Card presentation mode for preset bundles (architecture invariant 16).
+///
+/// The bundle schema version and the card presentation are independently
+/// controllable. Migration to v6 is forward-only with no downgrade, so a
+/// defective card must be switchable off without touching preset files.
+/// `Legacy` forces one-artifact card rendering even when v6 bundles exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PresetBundleUiMode {
+    /// Render each bundle as one compact card with a Configure drawer.
+    #[default]
+    Bundled,
+    /// Render every preset through the legacy one-artifact adapter.
+    Legacy,
+}
+
+impl PresetBundleUiMode {
+    /// The only representation exposed to the UI: a closed enum, never a raw
+    /// environment string.
+    pub fn to_wire(self) -> &'static str {
+        match self {
+            PresetBundleUiMode::Bundled => "bundled",
+            PresetBundleUiMode::Legacy => "legacy",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "bundled" => Some(PresetBundleUiMode::Bundled),
+            "legacy" => Some(PresetBundleUiMode::Legacy),
+            _ => None,
+        }
+    }
+}
+
+/// Read the render kill-switch from the environment. Canonical
+/// `LOCAL_LLM_FOUNDRY_PRESET_BUNDLE_UI`, with the legacy
+/// `LLAMA_MONITOR_PRESET_BUNDLE_UI` alias named by architecture invariant 16.
+fn resolve_preset_bundle_ui() -> PresetBundleUiMode {
+    let canonical = std::env::var("LOCAL_LLM_FOUNDRY_PRESET_BUNDLE_UI").ok();
+    let legacy = std::env::var("LLAMA_MONITOR_PRESET_BUNDLE_UI").ok();
+    select_preset_bundle_ui(canonical.as_deref(), legacy.as_deref())
+}
+
+/// Unparseable values and disagreeing aliases both fall back to the default so
+/// a typo cannot leave the grid in an unintended rendering mode.
+fn select_preset_bundle_ui(canonical: Option<&str>, legacy: Option<&str>) -> PresetBundleUiMode {
+    let canonical = canonical.and_then(PresetBundleUiMode::parse);
+    let legacy = legacy.and_then(PresetBundleUiMode::parse);
+    match (canonical, legacy) {
+        (Some(canonical), Some(legacy)) if canonical != legacy => {
+            eprintln!(
+                "[warn] LOCAL_LLM_FOUNDRY_PRESET_BUNDLE_UI and LLAMA_MONITOR_PRESET_BUNDLE_UI \
+                 disagree; using the default bundled card"
+            );
+            PresetBundleUiMode::default()
+        }
+        (Some(mode), _) | (None, Some(mode)) => mode,
+        (None, None) => PresetBundleUiMode::default(),
+    }
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct AppConfig {
@@ -472,6 +533,8 @@ pub struct AppConfig {
     pub port: u16,
     pub gpu_backend: String,
     pub llama_poll_interval: u64,
+    /// Render kill-switch for the preset-bundle launch card.
+    pub preset_bundle_ui: PresetBundleUiMode,
     pub models_dir: Option<PathBuf>,
     pub presets_file: PathBuf,
     pub templates_file: PathBuf,
@@ -563,6 +626,7 @@ impl AppConfig {
                 .unwrap_or_else(|| app_paths.sessions_file()),
             ssh_known_hosts_file: app_paths.ssh_known_hosts_file(),
             llama_poll_interval: args.llama_poll_interval,
+            preset_bundle_ui: resolve_preset_bundle_ui(),
             lhm_disabled_file: app_paths.lhm_disabled_file(),
             agent_host: args.agent_host,
             agent_port: args.agent_port,
@@ -629,6 +693,7 @@ impl AppConfig {
             port: 8001,
             gpu_backend: String::new(),
             llama_poll_interval: 1,
+            preset_bundle_ui: PresetBundleUiMode::default(),
             models_dir: None,
             presets_file: std::path::PathBuf::new(),
             templates_file: std::path::PathBuf::new(),
@@ -683,6 +748,35 @@ mod path_resolution_tests {
         assert!(!config.config_dir.exists());
         assert!(config.live_api_token().is_none());
         assert!(config.live_db_admin_token().is_none());
+    }
+
+    #[test]
+    fn preset_bundle_ui_defaults_to_bundled_and_fails_closed() {
+        assert_eq!(
+            select_preset_bundle_ui(None, None),
+            PresetBundleUiMode::Bundled
+        );
+        assert_eq!(
+            select_preset_bundle_ui(Some("legacy"), None),
+            PresetBundleUiMode::Legacy
+        );
+        // The legacy alias named by architecture invariant 16 still works alone.
+        assert_eq!(
+            select_preset_bundle_ui(None, Some("LEGACY")),
+            PresetBundleUiMode::Legacy
+        );
+        // A typo must not silently pick the other mode.
+        assert_eq!(
+            select_preset_bundle_ui(Some("bundle"), None),
+            PresetBundleUiMode::Bundled
+        );
+        // Disagreeing aliases fall back to the default rather than guessing.
+        assert_eq!(
+            select_preset_bundle_ui(Some("legacy"), Some("bundled")),
+            PresetBundleUiMode::Bundled
+        );
+        assert_eq!(PresetBundleUiMode::Legacy.to_wire(), "legacy");
+        assert_eq!(PresetBundleUiMode::Bundled.to_wire(), "bundled");
     }
 
     #[test]

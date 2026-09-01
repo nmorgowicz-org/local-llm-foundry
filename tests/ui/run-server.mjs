@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // run-server.mjs — cross-platform replacement for run-server.sh.
-// Creates a fresh temp config dir, starts the llama-monitor binary, and
+// Creates a fresh temp config dir, starts the local-llm-foundry binary, and
 // cleans up on exit. Works on Linux, macOS, and Windows.
 //
 // IMPORTANT (live dev instance):
@@ -57,7 +57,7 @@ testEnv.LLAMA_MONITOR_FAKE_RAPID_MLX_LOCAL_AVAILABLE = '1';
 
 let child;
 if (useRelease) {
-    const binaryPath = join(repoRoot, 'target', 'release', process.platform === 'win32' ? 'llama-monitor.exe' : 'llama-monitor');
+    const binaryPath = join(repoRoot, 'target', 'release', process.platform === 'win32' ? 'local-llm-foundry.exe' : 'local-llm-foundry');
     child = spawn(binaryPath, [
         '--headless',
         '--port', testPort,
@@ -71,6 +71,7 @@ if (useRelease) {
 } else {
     const cargoArgs = [
         'run',
+        '--bin', 'local-llm-foundry',
         '--',
         '--headless',
         '--port', testPort,

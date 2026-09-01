@@ -167,6 +167,9 @@ const launchFilters = {
 const _MEM_SAFETY_MARGIN = 512 * 1024 * 1024; // 512 MB safety margin for allocations
 
 // Cached memory state shared between the memory bar and card VRAM estimates.
+// readAt is the timestamp of the live /api/memory-availability read the verdict
+// was computed against (architecture invariant 19) — surfaced on each card's
+// VRAM element so a stale card is visibly stale.
 let _memState = {
     availBytes: 0,
     budgetIfPurgedBytes: 0,
@@ -174,7 +177,62 @@ let _memState = {
     availRamBytes: 0,
     isUnified: false,
     reclaimableBytes: 0,
+    readAt: null,
 };
+
+// Architecture invariant 19: the availability read is fetched once per render
+// of the memory bar, before the unified/discrete dispatch, so BOTH branches
+// (unified unified-memory and discrete-VRAM) consume the same live snapshot
+// rather than each deriving availability from their own metrics.
+async function _fetchMemoryAvailability() {
+    try {
+        const headers = window.authHeaders ? window.authHeaders() : {};
+        const resp = await fetch('/api/memory-availability', { headers });
+        if (!resp.ok) return null;
+        const data = await resp.json();
+        const snapshot = (data && data.ok && data.snapshot) ? data.snapshot : null;
+        return snapshot
+            ? { bytes: snapshot.current_safe_availability_bytes || 0, readAt: new Date().toISOString() }
+            : null;
+    } catch {
+        return null;
+    }
+}
+
+// Architecture invariant 16: the render kill-switch reaches the UI only as a
+// closed enum resolved server-side. 'bundled' renders the compact launch card;
+// 'legacy' (the pre-bundle fallback) renders through the flat preset shape. The
+// value is fetched from /api/preset-cards, validated against the closed enum,
+// and applied once. Unknown values fail closed to 'bundled'.
+let _presetBundleUi = 'bundled';
+let _presetBundleUiLoaded = false;
+let _presetBundleUiPromise = null;
+
+async function _refreshPresetBundleUi() {
+    if (_presetBundleUiLoaded) return _presetBundleUi;
+    if (!_presetBundleUiPromise) {
+        _presetBundleUiPromise = (async () => {
+            try {
+                const headers = window.authHeaders ? window.authHeaders() : {};
+                const resp = await fetch('/api/preset-cards', { headers });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    const mode = data && data.preset_bundle_ui;
+                    if (mode === 'bundled' || mode === 'legacy') _presetBundleUi = mode;
+                }
+            } catch {
+                // fail closed to the default 'bundled'
+            }
+            _presetBundleUiLoaded = true;
+            // If presets already rendered the grid under the default 'bundled'
+            // assumption, refresh once the authoritative mode is known so a legacy
+            // deployment never lingers on the compact bundle card (or vice versa).
+            if (document.getElementById('setup-launch-grid')) renderLaunchGrid();
+            return _presetBundleUi;
+        })();
+    }
+    return _presetBundleUiPromise;
+}
 
 function _osReserveForUnified(ramTotalBytes) {
     // OS reserve: how much of total RAM must never be treated as usable for inference.
@@ -327,10 +385,18 @@ export async function fetchAndRenderMemoryBar() {
             }
         }
 
+        // Fetch the live availability snapshot once, before dispatching, so the
+        // unified and discrete branches share the same read (invariant 19). The
+        // read timestamp is stamped on _memState NOW — before the card VRAM
+        // estimates render — so every card's fit verdict carries the time it was
+        // computed against.
+        const availability = await _fetchMemoryAvailability();
+        _memState.readAt = availability ? availability.readAt : null;
+
         if (isUnified) {
-            await _renderUnifiedMemoryBar(bar, purgeBtn, metalGpuLimitMb, ramTotalBytes, ramUsedBytes, reclaimableBytes, sysData);
+            await _renderUnifiedMemoryBar(bar, purgeBtn, metalGpuLimitMb, ramTotalBytes, ramUsedBytes, reclaimableBytes, sysData, availability);
         } else if (vramTotalBytes > 0) {
-            await _renderDiscreteMemoryBar(bar, purgeBtn, vramTotalBytes, vramUsedBytes, ramTotalBytes, ramUsedBytes);
+            await _renderDiscreteMemoryBar(bar, purgeBtn, vramTotalBytes, vramUsedBytes, ramTotalBytes, ramUsedBytes, availability);
         } else {
             // no usable metrics
         }
@@ -340,7 +406,7 @@ export async function fetchAndRenderMemoryBar() {
 }
 
 // Unified (macOS) path: single pool, Metal cap, reclaimable cache.
-async function _renderUnifiedMemoryBar(bar, purgeBtn, metalGpuLimitMb, ramTotalBytes, ramUsedBytes, reclaimableBytes, sysData) {
+async function _renderUnifiedMemoryBar(bar, purgeBtn, metalGpuLimitMb, ramTotalBytes, ramUsedBytes, reclaimableBytes, sysData, availability) {
     if (!ramTotalBytes) return;
 
     const cap = _metalCap(ramTotalBytes, metalGpuLimitMb);
@@ -373,18 +439,10 @@ async function _renderUnifiedMemoryBar(bar, purgeBtn, metalGpuLimitMb, ramTotalB
     let availNow = Math.max(0, Math.min(safeLimit, freeNow + likelyReclaimable - _MEM_SAFETY_MARGIN));
 
     // Phase 5b Part C: prefer the backend's MemoryAvailabilitySnapshot for
-    // current_safe_availability_bytes — the single source of truth.
-    try {
-        const headers = window.authHeaders ? window.authHeaders() : {};
-        const resp = await fetch('/api/memory-availability', { headers });
-        if (resp.ok) {
-            const data = await resp.json();
-            if (data.ok && data.snapshot && data.snapshot.current_safe_availability_bytes > 0) {
-                availNow = data.snapshot.current_safe_availability_bytes;
-            }
-        }
-    } catch {
-        // fall back to local calculation
+    // current_safe_availability_bytes — the single source of truth. The read is
+    // shared with the discrete branch and the card timestamps (invariant 19).
+    if (availability && availability.bytes > 0) {
+        availNow = availability.bytes;
     }
 
     // If user purges: all reclaimable becomes free; new "available" =:
@@ -572,6 +630,7 @@ async function _renderUnifiedMemoryBar(bar, purgeBtn, metalGpuLimitMb, ramTotalB
         availRamBytes: 0,
         isUnified: true,
         reclaimableBytes,
+        readAt: availability ? availability.readAt : null,
     };
 
     // Card VRAM estimates use:
@@ -595,7 +654,7 @@ async function _fetchDbAdminTokenForSystemAction() {
 }
 
 // Discrete GPU path (Win/Linux): VRAM bar + system RAM as overflow.
-async function _renderDiscreteMemoryBar(bar, purgeBtn, vramTotalBytes, vramUsedBytes, ramTotalBytes, ramUsedBytes) {
+async function _renderDiscreteMemoryBar(bar, purgeBtn, vramTotalBytes, vramUsedBytes, ramTotalBytes, ramUsedBytes, availability) {
     const vramFree = Math.max(0, vramTotalBytes - vramUsedBytes);
     const ramFreeBytes = Math.max(0, ramTotalBytes - ramUsedBytes);
 
@@ -632,6 +691,7 @@ async function _renderDiscreteMemoryBar(bar, purgeBtn, vramTotalBytes, vramUsedB
         availRamBytes: ramFreeBytes,
         isUnified: false,
         reclaimableBytes: 0,
+        readAt: availability ? availability.readAt : null,
     };
 
     _fetchCardVramEstimates(vramFree, ramFreeBytes, false, vramFree);
@@ -994,6 +1054,49 @@ function _renderGroupedLaunchGrid(grid, presets, activePresetId, hasUserPresets,
     }
 }
 
+// Phase 8a: project a v6 preset bundle onto the compact launch card. The card
+// shows the bundle identity (tune display name), the saved default selection's
+// chips, and the selected artifact's quantization — never the resolved-config
+// hash (that is drawer-only). `degraded` is true when the selected artifact has
+// no local file, which downgrades the Start button to the setup-wizard path.
+function _bundleCardView(preset) {
+    const bundle = preset.bundle;
+    if (!bundle || !bundle.artifacts || !bundle.artifacts.length) return null;
+    const sel = bundle.default_selection || {};
+    const selected =
+        bundle.artifacts.find(a => a.id === sel.artifact_id) ||
+        bundle.artifacts.find(a => a.role === 'weights') ||
+        bundle.artifacts[0];
+    const perf = (bundle.performance_options || []).find(p => p.id === sel.performance_id) || null;
+    // The KV policy is a wire id of the form `CTK_CTV` (e.g. `q8_0_q8_0`); each
+    // dtype can itself contain an underscore, so it is not safe to split on '_'.
+    // The known policies mirror server LlamaKvPolicyId; the card chip shows the
+    // readable `CTK/CTV` form. Unknown policies fall back to the flat preset KV.
+    const kvPolicyDisplay = {
+        f16_f16: 'f16/f16',
+        q8_0_q8_0: 'q8_0/q8_0',
+        q4_0_q4_0: 'q4_0/q4_0',
+        q8_0_q4_0: 'q8_0/q4_0',
+    };
+    const kvDisplay = kvPolicyDisplay[sel.kv_policy] || (sel.kv_policy || (preset.ctk || 'q8_0') + '/' + (preset.ctv || 'f16'));
+    const ctxDisplay = preset.context_size
+        ? (Math.round(preset.context_size / 1024) >= 1000
+            ? `${(Math.round(preset.context_size / 1024) / 1024).toFixed(1)}M context`
+            : `${Math.round(preset.context_size / 1024)}k context`)
+        : '128k context';
+    const quantDisplay = (selected.quantization && selected.quantization.value) ? selected.quantization.value.toUpperCase() : '';
+    return {
+        identity: bundle.identity || null,
+        bundleId: (bundle.identity && bundle.identity.bundle_id) || '',
+        tuneLabel: perf ? perf.label : null,
+        ctxDisplay,
+        kvDisplay,
+        quantDisplay,
+        selected,
+        degraded: !(selected && selected.local_path),
+    };
+}
+
 function _buildLaunchCard(preset, activePresetId) {
     const isExample = preset.id.startsWith('default-');
     const card = document.createElement('div');
@@ -1006,18 +1109,27 @@ function _buildLaunchCard(preset, activePresetId) {
     if (isRunning) card.classList.add('launch-card--running');
 
     const rapidMlx = preset.rapid_mlx;
+    // Phase 8a: a v6 bundle renders one compact card (tune name + saved selection
+    // chips) instead of the flat one-artifact shape. The kill-switch (_presetBundleUi)
+    // collapses it back through the flat path. Example cards never take the bundle
+    // branch.
+    const bundleView = (isExample || _presetBundleUi === 'legacy') ? null : _bundleCardView(preset);
+
     const modelSource = preset.backend === 'rapid_mlx'
         ? (rapidMlx?.model_source_view?.canonical_identity
             || rapidMlx?.model_source_view?.display_name || '')
         : (preset.model_path || preset.hf_repo || '');
-    const modelFile = (preset.model_path || '').split(/[/\\]/).pop() ||
+    const flatModelFile = (preset.model_path || '').split(/[/\\]/).pop() ||
                       (preset.backend === 'rapid_mlx' ? modelSource.split(/[/\\]/).pop() : '') ||
                       (preset.hf_repo ? preset.hf_repo.split('/').slice(-1)[0] : '');
-    const hasModel = !!modelFile;
+    const modelFile = bundleView ? (bundleView.selected?.display_name || flatModelFile) : flatModelFile;
+    const hasModel = !!modelFile && !(bundleView && bundleView.degraded);
     const backendLabel = preset.backend === 'rapid_mlx' ? 'Rapid-MLX' : 'llama-server';
+    // A bundle card leads with the tune's display name, not the preset's stored name.
+    const displayName = (bundleView && bundleView.identity?.display_name) || preset.name;
 
     const ctxK = preset.context_size ? Math.round(preset.context_size / 1024) : 128;
-    const ctxDisplay = ctxK >= 1000 ? `${(ctxK / 1024).toFixed(1)}M context` : `${ctxK}k context`;
+    let ctxDisplay = ctxK >= 1000 ? `${(ctxK / 1024).toFixed(1)}M context` : `${ctxK}k context`;
     const isRapidMlx = preset.backend === 'rapid_mlx';
     let ctkDisplay;
     if (isRapidMlx) {
@@ -1031,7 +1143,15 @@ function _buildLaunchCard(preset, activePresetId) {
     } else {
         ctkDisplay = (preset.ctk || 'q8_0') + '/' + (preset.ctv || 'f16');
     }
-    const quantTag = extractQuantFromFilename(modelFile);
+    let quantTag = extractQuantFromFilename(modelFile);
+    if (bundleView) {
+        // Bundle chips summarize the saved default selection, not the bundle's
+        // full option lists. The quantization comes from the selected artifact's
+        // declared quant, not a filename guess.
+        ctxDisplay = bundleView.ctxDisplay;
+        ctkDisplay = bundleView.kvDisplay;
+        quantTag = bundleView.quantDisplay;
+    }
     const rapidCacheMib = preset.backend === 'rapid_mlx' && rapidMlx?.prefix_cache_enabled !== false
         ? (rapidMlx?.retained_cache_mib ?? 8192) : 0;
     const rapidCacheChip = rapidCacheMib > 0
@@ -1082,10 +1202,21 @@ function _buildLaunchCard(preset, activePresetId) {
             ? `<div class="launch-card-arch" title="${escapeHtml(arch.tooltip)}">${escapeHtml(arch.display)}</div>`
             : '';
 
+        // Phase 8a bundle affordances. data-bundle-id / data-revision (set on the
+        // card root below) carry the revision handshake; .launch-card-tune shows
+        // the saved performance label; .launch-card-btn-configure opens the bundle
+        // drawer (phase 8b) in place of the flat Edit button.
+        const tuneHtml = bundleView && bundleView.tuneLabel
+            ? `<div class="launch-card-tune" title="Saved tune (performance) selection">${escapeHtml(bundleView.tuneLabel)}</div>`
+            : '';
+        const configButtonHtml = bundleView
+            ? '<button class="launch-card-btn-configure" type="button">Configure</button>'
+            : '';
+
         // eslint-disable-next-line no-unsanitized/property -- content sanitized via escapeHtml
         card.innerHTML = `
             <div class="launch-card-top">
-                <div class="launch-card-name" title="${escapeHtml(preset.name)}">${escapeHtml(preset.name)}</div>
+                <div class="launch-card-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</div>
                 ${isRunning ? '<span class="launch-card-running-badge">● Running</span>' : ''}
             </div>
             <div class="launch-card-meta">
@@ -1094,16 +1225,18 @@ function _buildLaunchCard(preset, activePresetId) {
             </div>
             <div class="launch-card-model ${hasModel ? '' : 'launch-card-model--empty'}" title="${escapeHtml(modelFile || '')}">${escapeHtml(modelFile || 'No model configured')}</div>
             ${archHtml}
+            ${tuneHtml}
             <div class="launch-card-chips">
                 <span class="launch-chip">${ctxDisplay}</span>
                 <span class="launch-chip">${ctkDisplay}</span>
-                ${quantTag ? `<span class="launch-chip launch-chip--quant" title="File quantization: ${escapeHtml(quantTag)}">${escapeHtml(quantTag)}</span>` : ''}
+                ${quantTag ? `<span class="launch-chip launch-chip--quant" title="Quantization: ${escapeHtml(quantTag)}">${escapeHtml(quantTag)}</span>` : ''}
                 ${rapidCacheChip}
                 ${preset.ngram_spec ? '<span class="launch-chip launch-chip--accent">n-gram</span>' : ''}
             </div>
             ${tagPills}
             ${hasModel ? '<div class="launch-card-vram launch-card-vram--loading"><span class="launch-card-vram-total">…</span></div>' : ''}
-            <div class="launch-card-actions">
+            <div class="launch-card-actions${bundleView ? ' launch-card-actions--bundle' : ''}">
+                ${configButtonHtml}
                 <button class="launch-card-btn-edit" type="button">Edit</button>
                 <button class="launch-card-btn-start ${hasModel ? '' : 'launch-card-btn-start--configure'}" type="button"
                     title="${hasModel ? `Start ${backendLabel} with this preset` : 'Open the setup wizard to set up a model for this preset'}">
@@ -1122,6 +1255,13 @@ function _buildLaunchCard(preset, activePresetId) {
             </div>
         `;
 
+        // Revision handshake lives on the card root: the resolve-and-launch
+        // payload and the conflict re-render both key off these attributes.
+        if (bundleView && bundleView.bundleId) {
+            card.dataset.bundleId = bundleView.bundleId;
+            card.dataset.revision = String(preset.revision ?? '');
+        }
+
         card.querySelector('.launch-card-btn-edit').addEventListener('click', () => {
             import('./presets.js').then(({ openPresetModal, syncSelectedPresetSelection }) => {
                 syncSelectedPresetSelection(preset.id, { userIntent: true, persist: true });
@@ -1129,17 +1269,34 @@ function _buildLaunchCard(preset, activePresetId) {
             });
         });
 
-        // Quick-edit: click context or KV chip to open preset modal focused on context section
-        card.querySelectorAll('.launch-chip:not(.launch-chip--quant)').forEach(chip => {
-            chip.style.cursor = 'pointer';
-            chip.title = 'Click to quickly edit context or KV cache settings';
-            chip.addEventListener('click', () => {
-                import('./presets.js').then(({ openPresetModal, syncSelectedPresetSelection }) => {
-                    syncSelectedPresetSelection(preset.id, { userIntent: true, persist: true });
-                    openPresetModal('edit', 'context');
-                });
+        // Phase 8a: bundle cards carry a dedicated Configure affordance that opens
+        // the bundle drawer (phase 8b). Until the drawer module is present we fall
+        // back to the existing bundle editor so the button is never a dead end.
+        const configBtn = card.querySelector('.launch-card-btn-configure');
+        if (configBtn) configBtn.addEventListener('click', () => {
+            import('./presets.js').then(({ syncSelectedPresetSelection, openPresetModal }) => {
+                syncSelectedPresetSelection(preset.id, { userIntent: true, persist: true });
+                import('./preset-bundle-drawer.js')
+                    .then(({ openBundleDrawer }) => openBundleDrawer(preset))
+                    .catch(() => openPresetModal('edit'));
             });
         });
+
+        // Quick-edit: click context or KV chip to open preset modal focused on context section.
+        // Bundle chips summarize the saved selection and are edited through the drawer,
+        // not the flat context quick-edit, so they don't inherit this handler.
+        if (!bundleView) {
+            card.querySelectorAll('.launch-chip:not(.launch-chip--quant)').forEach(chip => {
+                chip.style.cursor = 'pointer';
+                chip.title = 'Click to quickly edit context or KV cache settings';
+                chip.addEventListener('click', () => {
+                    import('./presets.js').then(({ openPresetModal, syncSelectedPresetSelection }) => {
+                        syncSelectedPresetSelection(preset.id, { userIntent: true, persist: true });
+                        openPresetModal('edit', 'context');
+                    });
+                });
+            });
+        }
 
         card.querySelector('.launch-card-btn-trash').addEventListener('click', async (e) => {
             e.stopPropagation();
@@ -1168,9 +1325,13 @@ function _buildLaunchCard(preset, activePresetId) {
                 Router.navigate('/spawn');
                 return;
             }
+            // Phase 8a: resolve-and-launch is server-owned. The card ships only the
+            // preset id + expected revision; the server resolves the bundle's saved
+            // selection and launches. Bundles carry the revision; flat presets don't.
+            const expectedRevision = bundleView ? (preset.revision ?? null) : null;
             import('./presets.js').then(({ syncSelectedPresetSelection }) => {
                 syncSelectedPresetSelection(preset.id, { userIntent: true, persist: true });
-                import('./attach-detach.js').then(({ doStartFromSetup }) => doStartFromSetup());
+                import('./attach-detach.js').then(({ doStartFromSetup }) => doStartFromSetup({ expectedRevision }));
             });
         });
     }
@@ -1373,6 +1534,10 @@ function _renderCardVram(el, data, availBytes, availRamBytes, isUnified, budgetI
 
     el.classList.remove('launch-card-vram--loading');
     el.title = parts.join(' · ');
+    // Architecture invariant 19: surface the timestamp of the live availability
+    // read the fit verdict was computed against, so a stale card is visibly stale.
+    if (_memState.readAt) el.dataset.availabilityReadAt = _memState.readAt;
+    else delete el.dataset.availabilityReadAt;
     // eslint-disable-next-line no-unsanitized/property -- all values are numeric; no user strings
     el.innerHTML = `
         <div class="launch-card-memory-bars">
@@ -1998,7 +2163,11 @@ export function initViewState() {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-export function initSetupView() {
+export async function initSetupView() {
+    // Resolve the render kill-switch before the first grid paint. The flag is a
+    // closed enum from /api/preset-cards; a bundle preset must not flash as the
+    // compact card (or the legacy flat card) until we know which mode to render.
+    await _refreshPresetBundleUi();
     // Initialize view state immediately — defensive functions return early if DOM not ready
     initViewState();
 }
