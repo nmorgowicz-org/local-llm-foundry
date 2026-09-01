@@ -38,6 +38,22 @@ multimodal-projector offload are separate from Rapid-MLX request-default
 reasoning settings. Bundle workload policy is shown only for bundled presets;
 flat presets do not gain that field.
 
+### Canonical llama.cpp wizard controls
+
+The wizard uses one same-field Guided/Pro path for llama.cpp runtime settings.
+Guided exposes them through the All settings drawer; Pro
+places them in the searchable category rail. Both presentations read and write
+the same control node and `wizardState`, and therefore produce identical spawn
+and preset payloads.
+
+The canonical additions are idle-slot cache retention, projector offload,
+native reasoning effort/format/preserve, plus the previously existing
+continuous-batching, SWA, load-mode, verbosity, checkpoint, and cache-reuse
+controls. Native reasoning preservation is fail-closed: it is rendered with a
+reason and cannot be selected while the selected binary or chat-template
+compatibility is unknown. It is separate from `preserve_thinking`, which is a
+legacy chat-template kwarg retained for compatibility.
+
 ## Frontend module map
 
 `static/js/features/spawn-wizard.js` was a single ~5,900-line file through Phase 7. It has

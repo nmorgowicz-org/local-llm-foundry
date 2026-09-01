@@ -207,7 +207,7 @@
       ],
       "presentation_view": "both",
       "critical": false,
-      "pro_category": "Advanced",
+      "pro_category": "Memory & context",
       "guided_placement": "drawer"
     },
     {
@@ -223,7 +223,7 @@
       ],
       "presentation_view": "both",
       "critical": false,
-      "pro_category": "Advanced",
+      "pro_category": "Memory & context",
       "guided_placement": "drawer"
     },
     {
@@ -239,7 +239,7 @@
       ],
       "presentation_view": "both",
       "critical": false,
-      "pro_category": "Advanced",
+      "pro_category": "Network & observability",
       "guided_placement": "drawer"
     },
     {
@@ -255,7 +255,7 @@
       ],
       "presentation_view": "both",
       "critical": false,
-      "pro_category": "Advanced",
+      "pro_category": "Memory & context",
       "guided_placement": "drawer"
     },
     {
@@ -271,7 +271,7 @@
       ],
       "presentation_view": "both",
       "critical": false,
-      "pro_category": "Advanced",
+      "pro_category": "Memory & context",
       "guided_placement": "drawer"
     },
     {
@@ -287,7 +287,7 @@
       ],
       "presentation_view": "both",
       "critical": false,
-      "pro_category": "Advanced",
+      "pro_category": "Memory & context",
       "guided_placement": "drawer"
     },
     {
@@ -298,6 +298,86 @@
       "editor_status": "implemented",
       "preset_key": "repeat_last_n",
       "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-cache-idle-slots",
+      "wizard_id": "spawn-cache-idle-slots",
+      "wizard_status": "implemented",
+      "editor_id": "modal-cache-idle-slots",
+      "editor_status": "implemented",
+      "preset_key": "cache_idle_slots",
+      "value_type": "boolean-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Memory & context",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-mmproj-offload",
+      "wizard_id": "spawn-mmproj-offload",
+      "wizard_status": "implemented",
+      "editor_id": "modal-mmproj-offload",
+      "editor_status": "implemented",
+      "preset_key": "mmproj_offload",
+      "value_type": "boolean-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Model & compatibility",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-reasoning-effort",
+      "wizard_id": "spawn-reasoning-effort",
+      "wizard_status": "implemented",
+      "editor_id": "modal-llama-reasoning-effort",
+      "editor_status": "implemented",
+      "preset_key": "llama_reasoning_effort",
+      "value_type": "enum",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-reasoning-format",
+      "wizard_id": "spawn-reasoning-format",
+      "wizard_status": "implemented",
+      "editor_id": "modal-llama-reasoning-format",
+      "editor_status": "implemented",
+      "preset_key": "llama_reasoning_format",
+      "value_type": "enum",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-reasoning-preserve",
+      "wizard_id": "spawn-reasoning-preserve",
+      "wizard_status": "implemented",
+      "editor_id": "modal-llama-reasoning-preserve",
+      "editor_status": "implemented",
+      "preset_key": "llama_reasoning_preserve",
+      "value_type": "boolean-optional",
       "loaders": [
         "llama_cpp"
       ],
@@ -932,70 +1012,6 @@
       "presentation_view": "both",
       "critical": false,
       "pro_category": "Performance",
-      "guided_placement": "drawer"
-    },
-    {
-      "semantic_id": "preset-mmproj-offload",
-      "wizard_id": null,
-      "wizard_status": "planned",
-      "editor_id": "modal-mmproj-offload",
-      "editor_status": "implemented",
-      "preset_key": "mmproj_offload",
-      "value_type": "boolean-optional",
-      "loaders": [
-        "llama_cpp"
-      ],
-      "presentation_view": "both",
-      "critical": false,
-      "pro_category": "Advanced",
-      "guided_placement": "drawer"
-    },
-    {
-      "semantic_id": "preset-llama-reasoning-effort",
-      "wizard_id": null,
-      "wizard_status": "planned",
-      "editor_id": "modal-llama-reasoning-effort",
-      "editor_status": "implemented",
-      "preset_key": "llama_reasoning_effort",
-      "value_type": "enum",
-      "loaders": [
-        "llama_cpp"
-      ],
-      "presentation_view": "both",
-      "critical": false,
-      "pro_category": "Advanced",
-      "guided_placement": "drawer"
-    },
-    {
-      "semantic_id": "preset-llama-reasoning-format",
-      "wizard_id": null,
-      "wizard_status": "planned",
-      "editor_id": "modal-llama-reasoning-format",
-      "editor_status": "implemented",
-      "preset_key": "llama_reasoning_format",
-      "value_type": "enum",
-      "loaders": [
-        "llama_cpp"
-      ],
-      "presentation_view": "both",
-      "critical": false,
-      "pro_category": "Advanced",
-      "guided_placement": "drawer"
-    },
-    {
-      "semantic_id": "preset-llama-reasoning-preserve",
-      "wizard_id": null,
-      "wizard_status": "planned",
-      "editor_id": "modal-llama-reasoning-preserve",
-      "editor_status": "implemented",
-      "preset_key": "llama_reasoning_preserve",
-      "value_type": "boolean-optional",
-      "loaders": [
-        "llama_cpp"
-      ],
-      "presentation_view": "both",
-      "critical": false,
-      "pro_category": "Advanced",
       "guided_placement": "drawer"
     },
     {

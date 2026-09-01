@@ -305,9 +305,14 @@ export async function renderSummary() {
  if (!rapid && hw.loadMode) rows.push({ label: 'Load mode', value: hw.loadMode });
  if (!rapid && hw.ctxCheckpoints != null) rows.push({ label: 'Context checkpoints', value: String(hw.ctxCheckpoints) });
  if (!rapid && hw.checkpointMinStep != null) rows.push({ label: 'Checkpoint minimum step', value: String(hw.checkpointMinStep) });
- if (!rapid && hw.cacheReuse != null) rows.push({ label: 'Cache reuse threshold', value: String(hw.cacheReuse) });
- if (!rapid && hw.noContBatching) rows.push({ label: 'Continuous batching', value: 'Disabled' });
- if (!rapid && hw.swaFull) rows.push({ label: 'Full SWA cache', value: 'Enabled' });
+  if (!rapid && hw.cacheReuse != null) rows.push({ label: 'Cache reuse threshold', value: String(hw.cacheReuse) });
+  if (!rapid && hw.cacheIdleSlots != null) rows.push({ label: 'Idle slot cache', value: hw.cacheIdleSlots ? 'On' : 'Off' });
+  if (!rapid && hw.noContBatching) rows.push({ label: 'Continuous batching', value: 'Disabled' });
+  if (!rapid && hw.swaFull) rows.push({ label: 'Full SWA cache', value: 'Enabled' });
+  if (!rapid && hw.mmprojOffload != null) rows.push({ label: 'Projector offload', value: hw.mmprojOffload ? 'On' : 'Off' });
+  if (!rapid && hw.llamaReasoningEffort && hw.llamaReasoningEffort !== 'default') rows.push({ label: 'llama.cpp reasoning effort', value: hw.llamaReasoningEffort });
+  if (!rapid && hw.llamaReasoningFormat) rows.push({ label: 'llama.cpp reasoning format', value: hw.llamaReasoningFormat });
+  if (!rapid && hw.llamaReasoningPreserve != null) rows.push({ label: 'llama.cpp preserve reasoning', value: hw.llamaReasoningPreserve ? 'On' : 'Off' });
   if (!rapid && hw.nCpuMoe > 0 && arch.nExperts > 0) rows.push({ label: 'MoE CPU offload', value: `${hw.nCpuMoe} of ${arch.nLayers} layers` });
   if (!rapid && hw.tensorSplit) rows.push({ label: 'Tensor split', value: hw.tensorSplit });
   if (!rapid && arch.mmprojBytes > 0) rows.push({ label: 'mmproj', value: formatGB(arch.mmprojBytes) });
@@ -756,6 +761,21 @@ export function buildPresetPayload() {
     const { api_key: protectedApiKey, ...rapidMlx } = spawnPayload.rapid_mlx;
     spawnPayload.rapid_mlx = rapidMlx;
     if (protectedApiKey) spawnPayload.api_key = protectedApiKey;
+
+    // Sampling is shared preset state even though Rapid-MLX sends its
+    // server-facing defaults through the backend branch. Keep the canonical
+    // top-level fields for preset round-trips and editor parity.
+    const h = wizardState.hardware;
+    Object.assign(spawnPayload, {
+      temperature: h.temperature != null ? h.temperature : null,
+      top_p: h.topP != null ? h.topP : null,
+      top_k: h.topK != null ? h.topK : null,
+      min_p: h.minP != null ? h.minP : null,
+      repeat_penalty: h.repeatPenalty != null ? h.repeatPenalty : null,
+      presence_penalty: h.presencePenalty != null ? h.presencePenalty : null,
+      max_tokens: h.maxTokens != null ? h.maxTokens : null,
+      seed: h.seed != null ? h.seed : null,
+    });
   }
   return {
     name: 'Setup wizard preset',

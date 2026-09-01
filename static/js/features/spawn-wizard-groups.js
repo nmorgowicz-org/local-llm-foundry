@@ -62,6 +62,11 @@ export const CONTROLS = [
   { id: 'spawn-checkpoint-min-step', loaders: ['llama_cpp'], critical: false, view: 'both' },
   { id: 'spawn-cache-reuse', loaders: ['llama_cpp'], critical: false, view: 'both' },
   { id: 'spawn-repeat-last-n', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-cache-idle-slots', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-mmproj-offload', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-reasoning-effort', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-reasoning-format', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-reasoning-preserve', loaders: ['llama_cpp'], critical: false, view: 'both' },
 
   // Generation, structured output, access, and escape-hatch controls live in
   // the same Tune step and are relocated into Pro's canonical pane.
@@ -122,10 +127,6 @@ export const CONTROLS = [
   { id: 'spawn-rapid-speculative-enabled', loaders: ['rapid_mlx'], group: 'companions', nested: 'companions', critical: false, view: 'both' },
   // Editor-only typed llama.cpp controls. The wizard status is explicit so
   // Phase 6 can add the wizard mount without inventing a second catalog.
-  { id: 'preset-mmproj-offload', wizardId: null, loaders: ['llama_cpp'], critical: false, view: 'both' },
-  { id: 'preset-llama-reasoning-effort', wizardId: null, loaders: ['llama_cpp'], critical: false, view: 'both' },
-  { id: 'preset-llama-reasoning-format', wizardId: null, loaders: ['llama_cpp'], critical: false, view: 'both' },
-  { id: 'preset-llama-reasoning-preserve', wizardId: null, loaders: ['llama_cpp'], critical: false, view: 'both' },
   { id: 'preset-workload-policy', wizardId: null, loaders: ['llama_cpp'], critical: false, view: 'both' },
 ];
 
@@ -187,10 +188,10 @@ const PRESET_FIELD_META = Object.freeze({
   'spawn-alias': { editorId: 'modal-alias', presetKey: 'alias', valueType: 'string' },
   'spawn-api-key': { editorId: 'modal-api-key', presetKey: 'api_key', valueType: 'secret' },
   'spawn-extra-args': { editorId: 'modal-extra-args', presetKey: 'extra_args', valueType: 'string' },
-  'preset-mmproj-offload': { editorId: 'modal-mmproj-offload', presetKey: 'mmproj_offload', valueType: 'boolean-optional', wizardStatus: 'planned' },
-  'preset-llama-reasoning-effort': { editorId: 'modal-llama-reasoning-effort', presetKey: 'llama_reasoning_effort', valueType: 'enum', wizardStatus: 'planned' },
-  'preset-llama-reasoning-format': { editorId: 'modal-llama-reasoning-format', presetKey: 'llama_reasoning_format', valueType: 'enum', wizardStatus: 'planned' },
-  'preset-llama-reasoning-preserve': { editorId: 'modal-llama-reasoning-preserve', presetKey: 'llama_reasoning_preserve', valueType: 'boolean-optional', wizardStatus: 'planned' },
+  'spawn-cache-idle-slots': { editorId: 'modal-cache-idle-slots', presetKey: 'cache_idle_slots', valueType: 'boolean-optional' },
+  'spawn-reasoning-effort': { editorId: 'modal-llama-reasoning-effort', presetKey: 'llama_reasoning_effort', valueType: 'enum' },
+  'spawn-reasoning-format': { editorId: 'modal-llama-reasoning-format', presetKey: 'llama_reasoning_format', valueType: 'enum' },
+  'spawn-reasoning-preserve': { editorId: 'modal-llama-reasoning-preserve', presetKey: 'llama_reasoning_preserve', valueType: 'boolean-optional' },
   'preset-workload-policy': { editorId: 'modal-workload-policy', presetKey: 'bundle.workload_policy', valueType: 'enum', wizardStatus: 'planned' },
 });
 
@@ -213,6 +214,13 @@ const RAPID_GROUP_CATEGORY = {
 function llamaCategory(id) {
   if (id === 'spawn-context-size' || id.startsWith('spawn-cache-type') || id === 'spawn-kv-unified' || id === 'spawn-fit-enable' || id === 'spawn-fit-target' || id === 'spawn-cache-mode' || id === 'spawn-cache-ram') return 'Memory & context';
   if (id === 'hw-quant-select' || id === 'hw-mmproj-select') return 'Model & compatibility';
+  if (id === 'spawn-mmproj-offload') return 'Model & compatibility';
+  if (id === 'spawn-no-cont-batching') return 'Performance';
+  if (id === 'spawn-swa-full' || id === 'spawn-load-mode' || id === 'spawn-ctx-checkpoints'
+    || id === 'spawn-checkpoint-min-step' || id === 'spawn-cache-reuse' || id === 'spawn-cache-idle-slots') {
+    return 'Memory & context';
+  }
+  if (id === 'spawn-verbosity') return 'Network & observability';
   if (id.startsWith('spawn-temperature') || id.startsWith('spawn-top-') || id.startsWith('spawn-min-p') || id.startsWith('spawn-repeat-') || id.startsWith('spawn-presence-') || id.startsWith('spawn-max-tokens') || id.startsWith('spawn-seed') || id.startsWith('spawn-enable-thinking') || id.startsWith('spawn-preserve-thinking') || id.startsWith('spawn-reasoning-')) return 'Generation & reasoning';
   if (id === 'spawn-output-mode' || id === 'spawn-grammar' || id === 'spawn-json-schema' || id === 'spawn-tool-call-format') return 'Tools & conversation formatting';
   if (id === 'spawn-port' || id === 'spawn-bind-host' || id === 'spawn-alias' || id === 'spawn-api-key') return 'Network & observability';

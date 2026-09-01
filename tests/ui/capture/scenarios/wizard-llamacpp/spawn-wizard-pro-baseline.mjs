@@ -57,6 +57,28 @@ export default async function({ page, baseUrl }) {
     });
   }
 
+  // Phase 6 adds a distinct compatibility pane and keeps native reasoning in
+  // Generation & reasoning. Capture both categories at a legible scale.
+  await page.evaluate(() => document.querySelectorAll('#pro-rail-nav .pro-rail-item').forEach(item => {
+    if (item.textContent === 'Model & compatibility') item.click();
+  }));
+  await sleep(150);
+  await captureShot(page, 'spawn-wizard-pro-model-compatibility.png', {
+    fullPage: true,
+    runtimeTag: 'llamacpp-local',
+    expandSelector: '.wizard-body',
+  });
+
+  await page.evaluate(() => document.querySelectorAll('#pro-rail-nav .pro-rail-item').forEach(item => {
+    if (item.textContent === 'Generation & reasoning') item.click();
+  }));
+  await sleep(150);
+  await captureShot(page, 'spawn-wizard-pro-generation-reasoning.png', {
+    fullPage: true,
+    runtimeTag: 'llamacpp-local',
+    expandSelector: '.wizard-body',
+  });
+
   await page.evaluate(() => document.querySelectorAll('#pro-rail-nav .pro-rail-item')[2]?.click());
     await sleep(200);
  // INTENT: Performance category exposes llama.cpp performance controls.

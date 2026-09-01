@@ -4771,6 +4771,47 @@
                                 <input type="number" id="spawn-cache-reuse" min="0" step="1" placeholder="disabled">
                             </div>
                             <div class="hardware-field">
+                                <label for="spawn-cache-idle-slots" title="Whether idle slot prompt caches are retained by llama.cpp.">Idle slot cache</label>
+                                <select id="spawn-cache-idle-slots">
+                                    <option value="">(default)</option>
+                                    <option value="true">On</option>
+                                    <option value="false">Off</option>
+                                </select>
+                                <div class="field-hint" id="spawn-cache-idle-slots-hint"></div>
+                            </div>
+                            <div class="hardware-field">
+                                <label for="spawn-reasoning-effort" title="Native llama.cpp reasoning effort. Values are enabled only when advertised by the selected binary.">llama.cpp effort</label>
+                                <select id="spawn-reasoning-effort">
+                                    <option value="default">Default</option>
+                                    <option value="minimal">minimal</option>
+                                    <option value="low">low</option>
+                                    <option value="medium">medium</option>
+                                    <option value="high">high</option>
+                                    <option value="xhigh">xhigh</option>
+                                    <option value="max">max</option>
+                                </select>
+                                <div class="field-hint" id="spawn-reasoning-effort-hint"></div>
+                            </div>
+                            <div class="hardware-field">
+                                <label for="spawn-reasoning-format" title="Native llama.cpp reasoning format. Default leaves format selection to the runtime.">llama.cpp format</label>
+                                <select id="spawn-reasoning-format">
+                                    <option value="">Default (auto)</option>
+                                    <option value="none">none</option>
+                                    <option value="deepseek">deepseek</option>
+                                    <option value="deepseek-legacy">deepseek-legacy</option>
+                                </select>
+                                <div class="field-hint" id="spawn-reasoning-format-hint"></div>
+                            </div>
+                            <div class="hardware-field">
+                                <label for="spawn-reasoning-preserve" title="Native llama.cpp reasoning preservation; distinct from chat-template preserve_thinking.">llama.cpp preserve</label>
+                                <select id="spawn-reasoning-preserve">
+                                    <option value="">Default</option>
+                                    <option value="true">On</option>
+                                    <option value="false">Off</option>
+                                </select>
+                                <div class="field-hint" id="spawn-reasoning-preserve-hint"></div>
+                            </div>
+                            <div class="hardware-field">
                                 <label><input type="checkbox" id="spawn-no-cont-batching"> Disable continuous batching</label>
                             </div>
                             <div class="hardware-field">
@@ -4787,6 +4828,15 @@
                                     <option value="dio">dio</option>
                                 </select>
                                 <div class="field-hint">Opt-in; non-default modes can change startup memory behavior.</div>
+                            </div>
+                            <div class="hardware-field">
+                                <label for="spawn-mmproj-offload" title="Whether the multimodal projector is placed on the GPU. Default follows llama.cpp.">Projector offload</label>
+                                <select id="spawn-mmproj-offload">
+                                    <option value="">(default)</option>
+                                    <option value="true">On</option>
+                                    <option value="false">Off</option>
+                                </select>
+                                <div class="field-hint" id="spawn-mmproj-offload-hint"></div>
                             </div>
                             <div class="hardware-field">
                                 <label for="spawn-threads" title="-t: CPU thread count for inference. On Apple Silicon, Apple recommends 1 (Metal GPU handles compute). Never exceed your chip's P-core count. Leave blank for server default.">Threads (-t)</label>
