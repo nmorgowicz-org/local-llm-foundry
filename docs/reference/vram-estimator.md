@@ -1167,3 +1167,11 @@ to canonical path, SHA-256, modification time, and version line, and repeated
 points are cached by the artifact/config/binary identity and `n_cpu_moe`.
 Missing, changed, timed-out, oversized, or unparsable probe output remains a
 disabled-with-reason result; it is never converted into zero memory.
+
+Bundle resolve responses expose this status as tagged `estimate` JSON. A
+request with `fit_automatically` set uses the probe only for that explicit
+action. Dense models use one `n_cpu_moe=0` reading; MoE models search the
+device suffix and host prefix independently, then return the smallest feasible
+placement. The returned selection is re-resolved before hashing, so its change
+list and configuration identity describe the exact proposal. A zero-placement
+proposal does not emit `--n-cpu-moe 0`.

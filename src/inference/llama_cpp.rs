@@ -885,7 +885,7 @@ impl LlamaCppAdapter {
         if let Some(pp) = self.config.presence_penalty {
             cmd.arg("--presence-penalty").arg(format!("{:.4}", pp));
         }
-        if let Some(n) = self.config.n_cpu_moe {
+        if let Some(n) = self.config.n_cpu_moe.filter(|value| *value > 0) {
             cmd.arg("--n-cpu-moe").arg(n.to_string());
         }
 

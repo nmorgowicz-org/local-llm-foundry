@@ -41,6 +41,22 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
 #[serde(default)]
 struct ResolveRequest {
     selection: Option<PresetBundleSelection>,
+    #[serde(default)]
+    fit_automatically: bool,
+    #[serde(default)]
+    available_vram_bytes: u64,
+    #[serde(default)]
+    available_ram_bytes: u64,
+    #[serde(default)]
+    is_unified_memory: bool,
+    #[serde(default)]
+    gpu_layers: Option<i32>,
+    #[serde(default)]
+    model_size_bytes: Option<u64>,
+    #[serde(default)]
+    fit_target_mib: Option<u64>,
+    #[serde(default)]
+    arch: Option<crate::llama::vram_estimator::ModelArch>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -128,18 +144,32 @@ fn api_resolve_bundle(
                         }
                     };
                     let capabilities = current_capabilities(&cfg).await;
+                    let requested_selection = request.selection.clone().or_else(|| {
+                        preset
+                            .bundle
+                            .as_ref()
+                            .map(|bundle| bundle.default_selection.clone())
+                    });
                     match crate::presets::resolver::resolve_preset(
                         &preset,
-                        request.selection.as_ref(),
+                        requested_selection.as_ref(),
                         &capabilities,
                     ) {
                         Ok(resolved) => {
-                            let selection = request.selection.or_else(|| {
-                                preset
-                                    .bundle
-                                    .as_ref()
-                                    .map(|bundle| bundle.default_selection.clone())
-                            });
+                            let (resolved, selection) = if request.fit_automatically {
+                                apply_fit_estimate(
+                                    resolved,
+                                    &preset,
+                                    requested_selection
+                                        .as_ref()
+                                        .expect("default selection exists for bundled preset"),
+                                    &request,
+                                    &cfg,
+                                    &capabilities,
+                                )
+                            } else {
+                                (resolved, requested_selection)
+                            };
                             Ok(Box::new(warp::reply::json(&resolve_response(
                                 &resolved,
                                 selection.as_ref(),
@@ -393,7 +423,10 @@ fn api_convert_to_bundle(
 }
 
 fn parse_resolve_request(body: serde_json::Value) -> Result<ResolveRequest, String> {
-    if body.get("selection").is_some() {
+    if body.get("selection").is_some()
+        || body.get("fit_automatically").is_some()
+        || body.get("arch").is_some()
+    {
         serde_json::from_value(body).map_err(|error| error.to_string())
     } else if body.is_null() || body == serde_json::json!({}) {
         Ok(ResolveRequest::default())
@@ -445,13 +478,186 @@ fn resolve_response(
         "ok": true,
         "selection": selection,
         "changes": changes,
-        "estimate": {"status": "not_applicable", "code": "phase_not_implemented"},
+        "estimate": serde_json::to_value(&resolved.estimate_status)
+            .unwrap_or_else(|_| serde_json::json!({"status": "unavailable", "code": "serialization_error"})),
         "capability_reasons": [],
         "evidence": null,
         "selection_hash": resolved.selection_hash,
         "resolved_config_hash": resolved.config_hash,
         "revision": revision,
     })
+}
+
+fn apply_fit_estimate(
+    mut resolved: crate::presets::resolver::ResolvedLaunch,
+    preset: &ModelPreset,
+    selection: &PresetBundleSelection,
+    request: &ResolveRequest,
+    config: &AppConfig,
+    capabilities: &CapabilitySnapshot,
+) -> (
+    crate::presets::resolver::ResolvedLaunch,
+    Option<PresetBundleSelection>,
+) {
+    use crate::llama::vram_estimator::{
+        Backend, EstimateEvidence, EstimatorOptions, ModelArch, full_estimate,
+    };
+    use crate::presets::fit_probe::{FitProbeConfig, ProcessFitReader};
+    use crate::presets::fit_search::{FitPlacementResult, FitSearchConfig, search};
+    use crate::presets::probe_estimate::{enrich, unsupported_additions};
+
+    let mut disabled = |code: &str, message: String| {
+        resolved.estimate_status = crate::presets::resolver::EstimateStatus::Unavailable {
+            code: code.into(),
+            message,
+        };
+        (resolved.clone(), Some(selection.clone()))
+    };
+    let Some(bundle) = preset.bundle.as_ref() else {
+        return disabled(
+            "preset_not_bundled",
+            "fit automatically requires a bundle".into(),
+        );
+    };
+    let Some(artifact) = bundle.artifact(&selection.artifact_id) else {
+        return disabled(
+            "artifact_not_found",
+            "selected artifact is not present in the bundle".into(),
+        );
+    };
+    let Some(model_path) = artifact.local_path.as_ref() else {
+        return disabled(
+            "artifact_not_local",
+            "fit automatically requires a local model artifact".into(),
+        );
+    };
+    let Some(digest) = artifact.digest.as_ref().filter(|digest| {
+        digest.algorithm.eq_ignore_ascii_case("sha256")
+            && !digest.value.is_empty()
+            && digest.coverage == crate::presets::bundle::PresetDigestCoverage::FullFile
+    }) else {
+        return disabled(
+            "artifact_digest_unavailable",
+            "fit automatically requires a full-file SHA-256 artifact digest".into(),
+        );
+    };
+    let model_size_bytes = request
+        .model_size_bytes
+        .or(artifact.size_bytes)
+        .unwrap_or_default();
+    if model_size_bytes == 0 {
+        return disabled(
+            "artifact_size_unavailable",
+            "fit automatically requires the model artifact size".into(),
+        );
+    }
+    let arch = request.arch.clone().unwrap_or_else(|| {
+        ModelArch::from_name_and_params(&preset.name, model_size_bytes as f64 / 1_000_000_000.0)
+    });
+    let performance = bundle
+        .performance_options
+        .iter()
+        .find(|option| option.id == selection.performance_id);
+    let batch_size = performance.map_or(preset.batch_size, |option| option.batch_size);
+    let ubatch_size = performance.map_or(preset.ubatch_size, |option| option.ubatch_size);
+    let probe_path = match config.llama_fit_params_path.as_ref() {
+        Some(path) => path,
+        None => {
+            return disabled(
+                "probe_unavailable",
+                "llama_fit_params_path is not configured".into(),
+            );
+        }
+    };
+    let mut probe_config =
+        FitProbeConfig::new(probe_path.clone(), std::path::PathBuf::from(model_path));
+    probe_config.artifact_digest = digest.value.clone();
+    probe_config.context_size = selection.context_size;
+    probe_config.ctk = preset.ctk.clone();
+    probe_config.ctv = preset.ctv.clone();
+    probe_config.batch_size = batch_size;
+    probe_config.ubatch_size = ubatch_size;
+    let probe_timeout = probe_config.timeout;
+    let mut reader = match ProcessFitReader::new(probe_config) {
+        Ok(reader) => reader,
+        Err(error) => return disabled("probe_unavailable", error.to_string()),
+    };
+
+    let mut effective_selection = selection.clone();
+    let reading = if arch.moe_layer_count > 0 {
+        let device_budget_mib = request.available_vram_bytes / (1024 * 1024);
+        let host_budget_mib = if request.available_ram_bytes == 0 {
+            u64::MAX
+        } else {
+            request.available_ram_bytes / (1024 * 1024)
+        };
+        match search(
+            &mut reader,
+            FitSearchConfig {
+                n_max: arch.moe_layer_count,
+                device_budget_mib,
+                host_budget_mib,
+                reserve_mib: request
+                    .fit_target_mib
+                    .unwrap_or(crate::presets::fit_probe::DEFAULT_FIT_RESERVE_MIB),
+                timeout: probe_timeout,
+            },
+        ) {
+            FitPlacementResult::Proposal(proposal) => {
+                effective_selection.n_cpu_moe =
+                    (proposal.n_cpu_moe > 0).then_some(proposal.n_cpu_moe as i32);
+                proposal.reading
+            }
+            FitPlacementResult::Unavailable(unavailable) => {
+                return disabled("probe_unavailable", unavailable.message);
+            }
+        }
+    } else {
+        match crate::presets::fit_probe::FitReader::read(&mut reader, 0) {
+            Ok(reading) => reading,
+            Err(error) => return disabled("probe_unavailable", error.to_string()),
+        }
+    };
+
+    if effective_selection != *selection {
+        resolved = match crate::presets::resolver::resolve_preset(
+            preset,
+            Some(&effective_selection),
+            capabilities,
+        ) {
+            Ok(resolved) => resolved,
+            Err(issues) => {
+                return disabled("fit_selection_invalid", issues[0].message.clone());
+            }
+        };
+    }
+    let formula = full_estimate(
+        model_size_bytes,
+        &arch,
+        effective_selection.context_size,
+        &preset.ctk,
+        &preset.ctv,
+        preset.parallel_slots,
+        ubatch_size,
+        effective_selection.n_cpu_moe.unwrap_or(0),
+        request.gpu_layers.or(preset.gpu_layers).unwrap_or(-1),
+        request.available_vram_bytes,
+        request.available_ram_bytes,
+        request.is_unified_memory,
+        EstimatorOptions {
+            backend: Backend::LlamaCpp,
+            evidence: EstimateEvidence::Measured,
+            ..Default::default()
+        },
+    );
+    let estimate = enrich(
+        formula.clone(),
+        &reading,
+        &unsupported_additions(preset, &formula),
+    );
+    resolved.estimate = Some(estimate.clone());
+    resolved.estimate_status = crate::presets::resolver::EstimateStatus::Available { estimate };
+    (resolved, Some(effective_selection))
 }
 
 fn card_view(preset: &ModelPreset) -> serde_json::Value {
@@ -621,6 +827,9 @@ mod tests {
                 source_policy: None,
             }],
             estimate: None,
+            estimate_status: crate::presets::resolver::EstimateStatus::NotApplicable {
+                code: "not_requested".into(),
+            },
             evidence: None,
         };
         let response = resolve_response(&resolved, None, 1).to_string();

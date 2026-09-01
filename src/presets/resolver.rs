@@ -5,6 +5,7 @@
 //! binary, or performs network I/O.
 
 use crate::inference::llama_cpp_capabilities::CapabilitySnapshot;
+use crate::llama::vram_estimator::VramBreakdown;
 use crate::presets::validation::ValidationIssue;
 use crate::presets::{ModelPreset, bundle};
 use bundle::BoundedEnum;
@@ -17,7 +18,23 @@ pub type OneShotSelection = PresetBundleSelection;
 /// Phase 4 owns the concrete estimator response. This marker keeps the
 /// internal contract typed without making Phase 3 serialize estimator state.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct LaunchEstimate;
+pub struct LaunchEstimate {
+    #[serde(flatten)]
+    pub breakdown: VramBreakdown,
+    pub method: String,
+    pub probe_device_total_mib: u64,
+    pub probe_host_total_mib: u64,
+    pub divergence: EstimateDivergence,
+    pub additions: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EstimateDivergence {
+    pub model_mib: i64,
+    pub context_mib: i64,
+    pub compute_mib: i64,
+    pub within_tolerance: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvidenceMatch {
@@ -34,6 +51,7 @@ pub struct ResolvedLaunch {
     pub config_hash: String,
     pub changes: Vec<ResolvedChange>,
     pub estimate: Option<LaunchEstimate>,
+    pub estimate_status: EstimateStatus,
     pub evidence: Option<EvidenceMatch>,
 }
 
@@ -48,6 +66,7 @@ pub struct ResolvedChange {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+#[allow(clippy::large_enum_variant)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum EstimateStatus {
     Available { estimate: LaunchEstimate },
@@ -144,6 +163,9 @@ fn build_result(
         config_hash,
         changes,
         estimate: None,
+        estimate_status: EstimateStatus::NotApplicable {
+            code: "not_requested".into(),
+        },
         evidence: None,
     }
 }
