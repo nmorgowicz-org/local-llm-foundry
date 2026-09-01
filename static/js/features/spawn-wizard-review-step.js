@@ -752,7 +752,6 @@ export async function saveAsPreset() {
 
 export function buildPresetPayload() {
   const spawnPayload = buildSpawnPayload();
-  const h = wizardState.hardware;
   if (spawnPayload.backend === 'rapid_mlx') {
     const { api_key: protectedApiKey, ...rapidMlx } = spawnPayload.rapid_mlx;
     spawnPayload.rapid_mlx = rapidMlx;
@@ -761,14 +760,6 @@ export function buildPresetPayload() {
   return {
     name: 'Setup wizard preset',
     ...spawnPayload,
-    temperature: h.temperature != null ? h.temperature : null,
-    top_p: h.topP != null ? h.topP : null,
-    top_k: h.topK != null ? h.topK : null,
-    min_p: h.minP != null ? h.minP : null,
-    repeat_penalty: h.repeatPenalty != null ? h.repeatPenalty : null,
-    presence_penalty: h.presencePenalty != null ? h.presencePenalty : null,
-    max_tokens: h.maxTokens != null ? h.maxTokens : null,
-    seed: h.seed != null ? h.seed : null,
   };
 }
 

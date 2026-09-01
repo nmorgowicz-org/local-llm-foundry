@@ -29,6 +29,7 @@ import {
 } from '../core/rapid-mlx-sidecars.js';
 import { openEstimateEvidenceDrawer } from './evidence-drawer.js';
 import { initCalibrationUi } from './calibration.js';
+import { FIELD_CATALOG } from './spawn-wizard-groups.js';
 import {
     chatTemplateStatusText,
     openChatTemplateManageModal,
@@ -40,6 +41,7 @@ import {
 let newPresetSeed = null;
 let _presetRapidMlxPrefillExplicit = false;
 let _presetEditorNavInitialized = false;
+let _llamaCapabilitiesPromise = null;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -64,6 +66,130 @@ function nullableBoolOpt(id) {
     if (v === 'true') return true;
     if (v === 'false') return false;
     return null;
+}
+
+function capabilityAvailable(state) {
+    return state === 'Available' || (state && Object.prototype.hasOwnProperty.call(state, 'Available'));
+}
+
+function capabilityReason(state, fallback) {
+    if (typeof state === 'string' && state !== 'Available') return state;
+    if (state?.Unavailable) return state.Unavailable;
+    return fallback;
+}
+
+async function loadLlamaCapabilities() {
+    if (_llamaCapabilitiesPromise) return _llamaCapabilitiesPromise;
+    _llamaCapabilitiesPromise = (async () => {
+        try {
+            const headers = window.authHeaders ? window.authHeaders() : {};
+            const response = await fetch('/api/llama-binary/capabilities', { headers });
+            if (!response.ok) return null;
+            const data = await response.json();
+            return data?.ok ? data.snapshot : null;
+        } catch {
+            return null;
+        }
+    })();
+    return _llamaCapabilitiesPromise;
+}
+
+function replaceOptions(select, options, selected) {
+    if (!select) return;
+    select.replaceChildren(...options.map(option => {
+        const el = document.createElement('option');
+        if (option.separator) {
+            el.disabled = true;
+            el.textContent = '────────';
+        } else {
+            el.value = option.value;
+            el.textContent = option.label || option.value;
+            el.disabled = !!option.disabled;
+            if (option.title) el.title = option.title;
+        }
+        return el;
+    }));
+    if (selected != null && [...select.options].some(option => option.value === String(selected))) {
+        select.value = String(selected);
+    }
+}
+
+function configureCapabilityFields(snapshot, preset) {
+    const typed = snapshot?.typed || {};
+    const cacheValues = snapshot?.cache?.kv_type_values || [];
+    const editorId = key => FIELD_CATALOG.find(field => field.presetKey === key)?.editorId;
+    const storedCtk = preset?.ctk || document.getElementById(editorId('ctk') || 'modal-ctk')?.value || 'q8_0';
+    const storedCtv = preset?.ctv || document.getElementById(editorId('ctv') || 'modal-ctv')?.value || 'f16';
+    const advertised = new Set(cacheValues);
+    const common = ['f16', 'q8_0', 'q4_0'];
+    const buildKvOptions = (storedValue) => {
+        const kvValues = [...new Set([...common, ...cacheValues, storedValue])];
+        const options = kvValues.map(value => ({
+        value,
+        disabled: advertised.size > 0 && !advertised.has(value),
+        title: advertised.size > 0 && !advertised.has(value) ? 'Not advertised by the selected llama.cpp binary' : '',
+        }));
+        options.splice(common.length, 0, { separator: true });
+        return options;
+    };
+    replaceOptions(document.getElementById(editorId('ctk') || 'modal-ctk'), buildKvOptions(storedCtk), storedCtk);
+    replaceOptions(document.getElementById(editorId('ctv') || 'modal-ctv'), buildKvOptions(storedCtv), storedCtv);
+
+    const effort = typed.reasoning_effort || {};
+    const effortValues = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+    const effortSelected = preset?.llama_reasoning_effort || 'default';
+    replaceOptions(document.getElementById('modal-llama-reasoning-effort'), [
+        { value: 'default', label: 'Default' },
+        ...effortValues.map(value => ({
+            value,
+            disabled: !capabilityAvailable(effort.supported) || (effort.accepted_values?.length > 0 && !effort.accepted_values.includes(value)),
+            title: !capabilityAvailable(effort.supported) ? capabilityReason(effort.supported, 'Not advertised by this binary') : '',
+        })),
+        ...(String(effortSelected) !== 'default' && !effortValues.includes(String(effortSelected)) ? [{ value: effortSelected, label: `${effortSelected} (stored; unsupported)`, disabled: true }] : []),
+    ], effortSelected);
+    const effortHint = document.getElementById('modal-llama-reasoning-effort-hint');
+    if (effortHint) effortHint.textContent = capabilityAvailable(effort.supported) ? '' : capabilityReason(effort.supported, 'This binary does not advertise --reasoning-effort.');
+
+    const format = typed.reasoning_format || {};
+    const formatValues = ['none', 'deepseek', 'deepseek-legacy'];
+    const formatSelected = preset?.llama_reasoning_format || '';
+    replaceOptions(document.getElementById('modal-llama-reasoning-format'), [
+        { value: '', label: 'Default (auto)' },
+        ...formatValues.map(value => ({
+            value,
+            disabled: !capabilityAvailable(format.supported) || (format.accepted_values?.length > 0 && !format.accepted_values.includes(value)),
+            title: !capabilityAvailable(format.supported) ? capabilityReason(format.supported, 'Not advertised by this binary') : '',
+        })),
+        ...(formatSelected && !formatValues.includes(String(formatSelected)) ? [{ value: formatSelected, label: `${formatSelected} (stored; unsupported)`, disabled: true }] : []),
+    ], formatSelected);
+    const formatHint = document.getElementById('modal-llama-reasoning-format-hint');
+    if (formatHint) formatHint.textContent = capabilityAvailable(format.supported) ? '' : capabilityReason(format.supported, 'This binary does not advertise --reasoning-format.');
+
+    const preserve = typed.reasoning_preserve || {};
+    const preserveSelect = document.getElementById('modal-llama-reasoning-preserve');
+    if (preserveSelect) {
+        for (const option of preserveSelect.options) {
+            if (option.value === 'true') option.disabled = !capabilityAvailable(preserve.positive);
+            if (option.value === 'false') option.disabled = !capabilityAvailable(preserve.negative);
+        }
+    }
+    const preserveHint = document.getElementById('modal-llama-reasoning-preserve-hint');
+    if (preserveHint && !capabilityAvailable(preserve.positive) && !capabilityAvailable(preserve.negative)) {
+        preserveHint.textContent = capabilityReason(preserve.positive, 'This binary does not advertise native reasoning preservation.');
+    } else if (preserveHint) preserveHint.textContent = '';
+
+    const mmproj = typed.mmproj_offload || {};
+    const mmprojSelect = document.getElementById('modal-mmproj-offload');
+    if (mmprojSelect) {
+        for (const option of mmprojSelect.options) {
+            if (option.value === 'true') option.disabled = !capabilityAvailable(mmproj.positive);
+            if (option.value === 'false') option.disabled = !capabilityAvailable(mmproj.negative);
+        }
+    }
+    const mmprojHint = document.getElementById('modal-mmproj-offload-hint');
+    if (mmprojHint && !capabilityAvailable(mmproj.positive) && !capabilityAvailable(mmproj.negative)) {
+        mmprojHint.textContent = capabilityReason(mmproj.positive, 'This binary does not advertise projector offload controls.');
+    } else if (mmprojHint) mmprojHint.textContent = '';
 }
 
 function getStructuredOutputMode() {
@@ -1371,7 +1497,10 @@ export function openPresetModal(mode, section, seedPreset = null) {
         setOpt('modal-enable-thinking', p.enable_thinking == null ? '' : String(!!p.enable_thinking));
         setOpt('modal-preserve-thinking', p.preserve_thinking == null ? '' : String(!!p.preserve_thinking));
         setOpt('modal-tool-call-format', p.tool_call_format || '');
-        setOpt('modal-reasoning', p.reasoning || '');
+ setOpt('modal-reasoning', p.reasoning || '');
+ setOpt('modal-llama-reasoning-effort', p.llama_reasoning_effort || 'default');
+ setOpt('modal-llama-reasoning-format', p.llama_reasoning_format || '');
+ setOpt('modal-llama-reasoning-preserve', p.llama_reasoning_preserve == null ? '' : String(p.llama_reasoning_preserve));
         numOrEmpty('modal-reasoning-budget', p.reasoning_budget);
         setVal('modal-reasoning-budget-message', (p.reasoning_budget_message || '').replace(/\n/g, '\\n'));
         // GPU
@@ -1465,6 +1594,7 @@ export function openPresetModal(mode, section, seedPreset = null) {
         _toggleCacheRamField(p.cache_mode || 'custom');
         // Model extras
         setVal('modal-mmproj', p.mmproj || '');
+        setOpt('modal-mmproj-offload', p.mmproj_offload == null ? '' : String(p.mmproj_offload));
         _toggleVisionTokens(!!p.mmproj);
         setVal('modal-chat-template-file', p.chat_template_file || '');
         updatePresetChatTemplateStatusLine();
@@ -1550,6 +1680,9 @@ export function openPresetModal(mode, section, seedPreset = null) {
         numOrEmpty('modal-image-min-tokens', qwenVLImageTokens(p).min_tokens);
         numOrEmpty('modal-image-max-tokens', p.image_max_tokens);
         _configureBackendPresetEditor(p);
+        const workloadWrap = document.getElementById('modal-workload-policy-wrap');
+        if (workloadWrap) workloadWrap.style.display = p.bundle ? '' : 'none';
+        setOpt('modal-workload-policy', p.bundle?.workload_policy || 'general_chat');
     } else {
         title.textContent = 'New Preset';
         if (subtitle) {
@@ -1573,6 +1706,13 @@ export function openPresetModal(mode, section, seedPreset = null) {
         setVal('modal-batch-size', 2048);
         setVal('modal-ubatch-size', 2048);
         setVal('modal-parallel-slots', 1);
+        setOpt('modal-mmproj-offload', '');
+        setOpt('modal-llama-reasoning-effort', 'default');
+        setOpt('modal-llama-reasoning-format', '');
+        setOpt('modal-llama-reasoning-preserve', '');
+        const workloadWrap = document.getElementById('modal-workload-policy-wrap');
+        if (workloadWrap) workloadWrap.style.display = newPresetSeed?.bundle ? '' : 'none';
+        setOpt('modal-workload-policy', newPresetSeed?.bundle?.workload_policy || 'general_chat');
         numOrEmpty('modal-port', newPresetSeed?.backend === 'rapid_mlx'
             ? newPresetSeed.rapid_mlx?.port
             : newPresetSeed?.port);
@@ -1581,6 +1721,11 @@ export function openPresetModal(mode, section, seedPreset = null) {
         setStructuredOutputMode('');
         _configureBackendPresetEditor(newPresetSeed);
         _presetRapidMlxPrefillExplicit = newPresetSeed?.rapid_mlx?.prefill_step_size != null;
+    }
+
+    const editorPreset = _currentModalPreset();
+    if (editorPreset?.backend !== 'rapid_mlx') {
+        void loadLlamaCapabilities().then(snapshot => configureCapabilityFields(snapshot, editorPreset));
     }
 
     const presetModel = document.getElementById('modal-model-path')?.value.trim();
@@ -2741,6 +2886,7 @@ function _buildFormPreset(existing) {
         hf_repo: modelSource.hf_repo,
         alias: strVal('modal-alias') || null,
         mmproj: strVal('modal-mmproj') || null,
+        mmproj_offload: nullableBoolOpt('modal-mmproj-offload'),
         chat_template_file: strVal('modal-chat-template-file') || null,
         gpu_layers: intOrNull('modal-gpu-layers'),
     no_mmap: document.getElementById('modal-no-mmap').checked,
@@ -2778,6 +2924,9 @@ function _buildFormPreset(existing) {
         preserve_thinking: nullableBoolOpt('modal-preserve-thinking'),
         tool_call_format: strVal('modal-tool-call-format') || null,
         reasoning: strVal('modal-reasoning') || null,
+        llama_reasoning_effort: strVal('modal-llama-reasoning-effort') || 'default',
+        llama_reasoning_format: valOrNull('modal-llama-reasoning-format'),
+        llama_reasoning_preserve: nullableBoolOpt('modal-llama-reasoning-preserve'),
         reasoning_budget: intOrNull('modal-reasoning-budget'),
         reasoning_budget_message: (document.getElementById('modal-reasoning-budget-message').value || '').replace(/\\n/g, '\n') || null,
         tensor_split: strVal('modal-tensor-split'),
@@ -2817,11 +2966,18 @@ function _buildFormPreset(existing) {
         spec_draft_p_split: floatOrNull('modal-spec-draft-p-split'),
         image_min_tokens: intOrNull('modal-image-min-tokens'),
         image_max_tokens: intOrNull('modal-image-max-tokens'),
+        ...(existing.bundle ? {
+            bundle: {
+                ...existing.bundle,
+                workload_policy: strVal('modal-workload-policy') || existing.bundle.workload_policy || 'general_chat',
+            },
+        } : {}),
     };
 }
 const CHANGE_LABELS = {
     name: 'Name', model_path: 'Model (local path or HF repo)', hf_repo: 'HuggingFace Repo',
     alias: 'Server Alias', mmproj: 'Multimodal Projector', chat_template_file: 'Chat Template File',
+    mmproj_offload: 'Projector Offload',
     image_min_tokens: 'Vision Min Tokens', image_max_tokens: 'Vision Max Tokens',
     gpu_layers: 'GPU Layers', no_mmap: 'no-mmap', mlock: 'mlock',
     context_size: 'Context Size', ctk: 'KV Key Type', ctv: 'KV Value Type',
@@ -2836,6 +2992,9 @@ const CHANGE_LABELS = {
     tool_call_format: 'Tool Call Format',
     reasoning: 'Reasoning', reasoning_budget: 'Reasoning Budget',
     reasoning_budget_message: 'Reasoning Budget Message',
+    llama_reasoning_effort: 'llama.cpp Reasoning Effort',
+    llama_reasoning_format: 'llama.cpp Reasoning Format',
+    llama_reasoning_preserve: 'llama.cpp Preserve Reasoning',
     tensor_split: 'Tensor Split', split_mode: 'Split Mode', main_gpu: 'Main GPU',
     n_cpu_moe: 'CPU MoE Threads',
     rope_scaling: 'RoPE Scaling', rope_freq_base: 'RoPE Freq Base', rope_freq_scale: 'RoPE Freq Scale',

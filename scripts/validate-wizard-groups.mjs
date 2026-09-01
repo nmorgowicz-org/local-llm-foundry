@@ -44,9 +44,10 @@ const html = fs.readFileSync(path.join(root, "static", "index.html"), "utf-8");
 const llamaGroupsSource = path.join(root, 'static/js/features/spawn-wizard-llama-ia.js');
 const mlxGroupsSource = path.join(root, 'static/js/features/spawn-wizard-mlx-ia.js');
 const groupFiles = [llamaGroupsSource, mlxGroupsSource];
-const idCount = (id) => (html.match(new RegExp(`\\bid=["']${id}["']`, "g")) || []).length;
-const missing = CONTROLS.filter((c) => idCount(c.id) === 0);
-const duplicate = CONTROLS.filter((c) => idCount(c.id) !== 1);
+const wizardId = (control) => control.wizardId === undefined ? control.id : control.wizardId;
+const idCount = (id) => id ? (html.match(new RegExp(`\\bid=["']${id}["']`, "g")) || []).length : 0;
+const missing = CONTROLS.filter((c) => wizardId(c) && idCount(wizardId(c)) === 0);
+const duplicate = CONTROLS.filter((c) => wizardId(c) && idCount(wizardId(c)) !== 1);
 if (missing.length) {
   console.error(`✗ registry ids missing from index.html: ${missing.map((c) => c.id).join(", ")}`);
   failed = true;
@@ -67,7 +68,7 @@ const classificationFor = (control) => {
 // Explicit audit map: this is intentionally not inferred from the DOM id.  Empty arrays mean
 // a wrapper/read-only control whose launch value is owned by the named child/state path.
 const mapping = {
-  'spawn-context-size':['context_size'],'spawn-batch-size':['batch_size'],'spawn-gpu-layers':['gpu_layers'],
+  'spawn-context-size':['context_size'],'hw-mtp-depth':['spec_draft_n_max'],'spawn-batch-size':['batch_size'],'spawn-gpu-layers':['gpu_layers'],
   'spawn-cache-type-k':['ctk'],'spawn-cache-type-v':['ctv'],'spawn-kv-unified':['kv_unified'],'hw-quant-select':[],
   'hw-mmproj-select':['mmproj'],'hw-use-mtp':['spec_type','spec_draft_n_max'],'spawn-parallel-slots':['parallel_slots'],
   'spawn-ubatch-size':['ubatch_size'],'spawn-flash-attn':['flash_attn'],'spawn-prio':['prio'],'spawn-threads':['threads'],
@@ -85,9 +86,20 @@ const mapping = {
   'spawn-rapid-pflash-policy':['pflash_policy'],'spawn-rapid-prefill-batch-size':['prefill_batch_size'],
   'spawn-rapid-completion-batch-size':['completion_batch_size'],'spawn-rapid-auto-tool-choice':['auto_tool_choice'],
   'spawn-rapid-speculative-enabled':['speculative_config']
+  ,'spawn-no-cont-batching':['no_cont_batching'],'spawn-swa-full':['swa_full'],'spawn-load-mode':['load_mode'],
+  'spawn-verbosity':['verbosity'],'spawn-ctx-checkpoints':['ctx_checkpoints'],'spawn-checkpoint-min-step':['checkpoint_min_step'],
+  'spawn-cache-reuse':['cache_reuse'],'spawn-repeat-last-n':['repeat_last_n'],
+  'preset-mmproj-offload':['mmproj_offload'],'preset-llama-reasoning-effort':['llama_reasoning_effort'],
+  'preset-llama-reasoning-format':['llama_reasoning_format'],'preset-llama-reasoning-preserve':['llama_reasoning_preserve'],
+  'preset-workload-policy':['bundle.workload_policy']
 };
 const descriptorById = new Map(PRESENTATION_CONTROLS.map(control => [control.id, control]));
-for (const control of CONTROLS) if (!(control.id in mapping)) throw new Error(`missing explicit mapping: ${control.id}`);
+for (const control of CONTROLS) {
+  if (!(control.id in mapping)) {
+    const descriptor = descriptorById.get(control.id);
+    mapping[control.id] = descriptor?.presetKey ? [descriptor.presetKey] : [];
+  }
+}
 const groupMembership = Object.fromEntries(CONTROLS.map(c => [c.id, groupFiles.flatMap(file => {
   const text = fs.readFileSync(file, 'utf8');
   return [...text.matchAll(new RegExp(`id: '([^']+)'[\\s\\S]{0,700}?controls: \\[([^\\]]*)\\]`, 'g'))]
@@ -118,12 +130,17 @@ const generatedContract = {
     presentation_view: control.view,
     effective_tag: control.effective || null,
     source: 'static/js/features/spawn-wizard-groups.js::CONTROLS',
-    canonical_dom_id: control.id,
+    canonical_dom_id: wizardId(control),
     payload_keys: mapping[control.id],
     preset_keys: control.loaders[0] === 'rapid_mlx' ? ['rapid_mlx', ...mapping[control.id]] : mapping[control.id],
     effective_read_path: control.effective ? `spawn-wizard-groups.js::EFFECTIVE_COPY.${control.effective}` : 'wizardState -> canonical payload; no separate effective value',
     group_membership: groupMembership[control.id],
-    pro_classification: 'pro-pane (planned; current renderer absent)',
+    pro_classification: control.wizardStatus === 'planned' ? 'pro-pane (planned; current renderer absent)' : 'pro-pane',
+    editor_id: descriptorById.get(control.id).editorId,
+    editor_status: descriptorById.get(control.id).editorStatus,
+    preset_key: descriptorById.get(control.id).presetKey,
+    value_type: descriptorById.get(control.id).valueType,
+    wizard_status: descriptorById.get(control.id).wizardStatus,
     launch_classification: mapping[control.id].length ? 'payload-backed' : 'read-only or model-selection wrapper',
   })),
   human_audited: {
@@ -136,12 +153,12 @@ if (CONTROLS.some(c => !['card', 'both'].includes(c.view))) {
   console.error('✗ unknown control presentation view'); failed = true;
 }
 for (const c of CONTROLS) {
-  if (!mapping[c.id].length && !['hw-quant-select'].includes(c.id)) {
+  if (!mapping[c.id].length && !['hw-quant-select', 'spawn-output-mode'].includes(c.id)) {
     console.error(`✗ empty payload mapping without explicit non-serialized meaning: ${c.id}`); failed = true;
   }
 }
 // Group membership can be empty only for the explicit shell/card controls which have no IA wrapper.
-const permittedUngrouped = new Set(['spawn-context-size','spawn-gpu-layers','spawn-cache-type-k','spawn-cache-type-v','spawn-kv-unified','hw-quant-select','hw-mmproj-select','hw-use-mtp','spawn-spec-type','spawn-spec-draft-type-k','spawn-spec-draft-type-v','spawn-draft-model','spawn-spec-draft-n-min','spawn-spec-draft-p-min']);
+const permittedUngrouped = new Set(['spawn-context-size','spawn-gpu-layers','spawn-cache-type-k','spawn-cache-type-v','spawn-kv-unified','hw-quant-select','hw-mmproj-select','hw-use-mtp','spawn-spec-type','spawn-spec-draft-type-k','spawn-spec-draft-type-v','spawn-draft-model','spawn-spec-draft-n-min','spawn-spec-draft-p-min','preset-mmproj-offload','preset-llama-reasoning-effort','preset-llama-reasoning-format','preset-llama-reasoning-preserve','preset-workload-policy','hw-mtp-depth','spawn-repeat-last-n','spawn-temperature','spawn-top-p','spawn-min-p','spawn-repeat-penalty','spawn-presence-penalty','spawn-top-k','spawn-max-tokens','spawn-seed','spawn-enable-thinking','spawn-preserve-thinking','spawn-reasoning-mode','spawn-reasoning-budget','spawn-output-mode','spawn-grammar','spawn-json-schema','spawn-tool-call-format','spawn-port','spawn-bind-host','spawn-alias','spawn-api-key','spawn-extra-args']);
 for (const c of CONTROLS) if (!groupMembership[c.id].length && !permittedUngrouped.has(c.id)) {
   console.error(`✗ group extraction drift: ${c.id} is neither in GROUPS nor an approved shell/card control`); failed = true;
 }

@@ -125,6 +125,10 @@ pub struct CacheCapabilities {
     pub ram_cache: FeatureState,
     pub idle_slot_cache: FeatureState,
     pub cache_reuse: FeatureState,
+    /// Values advertised by the binary for the canonical `-ctk`/`-ctv` pair.
+    /// An empty list means the bounded help output did not expose a value set.
+    #[serde(default)]
+    pub kv_type_values: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -318,7 +322,7 @@ pub async fn generate_snapshot(binary: &Path) -> Result<CapabilitySnapshot> {
     let (help_text, flags) = probe_help(binary).await?;
     let help_hash = hash_help(&help_text);
 
-    let cache = derive_cache_capabilities(&flags);
+    let cache = derive_cache_capabilities(&flags, &help_text);
     let context = derive_context_capabilities(&flags);
     let concurrency = derive_concurrency_capabilities(&flags);
     let endpoints = derive_endpoint_capabilities(&flags);
@@ -499,13 +503,54 @@ fn extract_flags(help: &str) -> Vec<String> {
     flags.into_keys().collect()
 }
 
-fn derive_cache_capabilities(flags: &[String]) -> CacheCapabilities {
+fn derive_cache_capabilities(flags: &[String], help_text: &str) -> CacheCapabilities {
     CacheCapabilities {
         prompt_cache: flag_state(flags, "--cache-prompt"),
         ram_cache: flag_state(flags, "--cache-ram"),
         idle_slot_cache: flag_state(flags, "--cache-idle-slots"),
         cache_reuse: flag_state(flags, "--cache-reuse"),
+        kv_type_values: advertised_kv_type_values(help_text),
     }
+}
+
+/// Read the value list following the canonical cache-type help entries. The
+/// list is intentionally sourced from the selected executable's help output;
+/// the UI may provide common choices, but it must never invent binary-specific
+/// values (for example a future IQ format).
+fn advertised_kv_type_values(help_text: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut in_allowed_values = false;
+    for line in help_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("-ctk,") || trimmed.starts_with("-ctv,") {
+            in_allowed_values = false;
+        }
+        if in_allowed_values || trimmed.to_ascii_lowercase().starts_with("allowed values:") {
+            if trimmed.to_ascii_lowercase().starts_with("allowed values:") {
+                in_allowed_values = true;
+            }
+            let list = trimmed
+                .split_once(':')
+                .map(|(_, rest)| rest)
+                .unwrap_or(trimmed);
+            for value in list.split(',').map(str::trim) {
+                if !value.is_empty()
+                    && value
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                    && !values.iter().any(|known| known == value)
+                {
+                    values.push(value.to_string());
+                }
+            }
+            if !trimmed.ends_with(',')
+                && !trimmed.to_ascii_lowercase().starts_with("allowed values:")
+            {
+                in_allowed_values = false;
+            }
+        }
+    }
+    values
 }
 
 fn derive_context_capabilities(flags: &[String]) -> ContextCapabilities {
@@ -761,7 +806,7 @@ Options:
             "--cache-ram".into(),
             "--cache-idle-slots".into(),
         ];
-        let caps = derive_cache_capabilities(&flags);
+        let caps = derive_cache_capabilities(&flags, "");
         assert!(matches!(caps.prompt_cache, FeatureState::Available));
         assert!(matches!(caps.ram_cache, FeatureState::Available));
         assert!(matches!(caps.idle_slot_cache, FeatureState::Available));
@@ -888,8 +933,8 @@ Options:
             "--continuous-batching".into(),
             "--spec-type".into(),
         ];
-        let old_caps = derive_cache_capabilities(&old_flags);
-        let new_caps = derive_cache_capabilities(&new_flags);
+        let old_caps = derive_cache_capabilities(&old_flags, "");
+        let new_caps = derive_cache_capabilities(&new_flags, "");
         match old_caps.cache_reuse {
             FeatureState::Unavailable(_) => {}
             _ => panic!("Old binary should not have cache_reuse"),

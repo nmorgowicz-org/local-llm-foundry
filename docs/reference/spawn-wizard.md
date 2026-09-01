@@ -20,6 +20,24 @@ The Spawn Wizard is the guided flow for creating a model server. It provides:
 - Per-backend settings isolation
 - Workload scenario mapping (page-1 use-case selection drives backend VRAM policy)
 
+## Preset Editor llama.cpp field parity
+
+The Preset Editor and Spawn Wizard share the canonical field registry in
+`static/js/features/spawn-wizard-groups.js`. The generated parity snapshot is
+`tests/ui/core/fixtures/llama-config-field-catalog.json`; it records the
+persisted key, editor control, wizard status, value type, and Pro category for
+each llama.cpp setting. This prevents an editor-only serializer from silently
+drifting away from the wizard contract.
+
+The editor's `ctk` and `ctv` controls are binary-capability sourced. `f16`,
+`q8_0`, and `q4_0` are shown first, followed by a separator and values
+advertised by the selected llama.cpp binary. Unsupported stored values remain
+visible and disabled with the capability reason, so an unrelated edit cannot
+erase them. Native llama.cpp reasoning effort, format, preservation, and
+multimodal-projector offload are separate from Rapid-MLX request-default
+reasoning settings. Bundle workload policy is shown only for bundled presets;
+flat presets do not gain that field.
+
 ## Frontend module map
 
 `static/js/features/spawn-wizard.js` was a single ~5,900-line file through Phase 7. It has

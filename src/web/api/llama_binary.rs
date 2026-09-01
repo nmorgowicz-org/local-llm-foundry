@@ -127,6 +127,8 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
 
     api_llama_binary_version(config.clone())
         .map(box_reply)
+        .or(api_llama_binary_capabilities(config.clone()).map(box_reply))
+        .unify()
         .or(api_llama_binary_latest(config.clone()).map(box_reply))
         .unify()
         .or(api_llama_binary_releases(config.clone()).map(box_reply))
@@ -140,6 +142,49 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         .or(api_llama_restart(state, config).map(box_reply))
         .unify()
         .boxed()
+}
+
+/// GET /api/llama-binary/capabilities
+///
+/// Return the authenticated, exact-binary help snapshot used by typed preset
+/// controls. This is deliberately separate from the human-readable version
+/// endpoint so the editor can source `-ctk`/`-ctv` values and native reasoning
+/// options from the selected executable.
+fn api_llama_binary_capabilities(
+    app_config: Arc<AppConfig>,
+) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+    warp::path!("api" / "llama-binary" / "capabilities")
+        .and(warp::get())
+        .and(warp::header::optional::<String>("authorization"))
+        .and_then(move |auth: Option<String>| {
+            let cfg = app_config.clone();
+            async move {
+                if !check_api_token(&auth, &cfg) {
+                    return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                        unauthorized_api_token(),
+                    ));
+                }
+                if !managed_llama_server_path(&cfg).is_file() {
+                    return Ok(Box::new(warp::reply::json(&serde_json::json!({
+                        "ok": false,
+                        "error": "llama-server binary is unavailable",
+                    }))));
+                }
+                match crate::inference::llama_cpp_capabilities::generate_snapshot(
+                    &managed_llama_server_path(&cfg),
+                )
+                .await
+                {
+                    Ok(snapshot) => Ok(Box::new(warp::reply::json(
+                        &serde_json::json!({ "ok": true, "snapshot": snapshot }),
+                    ))),
+                    Err(error) => Ok(Box::new(warp::reply::json(&serde_json::json!({
+                        "ok": false,
+                        "error": format!("capability probe failed: {error}"),
+                    })))),
+                }
+            }
+        })
 }
 
 /// GET /api/llama-binary/version

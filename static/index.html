@@ -2700,6 +2700,15 @@
                                     <button type="button" class="btn-sm btn-preset" id="preset-browse-mmproj-btn" title="Browse filesystem for .mmproj.gguf files">Browse</button>
                                 </div>
                             </div>
+                            <div class="pe-field">
+                                <label class="pe-label" for="modal-mmproj-offload" title="Whether the multimodal projector is placed on the GPU. Default follows llama.cpp.">Projector offload</label>
+                                <select class="pe-select" id="modal-mmproj-offload">
+                                    <option value="">Default</option>
+                                    <option value="true">On</option>
+                                    <option value="false">Off</option>
+                                </select>
+                                <div class="pe-field-hint" id="modal-mmproj-offload-hint"></div>
+                            </div>
 <div class="pe-field">
                                 <label class="pe-label" for="modal-chat-template-file" title="Path to a chat template file. Wizard-created presets can auto-install one for models that need a custom template.">Chat Template File (--chat-template-file)</label>
                                 <div class="pe-field-hint" id="preset-chat-template-status" style="margin-bottom:4px;">Chat template: built-in — using the model's built-in template</div>
@@ -2780,10 +2789,11 @@
                                 <div class="pe-field">
                                     <label class="pe-label" for="modal-ctk" title="KV cache key quantization. q8_0 is the best quality-per-byte for keys. f16 = lossless. q4_0/iq4_nl = 4-bit for aggressive VRAM savings.">KV Key Type (-ctk)</label>
                                     <select class="pe-select" id="modal-ctk">
-                                        <option value="q8_0">q8_0 (recommended)</option>
                                         <option value="f16">f16 (lossless)</option>
-                                        <option value="bf16">bf16</option>
+                                        <option value="q8_0">q8_0 (recommended)</option>
                                         <option value="q4_0">q4_0</option>
+                                        <option disabled>────────</option>
+                                        <option value="bf16">bf16</option>
                                         <option value="q4_1">q4_1</option>
                                         <option value="iq4_nl">iq4_nl</option>
                                         <option value="q5_0">q5_0</option>
@@ -2796,8 +2806,9 @@
                                     <select class="pe-select" id="modal-ctv">
                                         <option value="f16">f16 (default)</option>
                                         <option value="q8_0">q8_0</option>
-                                        <option value="bf16">bf16</option>
                                         <option value="q4_0">q4_0</option>
+                                        <option disabled>────────</option>
+                                        <option value="bf16">bf16</option>
                                         <option value="q4_1">q4_1</option>
                                         <option value="iq4_nl">iq4_nl</option>
                                         <option value="q5_0">q5_0</option>
@@ -2821,6 +2832,15 @@
                                         <option value="">Default</option>
                                         <option value="true">On (--kv-unified)</option>
                                         <option value="false">Off (--no-kv-unified)</option>
+                                    </select>
+                                </div>
+                                <div class="pe-field" id="modal-workload-policy-wrap" style="display:none;">
+                                    <label class="pe-label" for="modal-workload-policy" title="Bundle workload eligibility policy. Flat presets do not have a workload policy.">Bundle Workload</label>
+                                    <select class="pe-select" id="modal-workload-policy">
+                                        <option value="general_chat">General chat</option>
+                                        <option value="agentic_tools">Agentic tools</option>
+                                        <option value="roleplay_creative">Roleplay / creative</option>
+                                        <option value="custom_unknown">Custom / unknown</option>
                                     </select>
                                 </div>
                                 <div class="pe-field">
@@ -3024,6 +3044,20 @@
                                          <option value="off">off</option>
                                      </select>
                                  </div>
+                                 <div class="pe-field">
+                                     <label class="pe-label" for="modal-llama-reasoning-effort" title="Native llama.cpp reasoning effort. The available values come from the selected binary.">llama.cpp Reasoning Effort</label>
+                                     <select class="pe-select" id="modal-llama-reasoning-effort">
+                                         <option value="default">Default</option>
+                                     </select>
+                                     <div class="pe-field-hint" id="modal-llama-reasoning-effort-hint"></div>
+                                 </div>
+                                 <div class="pe-field">
+                                     <label class="pe-label" for="modal-llama-reasoning-format" title="Native llama.cpp reasoning format. Auto is represented by Default and emits no flag.">llama.cpp Reasoning Format</label>
+                                     <select class="pe-select" id="modal-llama-reasoning-format">
+                                         <option value="">Default (auto)</option>
+                                     </select>
+                                     <div class="pe-field-hint" id="modal-llama-reasoning-format-hint"></div>
+                                 </div>
                              </div>
                              <div class="pe-row">
                                  <div class="pe-field">
@@ -3040,6 +3074,15 @@
                                           <option value="">(default)</option>
                                           <option value="json">json</option>
                                       </select>
+                                  </div>
+                                  <div class="pe-field">
+                                      <label class="pe-label" for="modal-llama-reasoning-preserve" title="Preserve native llama.cpp reasoning output across the full conversation history.">llama.cpp Preserve Reasoning</label>
+                                      <select class="pe-select" id="modal-llama-reasoning-preserve">
+                                          <option value="">Default</option>
+                                          <option value="true">On</option>
+                                          <option value="false">Off</option>
+                                      </select>
+                                      <div class="pe-field-hint" id="modal-llama-reasoning-preserve-hint"></div>
                                   </div>
                               </div>
                          </div>
