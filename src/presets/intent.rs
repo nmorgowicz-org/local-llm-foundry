@@ -82,6 +82,7 @@ pub fn propose_intent(
             evaluated = candidate(context, bundle, &selection);
         }
         if !fits(context, evaluated.estimate.as_ref())
+            && !matches!(intent, PresetFitIntent::LowVram)
             && let Some(smaller) =
                 context_option(bundle, &selection.artifact_id, selection.context_size)
         {
@@ -138,6 +139,13 @@ pub fn propose_intent(
         selection = curated;
         selection.intent_source = Some(intent.clone());
         evaluated = candidate(context, bundle, &selection);
+    }
+
+    if !fits(context, evaluated.estimate.as_ref()) && unavailable_reason.is_none() {
+        unavailable_reason = Some(unavailable(
+            "intent_no_safe_fit",
+            "no safe artifact, performance, or placement change fits while preserving the selected context; lower context or choose a smaller model variant",
+        ));
     }
 
     let resolved = resolve_preset(context.preset, Some(&selection), context.capabilities)
@@ -470,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn low_vram_orders_context_and_performance_changes() {
+    fn low_vram_preserves_context_while_changing_performance() {
         let (preset, capabilities) = context(false, false);
         let proposal = propose_intent(
             &IntentContext {
@@ -486,8 +494,14 @@ mod tests {
             PresetFitIntent::LowVram,
         )
         .unwrap();
-        assert_eq!(proposal.selection.context_size, 8_000);
+        assert_eq!(proposal.selection.context_size, 32_000);
         assert_eq!(proposal.selection.performance_id, "small");
+        assert!(
+            proposal
+                .changes
+                .iter()
+                .all(|change| !change.field.contains("context"))
+        );
         assert!(proposal.changes.iter().all(|change| {
             !change.code.is_empty()
                 && !change.field.is_empty()
@@ -520,12 +534,12 @@ mod tests {
     }
 
     #[test]
-    fn context_reduction_honors_native_context_limit() {
+    fn low_vram_does_not_reduce_context_to_native_limit() {
         let (mut preset, capabilities) = context(false, false);
         preset.bundle.as_mut().unwrap().artifacts[0]
             .metadata
             .native_context_limit = Some(8_000);
-        let proposal = propose_intent(
+        let result = propose_intent(
             &IntentContext {
                 preset: &preset,
                 capabilities: &capabilities,
@@ -537,9 +551,16 @@ mod tests {
                 gpu_layers: -1,
             },
             PresetFitIntent::LowVram,
-        )
-        .unwrap();
-        assert_eq!(proposal.selection.context_size, 8_000);
+        );
+        let proposal = result.unwrap();
+        assert_eq!(proposal.selection.context_size, 32_000);
+        assert_eq!(
+            proposal
+                .unavailable
+                .as_ref()
+                .map(|reason| reason.code.as_str()),
+            Some("intent_no_safe_fit")
+        );
     }
 
     #[test]

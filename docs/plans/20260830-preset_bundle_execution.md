@@ -968,7 +968,10 @@ models. Test:
 
 - intent output is a complete exact selection;
 - every change has code, field, before, after, and explanation;
-- lower artifact choice precedes context reduction;
+- lower artifact choice precedes context reduction for intents that permit it;
+- Low-VRAM never changes the user's selected context automatically; when no
+  safe artifact, performance, or MoE placement change remains, it returns a
+  no-change result with the manual context/model-variant tradeoff;
 - ubatch never exceeds batch;
 - MoE CPU placement is used only for proven MoE models and within bounds;
 - agentic/tool workload policy never silently selects q4/q4;
@@ -1391,7 +1394,9 @@ discovering it here costs one context window.
   persistence, no revision handling, no spawn.
 - Include the states that carry the UX risk: a disabled option with its
   reason, a Low VRAM proposal with its diff, the derived `Custom` indicator,
-  the MoE CPU-offload slowdown warning, and a dirty-close confirm.
+  the MoE CPU-offload slowdown warning, and a dirty-close confirm. Also cover
+  workload-aware Low VRAM quality-floor preservation, context-preserving
+  no-change results, and model-card/variant discovery guidance.
 
 Keep it in a scratch directory or a branch that is never merged. Do not add
 routes, do not touch `sessionState`, and do not extend the frontend field
@@ -2031,6 +2036,14 @@ Extend `tests/ui/core/preset-flow.spec.js` for:
 - `Fit automatically` issues the probe search and renders the
   result as a draft change with the diff block; it never auto-applies or
   persists;
+- MoE placement changes the estimate visibly: the drawer reports probe-backed
+  device VRAM total, expert-weight system-RAM impact, and headroom against the
+  available device budget;
+- a user-adjustable headroom/VRAM buffer passes through as `fit_target_mib` and
+  reruns the same two-sided probe search, while manual `n_cpu_moe` changes use
+  a single-point probe;
+- unavailable or failed probe results show a backend reason and no stale or
+  inferred number;
 - when the probe is absent or unparseable, `Fit automatically` shows the
   backend `probe_unavailable` reason and never guesses a value;
 - Start once uses draft and does not save;

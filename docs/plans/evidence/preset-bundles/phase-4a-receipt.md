@@ -23,3 +23,10 @@ Focused evidence:
 
 The implementation reuses `full_estimate`; it adds no client-side VRAM formula
 and does not invoke `llama-fit-params`.
+
+Phase 4.5 amendment: Low VRAM preserves the selected context and workload
+quality floor. It never silently lowers Agentic/tools below `q8_0/q8_0`,
+changes workload policy, or reduces context to an artifact's native limit.
+If no safe artifact, performance, or placement change remains, the proposal
+stays at the selected context and reports `intent_no_safe_fit` with the
+remaining lower-context or smaller-model-variant tradeoff.

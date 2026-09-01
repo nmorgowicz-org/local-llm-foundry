@@ -115,6 +115,25 @@ density and keeps many models visible.
 
 Binding behavior:
 
+- Low VRAM is workload-aware and never rewrites the selected
+  `workload_policy`. It preserves that policy's quality floor while proposing
+  lower-memory changes. For `agentic_tools`, the floor is `q8_0/q8_0` with
+  today's binaries; when qualified mixed main-KV support exists, the floor is
+  `q8_0/q4_0`. `q4_0/q4_0` is never an implicit Low VRAM result for agentic
+  work. A policy-ineligible KV option remains visible but disabled with the
+  resolver's reason. Low VRAM never changes context automatically. If the
+  selected context is already the user's desired value and no safe
+  in-bundle artifact/performance/placement change remains, the proposal is a
+  valid no-change result and explains that lowering context or adding a
+  smaller quantization artifact are the remaining tradeoffs. When provenance
+  is available, the drawer offers the existing model-card/HF variant surface
+  to find or download that smaller artifact; it does not invent a second model
+  catalog.
+
+- In the example below, the `q4_0/q4_0` choice is disabled when the displayed
+  workload is Agentic / tool use; the example's generic visual shorthand does
+  not override this rule.
+
 - The collapsed card always shows the saved default selection.
 - `Start` launches that exact saved selection after backend resolution and
   validation. Card Start is an atomic resolve-and-launch: it sends the preset
@@ -1077,8 +1096,11 @@ CMake flag, KV behavioral safety, tool-call correctness, or performance.
 Low VRAM is a proposal algorithm, not a static switch. It operates in this
 order and reports every change:
 
-1. Prefer an explicitly lower-memory artifact in the same confirmed bundle.
-2. Reduce context only to a listed/qualified option.
+1. Prefer an explicitly lower-memory artifact in the same confirmed bundle,
+   subject to the workload's quality floor.
+2. Never reduce context as an implicit Low VRAM change. Context remains the
+   user's draft value; the drawer explains when lowering it is the remaining
+   local tradeoff.
 3. Reduce batch/ubatch while preserving `ubatch <= batch` and model-specific
    image-token constraints.
 4. For proven MoE models on qualified discrete-memory systems, increase CPU
@@ -1087,9 +1109,11 @@ order and reports every change:
    This restriction binds **intents** (Low VRAM) only: the drawer's explicit
    `Fit automatically` button is a user-initiated probe-backed proposal and is
    available wherever the probe runs, discrete or unified memory.
-5. Preserve the workload's qualified K/V quality floor.
+5. Preserve the workload's qualified K/V quality floor. Low VRAM may not
+   change `workload_policy` to make a lower KV value eligible.
 6. Offer aggressive K/V only as an explicit risky choice when workload policy
-   permits it; never silently for agentic/tools.
+   permits it; never silently for agentic/tools. If no safe change remains,
+   return a no-change proposal with the context/model-variant explanation.
 
 The proposal becomes an exact draft selection. Start never reruns the intent
 algorithm behind the user's back.
