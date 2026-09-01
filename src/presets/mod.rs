@@ -5,6 +5,8 @@ use anyhow::Result;
 use std::path::Path;
 
 pub mod bundle;
+pub mod fit_probe;
+pub mod intent;
 pub mod resolver;
 pub mod validation;
 
