@@ -6,7 +6,9 @@ use std::path::Path;
 
 pub mod bundle;
 pub mod fit_probe;
+pub mod fit_search;
 pub mod intent;
+pub mod probe_estimate;
 pub mod resolver;
 pub mod validation;
 

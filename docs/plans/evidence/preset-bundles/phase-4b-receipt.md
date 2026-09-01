@@ -28,5 +28,5 @@ Focused evidence:
   failures, and bounded timeout behavior.
 
 The reader is estimate-class evidence (`fit_probe`); it is not runtime measured
-memory evidence and is not a placement search. Phase 4c owns the two-sided
-`n_cpu_moe` search and reserve application.
+memory evidence and is not itself a placement search. Phase 4c consumes this
+seam for the two-sided `n_cpu_moe` search and reserve application.

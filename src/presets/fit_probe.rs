@@ -172,16 +172,28 @@ pub fn parse_outputs(
                     .is_some_and(|suffix| suffix.starts_with(" ("))
         })
     };
-    let device_total_mib = table
+    let table_device_total_mib = table
         .iter()
         .filter(|row| is_device_row(row))
         .map(|row| row.total_mib)
         .sum::<u64>();
-    if device_total_mib == 0 {
+    if table_device_total_mib == 0 {
         return Err(FitProbeError::Parse(
             "memory table contained no device total".into(),
         ));
     }
+    // The table's first number is the device capacity, not this process's
+    // allocation. The compact component row is the allocation budget used by
+    // fit-target decisions and intentionally does not depend on live `free`.
+    let device_total_mib = devices
+        .iter()
+        .map(|device| {
+            device
+                .model_mib
+                .saturating_add(device.context_mib)
+                .saturating_add(device.compute_mib)
+        })
+        .sum();
     let host_total_mib = table
         .iter()
         .filter(|row| !is_device_row(row))
@@ -580,7 +592,7 @@ mod tests {
     #[test]
     fn parses_metal_cpu_repack_into_host_total() {
         let reading = parse_outputs(12, METAL_STDOUT, METAL_STDERR).unwrap();
-        assert_eq!(reading.device_total_mib, 57_344);
+        assert_eq!(reading.device_total_mib, 15_196 + 5_182 + 832);
         assert_eq!(reading.host_total_mib, 1_156 + 5_568);
         assert_eq!(reading.model_mib, 15_196);
     }
@@ -588,7 +600,7 @@ mod tests {
     #[test]
     fn parses_cuda_host_growth_without_cpu_repack_row() {
         let reading = parse_outputs(16, CUDA_STDOUT, CUDA_STDERR).unwrap();
-        assert_eq!(reading.device_total_mib, 32_579);
+        assert_eq!(reading.device_total_mib, 13_276 + 2_140 + 677);
         assert_eq!(reading.host_total_mib, 8_139);
         assert_eq!(reading.context_mib, 2_140);
     }
