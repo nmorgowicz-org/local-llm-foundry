@@ -1098,4 +1098,73 @@ test('dirty close control requires confirmation', async ({ page }) => {
     await expect(drawer.locator('.bundle-diff-list')).toContainText('workload');
     expect(state.selectionPayloads).toHaveLength(0);
   });
+
+  // Evidence class is the resolver's own EvidenceMatch.class (architecture
+  // 12), and `detail` is `LaunchObservationReceipt` fields threaded through
+  // `resolve_response` unchanged — these mocks mirror that JSON shape, not
+  // an invented richer one.
+  function evidenceFixture(evidenceClass, overrides = {}) {
+    return {
+      class: evidenceClass,
+      summary: 'Measured 18.4 GiB',
+      detail: {
+        method: 'metal_unified_observation',
+        before_bytes: 4_000_000_000,
+        peak_bytes: 23_760_000_000,
+        after_bytes: 22_000_000_000,
+        model_delta_bytes: 19_760_000_000,
+        sample_count: 18,
+        interval_ms: 750,
+        noise_flags: ['macOS unified-memory sample is a system-wide wired-memory delta, not process-scoped'],
+        captured_unix_ms: 1_772_400_000_000,
+      },
+      ...overrides,
+    };
+  }
+
+  for (const evidenceClass of ['exact', 'compatible', 'related', 'stale']) {
+    test(`evidence-details action opens the receipt drawer for ${evidenceClass} evidence`, async ({ page }) => {
+      const pageErrors = [];
+      page.on('pageerror', error => pageErrors.push(error.message));
+      await installPresetMocks(page, {
+        presets: [bundlePreset()],
+        resolveResponse: async () => ({ evidence: evidenceFixture(evidenceClass) }),
+      });
+      await boot(page);
+
+      await page.locator('.launch-card[data-preset-id="bundled"] .launch-card-btn-configure').click();
+      const drawer = page.locator('#bundle-drawer');
+      const evidenceRow = drawer.locator('.bundle-evidence');
+      await expect(evidenceRow).toBeVisible();
+      await expect(evidenceRow).toHaveClass(new RegExp(`bundle-evidence--${evidenceClass}`));
+
+      const detailsBtn = evidenceRow.locator('[data-bundle-evidence-details]');
+      await expect(detailsBtn).toBeVisible();
+      await detailsBtn.click();
+      expect(pageErrors, pageErrors.join('\n')).toEqual([]);
+
+      const evidenceDrawer = page.locator('#evidence-drawer');
+      await expect(evidenceDrawer).toHaveClass(/open/);
+      await expect(evidenceDrawer.locator('#evidence-drawer-summary')).toHaveText('Measured 18.4 GiB');
+      await expect(evidenceDrawer.locator('.evidence-drawer-technical')).toContainText('metal_unified_observation');
+      await expect(evidenceDrawer.locator('.evidence-drawer-technical')).toContainText('Samples: 18 (750ms interval)');
+
+      await evidenceDrawer.locator('.evidence-drawer-close').click();
+      await expect(evidenceDrawer).toBeHidden();
+    });
+  }
+
+  test('evidence with no receipt detail renders the summary line with no Details action', async ({ page }) => {
+    await installPresetMocks(page, {
+      presets: [bundlePreset()],
+      resolveResponse: async () => ({ evidence: { class: 'exact', summary: 'Measured 18.4 GiB', detail: null } }),
+    });
+    await boot(page);
+
+    await page.locator('.launch-card[data-preset-id="bundled"] .launch-card-btn-configure').click();
+    const evidenceRow = page.locator('#bundle-drawer .bundle-evidence');
+    await expect(evidenceRow).toBeVisible();
+    await expect(evidenceRow).toContainText('Measured 18.4 GiB');
+    await expect(evidenceRow.locator('[data-bundle-evidence-details]')).toHaveCount(0);
+  });
 });

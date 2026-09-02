@@ -214,6 +214,20 @@ impl LaunchEvidenceMethod {
     }
 }
 
+/// Human-readable label for a receipt's method, for a details view.
+/// `None` (no method recorded on the fingerprint) surfaces as "unknown"
+/// rather than panicking or silently omitting the field.
+pub fn method_label(method: Option<LaunchEvidenceMethod>) -> &'static str {
+    match method {
+        Some(LaunchEvidenceMethod::WddmTotalDeviceDelta) => "wddm_total_device_delta",
+        Some(LaunchEvidenceMethod::CudaRocmProcessDelta) => "cuda_rocm_process_delta",
+        Some(LaunchEvidenceMethod::MetalUnifiedObservation) => "metal_unified_observation",
+        Some(LaunchEvidenceMethod::FitProbe) => "fit_probe",
+        Some(LaunchEvidenceMethod::EstimatorOnly) => "estimator_only",
+        None => "unknown",
+    }
+}
+
 /// The canonical normalized resolved-argv manifest digest, restricted to
 /// `MemoryRelevant` fields only, plus hardware/runtime/method identity.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

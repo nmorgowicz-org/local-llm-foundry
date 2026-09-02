@@ -15,6 +15,7 @@
 import { sessionState } from '../core/app-state.js';
 import { loadPresets, syncSelectedPresetSelection, openPresetModal } from './presets.js';
 import { showToastWithActions } from './toast.js';
+import { openEvidenceDrawer, evidenceFromLaunchObservation } from './evidence-drawer.js';
 
 // ── The four known workload policies (wire ids), in display order ────────────
 const WORKLOAD_POLICIES = [
@@ -741,17 +742,28 @@ const EVIDENCE_LABELS = {
     stale: 'Stale evidence — reverify before trusting',
 };
 
-function renderEvidence(el, evidence) {
-    el.className = 'bundle-evidence';
+function renderEvidence(target, evidence) {
+    target.className = 'bundle-evidence';
+    target.replaceChildren();
     if (!evidence || !evidence.class) {
-        el.hidden = true;
-        el.textContent = '';
+        target.hidden = true;
         return;
     }
-    el.hidden = false;
-    el.classList.add(`bundle-evidence--${evidence.class}`);
+    target.hidden = false;
+    target.classList.add(`bundle-evidence--${evidence.class}`);
     const label = EVIDENCE_LABELS[evidence.class] || evidence.class;
-    el.textContent = evidence.summary ? `${label} — ${evidence.summary}` : label;
+    const text = document.createElement('span');
+    text.className = 'bundle-evidence-text';
+    text.textContent = evidence.summary ? `${label} — ${evidence.summary}` : label;
+    target.appendChild(text);
+    if (evidence.detail) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'bundle-evidence-details';
+        btn.dataset.bundleEvidenceDetails = '1';
+        btn.textContent = 'Details';
+        target.appendChild(btn);
+    }
 }
 
 function renderResult(d, bundle) {
@@ -1129,6 +1141,11 @@ function bindStaticHandlers() {
     d.root.addEventListener('click', event => {
         if (event.target.closest('[data-bundle-close]')) {
             requestClose();
+        }
+        const detailsBtn = event.target.closest('[data-bundle-evidence-details]');
+        if (detailsBtn) {
+            const evidence = state.normalizedPreview?.evidence;
+            if (evidence) openEvidenceDrawer(evidenceFromLaunchObservation(evidence), detailsBtn);
         }
     });
 

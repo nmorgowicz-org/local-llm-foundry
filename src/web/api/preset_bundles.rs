@@ -520,9 +520,21 @@ fn lookup_evidence(
         summary.push_str(" — ");
         summary.push_str(first_warning);
     }
+    let method = crate::calibration::launch_evidence::method_label(receipt.fingerprint.method);
     Some(crate::presets::resolver::EvidenceMatch {
         class: class.as_str().to_string(),
         summary,
+        detail: Some(crate::presets::resolver::EvidenceDetail {
+            method: method.to_string(),
+            before_bytes: receipt.before_bytes,
+            peak_bytes: receipt.peak_bytes,
+            after_bytes: receipt.after_bytes,
+            model_delta_bytes: receipt.model_delta_bytes,
+            sample_count: receipt.sample_count,
+            interval_ms: receipt.interval_ms,
+            noise_flags: warnings,
+            captured_unix_ms: receipt.captured_unix_ms,
+        }),
     })
 }
 
@@ -559,6 +571,17 @@ fn resolve_response(
         "evidence": evidence.map(|evidence| serde_json::json!({
             "class": evidence.class,
             "summary": evidence.summary,
+            "detail": evidence.detail.map(|detail| serde_json::json!({
+                "method": detail.method,
+                "before_bytes": detail.before_bytes,
+                "peak_bytes": detail.peak_bytes,
+                "after_bytes": detail.after_bytes,
+                "model_delta_bytes": detail.model_delta_bytes,
+                "sample_count": detail.sample_count,
+                "interval_ms": detail.interval_ms,
+                "noise_flags": detail.noise_flags,
+                "captured_unix_ms": detail.captured_unix_ms,
+            })),
         })),
         "selection_hash": resolved.selection_hash,
         "resolved_config_hash": resolved.config_hash,

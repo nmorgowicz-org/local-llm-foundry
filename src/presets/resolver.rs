@@ -40,6 +40,23 @@ pub struct EstimateDivergence {
 pub struct EvidenceMatch {
     pub class: String,
     pub summary: String,
+    /// Receipt detail for a details view. `None` when the match's underlying
+    /// `LaunchObservationReceipt` could not be carried (kept optional so a
+    /// future caller can still build an `EvidenceMatch` from just class/summary).
+    pub detail: Option<EvidenceDetail>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceDetail {
+    pub method: String,
+    pub before_bytes: u64,
+    pub peak_bytes: u64,
+    pub after_bytes: u64,
+    pub model_delta_bytes: Option<u64>,
+    pub sample_count: u32,
+    pub interval_ms: u32,
+    pub noise_flags: Vec<String>,
+    pub captured_unix_ms: u128,
 }
 
 #[derive(Debug, Clone)]

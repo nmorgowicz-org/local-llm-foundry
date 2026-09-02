@@ -2,7 +2,112 @@
 
 Baseline commit: `b9e53c48ba9ad7cce2723fea91d7c392f4bb336d`
 
-## Slice 4 addendum (this checkpoint)
+## Slice 5 addendum (this checkpoint)
+
+Baseline for this slice: `e11e5970b7d016baa880a79efe9cf2eb77ab3c64` (slice 4,
+below).
+
+This slice ships the two items slice 2's "Outstanding" list deferred: the
+frontend evidence-details drawer action, and the `core/preset-flow.spec.js`
+playwright coverage for the exact/compatible/related/stale evidence classes.
+It does **not** touch either platform sampler or seek any real-host
+qualification run.
+
+### Backend: `EvidenceMatch` carries full receipt detail
+
+`resolver::EvidenceMatch` gained an optional `detail: Option<EvidenceDetail>`
+field (new `EvidenceDetail` struct: method, before/peak/after bytes, model
+delta, sample count, interval, noise flags, captured-at timestamp) so a
+details view has something to render beyond the existing one-line summary.
+Confirmed via grep that `preset_bundles.rs::lookup_evidence` is the only
+construction site for `EvidenceMatch`, so extending it in place (rather than
+building a parallel payload type) was safe. `lookup_evidence` now populates
+`detail` from the matched `LaunchObservationReceipt`, using a new
+`launch_evidence::method_label(Option<LaunchEvidenceMethod>)` helper for a
+human-readable method string (`"unknown"` for a receipt with no recorded
+method, rather than panicking or omitting the field). `resolve_response`'s
+JSON now nests a `"detail"` object under `"evidence"`.
+
+### Frontend: reuse the generic evidence drawer, don't build a new one
+
+Added `evidenceFromLaunchObservation(evidence)` to
+`evidence-drawer.js`, alongside the existing `evidenceFromEstimate` /
+`evidenceFromCommandPreview` builders — it maps the four `EvidenceMatchClass`
+values to the drawer's existing status/title vocabulary and formats the
+receipt detail (GiB-formatted before/peak/after/model-delta, sample count and
+interval, captured-at as a locale string, noise flags as warnings). No new
+drawer markup, styling, or accessibility wiring was needed; the drawer is
+already shared across surfaces and every untrusted value still goes through
+`textContent`.
+
+`preset-bundle-drawer.js`'s `renderEvidence` now appends a "Details" button
+when `evidence.detail` is present (omitted entirely when absent, e.g. a
+match with no carryable receipt), wired via the drawer's existing delegated
+click handler to call `openEvidenceDrawer(evidenceFromLaunchObservation(...),
+button)`.
+
+### Bug found and fixed: evidence-drawer/bundle-drawer z-index collision
+
+Opening the evidence drawer from inside the already-open bundle Configure
+drawer put the *bundle* drawer's close button on top, intercepting clicks
+meant for the evidence drawer's own close button — both `.evidence-drawer`
+and `.bundle-drawer` used `z-index: 920`, and DOM/paint order (not z-index
+alone) decided the tie in the bundle drawer's favor. This is a real product
+bug, not a test artifact: any future surface that opens the evidence drawer
+from within another open drawer would hit it. Fixed by bumping
+`.evidence-drawer` to `z-index: 930` in `evidence-drawer.css`, with a comment
+explaining why it must outrank other drawers.
+
+### Test-harness trap: `LLAMA_MONITOR_USE_RELEASE=1` serves a stale binary
+
+Phase 9's mandated verification command sets
+`LLAMA_MONITOR_USE_RELEASE=1`, which `tests/ui/run-server.mjs` uses to spawn
+the pre-built `target/release/local-llm-foundry` binary instead of running
+`cargo run`. A `cargo build` (debug) rebuild does not update this binary — a
+Playwright run against it will silently serve stale backend behavior with no
+error, confusing debugging (a temporary `console.log` traced the new
+`evidence.detail` field never reaching the page even though `class`/
+`summary` rendered correctly). Fixed by running `cargo build --release`
+before the release-mode Playwright run. Worth remembering for any future
+backend change verified this way.
+
+### Testing
+
+Added 5 tests to `core/preset-flow.spec.js`: one per `EvidenceMatchClass`
+(`exact`/`compatible`/`related`/`stale`) opening the Details drawer from a
+live bundle card and asserting the summary, technical detail (method,
+sample count/interval), and clean close; plus one asserting that evidence
+with `detail: null` renders the summary line with no Details button at all.
+
+### Verification (slice 5)
+
+- `rtk cargo build` — passed
+- `rtk cargo clippy -- -D warnings` — no issues
+- `rtk cargo fmt -- --check` — no diff
+- `rtk cargo test calibration::` — passed (no logic changes since slice 4;
+  covered by slice 4's own run)
+- `rtk cargo test preset_bundles` — passed (`EvidenceMatch`/`EvidenceDetail`
+  construction covered by existing suite plus the new playwright coverage
+  below)
+- `cd tests/ui && rtk env CI=1 LLAMA_MONITOR_USE_RELEASE=1
+  LLAMA_MONITOR_TEST_PORT=17778 npx playwright test core/preset-flow.spec.js
+  --workers=1 --reporter=list` — **33 passed** (29 pre-existing + 4 new
+  class-loop evidence tests + 1 new no-detail test), after the release
+  rebuild and z-index fixes above.
+
+### Files changed (slice 5)
+
+- `src/calibration/launch_evidence.rs` (`method_label` helper)
+- `src/presets/resolver.rs` (`EvidenceMatch.detail`, new `EvidenceDetail`)
+- `src/web/api/preset_bundles.rs` (`lookup_evidence` populates `detail`;
+  `resolve_response` nests it in the JSON response)
+- `static/css/evidence-drawer.css` (z-index fix)
+- `static/js/features/evidence-drawer.js` (`evidenceFromLaunchObservation`)
+- `static/js/features/preset-bundle-drawer.js` (Details button + click
+  wiring)
+- `tests/ui/core/preset-flow.spec.js` (5 new tests)
+
+## Slice 4 addendum
 
 Baseline for this slice: `60113a7` (slice 3, below).
 
@@ -399,22 +504,20 @@ alongside its benchmark samples.
 - `rtk cargo test calibration::` — 57 passed, 1 ignored (11 suites)
 - `rtk cargo test preset_bundles` — 10 passed (11 suites)
 
-## Outstanding (after slice 2)
+## Outstanding (after slice 5)
 
-- Windows/CUDA `nvidia-smi` sampler implementation — design only (see
-  slice 2 addendum); no Windows/CUDA hardware reachable from this session.
-  Scoped to CUDA only; no ROCm hardware available anywhere in this project.
-- Frontend evidence-details drawer action from the card.
+- Windows/CUDA `nvidia-smi` sampler is implemented for `WddmTotalDeviceDelta`
+  only (slice 3); `CudaRocmProcessDelta` (per-process attribution) remains
+  unimplemented — the only place it could be validated is Linux/CUDA
+  hardware, which this project does not have access to.
 - `rtk cargo test presets::evidence::` (no such module exists — the launch-
   evidence tests live in `calibration::launch_evidence` by design, per this
   doc's opening note that this is a receipt kind layered onto Calibration's
   vocabulary, not a separate module; Phase 9's plan text naming
-  `presets::evidence::` predates that design decision) and the
-  `core/preset-flow.spec.js` playwright run covering exact/compatible/
-  related/stale evidence classes on a live card.
+  `presets::evidence::` predates that design decision).
 - Real-host qualification gates — require explicit user authorization
   before starting/stopping a model server on this machine or the remote
-  Windows/CUDA machine; not requested yet in either slice.
+  Windows/CUDA machine; not requested yet in any slice so far.
 
 ## Hard gate
 
