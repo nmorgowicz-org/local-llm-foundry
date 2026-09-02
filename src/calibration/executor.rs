@@ -2212,6 +2212,7 @@ fn measurement_from_points(points: Vec<SweepPoint>) -> CalibrationMeasurement {
         wall_time_ms: 0,
         memory_peak_bytes: None,
         bounded_diagnostics: Vec::new(),
+        launch_evidence: None,
     }
 }
 

@@ -16,6 +16,7 @@ pub mod argv;
 pub mod candidates;
 pub mod design;
 pub mod executor;
+pub mod launch_evidence;
 pub mod server_qualification;
 
 pub const CALIBRATION_SCHEMA_VERSION: u32 = 1;
@@ -309,6 +310,8 @@ pub struct CalibrationMeasurement {
     pub wall_time_ms: u64,
     pub memory_peak_bytes: Option<u64>,
     pub bounded_diagnostics: Vec<String>,
+    #[serde(default)]
+    pub launch_evidence: Option<launch_evidence::LaunchObservationReceipt>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

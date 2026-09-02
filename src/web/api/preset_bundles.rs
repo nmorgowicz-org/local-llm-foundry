@@ -194,6 +194,7 @@ fn api_resolve_bundle(
                                 resolve_preset.revision,
                                 resolve_preset.bundle.as_ref(),
                                 &capabilities,
+                                &cfg,
                             ))) as ApiReply)
                         }
                         Err(issues) => Ok(json_error(
@@ -482,12 +483,56 @@ fn find_preset(state: &AppState, id: &str) -> Option<ModelPreset> {
         .cloned()
 }
 
+/// Looks up exact launch-memory evidence for the resolved launch. Never
+/// upgrades a weaker match into a stronger one and never surfaces an
+/// estimator/fit-probe receipt as an observation (`classify_evidence_match`
+/// already rejects those); a lookup failure is evidence-absent, not an error,
+/// since the card must still render on estimate alone.
+fn lookup_evidence(
+    config: &AppConfig,
+    resolved_preset: &ModelPreset,
+    capabilities: &CapabilitySnapshot,
+) -> Option<crate::presets::resolver::EvidenceMatch> {
+    let expected = crate::calibration::launch_evidence::current_fingerprint(
+        config,
+        resolved_preset,
+        capabilities,
+    )
+    .ok()?;
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let (class, warnings, receipt) = crate::calibration::launch_evidence::store::best_match(
+        &config.app_paths.launch_evidence_dir(),
+        &expected,
+        now_unix_ms,
+        crate::calibration::launch_evidence::EVIDENCE_FRESHNESS_WINDOW_MS,
+    )?;
+    let mut summary = match receipt.model_delta_bytes {
+        Some(delta) => format!(
+            "Measured {:.1} GiB",
+            delta as f64 / (1024.0 * 1024.0 * 1024.0)
+        ),
+        None => "Measured launch memory".to_string(),
+    };
+    if let Some(first_warning) = warnings.first() {
+        summary.push_str(" — ");
+        summary.push_str(first_warning);
+    }
+    Some(crate::presets::resolver::EvidenceMatch {
+        class: class.as_str().to_string(),
+        summary,
+    })
+}
+
 fn resolve_response(
     resolved: &crate::presets::resolver::ResolvedLaunch,
     selection: Option<&PresetBundleSelection>,
     revision: u64,
     bundle: Option<&crate::presets::bundle::PresetBundleSpec>,
     capabilities: &CapabilitySnapshot,
+    config: &AppConfig,
 ) -> serde_json::Value {
     let changes = resolved
         .changes
@@ -501,6 +546,7 @@ fn resolve_response(
             value
         })
         .collect::<Vec<_>>();
+    let evidence = lookup_evidence(config, &resolved.preset, capabilities);
     serde_json::json!({
         "ok": true,
         "selection": selection,
@@ -510,7 +556,10 @@ fn resolve_response(
         "capability_reasons": bundle
             .map(|bundle| capability_reasons(bundle, capabilities))
             .unwrap_or_default(),
-        "evidence": null,
+        "evidence": evidence.map(|evidence| serde_json::json!({
+            "class": evidence.class,
+            "summary": evidence.summary,
+        })),
         "selection_hash": resolved.selection_hash,
         "resolved_config_hash": resolved.config_hash,
         "revision": revision,
@@ -892,6 +941,7 @@ mod tests {
             1,
             None,
             &CapabilitySnapshot::product_default(),
+            &AppConfig::for_test(None, None),
         )
         .to_string();
         assert!(!response.contains("secret.gguf"));
