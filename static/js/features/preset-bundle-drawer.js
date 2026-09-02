@@ -214,10 +214,13 @@ function buildDrawer() {
         const row = el('section', 'bundle-row bundle-row-result');
         row.appendChild(el('h3', 'bundle-row-label', 'Predicted result'));
         const result = el('div', 'bundle-result');
+        const evidence = el('div', 'bundle-evidence');
+        evidence.hidden = true;
         const line = el('div', 'bundle-result-line');
         const verdict = el('div', 'bundle-result-verdict');
         const moeWarn = el('div', 'bundle-result-moe');
         moeWarn.hidden = true;
+        result.appendChild(evidence);
         result.appendChild(line);
         result.appendChild(verdict);
         result.appendChild(moeWarn);
@@ -728,12 +731,37 @@ function renderWorkload(d, bundle) {
     }
 }
 
+// Evidence class is the resolver's own EvidenceMatch.class (architecture 12:
+// exact/compatible/related/stale). Render it verbatim — never upgrade a
+// compatible/related/stale match to exact.
+const EVIDENCE_LABELS = {
+    exact: 'Measured on this machine',
+    compatible: 'Compatible model evidence',
+    related: 'Related model evidence',
+    stale: 'Stale evidence — reverify before trusting',
+};
+
+function renderEvidence(el, evidence) {
+    el.className = 'bundle-evidence';
+    if (!evidence || !evidence.class) {
+        el.hidden = true;
+        el.textContent = '';
+        return;
+    }
+    el.hidden = false;
+    el.classList.add(`bundle-evidence--${evidence.class}`);
+    const label = EVIDENCE_LABELS[evidence.class] || evidence.class;
+    el.textContent = evidence.summary ? `${label} — ${evidence.summary}` : label;
+}
+
 function renderResult(d, bundle) {
     const preview = state.normalizedPreview || {};
     const est = estimateBody(preview.estimate);
+    const evidenceEl = d.body.querySelector('.bundle-evidence');
     const line = d.body.querySelector('.bundle-result-line');
     const verdict = d.body.querySelector('.bundle-result-verdict');
     const moeWarn = d.body.querySelector('.bundle-result-moe');
+    renderEvidence(evidenceEl, preview.evidence);
     line.textContent = '';
     verdict.textContent = '';
     moeWarn.textContent = '';

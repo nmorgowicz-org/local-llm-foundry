@@ -31,6 +31,7 @@ import scenarioEvidenceDrawer from './scenarios/presets/evidence-drawer.mjs';
 import scenarioCommunitySources from './scenarios/presets/community-sources.mjs';
 import scenarioDiscussions from './scenarios/presets/discussions.mjs';
 import scenarioPresetBundleEditor from './scenarios/presets/preset-bundle-editor.mjs';
+import scenarioPresetBundle from './scenarios/presets/preset-bundle.mjs';
 import scenarioSpawnWizard from './scenarios/wizard-llamacpp/spawn-wizard.mjs';
 import scenarioSpawnWizardProBaseline from './scenarios/wizard-llamacpp/spawn-wizard-pro-baseline.mjs';
 import scenarioSpawnWizardLaunchFullConfig from './scenarios/wizard-llamacpp/spawn-wizard-launch-full-config.mjs';
@@ -216,6 +217,27 @@ export const SCENARIOS = {
     'model-discovery': { run: scenarioModelDiscovery, category: 'models', runtime: 'neutral' },
     'preset-editor': { run: scenarioPresetEditor, category: 'presets', runtime: 'neutral' },
     'preset-bundle-editor': { run: scenarioPresetBundleEditor, category: 'presets', runtime: 'llamacpp-local' },
+    'preset-bundle': {
+        run: scenarioPresetBundle,
+        category: 'presets',
+        runtime: 'llamacpp-local',
+        contract: {
+            intent: 'Prove the delivered bundle launch card and Configure drawer visually match the architecture hierarchy.',
+            expectedOutputs: [
+                'llamacpp-local--preset-bundle-grid-dark.png',
+                'llamacpp-local--preset-bundle-grid-light.png',
+                'llamacpp-local--preset-bundle-drawer-default-dark.png',
+                'llamacpp-local--preset-bundle-drawer-light.png',
+                'llamacpp-local--preset-bundle-drawer-narrow.png',
+                'llamacpp-local--preset-bundle-drawer-reduced-motion.png',
+                'llamacpp-local--preset-bundle-drawer-low-vram-changes.png',
+                'llamacpp-local--preset-bundle-drawer-no-fit.png',
+                'llamacpp-local--preset-bundle-drawer-evidence-exact.png',
+                'llamacpp-local--preset-bundle-drawer-evidence-related.png',
+                'llamacpp-local--preset-bundle-drawer-revision-conflict.png',
+            ],
+        },
+    },
     'calibration': {
         run: scenarioCalibration,
         setup: () => ({ extraArgs: seedCalibrationCapturePreset() }),

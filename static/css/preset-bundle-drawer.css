@@ -376,6 +376,21 @@
   background: var(--accent-subtle-bg);
 }
 
+.bundle-evidence {
+  margin-bottom: 8px;
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.bundle-evidence[hidden] { display: none; }
+
+.bundle-evidence--exact { color: var(--color-success, #4ade80); }
+.bundle-evidence--compatible { color: var(--color-accent, #60a5fa); }
+.bundle-evidence--related { color: var(--color-warning, #fbbf24); }
+.bundle-evidence--stale { color: var(--color-danger, #f87171); }
+
 .bundle-result-line {
   color: var(--color-text-primary);
   font-size: var(--text-sm);

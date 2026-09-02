@@ -3299,6 +3299,37 @@ body.setup-active .sidebar-nav {
   padding-top: 4px;
 }
 
+/* Phase 8a: bundle cards add a Configure button, making a 4-button row that
+   no longer fits on one line — Start's flex:1 was squeezed to near-zero and
+   its label wrapped/clipped. Stack Configure+Edit above a full-width Start,
+   with Trash anchored on the right spanning both rows. */
+.launch-card-actions--bundle {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  grid-template-rows: auto auto;
+}
+
+.launch-card-actions--bundle .launch-card-btn-configure {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.launch-card-actions--bundle .launch-card-btn-edit {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.launch-card-actions--bundle .launch-card-btn-start {
+  grid-column: 1 / span 2;
+  grid-row: 2;
+}
+
+.launch-card-actions--bundle .launch-card-btn-trash {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
 .launch-card-btn-start {
   flex: 1;
   display: inline-flex;
