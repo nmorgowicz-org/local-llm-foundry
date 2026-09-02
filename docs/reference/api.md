@@ -501,19 +501,19 @@ Returns the redacted setup-card projection and a catalog concurrency token. Card
 ### `POST /api/presets/{id}/resolve`
 Auth: api-token.
 
-Resolves the saved bundle selection or an optional one-shot `selection` through the server-owned resolver. Resolution does not write state. The response includes `sel-v1:` and `cfg-v1:` identifiers, normalized selection, changes, capability reasons, and a tagged estimate status. It never includes a flat preset, local artifact paths, API keys, or raw launch arguments.
+Resolves the saved bundle selection or an optional one-shot `selection` through the server-owned resolver. Resolution does not write state. The optional top-level `workload_policy` overrides the bundle policy for this preview only; it is not part of the typed selection. The response includes `sel-v1:` and `cfg-v1:` identifiers, normalized selection, changes, capability reasons, and a tagged estimate status. It never includes a flat preset, local artifact paths, API keys, or raw launch arguments.
 
 ```json
-{"selection": {"artifact_id": "weights-q4", "context_size": 160000, "kv_policy": "q4_0_q4_0", "performance_id": "balanced", "n_cpu_moe": 0}}
+{"selection": {"artifact_id": "weights-q4", "context_size": 160000, "kv_policy": "q4_0_q4_0", "performance_id": "balanced", "n_cpu_moe": 0}, "workload_policy": "general_chat"}
 ```
 
 ### `PATCH /api/presets/{id}/selection`
 Auth: api-token.
 
-Updates a bundled preset’s saved default selection. `expected_revision` is required; the server strips any submitted `intent_source`, validates the candidate, durably saves it, then changes in-memory state. A stale revision returns `409` and leaves state unchanged.
+Updates a bundled preset’s saved default selection and, when supplied, its bundle-level `workload_policy`. `expected_revision` is required; the server strips any submitted `intent_source`, validates the candidate, durably saves it, then changes in-memory state. A stale revision returns `409` and leaves state unchanged. Workload policy is a top-level PATCH field, not a member of the typed selection.
 
 ```json
-{"expected_revision": 1, "selection": {"artifact_id": "weights-q5", "context_size": 200000, "kv_policy": "q4_0_q4_0", "performance_id": "throughput", "n_cpu_moe": 6}}
+{"expected_revision": 1, "selection": {"artifact_id": "weights-q5", "context_size": 200000, "kv_policy": "q4_0_q4_0", "performance_id": "throughput", "n_cpu_moe": 6}, "workload_policy": "general_chat"}
 ```
 
 ### `POST /api/model-defaults`

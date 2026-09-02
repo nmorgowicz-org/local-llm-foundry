@@ -948,7 +948,9 @@ The mutation surfaces are fixed:
 - `POST /api/presets`: create; server assigns secure ID and `revision=1`;
 - `PUT /api/presets/{id}`: `{ expected_revision, preset }`;
 - `PATCH /api/presets/{id}/selection`:
-  `{ expected_revision, selection }`;
+  `{ expected_revision, selection, workload_policy? }`; `workload_policy` is
+  the bundle-level persisted policy and is deliberately not part of the typed
+  selection;
 - `POST /api/presets/{id}/copy`:
   `{ expected_revision, new_name }`, creating a new ID/revision 1;
 - `POST /api/presets/{id}/convert-to-bundle`:

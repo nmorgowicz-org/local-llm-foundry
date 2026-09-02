@@ -666,6 +666,15 @@ pub fn resolve_exact_selection(
         block_codes.push("unknown_kv_policy".into());
         reasons.push("unknown K/V policy is preserved but not launchable".into());
     }
+    if matches!(
+        bundle.workload_policy,
+        bundle::PresetWorkloadPolicy::AgenticTools | bundle::PresetWorkloadPolicy::Unknown(_)
+    ) && matches!(selection.kv_policy, LlamaKvPolicyId::Q4Q4)
+    {
+        block_codes.push("kv_policy_ineligible".into());
+        reasons.push("q4_0/q4_0 is not eligible for the selected workload quality floor".into());
+    }
+
     if !bundle.performance_options.is_empty()
         && !bundle
             .performance_options

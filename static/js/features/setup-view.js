@@ -9,6 +9,7 @@ import { escapeHtml } from '../core/format.js';
 import { showToast, showConfirmDialog, showPromptDialog } from './toast.js';
 import Router from './router.js';
 import { buildEstimateBody, rapidEstimatePolicyFromConfig } from './vram-estimate.js';
+import { openBundleDrawer } from './preset-bundle-drawer.js';
 
 // ── Model / preset classification (from GGUF-derived metadata) ────────────────
 // No name-based guessing: labels come from preset.family and preset.size_class
@@ -1269,17 +1270,13 @@ function _buildLaunchCard(preset, activePresetId) {
             });
         });
 
-        // Phase 8a: bundle cards carry a dedicated Configure affordance that opens
-        // the bundle drawer (phase 8b). Until the drawer module is present we fall
-        // back to the existing bundle editor so the button is never a dead end.
+        // Phase 8b: bundle cards carry a dedicated Configure affordance that opens
+        // the bundle drawer.
         const configBtn = card.querySelector('.launch-card-btn-configure');
-        if (configBtn) configBtn.addEventListener('click', () => {
-            import('./presets.js').then(({ syncSelectedPresetSelection, openPresetModal }) => {
-                syncSelectedPresetSelection(preset.id, { userIntent: true, persist: true });
-                import('./preset-bundle-drawer.js')
-                    .then(({ openBundleDrawer }) => openBundleDrawer(preset))
-                    .catch(() => openPresetModal('edit'));
-            });
+        if (configBtn) configBtn.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            openBundleDrawer(preset, configBtn);
         });
 
         // Quick-edit: click context or KV chip to open preset modal focused on context section.

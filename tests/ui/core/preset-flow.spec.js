@@ -87,7 +87,8 @@ function bundlePreset(id = 'bundled', name = 'Bundled preset', overrides = {}) {
           extra: {},
         },
       ],
-      kv_policies: ['f16_f16', 'q8_0_q8_0', 'q4_0_q4_0'],
+      context_options: [160000, 200000, 262144],
+      kv_policy_options: ['f16_f16', 'q8_0_q8_0', 'q4_0_q4_0'],
       performance_options: [
         { id: 'quality', label: 'Quality first', batch_size: 2048, ubatch_size: 512 },
         { id: 'balanced', label: 'Balanced', batch_size: 512, ubatch_size: 512 },
@@ -120,7 +121,8 @@ async function installPresetMocks(page, options = {}) {
     attachPayloads: [],
     resolvePayloads: [],
     selectionPayloads: [],
-    cardsRequests: 0,
+        cardsRequests: 0,
+        selectionConflictUsed: false,
   };
 
   await page.route('**/api/settings', route => route.fulfill({
@@ -301,34 +303,65 @@ async function installPresetMocks(page, options = {}) {
     }
 
     if (url.pathname.endsWith('/resolve') && method === 'POST') {
-      state.resolvePayloads.push(request.postDataJSON());
+      const body = request.postDataJSON() || {};
+      state.resolvePayloads.push(body);
       const source = state.presets.find(p => p.id === parts[2]);
+      const requestedSelection = body.selection || source?.bundle?.default_selection || null;
+      const resolved = options.resolveResponse
+        ? await options.resolveResponse({ body, source, selection: requestedSelection, state })
+        : {};
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           ok: true,
-          selection: source?.bundle?.default_selection || null,
-          changes: [],
-          estimate: null,
-          capability_reasons: [],
-          evidence: null,
-          selection_hash: 'sel-v1:test',
-          resolved_config_hash: 'cfg-v1:test',
+          selection: resolved.selection || requestedSelection,
+          changes: resolved.changes || [],
+          estimate: resolved.estimate || null,
+          capability_reasons: resolved.capability_reasons || [],
+          evidence: resolved.evidence || null,
+          selection_hash: resolved.selection_hash || 'sel-v1:test',
+          resolved_config_hash: resolved.resolved_config_hash || 'cfg-v1:test',
           revision: source?.revision || 0,
+          ...resolved,
         }),
       });
       return;
     }
 
-    if (url.pathname.endsWith('/selection') && method === 'PATCH') {
-      state.selectionPayloads.push(request.postDataJSON());
-      const index = state.presets.findIndex(p => p.id === parts[2]);
-      if (index >= 0) state.presets[index] = { ...state.presets[index], revision: (state.presets[index].revision || 0) + 1 };
+        if (url.pathname.endsWith('/selection') && method === 'PATCH') {
+            const body = request.postDataJSON();
+            state.selectionPayloads.push(body);
+            const index = state.presets.findIndex(p => p.id === parts[2]);
+            if (index >= 0) {
+                const current = state.presets[index];
+                if (options.selectionConflictOnce && !state.selectionConflictUsed) {
+                    state.selectionConflictUsed = true;
+                    state.presets[index] = { ...current, revision: (current.revision || 0) + 1 };
+                    await route.fulfill({
+                        status: 409,
+                        contentType: 'application/json',
+                        body: JSON.stringify({ ok: false, code: 'revision_conflict', error: 'preset changed elsewhere' }),
+                    });
+                    return;
+                }
+                state.presets[index] = {
+          ...current,
+          revision: (current.revision || 0) + 1,
+          bundle: {
+            ...current.bundle,
+            default_selection: { ...(body.selection || {}) },
+          },
+        };
+      }
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ ok: true, revision: state.presets[index]?.revision || 0 }),
+        body: JSON.stringify({
+          ok: true,
+          preset: state.presets[index],
+          revision: state.presets[index]?.revision || 0,
+        }),
       });
       return;
     }
@@ -809,5 +842,260 @@ test.describe('preset flow', () => {
     await card.locator('.launch-card-btn-start').click();
     await expect.poll(() => state.spawnPayloads.length).toBe(1);
     expect(state.spawnPayloads[0]).toEqual({ preset_id: 'bundled' });
+  });
+
+  test('Configure opens the bundle drawer and restores focus on close', async ({ page }) => {
+    const pageErrors = [];
+    page.on('pageerror', error => pageErrors.push(error.message));
+    await installPresetMocks(page, { presets: [bundlePreset()] });
+    await boot(page);
+
+    const configure = page.locator('.launch-card[data-preset-id="bundled"] .launch-card-btn-configure');
+    await configure.click();
+    expect(pageErrors, pageErrors.join('\n')).toEqual([]);
+    const drawer = page.locator('#bundle-drawer');
+    await expect(drawer).toHaveClass(/open/);
+    await expect(drawer.locator('[role="dialog"]')).toHaveAttribute('aria-labelledby', 'bundle-drawer-title');
+    await expect(drawer.locator('#bundle-drawer-title')).toHaveText('Configure Qwen3.8 27B · Brainwaves WFH');
+    await expect.poll(() => page.evaluate(() => document.activeElement?.className)).toBe('bundle-drawer-close');
+
+    await drawer.locator('.bundle-drawer-close').click();
+    await expect(drawer).toBeHidden();
+    await expect.poll(() => page.evaluate(() => document.activeElement?.classList.contains('launch-card-btn-configure'))).toBe(true);
+  });
+
+  test('drawer edits stay draft-only and Reset is the zero-friction discard', async ({ page }) => {
+    await installPresetMocks(page, { presets: [bundlePreset()] });
+    await boot(page);
+
+    const card = page.locator('.launch-card[data-preset-id="bundled"]');
+    await card.locator('.launch-card-btn-configure').click();
+    const drawer = page.locator('#bundle-drawer');
+    const q5 = drawer.locator('input[value="art-q5"]');
+    await expect(q5).toBeVisible();
+    await q5.check();
+    await expect(drawer.locator('.bundle-quant[value="art-q5"]')).toBeChecked();
+    await expect(card.locator('.launch-card-chips')).toContainText('Q4_K_M');
+    await expect(card.locator('.launch-card-chips')).not.toContainText('Q5_K_M');
+    await expect(drawer).toHaveClass(/is-dirty/);
+
+    await drawer.locator('.bundle-reset').click();
+    await expect(drawer).not.toHaveClass(/is-dirty/);
+    await expect(drawer.locator('input[value="art-q4"]')).toBeChecked();
+  });
+
+  test('disabled bundle choices remain visible with an accessible backend reason', async ({ page }) => {
+    await installPresetMocks(page, {
+      presets: [bundlePreset()],
+      resolveResponse: async () => ({
+        capability_reasons: [{
+          field: 'kv_policy',
+          value: 'q4_0_q4_0',
+          reason: 'Agentic / tool use requires the quality KV floor.',
+        }],
+      }),
+    });
+    await boot(page);
+
+    await page.locator('.launch-card[data-preset-id="bundled"] .launch-card-btn-configure').click();
+    const option = page.locator('.bundle-kv[value="q4_0_q4_0"]');
+    await expect(option).toBeVisible();
+    await expect(option).toBeDisabled();
+    const describedBy = await option.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    await expect(page.locator(`#${describedBy}`)).toHaveText('Agentic / tool use requires the quality KV floor.');
+  });
+
+  test('only the newest resolve response can update the draft', async ({ page }) => {
+    await installPresetMocks(page, {
+      presets: [bundlePreset()],
+      resolveResponse: async ({ selection }) => {
+        if (selection.context_size === 160000) await new Promise(resolve => setTimeout(resolve, 150));
+        return { selection };
+      },
+    });
+    await boot(page);
+
+    await page.locator('.launch-card[data-preset-id="bundled"] .launch-card-btn-configure').click();
+    const drawer = page.locator('#bundle-drawer');
+    await drawer.locator('.bundle-ctx[data-context="160000"]').click();
+    await drawer.locator('.bundle-ctx[data-context="200000"]').click();
+    await expect(drawer.locator('.bundle-ctx[data-context="200000"]')).toHaveClass(/is-active/);
+    await expect(drawer.locator('.bundle-ctx[data-context="160000"]')).not.toHaveClass(/is-active/);
+  });
+
+  test('Fit automatically is a draft probe result and headroom forwards fit_target_mib', async ({ page }) => {
+    const moeArtifacts = bundlePreset().bundle.artifacts.map(artifact => ({
+      ...artifact,
+      metadata: artifact.id === 'art-q4' ? { model_kind: 'moe', moe_layer_count: 64 } : artifact.metadata,
+    }));
+    const state = await installPresetMocks(page, {
+      presets: [bundlePreset('moe', 'MoE bundle', { bundle: { artifacts: moeArtifacts } })],
+      resolveResponse: async ({ body, selection }) => body.fit_automatically
+        ? {
+          selection: { ...selection, n_cpu_moe: 12 },
+          estimate: {
+            status: 'available',
+            estimate: {
+              total_bytes: 26_300_000_000,
+              weights_bytes: 17_179_869_184,
+              kv_cache_bytes: 8_000_000_000,
+              headroom_bytes: 1_500_000_000,
+              probe_device_total_mib: 25_684,
+              ram_bytes: 5_568 * 1024 * 1024,
+            },
+          },
+        }
+        : {},
+    });
+    await boot(page);
+
+    await page.locator('.launch-card[data-preset-id="moe"] .launch-card-btn-configure').click();
+    const drawer = page.locator('#bundle-drawer');
+    await drawer.locator('.bundle-moe[data-moe="fit"]').click();
+    await expect.poll(() => state.resolvePayloads.some(payload => payload.fit_automatically === true)).toBe(true);
+    await expect(drawer.locator('.bundle-moe-probe')).toContainText('Device VRAM 25.1 GB');
+    await expect(drawer.locator('.bundle-result-moe')).toContainText('slower generation');
+    await expect(state.selectionPayloads).toHaveLength(0);
+
+    await drawer.locator('.bundle-moe-headroom').fill('4');
+    await expect.poll(() => state.resolvePayloads.at(-1)?.fit_target_mib).toBe(4096);
+  });
+
+  test('Start without saving sends the normalized draft and does not persist', async ({ page }) => {
+    const state = await installPresetMocks(page, { presets: [bundlePreset()] });
+    await boot(page);
+    await page.locator('.launch-card[data-preset-id="bundled"] .launch-card-btn-configure').click();
+    const drawer = page.locator('#bundle-drawer');
+    const q5 = drawer.locator('input[value="art-q5"]');
+    await expect(q5).toBeVisible();
+    await q5.check();
+    await drawer.locator('.bundle-start-draft').click();
+
+    await expect.poll(() => state.spawnPayloads.length).toBe(1);
+    expect(state.selectionPayloads).toHaveLength(0);
+    expect(state.spawnPayloads[0]).toMatchObject({
+      preset_id: 'bundled',
+      expected_revision: 7,
+      selection: { artifact_id: 'art-q5' },
+    });
+  });
+
+  test('Save & Start persists before launching the returned revision', async ({ page }) => {
+    const state = await installPresetMocks(page, { presets: [bundlePreset()] });
+    await boot(page);
+    await page.locator('.launch-card[data-preset-id="bundled"] .launch-card-btn-configure').click();
+    const drawer = page.locator('#bundle-drawer');
+    const q5 = drawer.locator('input[value="art-q5"]');
+    await expect(q5).toBeVisible();
+    await q5.check();
+    await drawer.locator('.bundle-save-start').click();
+
+    await expect.poll(() => state.selectionPayloads.length).toBe(1);
+    await expect.poll(() => state.spawnPayloads.length).toBe(1);
+    expect(state.spawnPayloads[0]).toMatchObject({
+      preset_id: 'bundled',
+      expected_revision: 8,
+      selection: { artifact_id: 'art-q5' },
+    });
+  });
+
+test('drawer revision conflict offers Reload without overwriting current state', async ({ page }) => {
+    const state = await installPresetMocks(page, {
+        presets: [bundlePreset()],
+        selectionConflictOnce: true,
+    });
+    await boot(page);
+
+    const drawer = page.locator('#bundle-drawer');
+    await page.locator('.launch-card[data-preset-id="bundled"] .launch-card-btn-configure').click();
+    await drawer.locator('input[value="art-q5"]').check();
+    await drawer.locator('.bundle-save').click();
+
+    const toast = page.locator('.toast-with-actions').filter({ hasText: 'Preset changed elsewhere' });
+    await expect(toast).toBeVisible();
+    const reload = toast.locator('[data-action="reload"]');
+    await expect(reload).toHaveText('Reload');
+    await reload.click();
+
+    await expect(drawer).not.toHaveClass(/is-dirty/);
+    await expect(drawer.locator('input[value="art-q4"]')).toBeChecked();
+    await expect(drawer.locator('input[value="art-q5"]')).not.toBeChecked();
+    expect(state.selectionPayloads).toHaveLength(1);
+    expect(state.presets[0].revision).toBe(8);
+});
+
+test('dirty close control requires confirmation', async ({ page }) => {
+    await installPresetMocks(page, { presets: [bundlePreset()] });
+    await boot(page);
+    const configure = page.locator('.launch-card[data-preset-id="bundled"] .launch-card-btn-configure');
+    const drawer = page.locator('#bundle-drawer');
+    await configure.click();
+    const q5 = drawer.locator('input[value="art-q5"]');
+    await expect(q5).toBeVisible();
+    await q5.check();
+    let promptCount = 0;
+    page.once('dialog', async dialog => {
+      promptCount += 1;
+      await dialog.accept();
+    });
+    await drawer.locator('.bundle-drawer-close').click();
+    await expect(drawer).toBeHidden();
+    expect(promptCount).toBe(1);
+  });
+
+  test('dirty Escape requires confirmation', async ({ page }) => {
+    await installPresetMocks(page, { presets: [bundlePreset()] });
+    await boot(page);
+    await page.locator('.launch-card[data-preset-id="bundled"] .launch-card-btn-configure').click();
+    const drawer = page.locator('#bundle-drawer');
+    const q5 = drawer.locator('input[value="art-q5"]');
+    await expect(q5).toBeVisible();
+    await q5.check();
+    page.once('dialog', dialog => dialog.accept());
+    await page.keyboard.press('Escape');
+    await expect(drawer).toBeHidden();
+  });
+
+  test('dirty backdrop dismissal requires confirmation', async ({ page }) => {
+    await installPresetMocks(page, { presets: [bundlePreset()] });
+    await boot(page);
+    await page.locator('.launch-card[data-preset-id="bundled"] .launch-card-btn-configure').click();
+    const drawer = page.locator('#bundle-drawer');
+    const q5 = drawer.locator('input[value="art-q5"]');
+    await expect(q5).toBeVisible();
+    await q5.check();
+    page.once('dialog', dialog => dialog.accept());
+    await drawer.locator('.bundle-drawer-backdrop').click({ position: { x: 8, y: 8 } });
+    await expect(drawer).toBeHidden();
+  });
+
+  test('Custom is a derived indicator while workload is a selectable draft with a diff', async ({ page }) => {
+    const state = await installPresetMocks(page, {
+      presets: [bundlePreset('bundled', 'Bundled preset', { bundle: { workload_policy: 'general_chat' } })],
+      resolveResponse: async ({ body, selection }) => body.selection?.intent_source
+        ? { selection: { ...selection, performance_id: 'manual', batch_size: 1000, ubatch_size: 250 } }
+        : { selection },
+    });
+    await boot(page);
+    await page.locator('.launch-card[data-preset-id="bundled"] .launch-card-btn-configure').click();
+    const drawer = page.locator('#bundle-drawer');
+
+    await expect(drawer.locator('.bundle-row-intent .bundle-deriv-custom')).toBeVisible();
+    await expect(drawer.locator('.bundle-row-perf .bundle-deriv-custom')).toBeHidden();
+    await expect(drawer.locator('.bundle-row-intent .bundle-deriv-custom')).not.toHaveRole('button');
+    await expect(drawer.locator('.bundle-row-perf .bundle-deriv-custom')).not.toHaveRole('button');
+
+    await drawer.locator('.bundle-intent[data-intent="low_vram"]').click();
+    await expect(drawer.locator('.bundle-row-intent .bundle-deriv-custom')).toBeHidden();
+    await expect(drawer.locator('.bundle-row-perf .bundle-deriv-custom')).toBeVisible();
+
+    const workload = drawer.locator('.bundle-workload');
+    await expect(workload.locator('option')).toHaveCount(4);
+    await workload.selectOption('roleplay_creative');
+    await expect.poll(() => state.resolvePayloads.at(-1)?.workload_policy).toBe('roleplay_creative');
+    expect(state.resolvePayloads.at(-1)?.selection?.workload_policy).toBeUndefined();
+    await expect(drawer.locator('.bundle-diff-list')).toContainText('workload');
+    expect(state.selectionPayloads).toHaveLength(0);
   });
 });

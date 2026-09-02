@@ -12,7 +12,7 @@ use warp::Filter;
 use crate::config::AppConfig;
 use crate::inference::llama_cpp_capabilities::CapabilitySnapshot;
 use crate::presets::bundle::BoundedEnum;
-use crate::presets::bundle::PresetBundleSelection;
+use crate::presets::bundle::{PresetBundleSelection, PresetWorkloadPolicy};
 use crate::presets::{self, ModelPreset};
 use crate::state::AppState;
 use crate::web::safe_json_body;
@@ -41,6 +41,8 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
 #[serde(default)]
 struct ResolveRequest {
     selection: Option<PresetBundleSelection>,
+    #[serde(deserialize_with = "crate::presets::bundle::bounded_deserialize_opt")]
+    workload_policy: Option<PresetWorkloadPolicy>,
     #[serde(default)]
     fit_automatically: bool,
     #[serde(default)]
@@ -64,6 +66,8 @@ struct ResolveRequest {
 struct SelectionPatch {
     expected_revision: Option<u64>,
     selection: PresetBundleSelection,
+    #[serde(deserialize_with = "crate::presets::bundle::bounded_deserialize_opt")]
+    workload_policy: Option<PresetWorkloadPolicy>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -146,15 +150,26 @@ fn api_resolve_bundle(
                             ));
                         }
                     };
+                    let mut resolve_preset = preset.clone();
+                    if let Some(workload_policy) = request.workload_policy.clone() {
+                        let Some(bundle) = resolve_preset.bundle.as_mut() else {
+                            return Ok(json_error(
+                                warp::http::StatusCode::BAD_REQUEST,
+                                "not_bundled",
+                                "workload_policy requires a bundled preset",
+                            ));
+                        };
+                        bundle.workload_policy = workload_policy;
+                    }
                     let capabilities = current_capabilities(&cfg).await;
                     let requested_selection = request.selection.clone().or_else(|| {
-                        preset
+                        resolve_preset
                             .bundle
                             .as_ref()
                             .map(|bundle| bundle.default_selection.clone())
                     });
                     match crate::presets::resolver::resolve_preset(
-                        &preset,
+                        &resolve_preset,
                         requested_selection.as_ref(),
                         &capabilities,
                     ) {
@@ -162,7 +177,7 @@ fn api_resolve_bundle(
                             let (resolved, selection) = if request.fit_automatically {
                                 apply_fit_estimate(
                                     resolved,
-                                    &preset,
+                                    &resolve_preset,
                                     requested_selection
                                         .as_ref()
                                         .expect("default selection exists for bundled preset"),
@@ -176,7 +191,9 @@ fn api_resolve_bundle(
                             Ok(Box::new(warp::reply::json(&resolve_response(
                                 &resolved,
                                 selection.as_ref(),
-                                preset.revision,
+                                resolve_preset.revision,
+                                resolve_preset.bundle.as_ref(),
+                                &capabilities,
                             ))) as ApiReply)
                         }
                         Err(issues) => Ok(json_error(
@@ -240,7 +257,11 @@ fn api_patch_selection(
                     let mut selection = patch.selection;
                     selection.intent_source = None;
                     let mut candidate = current.clone();
-                    candidate.bundle = Some(bundle.clone());
+                    let mut candidate_bundle = bundle.clone();
+                    if let Some(workload_policy) = patch.workload_policy {
+                        candidate_bundle.workload_policy = workload_policy;
+                    }
+                    candidate.bundle = Some(candidate_bundle);
                     candidate.bundle.as_mut().unwrap().default_selection = selection;
                     presets::bundle::materialize_default_projection(&mut candidate);
                     candidate.revision = current.revision + 1;
@@ -427,6 +448,7 @@ fn api_convert_to_bundle(
 
 fn parse_resolve_request(body: serde_json::Value) -> Result<ResolveRequest, String> {
     if body.get("selection").is_some()
+        || body.get("workload_policy").is_some()
         || body.get("fit_automatically").is_some()
         || body.get("arch").is_some()
     {
@@ -464,6 +486,8 @@ fn resolve_response(
     resolved: &crate::presets::resolver::ResolvedLaunch,
     selection: Option<&PresetBundleSelection>,
     revision: u64,
+    bundle: Option<&crate::presets::bundle::PresetBundleSpec>,
+    capabilities: &CapabilitySnapshot,
 ) -> serde_json::Value {
     let changes = resolved
         .changes
@@ -483,12 +507,39 @@ fn resolve_response(
         "changes": changes,
         "estimate": serde_json::to_value(&resolved.estimate_status)
             .unwrap_or_else(|_| serde_json::json!({"status": "unavailable", "code": "serialization_error"})),
-        "capability_reasons": [],
+        "capability_reasons": bundle
+            .map(|bundle| capability_reasons(bundle, capabilities))
+            .unwrap_or_default(),
         "evidence": null,
         "selection_hash": resolved.selection_hash,
         "resolved_config_hash": resolved.config_hash,
         "revision": revision,
     })
+}
+
+fn capability_reasons(
+    bundle: &crate::presets::bundle::PresetBundleSpec,
+    capabilities: &CapabilitySnapshot,
+) -> Vec<serde_json::Value> {
+    let mut reasons = Vec::new();
+    if matches!(
+        bundle.workload_policy,
+        PresetWorkloadPolicy::AgenticTools | PresetWorkloadPolicy::Unknown(_)
+    ) {
+        reasons.push(serde_json::json!({
+            "field": "kv_policy",
+            "value": "q4_0_q4_0",
+            "reason": "q4_0/q4_0 is not eligible for the selected workload quality floor"
+        }));
+    }
+    if !capabilities.mixed_main_kv.supported {
+        reasons.push(serde_json::json!({
+            "field": "kv_policy",
+            "value": "q8_0_q4_0",
+            "reason": "mixed K/V requires a binary advertising mixed_main_kv support"
+        }));
+    }
+    reasons
 }
 
 fn apply_fit_estimate(
@@ -835,7 +886,14 @@ mod tests {
             },
             evidence: None,
         };
-        let response = resolve_response(&resolved, None, 1).to_string();
+        let response = resolve_response(
+            &resolved,
+            None,
+            1,
+            None,
+            &CapabilitySnapshot::product_default(),
+        )
+        .to_string();
         assert!(!response.contains("secret.gguf"));
         assert!(!response.contains("secret-key"));
     }
@@ -1187,16 +1245,36 @@ mod tests {
         let path = dir.path().join("presets.json");
         let ctx = test_context(vec![preset], path.clone());
         let routes = routes(ctx.clone());
+        let blocked = warp::test::request()
+            .method("POST")
+            .path("/api/presets/bundle-1/resolve")
+            .header("authorization", "Bearer test-token")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({
+                "selection": {
+                    "artifact_id": "weights",
+                    "context_size": 160000,
+                    "kv_policy": "q4_0_q4_0",
+                    "performance_id": "balanced",
+                    "n_cpu_moe": 0
+                },
+                "workload_policy": "agentic_tools"
+            }))
+            .reply(&routes)
+            .await;
+        assert_eq!(blocked.status(), warp::http::StatusCode::BAD_REQUEST);
+
         let body = serde_json::json!({
-            "expected_revision": 1,
+        "expected_revision": 1,
             "selection": {
                 "artifact_id": "weights",
                 "context_size": 200000,
                 "kv_policy": "q4_0_q4_0",
-                "performance_id": "balanced",
-                "n_cpu_moe": 0,
-                "intent_source": "low_vram"
-            }
+            "performance_id": "balanced",
+            "n_cpu_moe": 0,
+            "intent_source": "low_vram"
+        },
+        "workload_policy": "roleplay_creative"
         });
         let response = warp::test::request()
             .method("PATCH")
@@ -1211,6 +1289,7 @@ mod tests {
         assert_eq!(saved.revision, 2);
         let saved_bundle = saved.bundle.as_ref().unwrap();
         assert_eq!(saved_bundle.default_selection.context_size, 200_000);
+        assert_eq!(saved_bundle.workload_policy.to_wire(), "roleplay_creative");
         assert!(saved_bundle.default_selection.intent_source.is_none());
         let disk: Vec<ModelPreset> =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();

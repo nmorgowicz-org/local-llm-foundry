@@ -38,6 +38,8 @@ pub const CSS_LAYOUT: &str = include_str!("../../static/css/layout.css");
 pub const CSS_LOGS: &str = include_str!("../../static/css/logs.css");
 pub const CSS_MODAL_PREMIUM: &str = include_str!("../../static/css/modal-premium.css");
 pub const CSS_MODAL_SIZING: &str = include_str!("../../static/css/modal-sizing.css");
+pub const CSS_PRESET_BUNDLE_DRAWER: &str =
+    include_str!("../../static/css/preset-bundle-drawer.css");
 pub const CSS_SETTINGS_MODAL: &str = include_str!("../../static/css/settings-modal.css");
 pub const CSS_SETUP_VIEW: &str = include_str!("../../static/css/setup-view.css");
 pub const CSS_SPAWN_WIZARD_BASE: &str = include_str!("../../static/css/spawn-wizard-base.css");
@@ -131,6 +133,8 @@ pub const FEATURES_MODELS_JS: &str = include_str!("../../static/js/features/mode
 pub const FEATURES_NAV_JS: &str = include_str!("../../static/js/features/nav.js");
 pub const FEATURES_NETWORK_DETECTION_JS: &str =
     include_str!("../../static/js/features/network-detection.js");
+pub const FEATURES_PRESET_BUNDLE_DRAWER_JS: &str =
+    include_str!("../../static/js/features/preset-bundle-drawer.js");
 pub const FEATURES_PRESET_EDITOR_MLX_JS: &str =
     include_str!("../../static/js/features/preset-editor-mlx.js");
 pub const FEATURES_PRESETS_JS: &str = include_str!("../../static/js/features/presets.js");
