@@ -3,6 +3,7 @@ use crate::inference::backend::BackendAdapter;
 use crate::inference::launch::{LocalLaunchRequest, launch_local};
 use crate::inference::llama_cpp::ServerConfig;
 use crate::inference::supervisor::Supervisor;
+use crate::presets::ModelPreset;
 use crate::state::AppState;
 use anyhow::Result;
 use std::sync::Arc;
@@ -10,6 +11,15 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const LLAMA_STARTUP_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Inputs the launch-evidence sampler needs (architecture 12) that no
+/// existing `start_backend` parameter already carries. Grouped into one
+/// struct purely to keep `start_backend`'s argument count in check; it is
+/// not a meaningful domain type on its own.
+pub(crate) struct EvidenceContext {
+    pub app_config: AppConfig,
+    pub resolved_preset: Option<ModelPreset>,
+}
 
 pub async fn start_server(
     state: Arc<AppState>,
@@ -31,6 +41,7 @@ pub(crate) async fn start_backend(
     port: u16,
     model_identity: String,
     legacy_llama_config: Option<ServerConfig>,
+    evidence: EvidenceContext,
 ) -> Result<()> {
     let lifecycle = state.server_lifecycle.lock().await;
     ensure_no_local_process(&state).await?;
@@ -70,6 +81,11 @@ pub(crate) async fn start_backend(
         *state.server_running.lock().unwrap() = false;
         *state.supervisor.lock().await = Some(supervisor.clone());
     }
+
+    // Sampled immediately before spawn, while this call still has exclusive
+    // access to the pre-launch instant the Metal sampler needs as its
+    // `before` baseline (architecture 12).
+    let pre_launch_wired_bytes = crate::memory_availability::build_snapshot().wired_bytes;
 
     let pid = match supervisor.clone().start().await {
         Ok(pid) => pid,
@@ -128,6 +144,18 @@ pub(crate) async fn start_backend(
         port
     ));
     state.llama_poll_notify.notify_waiters();
+
+    // Fire-and-forget: sampling happens after this function has already
+    // returned control to normal session flow, and its own gate (macOS,
+    // fit pinned off, no extra_args) makes it a no-op on every other launch.
+    if let (BackendAdapter::LlamaCpp(_), Some(preset)) = (&adapter, evidence.resolved_preset) {
+        crate::calibration::launch_evidence::metal_sampler::spawn(
+            evidence.app_config,
+            preset,
+            pre_launch_wired_bytes,
+        );
+    }
+
     Ok(())
 }
 

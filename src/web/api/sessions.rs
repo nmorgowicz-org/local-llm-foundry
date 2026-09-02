@@ -8,7 +8,8 @@ use warp::Filter;
 
 use crate::config::AppConfig;
 use crate::inference::launch::{
-    launch_local, request_from_api_payload, request_from_preset, request_from_session,
+    launch_local, launch_local_with_resolved_preset, request_from_api_payload, request_from_preset,
+    request_from_session,
 };
 use crate::llama::server::stop_server;
 use crate::presets::bundle::PresetBundleSelection;
@@ -1211,7 +1212,14 @@ fn api_spawn_session_with_preset(
                 let response_backend = request.backend();
                 let response_port = request.port();
 
-                match launch_local(Arc::new(state.clone()), request, &app_config).await {
+                match launch_local_with_resolved_preset(
+                    Arc::new(state.clone()),
+                    request,
+                    &app_config,
+                    Some(launch_preset),
+                )
+                .await
+                {
                     Ok(()) => {
                         state.update_session_status(&session_id, SessionStatus::Running);
                         Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(warp::reply::json(

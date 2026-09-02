@@ -603,6 +603,20 @@ pub async fn launch_local(
     request: LocalLaunchRequest,
     app_config: &AppConfig,
 ) -> Result<()> {
+    launch_local_with_resolved_preset(state, request, app_config, None).await
+}
+
+/// Same as `launch_local`, but also carries the fully resolved `ModelPreset`
+/// behind this launch when the caller has one (bundle/preset launches do; a
+/// direct `ServerConfig` payload or a restored session without a matching
+/// preset does not). Only the launch-evidence sampler (architecture 12)
+/// consumes it; every other code path behaves identically either way.
+pub async fn launch_local_with_resolved_preset(
+    state: Arc<AppState>,
+    request: LocalLaunchRequest,
+    app_config: &AppConfig,
+    resolved_preset: Option<ModelPreset>,
+) -> Result<()> {
     let adapter = construct_adapter(&request, &state, app_config).await?;
     let legacy_llama_config = match &request {
         LocalLaunchRequest::LlamaCpp(config) => Some(config.as_ref().clone()),
@@ -617,6 +631,10 @@ pub async fn launch_local(
         port,
         model_identity,
         legacy_llama_config,
+        crate::llama::server::EvidenceContext {
+            app_config: app_config.clone(),
+            resolved_preset,
+        },
     )
     .await
 }

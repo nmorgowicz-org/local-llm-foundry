@@ -614,6 +614,95 @@ pub mod store {
     }
 }
 
+/// Bounded post-readiness macOS/Metal sampler (architecture 12).
+///
+/// Runs detached from session control: `start_backend` returns to its caller
+/// as soon as readiness succeeds, and this task samples afterward in the
+/// background. It holds no session-control lock, never blocks a stop or
+/// restart, and its only externally visible effect on success is one new
+/// receipt file — a failure at any step is silently dropped, since evidence
+/// capture is advisory and must never affect session control.
+pub mod metal_sampler {
+    use super::{FitState, LaunchSample, build_launch_observation, current_fingerprint, store};
+    use crate::config::AppConfig;
+    use crate::presets::ModelPreset;
+    use std::time::Duration;
+
+    const SAMPLE_COUNT: u32 = 6;
+    const SAMPLE_INTERVAL: Duration = Duration::from_millis(750);
+
+    /// Spawns the bounded sampler if this host/launch qualifies for exact
+    /// evidence: macOS, fit explicitly pinned off, and no unclassified
+    /// `extra_args` (the same hard gate `build_launch_observation` enforces,
+    /// checked here too so a disqualified launch never starts a poll loop).
+    /// `before_bytes` must be sampled by the caller immediately before the
+    /// process spawn, while this function still has exclusive access to that
+    /// pre-launch instant.
+    pub fn spawn(app_config: AppConfig, preset: ModelPreset, before_bytes: u64) {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        if preset.fit_enabled != Some(false) || !preset.extra_args.trim().is_empty() {
+            return;
+        }
+        tokio::spawn(async move {
+            run(app_config, preset, before_bytes).await;
+        });
+    }
+
+    async fn run(app_config: AppConfig, preset: ModelPreset, before_bytes: u64) {
+        let mut peak_bytes = before_bytes;
+        for _ in 0..SAMPLE_COUNT {
+            tokio::time::sleep(SAMPLE_INTERVAL).await;
+            let sample = crate::memory_availability::build_snapshot();
+            peak_bytes = peak_bytes.max(sample.wired_bytes);
+        }
+        let after = crate::memory_availability::build_snapshot();
+
+        // Reuses the OnceLock capability cache `construct_adapter` already
+        // populated for this exact binary during launch validation; this
+        // must never itself spawn `llama-server --help`.
+        let Ok(identity) = crate::inference::llama_cpp_capabilities::ExecutableIdentity::from_path(
+            &app_config.llama_server_path,
+        ) else {
+            return;
+        };
+        let Some(capabilities) =
+            crate::inference::llama_cpp_capabilities::cached_snapshot(&identity)
+        else {
+            return;
+        };
+        let Ok(fingerprint) = current_fingerprint(&app_config, &preset, &capabilities) else {
+            return;
+        };
+
+        let sample = LaunchSample {
+            before_bytes,
+            peak_bytes,
+            after_bytes: after.wired_bytes,
+            sample_count: SAMPLE_COUNT,
+            interval_ms: SAMPLE_INTERVAL.as_millis() as u32,
+            // Apple Silicon has no per-process device-memory counter exposed
+            // to userspace the way WDDM/CUDA do; `wired_bytes` is a
+            // system-wide delta around this one launch, not a process-scoped
+            // measurement, so every macOS receipt carries this caveat.
+            noise_flags: vec![
+                "macOS unified-memory sample is a system-wide wired-memory delta, not process-scoped"
+                    .into(),
+            ],
+            captured_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis())
+                .unwrap_or_default(),
+        };
+        let Ok(receipt) = build_launch_observation(&preset, fingerprint, FitState::Off, sample)
+        else {
+            return;
+        };
+        let _ = store::save(&app_config.app_paths.launch_evidence_dir(), &receipt);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -877,5 +966,286 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         std::fs::write(temp.path().join("not-json.json"), b"not json").expect("write junk");
         assert!(store::list(temp.path()).is_empty());
+    }
+
+    /// One mutation per memory-relevant normalized argv field (Phase 9 fixture
+    /// corpus requirement). Field coverage is asserted against
+    /// `classify_argv_field` itself, so a newly added `MemoryRelevant` field
+    /// with no mutation fixture here fails this test rather than silently
+    /// going unverified.
+    #[test]
+    fn manifest_digest_changes_for_every_memory_relevant_field() {
+        let baseline_json = serde_json::json!({
+            "name": "fixture",
+            "model_path": "/models/a.gguf",
+            "context_size": 4096,
+            "ctk": "f16",
+            "ctv": "f16",
+            "tensor_split": "",
+            "batch_size": 512,
+            "ubatch_size": 512,
+            "no_mmap": false,
+            "load_mode": "mmap",
+            "swa_full": false,
+            "ctx_checkpoints": 4,
+            "checkpoint_min_step": 8,
+            "cache_reuse": 16,
+            "parallel_slots": 1,
+            "n_cpu_moe": 4,
+            "gpu_layers": 20,
+            "mlock": false,
+            "flash_attn": "on",
+            "split_mode": "layer",
+            "main_gpu": 1,
+            "draft_model": "/models/draft.gguf",
+            "draft_min": 1,
+            "draft_max": 8,
+            "spec_ngram_size": 4,
+            "spec_type": "ngram-simple",
+            "spec_default": false,
+            "spec_draft_n_max": 16,
+            "spec_draft_n_min": 1,
+            "spec_draft_p_split": 0.5,
+            "spec_draft_p_min": 0.1,
+            "spec_draft_ngl": 10,
+            "spec_draft_device": "cuda:0",
+            "spec_draft_cpu_moe": false,
+            "spec_draft_n_cpu_moe": 2,
+            "spec_draft_type_k": "q8_0",
+            "spec_draft_type_v": "q8_0",
+            "kv_unified": true,
+            "cache_idle_slots": true,
+            "cache_ram_mib": 1024,
+            "fit_enabled": false,
+            "fit_ctx": 4096,
+            "fit_target": "balanced",
+            "mmproj": "/models/mmproj.gguf",
+            "image_min_tokens": 64,
+            "image_max_tokens": 1024,
+            "mmproj_offload": true,
+        });
+
+        let mutations: &[(&str, serde_json::Value)] = &[
+            ("model_path", serde_json::json!("/models/b.gguf")),
+            ("context_size", serde_json::json!(8192)),
+            ("ctk", serde_json::json!("q8_0")),
+            ("ctv", serde_json::json!("q8_0")),
+            ("tensor_split", serde_json::json!("0.5,0.5")),
+            ("batch_size", serde_json::json!(1024)),
+            ("ubatch_size", serde_json::json!(256)),
+            ("no_mmap", serde_json::json!(true)),
+            ("load_mode", serde_json::json!("dio")),
+            ("swa_full", serde_json::json!(true)),
+            ("ctx_checkpoints", serde_json::json!(8)),
+            ("checkpoint_min_step", serde_json::json!(16)),
+            ("cache_reuse", serde_json::json!(32)),
+            ("parallel_slots", serde_json::json!(2)),
+            ("n_cpu_moe", serde_json::json!(8)),
+            ("gpu_layers", serde_json::json!(40)),
+            ("mlock", serde_json::json!(true)),
+            ("flash_attn", serde_json::json!("off")),
+            ("split_mode", serde_json::json!("row")),
+            ("main_gpu", serde_json::json!(2)),
+            ("draft_model", serde_json::json!("/models/draft2.gguf")),
+            ("draft_min", serde_json::json!(2)),
+            ("draft_max", serde_json::json!(16)),
+            ("spec_ngram_size", serde_json::json!(8)),
+            ("spec_type", serde_json::json!("ngram-map-k")),
+            ("spec_default", serde_json::json!(true)),
+            ("spec_draft_n_max", serde_json::json!(32)),
+            ("spec_draft_n_min", serde_json::json!(2)),
+            ("spec_draft_p_split", serde_json::json!(0.75)),
+            ("spec_draft_p_min", serde_json::json!(0.2)),
+            ("spec_draft_ngl", serde_json::json!(20)),
+            ("spec_draft_device", serde_json::json!("cuda:1")),
+            ("spec_draft_cpu_moe", serde_json::json!(true)),
+            ("spec_draft_n_cpu_moe", serde_json::json!(4)),
+            ("spec_draft_type_k", serde_json::json!("q4_0")),
+            ("spec_draft_type_v", serde_json::json!("q4_0")),
+            ("kv_unified", serde_json::json!(false)),
+            ("cache_idle_slots", serde_json::json!(false)),
+            ("cache_ram_mib", serde_json::json!(2048)),
+            ("fit_enabled", serde_json::json!(true)),
+            ("fit_ctx", serde_json::json!(8192)),
+            ("fit_target", serde_json::json!("aggressive")),
+            ("mmproj", serde_json::json!("/models/mmproj2.gguf")),
+            ("image_min_tokens", serde_json::json!(128)),
+            ("image_max_tokens", serde_json::json!(2048)),
+            ("mmproj_offload", serde_json::json!(false)),
+        ];
+
+        let covered: std::collections::BTreeSet<String> =
+            mutations.iter().map(|(name, _)| name.to_string()).collect();
+        let default_value = serde_json::to_value(ModelPreset::default()).expect("default preset");
+        let serde_json::Value::Object(default_fields) = default_value else {
+            panic!("preset serializes to an object");
+        };
+        let all_memory_relevant: std::collections::BTreeSet<String> = default_fields
+            .keys()
+            .filter(|name| classify_argv_field(name) == Some(ArgvFieldClass::MemoryRelevant))
+            .cloned()
+            .collect();
+        assert_eq!(
+            covered, all_memory_relevant,
+            "mutation fixture set does not match classify_argv_field's MemoryRelevant fields"
+        );
+
+        let baseline: ModelPreset = serde_json::from_value(baseline_json).expect("baseline preset");
+        let baseline_digest = manifest_digest(&baseline).expect("baseline digest");
+
+        for (field, mutated) in mutations {
+            let mut json = serde_json::to_value(&baseline).expect("serialize baseline");
+            json[field] = mutated.clone();
+            let mutated_preset: ModelPreset = serde_json::from_value(json).expect("mutated preset");
+            let mutated_digest = manifest_digest(&mutated_preset).expect("mutated digest");
+            assert_ne!(
+                baseline_digest, mutated_digest,
+                "mutating memory-relevant field `{field}` did not change the manifest digest"
+            );
+        }
+    }
+
+    /// Platform-labelled fixtures for the two non-macOS direct-observation
+    /// methods (Phase 9 fixture corpus). Neither sampler is implemented on
+    /// this machine (no Windows/CUDA hardware reachable from this session —
+    /// see `docs/plans/evidence/preset-bundles/windows-cuda-sampler-design.md`),
+    /// but the vocabulary itself — method identity, `is_direct_observation`,
+    /// and match-class gating — is platform-independent and fully testable
+    /// here.
+    #[test]
+    fn windows_wddm_and_cuda_rocm_methods_are_direct_observations_with_distinct_identity() {
+        assert!(LaunchEvidenceMethod::WddmTotalDeviceDelta.is_direct_observation());
+        assert!(LaunchEvidenceMethod::CudaRocmProcessDelta.is_direct_observation());
+
+        let wddm = fingerprint(
+            LaunchEvidenceMethod::WddmTotalDeviceDelta,
+            "evidence-v1:same",
+        );
+        let mut cuda_same_digest = wddm.clone();
+        cuda_same_digest.method = Some(LaunchEvidenceMethod::CudaRocmProcessDelta);
+
+        // Method is part of launch identity: an otherwise-identical receipt
+        // captured by the other platform's sampler must never match, even
+        // with the same manifest digest and runtime/hardware fields.
+        assert!(classify_evidence_match(&cuda_same_digest, &wddm, 0, 60_000).is_none());
+    }
+
+    #[test]
+    fn estimator_only_and_fit_probe_never_match_or_power_measured_evidence() {
+        let expected = fingerprint(
+            LaunchEvidenceMethod::WddmTotalDeviceDelta,
+            "evidence-v1:win",
+        );
+
+        assert!(!LaunchEvidenceMethod::EstimatorOnly.is_direct_observation());
+        assert!(!LaunchEvidenceMethod::FitProbe.is_direct_observation());
+
+        let mut estimator_only = expected.clone();
+        estimator_only.method = Some(LaunchEvidenceMethod::EstimatorOnly);
+        assert!(classify_evidence_match(&estimator_only, &expected, 0, 60_000).is_none());
+
+        let mut fit_probe = expected.clone();
+        fit_probe.method = Some(LaunchEvidenceMethod::FitProbe);
+        assert!(classify_evidence_match(&fit_probe, &expected, 0, 60_000).is_none());
+    }
+
+    #[test]
+    fn negative_delta_from_noisy_sampling_never_underflows_into_a_bogus_positive_number() {
+        let preset = ModelPreset {
+            model_path: "/models/a.gguf".into(),
+            context_size: 4096,
+            ..Default::default()
+        };
+        let fingerprint = LaunchEvidenceFingerprint {
+            method: Some(LaunchEvidenceMethod::WddmTotalDeviceDelta),
+            ..Default::default()
+        };
+        // Background GPU usage from another process fell during the sampling
+        // window, so `peak` reads lower than `before` even though this
+        // launch's own allocation only grew. `checked_sub` must yield `None`
+        // rather than wrapping into a huge bogus delta.
+        let sample = LaunchSample {
+            before_bytes: 20_000_000_000,
+            peak_bytes: 18_000_000_000,
+            after_bytes: 19_000_000_000,
+            sample_count: 6,
+            interval_ms: 750,
+            noise_flags: vec![
+                "background GPU process pid=1234 released memory during sampling window".into(),
+            ],
+            captured_unix_ms: 1_700_000_000_000,
+        };
+        let receipt = build_launch_observation(&preset, fingerprint, FitState::Off, sample)
+            .expect("receipt still builds; noise is recorded, not fatal");
+        assert_eq!(receipt.model_delta_bytes, None);
+        assert!(!receipt.noise_flags.is_empty());
+    }
+
+    #[test]
+    fn incomplete_sampling_window_is_recorded_not_hidden() {
+        let preset = ModelPreset {
+            model_path: "/models/a.gguf".into(),
+            context_size: 4096,
+            ..Default::default()
+        };
+        let fingerprint = LaunchEvidenceFingerprint {
+            method: Some(LaunchEvidenceMethod::MetalUnifiedObservation),
+            ..Default::default()
+        };
+        // The process exited mid-poll (e.g. crashed after readiness): only 2
+        // of the intended 6 samples were taken before it disappeared.
+        let sample = LaunchSample {
+            before_bytes: 10_000_000_000,
+            peak_bytes: 15_000_000_000,
+            after_bytes: 15_000_000_000,
+            sample_count: 2,
+            interval_ms: 750,
+            noise_flags: vec![
+                "sampling window ended early: process exited after 2 of 6 samples".into(),
+            ],
+            captured_unix_ms: 1_700_000_000_000,
+        };
+        let receipt = build_launch_observation(&preset, fingerprint, FitState::Off, sample)
+            .expect("receipt still builds for a short window; incompleteness is a noise flag");
+        assert_eq!(receipt.sample_count, 2);
+        assert!(receipt.noise_flags[0].contains("ended early"));
+    }
+
+    fn test_app_config(config_dir: &std::path::Path) -> AppConfig {
+        use clap::Parser;
+        AppConfig::from_args(crate::cli::AppArgs::parse_from([
+            "llama-monitor",
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--llama-server-path",
+            "llama-server",
+            "--gpu-backend",
+            "none",
+        ]))
+    }
+
+    #[test]
+    fn metal_sampler_spawn_is_a_noop_when_launch_does_not_qualify_for_exact_evidence() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app_config = test_app_config(temp.path());
+
+        // Fit not pinned off: the gate must return before ever reaching
+        // `tokio::spawn`, so calling this outside a tokio runtime must not
+        // panic.
+        let disqualified_by_fit = ModelPreset {
+            model_path: "/models/a.gguf".into(),
+            fit_enabled: Some(true),
+            ..Default::default()
+        };
+        metal_sampler::spawn(app_config.clone(), disqualified_by_fit, 0);
+
+        // Non-empty extra_args: same no-tokio-runtime-needed guarantee.
+        let disqualified_by_extra_args = ModelPreset {
+            model_path: "/models/a.gguf".into(),
+            fit_enabled: Some(false),
+            extra_args: "--some-flag".into(),
+            ..Default::default()
+        };
+        metal_sampler::spawn(app_config, disqualified_by_extra_args, 0);
     }
 }
