@@ -703,6 +703,319 @@ pub mod metal_sampler {
     }
 }
 
+/// Bounded, repeated, idle-stabilized Windows/WDDM `nvidia-smi` sampler
+/// (architecture 12, Phase 9 real-host gate). Unlike `metal_sampler`
+/// (single in-process poll loop), this drives an external process for every
+/// sample, so it only ever pays that cost on a launch that already
+/// qualifies for exact evidence — see `capture_before`'s gate.
+///
+/// Scoped to `WddmTotalDeviceDelta` (total-device) only. `CudaRocmProcessDelta`
+/// (per-process) is deliberately not attempted: a real sample taken against
+/// Ryne's driver (`tests/fixtures/nvidia_smi_compute_apps_csv.txt`) shows
+/// `used_memory` reported as `[N/A]` for every process under WDDM, exactly
+/// the unreliable-attribution case
+/// `docs/plans/evidence/preset-bundles/windows-cuda-sampler-design.md`
+/// flagged as an open question — so the compute-apps query is used here only
+/// for PID-presence background-noise detection, never as a memory source.
+pub mod nvidia_sampler {
+    use super::{
+        FitState, LaunchEvidenceMethod, LaunchSample, build_launch_observation,
+        current_fingerprint, store,
+    };
+    use crate::config::AppConfig;
+    use crate::presets::ModelPreset;
+    use std::time::Duration;
+
+    const IDLE_STABILIZE_SAMPLES: u32 = 5;
+    const IDLE_STABILIZE_INTERVAL: Duration = Duration::from_millis(200);
+    const IDLE_STABILIZE_TOLERANCE_BYTES: u64 = 16 * 1024 * 1024;
+    const PEAK_SAMPLE_COUNT: u32 = 6;
+    const PEAK_SAMPLE_INTERVAL: Duration = Duration::from_millis(750);
+    const REPEAT_CYCLES: u32 = 3;
+
+    /// One row of `nvidia-smi --query-compute-apps=pid,used_memory`. Memory
+    /// is `None` whenever the driver reports `[N/A]` (the observed case on
+    /// WDDM) rather than a parsed value — presence/absence of the row is
+    /// still meaningful for noise detection even when memory isn't.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct ComputeApp {
+        pub pid: u32,
+        pub used_memory_bytes: Option<u64>,
+    }
+
+    /// Parses `nvidia-smi --query-compute-apps=pid,used_memory
+    /// --format=csv,noheader,nounits` output. A row with an unparseable pid
+    /// is dropped; `[N/A]` (or any other unparseable) memory field becomes
+    /// `None` rather than dropping the row, since the pid itself is still
+    /// usable for background-process presence diffing.
+    pub(crate) fn parse_compute_apps_csv(csv: &str) -> Vec<ComputeApp> {
+        csv.lines()
+            .filter_map(|line| {
+                let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+                if fields.len() < 2 {
+                    return None;
+                }
+                let pid = fields[0].parse::<u32>().ok()?;
+                let used_memory_bytes = fields[1].parse::<u64>().ok().map(|mib| mib * 1024 * 1024);
+                Some(ComputeApp {
+                    pid,
+                    used_memory_bytes,
+                })
+            })
+            .collect()
+    }
+
+    /// Finds the first pair of consecutive samples that agree within
+    /// `tolerance` and returns `(that_value, true)`; otherwise returns the
+    /// last sample seen and `false` so the caller can flag an unstabilized
+    /// baseline rather than silently trusting a still-drifting reading.
+    pub(crate) fn find_stable_value(samples: &[u64], tolerance: u64) -> (u64, bool) {
+        for window in samples.windows(2) {
+            if window[1].abs_diff(window[0]) <= tolerance {
+                return (window[1], true);
+            }
+        }
+        (samples.last().copied().unwrap_or(0), false)
+    }
+
+    /// Diffs two `--query-compute-apps` inventories, excluding `launched_pid`
+    /// itself, and returns human-readable `noise_flags` entries for any PID
+    /// that appeared, disappeared, or (when both samples have a parsed
+    /// memory value) moved by more than `tolerance`.
+    pub(crate) fn diff_background_processes(
+        before: &[ComputeApp],
+        after: &[ComputeApp],
+        launched_pid: u32,
+        tolerance: u64,
+    ) -> Vec<String> {
+        let mut flags = Vec::new();
+        for app in after {
+            if app.pid == launched_pid {
+                continue;
+            }
+            match before.iter().find(|p| p.pid == app.pid) {
+                None => flags.push(format!(
+                    "background CUDA process pid={} appeared during sampling window",
+                    app.pid
+                )),
+                Some(prev) => {
+                    if let (Some(prev_bytes), Some(now_bytes)) =
+                        (prev.used_memory_bytes, app.used_memory_bytes)
+                        && prev_bytes.abs_diff(now_bytes) > tolerance
+                    {
+                        flags.push(format!(
+                            "background CUDA process pid={} changed by {} bytes during sampling window",
+                            app.pid,
+                            prev_bytes.abs_diff(now_bytes)
+                        ));
+                    }
+                }
+            }
+        }
+        for prev in before {
+            if prev.pid == launched_pid {
+                continue;
+            }
+            if !after.iter().any(|app| app.pid == prev.pid) {
+                flags.push(format!(
+                    "background CUDA process pid={} disappeared during sampling window",
+                    prev.pid
+                ));
+            }
+        }
+        flags
+    }
+
+    /// `true` only if every cycle produced a delta (no underflow) and every
+    /// pair of consecutive cycle deltas agrees within `tolerance` (Phase 9's
+    /// "repeated observation" requirement).
+    pub(crate) fn cycles_agree(deltas: &[Option<u64>], tolerance: u64) -> bool {
+        if deltas.is_empty() {
+            return false;
+        }
+        let mut known = Vec::with_capacity(deltas.len());
+        for delta in deltas {
+            match delta {
+                Some(value) => known.push(*value),
+                None => return false,
+            }
+        }
+        known.windows(2).all(|w| w[0].abs_diff(w[1]) <= tolerance)
+    }
+
+    async fn query_compute_apps() -> Vec<ComputeApp> {
+        let output = tokio::process::Command::new("nvidia-smi")
+            .args([
+                "--query-compute-apps=pid,used_memory",
+                "--format=csv,noheader,nounits",
+            ])
+            .output()
+            .await;
+        match output {
+            Ok(output) if output.status.success() => {
+                parse_compute_apps_csv(&String::from_utf8_lossy(&output.stdout))
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Total-device VRAM used across every reported GPU, in bytes. Reuses
+    /// the same `nvidia-smi --query-gpu` parsing the live GPU-metrics panel
+    /// already relies on (`crate::gpu::nvidia::parse_nvidia_csv`), off the
+    /// async runtime thread since it spawns a real child process.
+    async fn total_device_used_bytes(app_config: &AppConfig) -> Option<u64> {
+        let backend = crate::gpu::detect_backend(&app_config.gpu_backend);
+        let metrics = tokio::task::spawn_blocking(move || backend.read_metrics().ok())
+            .await
+            .ok()??;
+        Some(
+            metrics
+                .values()
+                .map(|metric| metric.vram_used * 1024 * 1024)
+                .sum::<u64>(),
+        )
+    }
+
+    /// Pre-spawn inventory and idle-stabilized `before` baseline, captured by
+    /// `start_backend` immediately before `supervisor.start()` — the same
+    /// timing slot as the Metal sampler's `pre_launch_wired_bytes`. Unlike
+    /// that cheap in-process call, this drives real `nvidia-smi` processes,
+    /// so `capture_before` gates on qualification first and returns `None`
+    /// with zero I/O for every non-qualifying (i.e. most) launch.
+    pub struct PreSpawnCapture {
+        before_bytes: u64,
+        stabilized: bool,
+        pre_existing_apps: Vec<ComputeApp>,
+    }
+
+    /// Returns `None` when this host/launch does not qualify for exact
+    /// evidence (mirrors `metal_sampler::spawn`'s gate, `target_os =
+    /// "windows"` in place of `"macos"`) so `start_backend` can call this
+    /// unconditionally and pay no cost on the common path.
+    pub async fn capture_before(
+        app_config: &AppConfig,
+        preset: &ModelPreset,
+    ) -> Option<PreSpawnCapture> {
+        if !cfg!(target_os = "windows") {
+            return None;
+        }
+        if preset.fit_enabled != Some(false) || !preset.extra_args.trim().is_empty() {
+            return None;
+        }
+
+        let pre_existing_apps = query_compute_apps().await;
+
+        let mut samples = vec![total_device_used_bytes(app_config).await?];
+        for _ in 0..IDLE_STABILIZE_SAMPLES {
+            tokio::time::sleep(IDLE_STABILIZE_INTERVAL).await;
+            let Some(sample) = total_device_used_bytes(app_config).await else {
+                break;
+            };
+            samples.push(sample);
+            if find_stable_value(&samples, IDLE_STABILIZE_TOLERANCE_BYTES).1 {
+                break;
+            }
+        }
+        let (before_bytes, stabilized) =
+            find_stable_value(&samples, IDLE_STABILIZE_TOLERANCE_BYTES);
+
+        Some(PreSpawnCapture {
+            before_bytes,
+            stabilized,
+            pre_existing_apps,
+        })
+    }
+
+    /// Spawns the bounded post-readiness peak/after/repeat phase, detached
+    /// from session control exactly like `metal_sampler::spawn` — this
+    /// function only schedules the task, so it can never block a stop or
+    /// restart.
+    pub fn spawn(app_config: AppConfig, preset: ModelPreset, pid: u32, capture: PreSpawnCapture) {
+        tokio::spawn(async move {
+            run(app_config, preset, pid, capture).await;
+        });
+    }
+
+    async fn run(app_config: AppConfig, preset: ModelPreset, pid: u32, capture: PreSpawnCapture) {
+        let mut noise_flags = Vec::new();
+        if !capture.stabilized {
+            noise_flags.push(
+                "idle stabilization did not converge before spawn; `before` baseline may include background drift"
+                    .to_string(),
+            );
+        }
+
+        let mut cycle_before = capture.before_bytes;
+        let mut deltas = Vec::with_capacity(REPEAT_CYCLES as usize);
+        let mut peak_bytes = capture.before_bytes;
+        let mut after_bytes = capture.before_bytes;
+
+        for _ in 0..REPEAT_CYCLES {
+            let mut cycle_peak = cycle_before;
+            for _ in 0..PEAK_SAMPLE_COUNT {
+                tokio::time::sleep(PEAK_SAMPLE_INTERVAL).await;
+                if let Some(sample) = total_device_used_bytes(&app_config).await {
+                    cycle_peak = cycle_peak.max(sample);
+                }
+            }
+            let cycle_after = total_device_used_bytes(&app_config)
+                .await
+                .unwrap_or(cycle_peak);
+            deltas.push(cycle_peak.checked_sub(cycle_before));
+            peak_bytes = peak_bytes.max(cycle_peak);
+            after_bytes = cycle_after;
+            cycle_before = cycle_after;
+        }
+
+        if !cycles_agree(&deltas, IDLE_STABILIZE_TOLERANCE_BYTES) {
+            noise_flags.push(format!(
+                "repeated observation cycles did not agree within tolerance: {deltas:?}"
+            ));
+        }
+
+        let after_apps = query_compute_apps().await;
+        noise_flags.extend(diff_background_processes(
+            &capture.pre_existing_apps,
+            &after_apps,
+            pid,
+            IDLE_STABILIZE_TOLERANCE_BYTES,
+        ));
+
+        let Ok(identity) = crate::inference::llama_cpp_capabilities::ExecutableIdentity::from_path(
+            &app_config.llama_server_path,
+        ) else {
+            return;
+        };
+        let Some(capabilities) =
+            crate::inference::llama_cpp_capabilities::cached_snapshot(&identity)
+        else {
+            return;
+        };
+        let Ok(mut fingerprint) = current_fingerprint(&app_config, &preset, &capabilities) else {
+            return;
+        };
+        fingerprint.method = Some(LaunchEvidenceMethod::WddmTotalDeviceDelta);
+
+        let sample = LaunchSample {
+            before_bytes: capture.before_bytes,
+            peak_bytes,
+            after_bytes,
+            sample_count: PEAK_SAMPLE_COUNT * REPEAT_CYCLES,
+            interval_ms: PEAK_SAMPLE_INTERVAL.as_millis() as u32,
+            noise_flags,
+            captured_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis())
+                .unwrap_or_default(),
+        };
+        let Ok(receipt) = build_launch_observation(&preset, fingerprint, FitState::Off, sample)
+        else {
+            return;
+        };
+        let _ = store::save(&app_config.app_paths.launch_evidence_dir(), &receipt);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1222,6 +1535,154 @@ mod tests {
             "--gpu-backend",
             "none",
         ]))
+    }
+
+    /// Real capture from Ryne (RTX 5090, driver 616.56,
+    /// `nvidia-smi --query-compute-apps=pid,used_memory
+    /// --format=csv,noheader,nounits`), 2026-09-02 — not a guessed format.
+    /// Every `used_memory` cell is `[N/A]` under WDDM, confirming the design
+    /// doc's open question: per-process attribution is not available on this
+    /// real host, which is why `nvidia_sampler` uses this query only for
+    /// PID-presence diffing, never as a memory source.
+    #[test]
+    fn parse_compute_apps_csv_handles_real_wddm_na_output() {
+        let csv = include_str!("../../tests/fixtures/nvidia_smi_compute_apps_csv.txt");
+        let apps = nvidia_sampler::parse_compute_apps_csv(csv);
+        assert_eq!(apps.len(), 15);
+        assert!(
+            apps.iter().all(|app| app.used_memory_bytes.is_none()),
+            "every row in the real WDDM fixture reports [N/A] for used_memory"
+        );
+        assert!(apps.iter().any(|app| app.pid == 47360));
+    }
+
+    #[test]
+    fn parse_compute_apps_csv_parses_a_real_memory_value_when_present() {
+        let apps = nvidia_sampler::parse_compute_apps_csv("1234, 2048\n5678, [N/A]\n");
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0].pid, 1234);
+        assert_eq!(apps[0].used_memory_bytes, Some(2048 * 1024 * 1024));
+        assert_eq!(apps[1].pid, 5678);
+        assert_eq!(apps[1].used_memory_bytes, None);
+    }
+
+    #[test]
+    fn find_stable_value_detects_convergence_within_tolerance() {
+        let samples = vec![20_000_000_000, 20_020_000_000, 20_021_000_000];
+        let (value, stabilized) = nvidia_sampler::find_stable_value(&samples, 16 * 1024 * 1024);
+        assert!(stabilized);
+        assert_eq!(value, 20_021_000_000);
+    }
+
+    #[test]
+    fn find_stable_value_reports_unstabilized_when_still_drifting() {
+        let samples = vec![20_000_000_000, 21_000_000_000, 22_000_000_000];
+        let (value, stabilized) = nvidia_sampler::find_stable_value(&samples, 16 * 1024 * 1024);
+        assert!(!stabilized);
+        assert_eq!(value, 22_000_000_000);
+    }
+
+    #[test]
+    fn diff_background_processes_flags_appearance_disappearance_and_growth() {
+        use nvidia_sampler::ComputeApp;
+        let before = vec![
+            ComputeApp {
+                pid: 100,
+                used_memory_bytes: Some(1_000_000_000),
+            },
+            ComputeApp {
+                pid: 200,
+                used_memory_bytes: Some(500_000_000),
+            },
+        ];
+        let after = vec![
+            // pid 100 grew well past tolerance.
+            ComputeApp {
+                pid: 100,
+                used_memory_bytes: Some(2_000_000_000),
+            },
+            // pid 200 disappeared.
+            // pid 300 appeared.
+            ComputeApp {
+                pid: 300,
+                used_memory_bytes: None,
+            },
+            // pid 9 is the launched process itself; must never be flagged.
+            ComputeApp {
+                pid: 9,
+                used_memory_bytes: Some(999_000_000),
+            },
+        ];
+        let flags = nvidia_sampler::diff_background_processes(&before, &after, 9, 16 * 1024 * 1024);
+        assert!(
+            flags
+                .iter()
+                .any(|f| f.contains("pid=100") && f.contains("changed by"))
+        );
+        assert!(
+            flags
+                .iter()
+                .any(|f| f.contains("pid=200") && f.contains("disappeared"))
+        );
+        assert!(
+            flags
+                .iter()
+                .any(|f| f.contains("pid=300") && f.contains("appeared"))
+        );
+        assert!(!flags.iter().any(|f| f.contains("pid=9")));
+    }
+
+    #[test]
+    fn diff_background_processes_does_not_flag_na_memory_as_a_change() {
+        use nvidia_sampler::ComputeApp;
+        let before = vec![ComputeApp {
+            pid: 100,
+            used_memory_bytes: None,
+        }];
+        let after = vec![ComputeApp {
+            pid: 100,
+            used_memory_bytes: None,
+        }];
+        let flags = nvidia_sampler::diff_background_processes(&before, &after, 9, 16 * 1024 * 1024);
+        assert!(flags.is_empty());
+    }
+
+    #[test]
+    fn cycles_agree_requires_every_cycle_to_produce_a_delta_and_agree_within_tolerance() {
+        let tolerance = 16 * 1024 * 1024;
+        assert!(nvidia_sampler::cycles_agree(
+            &[
+                Some(1_000_000_000),
+                Some(1_005_000_000),
+                Some(1_002_000_000)
+            ],
+            tolerance
+        ));
+        assert!(!nvidia_sampler::cycles_agree(
+            &[Some(1_000_000_000), Some(2_000_000_000)],
+            tolerance
+        ));
+        assert!(!nvidia_sampler::cycles_agree(
+            &[Some(1_000_000_000), None, Some(1_002_000_000)],
+            tolerance
+        ));
+        assert!(!nvidia_sampler::cycles_agree(&[], tolerance));
+    }
+
+    #[tokio::test]
+    async fn nvidia_capture_before_is_a_noop_off_windows_or_when_disqualified() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app_config = test_app_config(temp.path());
+
+        // On this machine (never Windows in CI/dev here), the target_os gate
+        // alone must return None with zero I/O regardless of preset shape.
+        let preset = ModelPreset {
+            model_path: "/models/a.gguf".into(),
+            fit_enabled: Some(false),
+            ..Default::default()
+        };
+        let result = nvidia_sampler::capture_before(&app_config, &preset).await;
+        assert!(result.is_none());
     }
 
     #[test]

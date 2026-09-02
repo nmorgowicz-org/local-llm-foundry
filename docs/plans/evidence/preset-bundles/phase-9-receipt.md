@@ -2,7 +2,137 @@
 
 Baseline commit: `b9e53c48ba9ad7cce2723fea91d7c392f4bb336d`
 
-## Slice 2 addendum (this checkpoint)
+## Slice 3 addendum (this checkpoint)
+
+Baseline for this slice: `3af63862d8f5277a16a21e1a1c34e97849bf0baa` (slice 2,
+below).
+
+This slice ships the Windows/WDDM `nvidia-smi` sampler itself —
+`nvidia_sampler` in `launch_evidence.rs` — upgrading it from slice 2's design
+document to a real, compiled, unit-tested implementation. It does **not**
+ship `CudaRocmProcessDelta` (per-process attribution; see below for why),
+the frontend evidence-details drawer action, or any real-host qualification
+run (still gated on explicit authorization, not sought this slice).
+
+### Why this was possible without Windows hardware in this session
+
+None of this machine's tools changed — Apple Silicon still can't compile
+Windows-only code paths for execution, and no model server was started or
+stopped anywhere. What changed is that `ssh nick@ryne` gave read-only access
+to a real Windows/CUDA host (RTX 5090, driver 616.56) for the one thing that
+was actually missing before: a genuine `nvidia-smi` CSV sample to build and
+verify a parser against, instead of an assumed format. That is compile-time
+and unit-test verification only — the sampler has never executed against a
+live launch, which is exactly what a real-host qualification run (Stage 3,
+still unauthorized) would provide.
+
+### Scope narrowed to `WddmTotalDeviceDelta` only
+
+The design doc (slice 2) left `CudaRocmProcessDelta` vs. `WddmTotalDeviceDelta`
+as an open question pending real driver output. The real sample now settles
+it for this host: `nvidia-smi --query-compute-apps=pid,used_memory
+--format=csv,noheader,nounits` against Ryne returns `[N/A]` for every
+process's `used_memory`, with no exception (saved as
+`tests/fixtures/nvidia_smi_compute_apps_csv.txt`). Per-process attribution is
+therefore not available on this real WDDM host, so `nvidia_sampler` only
+ever records `WddmTotalDeviceDelta` (total-device). The compute-apps query is
+still used, but only for **PID-presence diffing** (a process appearing,
+disappearing) for background-noise flags — never as a memory source, since
+the memory field it would need is unusable here. `CudaRocmProcessDelta`
+remains unimplemented; the only place it could be validated is Linux/CUDA
+hardware, which this project does not have access to (same constraint noted
+in the slice 2 design doc).
+
+### `nvidia_sampler` (`launch_evidence.rs`)
+
+- **Gate.** `capture_before(app_config, preset)` mirrors `metal_sampler`'s
+  gate (`target_os = "windows"` in place of `"macos"`, fit pinned off, empty
+  `extra_args`) and returns `None` with zero I/O the instant any condition
+  fails — so, unlike the cheap in-process Metal read, the real `nvidia-smi`
+  process spawns this sampler requires are paid only on an already-qualifying
+  launch, never on the common path.
+- **Threading.** `start_backend` (`src/llama/server.rs`) calls
+  `nvidia_sampler::capture_before` in the same pre-spawn timing slot as the
+  Metal sampler's `pre_launch_wired_bytes`, immediately before
+  `supervisor.start()`. The returned `PreSpawnCapture` (idle-stabilized
+  `before` baseline plus the pre-existing `--query-compute-apps` inventory)
+  is threaded down to `nvidia_sampler::spawn`, called alongside
+  `metal_sampler::spawn` at the same post-readiness point, with the same
+  detached-`tokio::spawn`, fire-and-forget shape — it can never block a
+  stop/restart.
+- **Idle stabilization.** Up to 5 samples at 200ms, accepted once two
+  consecutive readings agree within 16 MiB; otherwise the last sample is
+  used and `noise_flags` records that it never converged, rather than
+  silently trusting a still-drifting baseline.
+- **Repeated observation.** Runs the peak/after cycle (6 samples at 750ms,
+  matching the Metal sampler's cadence) 3 times against the same live
+  server, re-baselining each cycle against the previous cycle's `after`.
+  `cycles_agree` requires every cycle to produce a delta (no underflow) and
+  every consecutive pair to agree within 16 MiB; disagreement is recorded as
+  a noise flag rather than silently averaged away or presented as clean.
+- **Background-process noise detection.** `diff_background_processes` diffs
+  the pre-existing `--query-compute-apps` PID list against the post-sampling
+  list (excluding the launched PID), flagging any PID that appeared,
+  disappeared, or (only where both samples happen to carry a parsed memory
+  value) changed by more than the stabilization tolerance.
+- **Total-device reads.** `total_device_used_bytes` reuses the same
+  `nvidia-smi --query-gpu` CSV parsing the live GPU-metrics panel already
+  relies on (`crate::gpu::nvidia::parse_nvidia_csv`, via
+  `crate::gpu::detect_backend`), run on a blocking thread since each call
+  spawns a real child process.
+
+### Fixture corpus additions (`launch_evidence.rs` test module)
+
+- `parse_compute_apps_csv_handles_real_wddm_na_output` — parses the real
+  Ryne capture; asserts every row's memory is `None` (matching the actual
+  observed driver behavior) and the pid list is intact.
+- `parse_compute_apps_csv_parses_a_real_memory_value_when_present` —
+  confirms the parser does handle a numeric `used_memory` value correctly
+  when one is present, even though this host never produces one.
+- `find_stable_value_detects_convergence_within_tolerance` /
+  `find_stable_value_reports_unstabilized_when_still_drifting`.
+- `diff_background_processes_flags_appearance_disappearance_and_growth` —
+  also asserts the launched PID itself is never flagged.
+- `diff_background_processes_does_not_flag_na_memory_as_a_change` — two
+  `[N/A]` samples for the same pid must not be misread as a zero-vs-zero
+  "change."
+- `cycles_agree_requires_every_cycle_to_produce_a_delta_and_agree_within_tolerance`
+  — covers agreement, disagreement, an underflowed cycle, and the empty
+  case.
+- `nvidia_capture_before_is_a_noop_off_windows_or_when_disqualified` — calls
+  the real `capture_before` on this (non-Windows) machine and asserts it
+  returns `None`, proving the gate short-circuits before any `nvidia-smi`
+  process is spawned.
+
+### Real fixture
+
+`tests/fixtures/nvidia_smi_compute_apps_csv.txt` — captured 2026-09-02 via
+`ssh nick@ryne "nvidia-smi --query-compute-apps=pid,used_memory
+--format=csv,noheader,nounits"` against Ryne's real RTX 5090 (driver
+616.56). Not a guessed format; this is what settled the
+`WddmTotalDeviceDelta`-only scoping decision above.
+
+### Verification (slice 3)
+
+- `rtk cargo build` — passed
+- `rtk cargo clippy -- -D warnings` — no issues
+- `rtk cargo fmt -- --check` — no diff
+- `rtk cargo test calibration::` — 71 passed, 1 ignored (11 suites)
+- `rtk cargo test preset_bundles` — 10 passed (11 suites)
+- `rtk cargo test inference::` — 377 passed, 2 ignored (11 suites)
+- `rtk cargo test llama::` — 305 passed, 3 ignored (11 suites)
+- `rtk cargo test sessions` — 15 passed (11 suites)
+
+### Files changed (slice 3)
+
+- `src/calibration/launch_evidence.rs` (new `nvidia_sampler` module, new
+  fixture corpus tests)
+- `src/llama/server.rs` (`nvidia_pre_spawn` capture + spawn call site)
+- `tests/fixtures/nvidia_smi_compute_apps_csv.txt` (new, real capture)
+- `docs/plans/evidence/preset-bundles/windows-cuda-sampler-design.md`
+  (status note updated — see file)
+
+## Slice 2 addendum
 
 Baseline for this slice: `b45daeb7d6b7714d764afec5a29e95b9364d53fb` (slice 1,
 below).

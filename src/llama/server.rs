@@ -87,6 +87,22 @@ pub(crate) async fn start_backend(
     // `before` baseline (architecture 12).
     let pre_launch_wired_bytes = crate::memory_availability::build_snapshot().wired_bytes;
 
+    // Same pre-spawn timing slot, but for the Windows/WDDM sampler. Unlike
+    // the in-process wired-memory read above, this drives real `nvidia-smi`
+    // processes for idle stabilization, so `capture_before` gates on
+    // qualification (Windows, fit pinned off, no extra_args) itself and
+    // returns instantly with zero I/O on every other launch.
+    let nvidia_pre_spawn = match (&adapter, &evidence.resolved_preset) {
+        (BackendAdapter::LlamaCpp(_), Some(preset)) => {
+            crate::calibration::launch_evidence::nvidia_sampler::capture_before(
+                &evidence.app_config,
+                preset,
+            )
+            .await
+        }
+        _ => None,
+    };
+
     let pid = match supervisor.clone().start().await {
         Ok(pid) => pid,
         Err(error) => {
@@ -149,6 +165,14 @@ pub(crate) async fn start_backend(
     // returned control to normal session flow, and its own gate (macOS,
     // fit pinned off, no extra_args) makes it a no-op on every other launch.
     if let (BackendAdapter::LlamaCpp(_), Some(preset)) = (&adapter, evidence.resolved_preset) {
+        if let Some(capture) = nvidia_pre_spawn {
+            crate::calibration::launch_evidence::nvidia_sampler::spawn(
+                evidence.app_config.clone(),
+                preset.clone(),
+                pid,
+                capture,
+            );
+        }
         crate::calibration::launch_evidence::metal_sampler::spawn(
             evidence.app_config,
             preset,

@@ -1,11 +1,18 @@
-# Windows/CUDA `nvidia-smi` sampler — design (not implemented)
+# Windows/CUDA `nvidia-smi` sampler — design
 
-Status: design only. No Windows/CUDA hardware is reachable from this session
-(this machine is Apple Silicon; the only other known machine, Ryne, requires
-explicit Coordinator/user authorization before starting or stopping a real
-model server, per architecture section 12 and execution plan Phase 9's
-"Real-host gates"). This document is the implementation plan for whoever
-holds that authorization; nothing here has been built or run.
+Status: `WddmTotalDeviceDelta` is implemented (`nvidia_sampler` in
+`src/calibration/launch_evidence.rs`, phase-9-receipt.md slice 3) and passes
+build/clippy/fmt/unit tests, including against a real `nvidia-smi` capture
+from Ryne (`tests/fixtures/nvidia_smi_compute_apps_csv.txt`, RTX 5090, driver
+616.56). That real capture shows `used_memory` as `[N/A]` for every process
+under WDDM, so `CudaRocmProcessDelta` (per-process attribution) remains
+deliberately unimplemented — see "Method mapping" below. This machine is
+Apple Silicon, so the sampler has never *executed* (its `cfg!(target_os =
+"windows")` gate is always false here); no Windows/CUDA hardware has run it,
+and no real model server has been started or stopped anywhere. A real-host
+qualification run on Ryne still requires explicit Coordinator/user
+authorization, per architecture section 12 and execution plan Phase 9's
+"Real-host gates" — not sought or granted as of this status update.
 
 ## Method mapping
 
