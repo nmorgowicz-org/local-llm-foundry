@@ -630,6 +630,11 @@ pub mod metal_sampler {
 
     const SAMPLE_COUNT: u32 = 6;
     const SAMPLE_INTERVAL: Duration = Duration::from_millis(750);
+    const REPEAT_CYCLES: u32 = 3;
+    // wired_bytes is system-wide, not process-scoped, so it swings more
+    // between samples than a discrete GPU's total-device VRAM reading does;
+    // this tolerance is wider than nvidia_sampler's 16 MiB for that reason.
+    const CYCLE_AGREEMENT_TOLERANCE_BYTES: u64 = 64 * 1024 * 1024;
 
     /// Spawns the bounded sampler if this host/launch qualifies for exact
     /// evidence: macOS, fit explicitly pinned off, and no unclassified
@@ -650,14 +655,44 @@ pub mod metal_sampler {
         });
     }
 
+    /// Runs `REPEAT_CYCLES` peak/after cycles back to back (re-baselining
+    /// each cycle against the previous cycle's `after` sample, exactly like
+    /// `nvidia_sampler::run`) and checks the resulting deltas against
+    /// `super::nvidia_sampler::cycles_agree`. A single wired-memory sample is
+    /// too easily inflated by unrelated system activity (Chrome, Spotlight,
+    /// background sync) to trust on its own; requiring multiple cycles to
+    /// agree is the same mitigation the noisier-signal-but-fewer-safeguards
+    /// asymmetry this module used to have on Windows now also gets here.
     async fn run(app_config: AppConfig, preset: ModelPreset, before_bytes: u64) {
+        let mut noise_flags = vec![
+            "macOS unified-memory sample is a system-wide wired-memory delta, not process-scoped"
+                .to_string(),
+        ];
+
+        let mut cycle_before = before_bytes;
+        let mut deltas = Vec::with_capacity(REPEAT_CYCLES as usize);
         let mut peak_bytes = before_bytes;
-        for _ in 0..SAMPLE_COUNT {
-            tokio::time::sleep(SAMPLE_INTERVAL).await;
-            let sample = crate::memory_availability::build_snapshot();
-            peak_bytes = peak_bytes.max(sample.wired_bytes);
+        let mut after_bytes = before_bytes;
+
+        for _ in 0..REPEAT_CYCLES {
+            let mut cycle_peak = cycle_before;
+            for _ in 0..SAMPLE_COUNT {
+                tokio::time::sleep(SAMPLE_INTERVAL).await;
+                let sample = crate::memory_availability::build_snapshot();
+                cycle_peak = cycle_peak.max(sample.wired_bytes);
+            }
+            let cycle_after = crate::memory_availability::build_snapshot().wired_bytes;
+            deltas.push(cycle_peak.checked_sub(cycle_before));
+            peak_bytes = peak_bytes.max(cycle_peak);
+            after_bytes = cycle_after;
+            cycle_before = cycle_after;
         }
-        let after = crate::memory_availability::build_snapshot();
+
+        if !super::nvidia_sampler::cycles_agree(&deltas, CYCLE_AGREEMENT_TOLERANCE_BYTES) {
+            noise_flags.push(format!(
+                "repeated observation cycles did not agree within tolerance: {deltas:?}"
+            ));
+        }
 
         // Reuses the OnceLock capability cache `construct_adapter` already
         // populated for this exact binary during launch validation; this
@@ -679,17 +714,10 @@ pub mod metal_sampler {
         let sample = LaunchSample {
             before_bytes,
             peak_bytes,
-            after_bytes: after.wired_bytes,
-            sample_count: SAMPLE_COUNT,
+            after_bytes,
+            sample_count: SAMPLE_COUNT * REPEAT_CYCLES,
             interval_ms: SAMPLE_INTERVAL.as_millis() as u32,
-            // Apple Silicon has no per-process device-memory counter exposed
-            // to userspace the way WDDM/CUDA do; `wired_bytes` is a
-            // system-wide delta around this one launch, not a process-scoped
-            // measurement, so every macOS receipt carries this caveat.
-            noise_flags: vec![
-                "macOS unified-memory sample is a system-wide wired-memory delta, not process-scoped"
-                    .into(),
-            ],
+            noise_flags,
             captured_unix_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|duration| duration.as_millis())

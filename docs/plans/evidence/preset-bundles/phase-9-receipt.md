@@ -2,7 +2,76 @@
 
 Baseline commit: `b9e53c48ba9ad7cce2723fea91d7c392f4bb336d`
 
-## Slice 3 addendum (this checkpoint)
+## Slice 4 addendum (this checkpoint)
+
+Baseline for this slice: `60113a7` (slice 3, below).
+
+### Why: an asymmetry between the two samplers
+
+Reviewing slice 3's data noted a real gap: `metal_sampler`'s signal
+(`wired_bytes`) is **system-wide**, not process-scoped — it can be inflated
+by anything else touching unified memory during the ~4.5s sampling window
+(Chrome, Spotlight, background sync). `nvidia_sampler`'s signal
+(total-device VRAM) is comparatively more stable, yet it was the one that
+got repeated-cycle agreement checking (Phase 9's "repeated observation"
+requirement) and background-process noise detection, while `metal_sampler`
+shipped as a single-shot 6-sample poll with no repeat and no way to flag
+disagreement across attempts. The noisier signal had the thinner
+verification — backwards from what a noisy measurement needs.
+
+### Change: `metal_sampler` now runs repeated cycles too
+
+`metal_sampler::run` was restructured to mirror `nvidia_sampler::run`'s
+cycle shape: 3 repeated peak/after cycles (`REPEAT_CYCLES = 3`), each
+re-baselined against the previous cycle's `after` sample, with
+per-cycle deltas checked via the same `nvidia_sampler::cycles_agree`
+helper (reused directly via `super::nvidia_sampler::cycles_agree`, not
+duplicated). Disagreement is recorded as an explicit `noise_flags` entry
+(`"repeated observation cycles did not agree within tolerance: ..."`)
+rather than silently averaged away.
+
+The agreement tolerance (`CYCLE_AGREEMENT_TOLERANCE_BYTES = 64 MiB`) is
+wider than `nvidia_sampler`'s 16 MiB, since a system-wide wired-memory
+reading is expected to swing more between samples than a discrete GPU's
+total-device VRAM reading — a deliberately looser bar for a deliberately
+noisier signal, rather than pretending the two are equally precise.
+
+Total sample count per receipt rises from 6 to 18 (`SAMPLE_COUNT *
+REPEAT_CYCLES`), and the sampler's total runtime from ~4.5s to ~13.5s — it
+remains fully detached (`tokio::spawn`, after readiness) and cannot block a
+stop or restart. The existing system-wide-signal caveat in `noise_flags` is
+unchanged; the disagreement flag is additive, not a replacement.
+
+`CudaRocmProcessDelta`'s open per-process-attribution question (slice 3) is
+untouched by this change — this slice only closes the repeated-observation
+gap on the macOS side.
+
+### Verification (slice 4)
+
+- `rtk cargo build` — passed
+- `rtk cargo clippy -- -D warnings` — no issues
+- `rtk cargo fmt -- --check` — no diff
+- `rtk cargo test calibration::` — 71 passed, 1 ignored (11 suites)
+- `rtk cargo test preset_bundles` — 10 passed (11 suites)
+- `rtk cargo test inference::` — 377 passed, 2 ignored (11 suites)
+- `rtk cargo test llama::` — 305 passed, 3 ignored (11 suites)
+- `rtk cargo test sessions` — 15 passed (11 suites)
+
+No new unit tests were added this slice — the changed code path
+(`metal_sampler::run`'s cycle loop) is exercised the same way slice 2 left
+it: through the real `spawn()` gate test for the disqualified path, plus
+reuse of `nvidia_sampler::cycles_agree`'s own existing test coverage for the
+agreement logic itself. A real qualifying macOS launch has still never been
+executed end to end (no receipt exists on disk under
+`calibrations/launch-evidence/`); that remains the same limitation noted in
+slice 3, now also true of the cycle-agreement path.
+
+### Files changed (slice 4)
+
+- `src/calibration/launch_evidence.rs` (`metal_sampler::run` repeated-cycle
+  rewrite only; no other module touched)
+
+## Slice 3 addendum
 
 Baseline for this slice: `3af63862d8f5277a16a21e1a1c34e97849bf0baa` (slice 2,
 below).
