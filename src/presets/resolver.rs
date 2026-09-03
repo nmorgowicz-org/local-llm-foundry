@@ -749,6 +749,7 @@ fn same_selection_axes(left: &PresetBundleSelection, right: &PresetBundleSelecti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::llama_cpp_capabilities::FeatureState;
     use crate::presets::bundle::{
         PresetArtifactMetadata, PresetArtifactQuantization, PresetPerformanceOption,
         PresetWorkloadPolicy,
@@ -876,6 +877,44 @@ mod tests {
         selection.intent_source = Some(bundle::PresetFitIntent::LowVram);
         let second = resolve_preset(&preset, Some(&selection), &snapshot()).unwrap();
         assert_eq!(first.selection_hash, second.selection_hash);
+    }
+
+    /// Fixture 6 (Phase 10a): vision bundle with mmproj offload capability
+    /// on/off/unavailable. `mmproj_offload` is a flat field on ModelPreset
+    /// carried through bundle resolution unchanged; capability gating comes
+    /// from `TypedLlamaCapabilities::mmproj_offload`, checked directly
+    /// against whichever polarity (`positive`/`negative`) was requested.
+    #[test]
+    fn mmproj_offload_on_is_accepted_when_the_binary_advertises_it() {
+        let mut preset = bundle::create_bundle_preset("Vision", bundle());
+        preset.mmproj_offload = Some(true);
+        let mut caps = snapshot();
+        caps.typed.mmproj_offload.positive = FeatureState::Available;
+        let result = resolve_preset(&preset, None, &caps);
+        assert!(result.is_ok(), "expected success, got {result:?}");
+    }
+
+    #[test]
+    fn mmproj_offload_off_is_accepted_when_the_binary_advertises_it() {
+        let mut preset = bundle::create_bundle_preset("Vision", bundle());
+        preset.mmproj_offload = Some(false);
+        let mut caps = snapshot();
+        caps.typed.mmproj_offload.negative = FeatureState::Available;
+        let result = resolve_preset(&preset, None, &caps);
+        assert!(result.is_ok(), "expected success, got {result:?}");
+    }
+
+    #[test]
+    fn mmproj_offload_is_rejected_when_the_binary_does_not_advertise_it() {
+        let mut preset = bundle::create_bundle_preset("Vision", bundle());
+        preset.mmproj_offload = Some(true);
+        // product_default() leaves typed.mmproj_offload.positive Unavailable.
+        let caps = snapshot();
+        let issues = resolve_preset(&preset, None, &caps).unwrap_err();
+        assert!(
+            issues.iter().any(|i| i.code == "CAPABILITY_UNAVAILABLE"),
+            "expected CAPABILITY_UNAVAILABLE, got {issues:?}"
+        );
     }
 
     fn moe_bundle_with_metadata(metadata: PresetArtifactMetadata) -> PresetBundleSpec {

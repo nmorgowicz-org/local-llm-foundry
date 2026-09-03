@@ -696,6 +696,40 @@ mod tests {
         }
     }
 
+    fn valid_rapid_mlx_preset() -> ModelPreset {
+        ModelPreset {
+            name: "Rapid".into(),
+            backend: InferenceBackend::RapidMlx,
+            rapid_mlx: Some(crate::inference::rapid_mlx::RapidMlxConfig {
+                model_path: "/models/rapid".into(),
+                port: 8123,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Fixture 9 (Phase 10a): a Rapid-MLX preset proving no llama field
+    /// leakage — a valid Rapid-MLX preset (llama-only fields left at their
+    /// defaults) passes, while carrying a llama.cpp bundle or an api_key
+    /// nested under rapid_mlx (instead of the shared top-level field) is
+    /// rejected by the same gate llama_cpp presets are held to in reverse.
+    #[test]
+    fn rapid_mlx_preset_with_no_llama_fields_passes() {
+        let preset = valid_rapid_mlx_preset();
+        assert!(preset.bundle.is_none());
+        validate_preset_backend_config(&preset).unwrap();
+    }
+
+    #[test]
+    fn rapid_mlx_preset_rejects_a_llama_bundle() {
+        let mut preset = valid_rapid_mlx_preset();
+        preset.bundle = Some(crate::presets::bundle::PresetBundleSpec::default());
+        let error = validate_preset_backend_config(&preset).unwrap_err();
+        assert!(error.to_string().contains("not a llama.cpp preset"));
+    }
+
+
     #[tokio::test]
     async fn factory_selects_llama_cpp_adapter() {
         let dir = tempfile::tempdir().unwrap();
