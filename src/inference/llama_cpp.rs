@@ -1658,6 +1658,24 @@ mod tests {
         assert!(!args.iter().any(|arg| arg == "--mlock"));
     }
 
+    /// Phase 10a Windows-safety requirement: argv is built via `Command::arg`,
+    /// which never invokes a shell, so a Windows-style path must survive into
+    /// argv byte-for-byte — no backslash escaping/doubling and no forward-
+    /// slash normalization, either of which would corrupt the real path.
+    #[tokio::test]
+    async fn windows_style_model_path_passes_through_argv_unmodified() {
+        let windows_path = r"C:\Users\test\models\model.gguf";
+        let args = launch_args(ServerConfig {
+            model_path: windows_path.into(),
+            port: 8080,
+            ..Default::default()
+        })
+        .await;
+
+        let m_index = args.iter().position(|a| a == "-m").expect("-m present");
+        assert_eq!(args[m_index + 1], windows_path);
+    }
+
     #[tokio::test]
     async fn empty_ctk_and_ctv_are_omitted_rather_than_passed_as_empty_strings() {
         let args = launch_args(ServerConfig {
