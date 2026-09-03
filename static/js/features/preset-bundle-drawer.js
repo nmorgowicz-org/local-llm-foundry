@@ -290,6 +290,7 @@ const state = {
     opener: null,
     activeIntent: null,
     probeStatus: 'idle',
+    lifecycleGeneration: 0,
 };
 
 function isMoeArtifact(artifact) {
@@ -939,7 +940,12 @@ function closeDrawer(opener) {
         state.previewAbortController = null;
     }
     d.root.classList.remove('open');
+    // Reopening within the close transition bumps lifecycleGeneration, so a
+    // stale finish() below (fired from the setTimeout) can detect it no
+    // longer owns the drawer and skip clobbering the fresh open state.
+    const generation = ++state.lifecycleGeneration;
     const finish = () => {
+        if (state.lifecycleGeneration !== generation) return;
         d.root.hidden = true;
         state.dirty = false;
         state.draftSelection = null;
@@ -1102,6 +1108,11 @@ function showToast(message, kind = 'info') {
 function openBundleDrawer(preset, opener) {
     if (!preset || !preset.bundle) return;
     const d = drawer();
+
+    // Invalidate any in-flight close from a rapid close→reopen so its
+    // delayed finish() (still pending in a setTimeout) can't hide this
+    // freshly-opened drawer or clear the state we're about to set below.
+    state.lifecycleGeneration += 1;
 
     state.presetId = preset.id;
     state.bundleId = preset.bundle.identity?.bundle_id || preset.id;

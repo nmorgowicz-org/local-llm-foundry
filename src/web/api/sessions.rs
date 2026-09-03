@@ -1147,6 +1147,33 @@ fn api_spawn_session_with_preset(
 
                 let (launch_preset, resolved_selection_hash) = if preset.bundle.is_some() {
                     let capabilities = super::preset_bundles::current_capabilities(&app_config).await;
+
+                    // current_capabilities().await is the only suspension point between the
+                    // initial preset snapshot above and its use below; re-fetch and re-validate
+                    // here so a concurrent mutation during that await can't let a stale preset
+                    // reach resolve_preset/launch.
+                    let preset = {
+                        let presets = state.presets.lock().unwrap();
+                        match presets.iter().find(|p| p.id == preset_id).cloned() {
+                            Some(p) => p,
+                            None => {
+                                return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(warp::reply::json(
+                                    &serde_json::json!({"ok": false, "error": "Preset not found"}),
+                                )));
+                            }
+                        }
+                    };
+                    if let Some(expected) = expected_revision
+                        && expected != preset.revision
+                    {
+                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                            warp::reply::with_status(
+                                warp::reply::json(&serde_json::json!({"ok": false, "code": "revision_conflict", "error": "preset revision is stale", "revision": preset.revision})),
+                                warp::http::StatusCode::CONFLICT,
+                            ),
+                        ));
+                    }
+
                     let resolved = match crate::presets::resolver::resolve_preset(
                         &preset,
                         requested_selection.as_ref(),
