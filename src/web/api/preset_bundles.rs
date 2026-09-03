@@ -1027,6 +1027,36 @@ mod tests {
         assert!(!path.exists(), "resolve must not create or rewrite presets");
     }
 
+    /// Fixture 10 (Phase 10a), no-evidence case: exact/compatible/related/
+    /// stale are covered by Phase 9 slice 5's Details-drawer tests, but the
+    /// null case — no launch-evidence receipt exists at all — was never
+    /// itself asserted. The card must still resolve on estimate alone
+    /// (`lookup_evidence`'s doc comment), with `evidence: null`.
+    #[tokio::test]
+    async fn resolve_reports_null_evidence_when_no_receipt_exists() {
+        let preset = bundled_fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presets.json");
+        let ctx = test_context(vec![preset], path);
+        let routes = routes(ctx);
+
+        let response = warp::test::request()
+            .method("POST")
+            .path("/api/presets/bundle-1/resolve")
+            .header("authorization", "Bearer test-token")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({}))
+            .reply(&routes)
+            .await;
+        assert_eq!(response.status(), warp::http::StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(response.body()).unwrap();
+        assert!(body["ok"].as_bool().unwrap());
+        assert!(
+            body["evidence"].is_null(),
+            "expected no-evidence state, got {body:?}"
+        );
+    }
+
     #[tokio::test]
     async fn copy_checks_revision_and_assigns_new_server_revision() {
         let preset = ModelPreset {
