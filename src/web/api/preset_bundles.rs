@@ -874,7 +874,7 @@ mod tests {
     use crate::gpu::env::GpuEnv;
     use crate::state::AppPaths;
     use crate::web::auth::AuthManager;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
     fn test_context(presets: Vec<ModelPreset>, presets_path: PathBuf) -> ApiCtx {
@@ -1391,5 +1391,133 @@ mod tests {
             .reply(&routes)
             .await;
         assert_eq!(stale.status(), warp::http::StatusCode::CONFLICT);
+    }
+
+    /// Makes `presets::save_presets` fail deterministically and portably (no
+    /// permission bits, works as root) by occupying its `.json.tmp` write
+    /// target with a directory, so `std::fs::write` errors before the
+    /// rename that would otherwise replace the real presets file.
+    fn break_presets_write(path: &Path) {
+        std::fs::create_dir_all(path.with_extension("json.tmp")).unwrap();
+    }
+
+    fn bundled_fixture() -> ModelPreset {
+        let mut preset = crate::presets::bundle::create_bundle_preset("Original", {
+            let mut bundle = crate::presets::bundle::PresetBundleSpec::default();
+            bundle.artifacts = vec![crate::presets::bundle::PresetModelArtifact {
+                id: "weights".into(),
+                local_path: Some("/models/weights.gguf".into()),
+                ..Default::default()
+            }];
+            bundle.context_options = vec![8192];
+            bundle.kv_policy_options = vec![crate::presets::bundle::LlamaKvPolicyId::F16F16];
+            bundle.performance_options = vec![crate::presets::bundle::PresetPerformanceOption {
+                id: "default".into(),
+                label: "default".into(),
+                batch_size: 512,
+                ubatch_size: 512,
+            }];
+            bundle.allow_validated_custom = true;
+            let selection = crate::presets::bundle::PresetBundleSelection {
+                artifact_id: "weights".into(),
+                context_size: 8192,
+                kv_policy: crate::presets::bundle::LlamaKvPolicyId::F16F16,
+                performance_id: "default".into(),
+                n_cpu_moe: None,
+                intent_source: None,
+            };
+            bundle.curated_selections = vec![selection.clone()];
+            bundle.default_selection = selection;
+            bundle
+        });
+        preset.id = "bundle-1".into();
+        preset.revision = 1;
+        preset
+    }
+
+    #[tokio::test]
+    async fn selection_patch_disk_failure_returns_500_and_leaves_state_unchanged() {
+        let preset = bundled_fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presets.json");
+        break_presets_write(&path);
+        let ctx = test_context(vec![preset.clone()], path);
+        let routes = routes(ctx.clone());
+
+        let response = warp::test::request()
+            .method("PATCH")
+            .path("/api/presets/bundle-1/selection")
+            .header("authorization", "Bearer test-token")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({
+                "expected_revision": 1,
+                "selection": {
+                    "artifact_id": "weights",
+                    "context_size": 8192,
+                    "kv_policy": "f16_f16",
+                    "performance_id": "default",
+                    "n_cpu_moe": null
+                }
+            }))
+            .reply(&routes)
+            .await;
+        assert_eq!(response.status(), warp::http::StatusCode::INTERNAL_SERVER_ERROR);
+        let state_preset = ctx.state.presets.lock().unwrap()[0].clone();
+        assert_eq!(state_preset.revision, 1, "in-memory preset must be unchanged");
+        assert_eq!(state_preset.name, preset.name);
+    }
+
+    #[tokio::test]
+    async fn convert_to_bundle_disk_failure_returns_500_and_leaves_state_unchanged() {
+        let preset = ModelPreset {
+            id: "flat-1".into(),
+            name: "Flat".into(),
+            revision: 1,
+            model_path: "/models/flat.gguf".into(),
+            ..Default::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presets.json");
+        break_presets_write(&path);
+        let ctx = test_context(vec![preset.clone()], path);
+        let routes = routes(ctx.clone());
+
+        let response = warp::test::request()
+            .method("POST")
+            .path("/api/presets/flat-1/convert-to-bundle")
+            .header("authorization", "Bearer test-token")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({"expected_revision": 1, "conversion": {}}))
+            .reply(&routes)
+            .await;
+        assert_eq!(response.status(), warp::http::StatusCode::INTERNAL_SERVER_ERROR);
+        let state_preset = ctx.state.presets.lock().unwrap()[0].clone();
+        assert!(state_preset.bundle.is_none(), "must not have been converted in memory");
+        assert_eq!(state_preset.revision, 1);
+    }
+
+    #[tokio::test]
+    async fn copy_preset_disk_failure_returns_500_and_leaves_state_unchanged() {
+        let preset = bundled_fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presets.json");
+        break_presets_write(&path);
+        let ctx = test_context(vec![preset], path);
+        let routes = routes(ctx.clone());
+
+        let response = warp::test::request()
+            .method("POST")
+            .path("/api/presets/bundle-1/copy")
+            .header("authorization", "Bearer test-token")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({"expected_revision": 1, "new_name": "Copy"}))
+            .reply(&routes)
+            .await;
+        assert_eq!(response.status(), warp::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            ctx.state.presets.lock().unwrap().len(),
+            1,
+            "no copy must have been added to in-memory state"
+        );
     }
 }

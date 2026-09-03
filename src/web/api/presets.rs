@@ -518,6 +518,116 @@ fn api_reset_presets(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat_storage::ChatStorage;
+    use crate::config::{self, TLSConfig, TlsMode};
+    use crate::gpu::env::GpuEnv;
+    use crate::state::AppPaths;
+    use crate::web::api::ApiCtx;
+    use crate::web::auth::AuthManager;
+    use std::path::{Path, PathBuf};
+
+    fn test_context(presets: Vec<ModelPreset>, presets_path: PathBuf) -> ApiCtx {
+        let state = AppState::new(
+            presets,
+            AppPaths {
+                presets_path,
+                templates_path: PathBuf::new(),
+                models_dir: None,
+                gpu_env_path: PathBuf::new(),
+                ui_settings_path: PathBuf::new(),
+                sessions_path: PathBuf::new(),
+                model_tags_path: PathBuf::new(),
+            },
+            GpuEnv::default(),
+            crate::state::UiSettings::default(),
+            Arc::new(ChatStorage::open(&PathBuf::from(":memory:")).unwrap()),
+            TLSConfig::default(),
+        );
+        ApiCtx {
+            state,
+            config: Arc::new(config::AppConfig::for_test(
+                Some("test-token".into()),
+                Some("test-admin".into()),
+            )),
+            auth: AuthManager::new(None, None, &TlsMode::None),
+        }
+    }
+
+    /// Occupies `save_presets`'s `.json.tmp` write target with a directory so
+    /// the write fails deterministically and portably (no permission bits,
+    /// works as root), before the rename that would replace the real file.
+    fn break_presets_write(path: &Path) {
+        std::fs::create_dir_all(path.with_extension("json.tmp")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_disk_failure_returns_500_and_leaves_state_unchanged() {
+        let preset = ModelPreset {
+            id: "preset-1".into(),
+            name: "Keep me".into(),
+            revision: 1,
+            ..Default::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presets.json");
+        break_presets_write(&path);
+        let ctx = test_context(vec![preset], path);
+        let routes = routes(ctx.clone());
+
+        let response = warp::test::request()
+            .method("DELETE")
+            .path("/api/presets/preset-1")
+            .header("authorization", "Bearer test-admin")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({
+                "expected_revision": 1,
+                "confirmation": "DELETE PRESET"
+            }))
+            .reply(&routes)
+            .await;
+        assert_eq!(
+            response.status(),
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let presets = ctx.state.presets.lock().unwrap();
+        assert_eq!(presets.len(), 1, "preset must not have been removed from memory");
+        assert_eq!(presets[0].id, "preset-1");
+    }
+
+    #[tokio::test]
+    async fn reset_disk_failure_returns_500_and_leaves_state_unchanged() {
+        let preset = ModelPreset {
+            id: "preset-1".into(),
+            name: "Custom".into(),
+            revision: 1,
+            ..Default::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presets.json");
+        break_presets_write(&path);
+        let ctx = test_context(vec![preset], path);
+        let routes = routes(ctx.clone());
+        let etag = super::super::preset_bundles::catalog_etag(&ctx.state.presets.lock().unwrap());
+
+        let response = warp::test::request()
+            .method("POST")
+            .path("/api/presets/reset")
+            .header("authorization", "Bearer test-admin")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({
+                "confirmation": "RESET PRESETS",
+                "expected_catalog_etag": etag
+            }))
+            .reply(&routes)
+            .await;
+        assert_eq!(
+            response.status(),
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let presets = ctx.state.presets.lock().unwrap();
+        assert_eq!(presets.len(), 1, "reset must not have replaced in-memory presets");
+        assert_eq!(presets[0].id, "preset-1", "custom preset must survive a failed reset");
+    }
 
     #[test]
     fn api_redacts_key_but_reports_configured_marker() {
