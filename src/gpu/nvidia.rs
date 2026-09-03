@@ -45,6 +45,18 @@ pub fn parse_nvidia_csv(csv: &str) -> Result<BTreeMap<String, GpuMetrics>> {
             continue;
         }
 
+        // nvidia-smi reports an unsupported/unavailable metric as the literal
+        // string "[N/A]" rather than omitting the field. Parsing that as a
+        // number would silently fall back to 0 and read as a real (e.g. 0°C)
+        // measurement, so skip the whole row instead of reporting fabricated
+        // zeros for a card whose readings we don't actually have.
+        if fields[2..10]
+            .iter()
+            .any(|field| field.eq_ignore_ascii_case("[N/A]") || field.eq_ignore_ascii_case("N/A"))
+        {
+            continue;
+        }
+
         let index = fields[0];
         let name = fields[1];
         let temp = fields[2].parse::<f32>().unwrap_or(0.0);

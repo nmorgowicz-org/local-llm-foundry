@@ -188,7 +188,7 @@ pub fn read_iogpu_wired_limit_mb() -> u64 {
 /// The recommended default is much lower (RAM minus 8GB reserve).
 const WIRED_LIMIT_HARD_CEILING_FRACTION: f64 = 0.95;
 
-/// Minimum RAM reserve (GiB) for systems ≤16GB.
+/// Minimum RAM reserve (GiB) for systems <24GB.
 /// Smaller systems need more headroom for OS stability.
 const WIRED_LIMIT_RESERVE_SMALL_SYSTEM_GIB: u64 = 6;
 
@@ -211,7 +211,8 @@ pub fn wired_limit_max_mb(total_ram_bytes: u64) -> Option<u64> {
 
 /// Compute the RAM-relative safe default wired limit when sysctl is unset (0).
 /// Tiered by RAM size:
-/// - ≤16 GB: total - 6 GB reserve (protects small systems from swap thrashing)
+/// - <24 GB: total - 6 GB reserve (protects small systems from swap thrashing;
+///   covers real 16/18 GB Apple Silicon configs, not just ≤16 GB)
 /// - ≥24 GB: total - 8 GB reserve (matches user-verified 64 GB path: 57,344 MiB)
 ///
 /// This is the configured_ceiling_bytes default used by MemoryAvailabilitySnapshot
@@ -222,7 +223,7 @@ pub fn wired_limit_safe_default_mb(total_ram_bytes: u64) -> Option<u64> {
     }
     let total_ram_mb = total_ram_bytes / (1024 * 1024);
     let total_ram_gb = total_ram_mb / 1024;
-    let reserve_mb = if total_ram_gb <= 16 {
+    let reserve_mb = if total_ram_gb < 24 {
         WIRED_LIMIT_RESERVE_SMALL_SYSTEM_GIB * 1024
     } else {
         WIRED_LIMIT_RESERVE_DEFAULT_GIB * 1024
