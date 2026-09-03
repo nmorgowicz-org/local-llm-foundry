@@ -146,16 +146,64 @@ not a logic regression. Left as-is — out of this phase's scope.
   renaming an existing fixture arbitrarily, since no test currently
   depends on that exact name and inventing one risks looking like
   fixture-shopping to satisfy the gate rather than proving behavior.
-- **Named full-chain round-trip tests**: "wizard Guided -> save -> card ->
-  Configure -> editor -> Start", "wizard Pro -> save -> editor -> wizard
-  template reload", "legacy -> explicit bundle conversion -> Q4/Q5
-  selection" — not yet verified against `tests/ui/core/spawn-wizard.spec.js`
-  / `preset-flow.spec.js` for an exact named match to each phrase.
-- **Card filtering/grouping/collections/sorting/running-badge/delete**:
-  suspected coverage lives partly in `tests/ui/core/launch-grid.spec.js`,
-  not yet cross-checked against the round-trip list verbatim.
-- **Focused verification suite** not yet run end-to-end this phase:
-  `npm run validate-preset-bundle-contract`, `npm run validate-js`,
-  `npm run lint`, the 5 named Playwright specs, `git diff --check`.
+- **Named full-chain round-trip tests**: no single test carries the exact
+  composite name ("wizard Guided -> save -> card -> Configure -> editor ->
+  Start", etc.), but every leg is independently covered:
+  `preset-flow.spec.js` has "spawn wizard save records the created preset
+  id and updates on the second save", "Configure opens the bundle drawer
+  and restores focus on close", "Start without saving sends the normalized
+  draft and does not persist", and "Save & Start persists before launching
+  the returned revision"; `spawn-wizard.spec.js` covers Pro-shell/template
+  restoration ("Pro shell switches the canonical settings without
+  duplicating controls", the Rapid-MLX template-restore tests). Judgment
+  call: did not author a new composite end-to-end test to match the literal
+  phrasing, since doing so blind (no browser tooling loaded, no visual
+  verification available in this run) risked introducing an unverified,
+  possibly-flaky test for behavior the existing suite already proves leg by
+  leg. Flagging for the user rather than guessing at Playwright selectors.
+- **Card filtering/grouping/collections/sorting/running-badge/delete** —
+  checked `tests/ui/core/launch-grid.spec.js` (3 tests) and grepped the
+  full `tests/ui/core/*.spec.js` set:
+  - filtering and family grouping: covered ("show filter bar when there are
+    multiple presets", "group by family creates group headers when
+    enabled", "family filter pills click without errors").
+  - collections, sorting, the running badge, and preset deletion: **no
+    Playwright coverage found anywhere**. `deletePreset()`
+    (`static/js/features/presets.js:3540`) is wired to a `#preset-select`
+    dropdown value plus a confirm dialog, not a per-card button with a
+    stable selector — traced it looking for a card-level delete affordance
+    (`card-menu`, `data-action="delete"`, etc.) and found none in
+    `static/js/features/*.js`, meaning deletion is reachable only through a
+    settings/select flow this session didn't fully map. No spec file exists
+    for card sort order, collections, or a running-state badge either. This
+    is a real, unaddressed gap — left open rather than authoring a
+    Playwright test against UI structure not yet understood well enough to
+    get right; it needs a dedicated slice to first map the actual
+    delete/sort/collections UI surface, then test it.
 
-Continuing autonomously into the remaining items above.
+## Focused verification — run and passing
+
+- `cargo build --release` — rebuilt (binary was stale relative to this
+  phase's source changes)
+- `npm run validate-preset-bundle-contract` — passed (64 llama.cpp field
+  rows matched, frontend contract validated)
+- `npm run validate-js` — passed (all `static/js/features/*.js` validated)
+- `npm run lint` (eslint) — clean
+- `env CI=1 LLAMA_MONITOR_USE_RELEASE=1 LLAMA_MONITOR_TEST_PORT=17778 npx
+  playwright test core/preset-flow.spec.js core/phase7-presets.spec.js
+  core/spawn-wizard.spec.js core/llama-config-parity.spec.js
+  core/security-auth.spec.js --workers=1` — **80/80 passed**
+- `git diff --check` — clean
+
+## Status
+
+All 10 required fixtures are exercised by at least one named test except
+fixture 4's literal naming (functional coverage present, see above). All
+listed round trips pass except the two gaps named above (composite
+full-chain test naming, and card collections/sorting/running-badge/delete
+UI coverage), both of which are genuine open items rather than something
+closed by relaxing a validator or editing a fixture to match behavior.
+Recommend the user decide whether to close the delete/sort/collections/
+running-badge UI-test gap in a follow-up slice (needs browser tooling this
+run didn't have loaded) before treating Phase 10a as fully done, or accept
+it as scoped out and proceed to Phase 10b.
