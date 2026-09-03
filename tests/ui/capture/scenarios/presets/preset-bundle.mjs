@@ -148,7 +148,21 @@ export default async function scenarioPresetBundle(ctx) {
             } else if (resolveMode === 'no_fit') {
                 estimate = NO_FIT_ESTIMATE;
             } else if (resolveMode === 'evidence_exact') {
-                evidence = { class: 'exact', summary: 'Measured on this machine, 2026-08-30.' };
+                evidence = {
+                    class: 'exact',
+                    summary: 'Measured on this machine, 2026-08-30.',
+                    detail: {
+                        method: 'metal_sampler',
+                        before_bytes: 2147483648,
+                        peak_bytes: 23085449216,
+                        after_bytes: 2415919104,
+                        model_delta_bytes: 20937965568,
+                        sample_count: 3,
+                        interval_ms: 250,
+                        captured_unix_ms: 1787443200000,
+                        noise_flags: [],
+                    },
+                };
             } else if (resolveMode === 'evidence_related') {
                 evidence = { class: 'related', summary: 'Measured on a related Q5_K_M configuration on this machine.' };
             }
