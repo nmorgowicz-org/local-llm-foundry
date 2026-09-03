@@ -145,3 +145,69 @@ be a deliberate design change rather than a bug fix.
 Phases 10a and 10b are both done. Suggested final commit message for the PR
 that bundles this work, per the plan: `docs(presets): document bundled
 launch configuration workflow`.
+
+## Addendum — commit `58f6026` and final pre-PR re-verification
+
+After this receipt was written, `/review` (run against the working tree at
+session start, covering the preset-bundle drawer CSS/JS and the `presets`
+capture scenario) also flagged the launch-card grid's collections filter,
+sort order, running-badge, and per-card delete as having zero real test
+coverage — the same gap already named as Outstanding in the Phase 10a
+receipt. Closed in `58f6026`:
+
+- `tests/ui/core/launch-grid.spec.js` extended with 8 deterministic,
+  route-mocked tests (sort-by-name/size, collections filter narrow/restore,
+  running badge appear/disappear, delete confirm/cancel) — 8/8 passing.
+- `tests/ui/capture/scenarios/presets/launch-grid.mjs` added and registered
+  in `index.mjs` (category `presets`, runtime `llamacpp-local`).
+- Writing these tests surfaced two real production bugs, both fixed in the
+  same commit:
+  1. `presets.js` `loadPresets()` awaited `presetsResp.json()` then
+     `collectionsResp.json()` sequentially after the initial
+     `Promise.all([...])` on the raw responses, leaving an await gap where
+     `sessionState.presets` was populated but `sessionState.collections` was
+     not — a concurrent `initLaunchFilters()` could see the empty
+     collections array, set its `dataset.initialized` guard, and
+     permanently skip populating the collections dropdown for the rest of
+     the session. Fixed by resolving both JSON bodies via `Promise.all`
+     before writing either to `sessionState`.
+  2. `setup-view.js` `updateRunningCardHighlight()` only ever toggled
+     `style.display` on an existing `.launch-card-running-badge` element,
+     assuming `_buildLaunchCard()` always created one — but a card built
+     while stopped has no badge span. A live "now running" transition would
+     then highlight the card's border but show no "● Running" label. Fixed
+     by lazily creating the badge span (via `document.createElement` +
+     `textContent`, no `innerHTML`) when a running transition needs one and
+     none exists yet.
+
+Both fixes read via `git show 58f6026` and confirmed to use
+`textContent`/`createElement` exclusively — no `innerHTML` assignment,
+consistent with security-checklist item 5.
+
+**Re-verification, performed directly (not delegated) after a background
+verification agent twice died mid-run on the `wizard-llamacpp` capture
+group with no diagnosable cause — both deaths left no new commit and no
+corrupted state, just an incomplete capture run):**
+
+- `cargo clippy -- -D warnings` — clean.
+- `git status` — clean, tree unmodified except this addendum.
+- `env SCREENSHOT_PORT=17850 node tests/ui/capture/cli-group.mjs
+  wizard-llamacpp --no-attach` — run interactively in the foreground
+  (rather than backgrounded/delegated) to completion: all 9 scenarios
+  (`spawn-wizard`, `spawn-wizard-calibration`, `spawn-wizard-gif`,
+  `spawn-wizard-guided-drawer`, `spawn-wizard-hf-download`,
+  `spawn-wizard-launch-full-config`, `spawn-wizard-mmproj-selection`,
+  `spawn-wizard-pro-baseline`, `spawn-wizard-tier-matrix`) completed
+  cleanly, exit 0 — including `spawn-wizard-tier-matrix`, the scenario the
+  prior two background attempts died partway through. No port conflict or
+  reproducible failure found; treating the two prior deaths as
+  environmental (background-agent process lifecycle), not a defect in the
+  scenario itself.
+- `scripts/check-unused-screenshots.sh` — clean, no unreferenced
+  screenshots.
+- `rustup target add x86_64-pc-windows-gnu` + `cargo check --target
+  x86_64-pc-windows-gnu` — passed.
+
+All mandatory pre-PR checks and the full screenshot capture sequence are
+now independently confirmed complete on top of `58f6026`. No code changes
+were required by this re-verification pass; it is a receipt-only addendum.
