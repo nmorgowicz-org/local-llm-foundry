@@ -570,6 +570,28 @@ builder.
 
 ### Outstanding (after slice 6)
 
-- `reasoning_preserve_template` capability verification — real
-  implementation needed so `--reasoning-preserve` launches don't require
-  dropping the flag for exact-evidence eligibility.
+- ~~`reasoning_preserve_template` capability verification~~ — closed by
+  `035647e` (same commit that recorded this slice's receipt text, which
+  itself went un-updated until this note): the fail-closed gate in
+  `LlamaCppAdapter`'s launch-arg validation and the `Unavailable`
+  hardcoding in `llama_cpp_capabilities.rs` were both removed. Rationale
+  recorded in that commit: llama.cpp's chat template honors or ignores
+  `--reasoning-preserve` at runtime regardless of any advance
+  compatibility check, and no reliable source-backed signal exists to
+  verify compatibility before launch — so gating in advance was blocking
+  real launches (like slice 6's) on an unverifiable premise, not a real
+  safety concern. `--reasoning-preserve` now launches unconditionally
+  when the binary advertises the flag; a user's own reasoning-preserve
+  launches (like the one this slice qualified) no longer need to drop
+  the field to get exact-evidence eligibility.
+
+### Post-slice-6 maintenance (not phase-9 scope, noted for completeness)
+
+- `a91eafa` bounded `capture_telemetry()`'s synchronous `mactop` read
+  with a 750ms timeout (was up to ~34s unbounded per call, up to 4 calls
+  per calibration trial) — a general calibration-latency fix, not
+  launch-evidence logic.
+- `3459107` cleared `cargo clippy --all-targets -- -D warnings` across
+  the workspace (field-reassign-with-default, manual-filter,
+  await-holding-lock, and module-ordering lints) — general cleanup, no
+  behavior change.
