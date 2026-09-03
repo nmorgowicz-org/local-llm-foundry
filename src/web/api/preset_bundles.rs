@@ -1027,6 +1027,91 @@ mod tests {
         assert!(!path.exists(), "resolve must not create or rewrite presets");
     }
 
+    /// Phase 10b security checklist: "auth routing tests cover every new
+    /// endpoint." `cards_require_api_token` and
+    /// `resolve_requires_auth_and_does_not_write` covered 2 of 5 bundle
+    /// routes; PATCH selection, copy, and convert-to-bundle shared the same
+    /// `check_api_token` call but had no dedicated rejection test.
+    #[tokio::test]
+    async fn selection_patch_requires_auth_and_does_not_write() {
+        let preset = bundled_fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presets.json");
+        let ctx = test_context(vec![preset], path.clone());
+        let routes = routes(ctx.clone());
+
+        let response = warp::test::request()
+            .method("PATCH")
+            .path("/api/presets/bundle-1/selection")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({
+                "expected_revision": 1,
+                "selection": {
+                    "artifact_id": "weights",
+                    "context_size": 8192,
+                    "kv_policy": "f16_f16",
+                    "performance_id": "default"
+                }
+            }))
+            .reply(&routes)
+            .await;
+        assert_eq!(response.status(), warp::http::StatusCode::UNAUTHORIZED);
+        let saved = ctx.state.presets.lock().unwrap()[0].clone();
+        assert_eq!(saved.revision, 1, "unauthorized PATCH must not write");
+    }
+
+    #[tokio::test]
+    async fn copy_requires_auth_and_does_not_write() {
+        let preset = bundled_fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presets.json");
+        let ctx = test_context(vec![preset], path.clone());
+        let routes = routes(ctx.clone());
+
+        let response = warp::test::request()
+            .method("POST")
+            .path("/api/presets/bundle-1/copy")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({"new_name": "Copy"}))
+            .reply(&routes)
+            .await;
+        assert_eq!(response.status(), warp::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            ctx.state.presets.lock().unwrap().len(),
+            1,
+            "unauthorized copy must not create a preset"
+        );
+    }
+
+    #[tokio::test]
+    async fn convert_to_bundle_requires_auth_and_does_not_write() {
+        let preset = ModelPreset {
+            id: "flat-1".into(),
+            name: "Flat".into(),
+            revision: 1,
+            model_path: "/models/flat.gguf".into(),
+            ..Default::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presets.json");
+        let ctx = test_context(vec![preset], path.clone());
+        let routes = routes(ctx.clone());
+
+        let response = warp::test::request()
+            .method("POST")
+            .path("/api/presets/flat-1/convert-to-bundle")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({"expected_revision": 1, "conversion": {}}))
+            .reply(&routes)
+            .await;
+        assert_eq!(response.status(), warp::http::StatusCode::UNAUTHORIZED);
+        let saved = ctx.state.presets.lock().unwrap()[0].clone();
+        assert!(
+            saved.bundle.is_none(),
+            "unauthorized convert must not mutate the preset"
+        );
+    }
+
     /// Fixture 10 (Phase 10a), no-evidence case: exact/compatible/related/
     /// stale are covered by Phase 9 slice 5's Details-drawer tests, but the
     /// null case — no launch-evidence receipt exists at all — was never
