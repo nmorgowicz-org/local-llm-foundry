@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.1](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.1.0...v2.1.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **release:** align release workflow with legacy-asset drop policy ([#382](https://github.com/nmorgowicz-org/local-llm-foundry/issues/382)) ([509d66d](https://github.com/nmorgowicz-org/local-llm-foundry/commit/509d66d82b9819da719cd81c5a15549ebbb4ec95))
+
 ## [2.1.0](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.0.13...v2.1.0) (2026-09-03)
 
 
