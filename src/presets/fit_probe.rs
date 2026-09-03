@@ -559,7 +559,7 @@ impl FixtureFitReader {
 
     pub fn embedded() -> Result<Self, FitProbeError> {
         Self::from_json(include_str!(
-            "../../docs/plans/evidence/preset-bundles/phase-0/fit-probe-output-fixtures.json"
+            "../../docs/archive/preset-bundles/evidence/preset-bundles/phase-0/fit-probe-output-fixtures.json"
         ))
     }
 
@@ -608,7 +608,7 @@ mod tests {
     #[test]
     fn fixture_reader_parses_all_successful_points() {
         let contents = include_str!(
-            "../../docs/plans/evidence/preset-bundles/phase-0/fit-probe-output-fixtures.json"
+            "../../docs/archive/preset-bundles/evidence/preset-bundles/phase-0/fit-probe-output-fixtures.json"
         );
         let document: FixtureDocument = serde_json::from_str(contents).unwrap();
         for fixture in document.fixtures {

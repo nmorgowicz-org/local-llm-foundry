@@ -756,7 +756,7 @@ pub mod metal_sampler {
 /// Ryne's driver (`tests/fixtures/nvidia_smi_compute_apps_csv.txt`) shows
 /// `used_memory` reported as `[N/A]` for every process under WDDM, exactly
 /// the unreliable-attribution case
-/// `docs/plans/evidence/preset-bundles/windows-cuda-sampler-design.md`
+/// `docs/archive/preset-bundles/evidence/preset-bundles/windows-cuda-sampler-design.md`
 /// flagged as an open question — so the compute-apps query is used here only
 /// for PID-presence background-noise detection, never as a memory source.
 pub mod nvidia_sampler {
@@ -1463,7 +1463,7 @@ mod tests {
     /// Platform-labelled fixtures for the two non-macOS direct-observation
     /// methods (Phase 9 fixture corpus). Neither sampler is implemented on
     /// this machine (no Windows/CUDA hardware reachable from this session —
-    /// see `docs/plans/evidence/preset-bundles/windows-cuda-sampler-design.md`),
+    /// see `docs/archive/preset-bundles/evidence/preset-bundles/windows-cuda-sampler-design.md`),
     /// but the vocabulary itself — method identity, `is_direct_observation`,
     /// and match-class gating — is platform-independent and fully testable
     /// here.

@@ -4,7 +4,7 @@
 **Author:** Nick M (with Claude Opus 5)
 **Status:** Architecture contract. Design decisions resolved (§11); nine research gaps open (§13). Execution phases deferred until the preset bundle PR ships.
 **Branch:** (not yet cut) — depends on `feature/preset-bundle-launch-options` landing first
-**Last Verified:** 2026-09-02 against `docs/plans/20260830-preset_bundle_architecture.md`, `src/inference/`, and upstream oMLX/MTPLX source clones
+**Last Verified:** 2026-09-02 against `docs/archive/preset-bundles/20260830-preset_bundle_architecture.md`, `src/inference/`, and upstream oMLX/MTPLX source clones
 
 > **For agentic workers:** this is an architecture contract, not an executable plan. It defines seams, invariants, and resolved decisions. Close §13's research gaps before attempting task decomposition. The task-by-task execution doc (with TDD steps and gates, per `superpowers:writing-plans`) is written *after* the preset bundle feature ships, and it must argue from this document.
 
@@ -12,7 +12,7 @@
 
 **Architecture:** Extend the existing `InferenceBackend` / `BackendAdapter` enum seam with an `Omlx` variant and an `OmlxConfig` sidecar on `ModelPreset`. Introduce a second capability-evidence path for Python-package loaders, because §10's binary-SHA + `--help` probe does not describe oMLX. Preset cards gain no new axes; loader-specific semantics stay Editor-owned and reach the card only as eligibility-with-reason.
 
-**Spec:** `docs/plans/20260830-preset_bundle_architecture.md` (binding), `docs/plans/20260830-preset_bundle_execution.md` (in flight)
+**Spec:** `docs/archive/preset-bundles/20260830-preset_bundle_architecture.md` (binding), `docs/archive/preset-bundles/20260830-preset_bundle_execution.md` (in flight)
 
 ---
 
