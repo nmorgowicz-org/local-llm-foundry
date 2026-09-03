@@ -1204,6 +1204,24 @@ fn api_spawn_session_with_preset(
                     (preset.clone(), None)
                 };
 
+                // Final live-state check immediately before the resolved config is
+                // frozen into a session/launch request: closes the window even if a
+                // future refactor adds an await between here and the checks above.
+                if let Some(expected) = expected_revision {
+                    let live_revision = {
+                        let presets = state.presets.lock().unwrap();
+                        presets.iter().find(|p| p.id == preset_id).map(|p| p.revision)
+                    };
+                    if live_revision != Some(expected) {
+                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                            warp::reply::with_status(
+                                warp::reply::json(&serde_json::json!({"ok": false, "code": "revision_conflict", "error": "preset revision is stale", "revision": live_revision})),
+                                warp::http::StatusCode::CONFLICT,
+                            ),
+                        ));
+                    }
+                }
+
                 let request = match request_from_preset(&launch_preset, requested_port) {
                     Ok(request) => request,
                     Err(error) => {
