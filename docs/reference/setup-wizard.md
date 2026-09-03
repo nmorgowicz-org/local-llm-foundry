@@ -274,7 +274,7 @@ Rapid-MLX reasoning mode:
 
 | Control | ID | Behavior |
 |---------|----|----------|
-| Projector offload | `spawn-mmproj-offload` | Default / On / Off for the multimodal projector |
+| Projector offload | `spawn-mmproj-offload` | Default / On / Off for the multimodal projector; On/Off is disabled when the selected binary's capability snapshot does not advertise that polarity (`CAPABILITY_UNAVAILABLE` on resolve) |
 | Reasoning effort | `spawn-reasoning-effort` | Native `--reasoning-effort`; unsupported advertised values remain visible but disabled |
 | Reasoning format | `spawn-reasoning-format` | Native `--reasoning-format`; unsupported values remain visible but disabled |
 | Preserve reasoning | `spawn-reasoning-preserve` | Native `--reasoning-preserve`; disabled until both binary support and template compatibility are known |

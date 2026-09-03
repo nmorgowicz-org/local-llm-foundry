@@ -516,6 +516,26 @@ Updates a bundled preset’s saved default selection and, when supplied, its bun
 {"expected_revision": 1, "selection": {"artifact_id": "weights-q5", "context_size": 200000, "kv_policy": "q4_0_q4_0", "performance_id": "throughput", "n_cpu_moe": 6}, "workload_policy": "general_chat"}
 ```
 
+#### Resolver issue codes
+
+`resolve`, `selection` (PATCH), and a session launch that resolves a bundled preset all share `crate::presets::resolver::resolve_preset`. When resolution fails, all three return `400` with `{"ok": false, "code": "selection_invalid", "error": <issues>}`, where `error` is the serialized `Vec<ValidationIssue>` (`{field, code, message, repair}`); the `/resolve` and PATCH routes JSON-stringify it into `error`, the session-launch route embeds the array directly. A successful `/resolve` response never carries these codes — its `capability_reasons` field only reports kv_policy quality-floor and mixed-K/V warnings, which are advisory, not blocking.
+
+| Code | Field | Trigger |
+|---|---|---|
+| `PRESET_NOT_BUNDLED` | `selection` | a one-shot `selection` was supplied for a non-bundled preset |
+| `INVALID_BUNDLE` | `bundle` | `bundle::validate_bundle_structural` rejected the bundle shape |
+| `INVALID_BACKEND_CONFIG` | `backend` | `validate_preset_backend_config` rejected the backend/rapid_mlx combination |
+| `artifact_not_found` | `selection` | the selected `artifact_id` is not present in the bundle |
+| `artifact_not_weights` | `selection` | the selected artifact is not a `Weights`-role artifact |
+| `artifact_not_local` | `selection` | the selected artifact has no adopted local path |
+| `MIXED_MAIN_KV_UNSUPPORTED` | `selection` | `kv_policy` is `q4_0`/`q8_0` mixed and the binary capability snapshot does not advertise `mixed_main_kv` |
+| `N_CPU_MOE_NEGATIVE` | `selection` | `n_cpu_moe` is negative |
+| `N_CPU_MOE_UNIFIED_MEMORY_UNQUALIFIED` | `selection` | `n_cpu_moe > 0` on a unified-memory host (CPU expert placement is not qualified there) |
+| `N_CPU_MOE_DENSE_MODEL` | `selection` | `n_cpu_moe > 0` but the artifact's `model_kind` is `Dense` |
+| `N_CPU_MOE_METADATA_UNKNOWN` | `selection` | `n_cpu_moe > 0` but the artifact's `model_kind` is `Unknown` or its GGUF metadata has no `moe_layer_count` — CPU expert placement requires authoritative MoE layer metadata, not just a MoE-shaped guess |
+| `N_CPU_MOE_EXCEEDS_LAYER_COUNT` | `selection` | `n_cpu_moe` exceeds the artifact's GGUF `moe_layer_count` |
+| `CAPABILITY_UNAVAILABLE` | `mmproj_offload`, `llama_reasoning_effort`, `llama_reasoning_format`, `llama_reasoning_preserve` | the requested typed flag's polarity is `Unavailable` in the binary's capability snapshot (e.g. `mmproj_offload: Some(true)` requires `typed.mmproj_offload.positive` to be `Available`) |
+
 ### `POST /api/model-defaults`
 Auth: api-token.
 
