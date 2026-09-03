@@ -141,8 +141,6 @@ Notes:
 
 ### 4) Let’s Encrypt (ACME)
 
-![ACME / Let’s Encrypt configuration](../screenshots/tls--neutral--mode-acme-full.png)
-
 Behavior:
 - llama-monitor uses the ACME protocol to obtain and renew TLS certificates from Let’s Encrypt.
 - Uses DNS-01 validation via the lego client.
@@ -310,8 +308,6 @@ The Security & Certificates panel includes a DB Admin section for high-impact op
 These operations require:
 - Proper authentication (api-token and/or db-admin-token).
 - Confirmation for destructive actions to prevent accidental use.
-
-![DB Admin Section](../screenshots/tls--neutral--db-admin-section.png)
 
 For deeper technical details and code references, see:
 - docs/archive/security/20260516-tls_acme_implementation.md

@@ -140,70 +140,87 @@ export default async function(ctx, options) {
 
         // 5) ACME mode: select "Let's Encrypt (ACME)" pill, scroll so ACME is high, capture
         await selectCertMode('acme');
+
+        // Wait for ACME FQDN field to be present and scroll it into view
+        let acmeFound = false;
+        for (let attempt = 0; attempt < 6; attempt++) {
+            await sleep(500);
+            acmeFound = await page.evaluate(() => {
+                return !!document.getElementById('acme-fqdn');
+            });
+            if (acmeFound) break;
+        }
+        if (!acmeFound) {
+            console.log('[CAPTURE] #acme-fqdn not found after retries, skipping ACME capture');
+            await page.keyboard.press('Escape');
+            return;
+        }
+
         await page.evaluate(() => {
             const acmeFqdn = document.getElementById('acme-fqdn');
             if (acmeFqdn) {
-                const pane = document.getElementById('settings-security');
                 acmeFqdn.scrollIntoView({ behavior: 'instant', block: 'start' });
+                const pane = document.getElementById('settings-security');
                 if (pane) {
                     pane.scrollTop += 6;
                 }
             }
         });
-        await sleep(600);
+        await sleep(300);
         await dismissToasts();
 
-        const acmeVisible = await page.evaluate(() => {
-            const acmeFqdn = document.getElementById('acme-fqdn');
-            if (!acmeFqdn) return false;
-            const rect = acmeFqdn.getBoundingClientRect();
-            return rect.top >= 0 && rect.bottom <= window.innerHeight;
-        });
-        console.log('[CAPTURE] ACME section visible:', acmeVisible);
+        // Full view with ACME card high and title visible
+        await captureShot(page, 'tls-mode-acme-full.png', { fullPage: true });
 
-        if (acmeVisible) {
-            // Full view with ACME card high and title visible
-            await captureShot(page, 'tls-mode-acme-full.png', { fullPage: true });
-
-            // Show "Other" provider input, keep ACME high, capture
-            await page.evaluate(() => {
-                const select = document.getElementById('acme-dns-provider');
-                const otherOption = Array.from(select?.options || [])
-                    .find(o => o.value === '__other__');
-                if (otherOption) {
-                    select.value = '__other__';
-                    select.dispatchEvent(new Event('change'));
-                }
-            });
-            await sleep(600);
-            await page.evaluate(() => {
-                const acmeFqdn = document.getElementById('acme-fqdn');
-                if (acmeFqdn) {
-                    const pane = document.getElementById('settings-security');
-                    acmeFqdn.scrollIntoView({ behavior: 'instant', block: 'start' });
-                    if (pane) {
-                        pane.scrollTop += 6;
-                    }
-                }
-            });
-            await sleep(400);
-            await dismissToasts();
-
-            const customWrapVisible = await page.evaluate(() => {
-                const el = document.getElementById('acme-provider-custom-wrap');
-                if (!el) return false;
-                const style = window.getComputedStyle(el);
-                return style.display !== 'none';
-            });
-            if (customWrapVisible) {
-                await captureShot(page, 'tls-acme-other-provider.png', { fullPage: true });
+        // Show "Other" provider input, keep ACME high, capture
+        await page.evaluate(() => {
+            const select = document.getElementById('acme-dns-provider');
+            const otherOption = Array.from(select?.options || [])
+                .find(o => o.value === '__other__');
+            if (otherOption) {
+                select.value = '__other__';
+                select.dispatchEvent(new Event('change'));
             }
-        } else {
-            console.log('[CAPTURE] ACME section not visible after scroll; capturing anyway');
-            await captureShot(page, 'tls-mode-acme-full.png', { fullPage: true });
+        });
+        await sleep(600);
+        await page.evaluate(() => {
+            const acmeFqdn = document.getElementById('acme-fqdn');
+            if (acmeFqdn) {
+                acmeFqdn.scrollIntoView({ behavior: 'instant', block: 'start' });
+                const pane = document.getElementById('settings-security');
+                if (pane) {
+                    pane.scrollTop += 6;
+                }
+            }
+        });
+        await sleep(300);
+        await dismissToasts();
+
+        const customWrapVisible = await page.evaluate(() => {
+            const el = document.getElementById('acme-provider-custom-wrap');
+            if (!el) return false;
+            const style = window.getComputedStyle(el);
+            return style.display !== 'none';
+        });
+        if (customWrapVisible) {
+            await captureShot(page, 'tls-acme-other-provider.png', { fullPage: true });
         }
 
         // 6) Database Administration section
+        let dbFound = false;
+        for (let attempt = 0; attempt < 6; attempt++) {
+            await sleep(500);
+            dbFound = await page.evaluate(() => {
+                return !!document.getElementById('db-admin-panel');
+            });
+            if (dbFound) break;
+        }
+        if (!dbFound) {
+            console.log('[CAPTURE] #db-admin-panel not found after retries, skipping DB admin capture');
+            await page.keyboard.press('Escape');
+            return;
+        }
+
         await page.evaluate(() => {
             const dbPanel = document.getElementById('db-admin-panel');
             if (dbPanel) {
@@ -214,23 +231,10 @@ export default async function(ctx, options) {
                 }
             }
         });
-        await sleep(600);
+        await sleep(300);
         await dismissToasts();
 
-        const dbVisible = await page.evaluate(() => {
-            const dbPanel = document.getElementById('db-admin-panel');
-            if (!dbPanel) return false;
-            const rect = dbPanel.getBoundingClientRect();
-            return rect.top >= 0 && rect.bottom <= window.innerHeight;
-        });
-        console.log('[CAPTURE] DB admin section visible:', dbVisible);
-
-        if (dbVisible) {
-            await captureShot(page, 'tls-db-admin-section.png', { fullPage: true });
-        } else {
-            console.log('[CAPTURE] DB admin section not visible; capturing anyway');
-            await captureShot(page, 'tls-db-admin-section.png', { fullPage: true });
-        }
+        await captureShot(page, 'tls-db-admin-section.png', { fullPage: true });
 
         await page.keyboard.press('Escape');
         await sleep(300);

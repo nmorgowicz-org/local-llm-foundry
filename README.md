@@ -65,8 +65,6 @@ an evidence-backed launch configuration:
   Tuning panel, with live throughput, context, slot, GPU, and system telemetry
   in the same dashboard.
 
-![llama.cpp engine selection](docs/screenshots/spawn-wizard-engines--neutral--dark.png)
-
 ### Rapid-MLX Backend (Apple Silicon)
 
 Rapid-MLX is now a first-class inference backend for Apple Silicon. Local LLM Foundry manages its runtime in an isolated environment—no manual Python setup required.
@@ -143,8 +141,6 @@ An integrated setup wizard for discovering, downloading, configuring, and launch
 - **VRAM-aware tuning**: live breakdown bar with auto-size and quant-compare
 - **llama.cpp binary management**: browse release notes and auto-download,
   install, update, or roll back supported llama.cpp builds
-
-![Engine selection in Setup wizard](docs/screenshots/spawn-wizard-engines--neutral--dark.png)
 
 ![Setup wizard flow](docs/screenshots/llamacpp-local--spawn-wizard-flow.gif)
 

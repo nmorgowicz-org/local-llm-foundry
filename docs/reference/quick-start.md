@@ -31,8 +31,6 @@ The setup wizard is the easiest way to get started. It will:
 - Guide you through model and quant selection.
 - Use the VRAM estimator to keep your system stable.
 
-![Engine selection](../screenshots/spawn-wizard-engines--neutral--dark.png)
-
 Or, if you already have a server running, you can:
 
 - Attach directly to an existing llama.cpp or Rapid-MLX server by selecting its

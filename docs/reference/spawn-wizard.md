@@ -323,8 +323,6 @@ The wizard supports two inference backends:
 
 Engine selection appears on Step 0 (Model) as two cards.
 
-![Engine selection](../screenshots/spawn-wizard-engines--neutral--dark.png)
-
 The wizard:
 
 - Prefers llama.cpp by default.
