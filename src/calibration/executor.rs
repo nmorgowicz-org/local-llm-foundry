@@ -2852,10 +2852,18 @@ mod tests {
         let server = bin.join("llama-server");
         std::fs::write(&server, b"fake server").expect("server fixture");
         let bench = bin.join("llama-bench");
+        // avg_ts is deliberately modest (not the 100000+ tok/s a fake
+        // instant-return script could "support"): validate_wall_clock_plausibility
+        // compares this rate's implied duration against the real wall-clock
+        // time of spawning the fixture process, and under full-suite test
+        // parallelism that spawn can take hundreds of ms of scheduling
+        // delay. A too-fast fake rate implies a near-zero duration that
+        // false-positives as implausible once real spawn latency exceeds
+        // it; 1000 tok/s keeps comfortable headroom against that.
         let output = if valid {
             r#"[
-                {"n_depth":4096,"n_gen":0,"n_prompt":512,"avg_ts":100000,"stddev":0.1,"n_rep":3,"samples_ts":[99999,100000,100001]},
-                {"n_depth":4096,"n_gen":256,"n_prompt":0,"avg_ts":100000,"stddev":0.1,"n_rep":3,"samples_ts":[99999,100000,100001]}
+                {"n_depth":4096,"n_gen":0,"n_prompt":512,"avg_ts":1000,"stddev":0.1,"n_rep":3,"samples_ts":[999,1000,1001]},
+                {"n_depth":4096,"n_gen":256,"n_prompt":0,"avg_ts":1000,"stddev":0.1,"n_rep":3,"samples_ts":[999,1000,1001]}
             ]"#
         } else {
             r#"[{"n_depth":4096,"n_gen":256,"n_prompt":0,"avg_ts":0,"stddev":0,"n_rep":3}]"#
