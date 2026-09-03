@@ -175,12 +175,17 @@ fn api_resolve_bundle(
                     ) {
                         Ok(resolved) => {
                             let (resolved, selection) = if request.fit_automatically {
+                                let Some(selection) = requested_selection.as_ref() else {
+                                    return Ok(json_error(
+                                        warp::http::StatusCode::BAD_REQUEST,
+                                        "selection_required",
+                                        "fit_automatically requires a selection (either supplied in the request or a bundled preset's default_selection)",
+                                    ));
+                                };
                                 apply_fit_estimate(
                                     resolved,
                                     &resolve_preset,
-                                    requested_selection
-                                        .as_ref()
-                                        .expect("default selection exists for bundled preset"),
+                                    selection,
                                     &request,
                                     &cfg,
                                     &capabilities,
@@ -1025,6 +1030,35 @@ mod tests {
             .await;
         assert_eq!(response.status(), warp::http::StatusCode::BAD_REQUEST);
         assert!(!path.exists(), "resolve must not create or rewrite presets");
+    }
+
+    /// A non-bundled preset has no `default_selection` to fall back to, so
+    /// `requested_selection` is None when the request itself supplies no
+    /// selection either. `fit_automatically: true` used to `.expect()` a
+    /// selection here and panic the server; it must return 400 instead.
+    #[tokio::test]
+    async fn resolve_fit_automatically_without_selection_on_flat_preset_returns_400() {
+        let preset = ModelPreset {
+            id: "flat-1".into(),
+            bundle: None,
+            ..Default::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presets.json");
+        let ctx = test_context(vec![preset], path);
+        let routes = routes(ctx);
+
+        let response = warp::test::request()
+            .method("POST")
+            .path("/api/presets/flat-1/resolve")
+            .header("authorization", "Bearer test-token")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({"fit_automatically": true}))
+            .reply(&routes)
+            .await;
+        assert_eq!(response.status(), warp::http::StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = serde_json::from_slice(response.body()).unwrap();
+        assert_eq!(body["code"], "selection_required");
     }
 
     /// Phase 10b security checklist: "auth routing tests cover every new

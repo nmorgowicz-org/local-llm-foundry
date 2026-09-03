@@ -391,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn host_limited_at_zero_does_not_search_higher_placements() {
+    fn host_limited_at_zero_reads_only_n_zero_for_host_search() {
         let mut reader = MapReader::with_values((0..=20).map(|n| (n, 90, 101 + n as u64)));
         let result = search(
             &mut reader,

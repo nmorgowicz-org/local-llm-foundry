@@ -628,6 +628,29 @@ pub mod store {
     }
 }
 
+/// Repeated-cycle agreement check shared by both platform samplers. Lives in
+/// its own module (rather than inside `nvidia_sampler`) so `metal_sampler`
+/// importing it isn't a cross-platform reach into a sibling platform's
+/// module.
+pub(crate) mod cycle_agreement {
+    /// `true` only if every cycle produced a delta (no underflow) and every
+    /// pair of consecutive cycle deltas agrees within `tolerance` (Phase 9's
+    /// "repeated observation" requirement).
+    pub(crate) fn cycles_agree(deltas: &[Option<u64>], tolerance: u64) -> bool {
+        if deltas.is_empty() {
+            return false;
+        }
+        let mut known = Vec::with_capacity(deltas.len());
+        for delta in deltas {
+            match delta {
+                Some(value) => known.push(*value),
+                None => return false,
+            }
+        }
+        known.windows(2).all(|w| w[0].abs_diff(w[1]) <= tolerance)
+    }
+}
+
 /// Bounded post-readiness macOS/Metal sampler (architecture 12).
 ///
 /// Runs detached from session control: `start_backend` returns to its caller
@@ -672,7 +695,7 @@ pub mod metal_sampler {
     /// Runs `REPEAT_CYCLES` peak/after cycles back to back (re-baselining
     /// each cycle against the previous cycle's `after` sample, exactly like
     /// `nvidia_sampler::run`) and checks the resulting deltas against
-    /// `super::nvidia_sampler::cycles_agree`. A single wired-memory sample is
+    /// `super::cycle_agreement::cycles_agree`. A single wired-memory sample is
     /// too easily inflated by unrelated system activity (Chrome, Spotlight,
     /// background sync) to trust on its own; requiring multiple cycles to
     /// agree is the same mitigation the noisier-signal-but-fewer-safeguards
@@ -702,7 +725,7 @@ pub mod metal_sampler {
             cycle_before = cycle_after;
         }
 
-        if !super::nvidia_sampler::cycles_agree(&deltas, CYCLE_AGREEMENT_TOLERANCE_BYTES) {
+        if !super::cycle_agreement::cycles_agree(&deltas, CYCLE_AGREEMENT_TOLERANCE_BYTES) {
             noise_flags.push(format!(
                 "repeated observation cycles did not agree within tolerance: {deltas:?}"
             ));
@@ -868,23 +891,6 @@ pub mod nvidia_sampler {
         flags
     }
 
-    /// `true` only if every cycle produced a delta (no underflow) and every
-    /// pair of consecutive cycle deltas agrees within `tolerance` (Phase 9's
-    /// "repeated observation" requirement).
-    pub(crate) fn cycles_agree(deltas: &[Option<u64>], tolerance: u64) -> bool {
-        if deltas.is_empty() {
-            return false;
-        }
-        let mut known = Vec::with_capacity(deltas.len());
-        for delta in deltas {
-            match delta {
-                Some(value) => known.push(*value),
-                None => return false,
-            }
-        }
-        known.windows(2).all(|w| w[0].abs_diff(w[1]) <= tolerance)
-    }
-
     async fn query_compute_apps() -> Vec<ComputeApp> {
         let output = tokio::process::Command::new("nvidia-smi")
             .args([
@@ -1009,7 +1015,7 @@ pub mod nvidia_sampler {
             cycle_before = cycle_after;
         }
 
-        if !cycles_agree(&deltas, IDLE_STABILIZE_TOLERANCE_BYTES) {
+        if !super::cycle_agreement::cycles_agree(&deltas, IDLE_STABILIZE_TOLERANCE_BYTES) {
             noise_flags.push(format!(
                 "repeated observation cycles did not agree within tolerance: {deltas:?}"
             ));
@@ -1692,7 +1698,7 @@ mod tests {
     #[test]
     fn cycles_agree_requires_every_cycle_to_produce_a_delta_and_agree_within_tolerance() {
         let tolerance = 16 * 1024 * 1024;
-        assert!(nvidia_sampler::cycles_agree(
+        assert!(cycle_agreement::cycles_agree(
             &[
                 Some(1_000_000_000),
                 Some(1_005_000_000),
@@ -1700,15 +1706,15 @@ mod tests {
             ],
             tolerance
         ));
-        assert!(!nvidia_sampler::cycles_agree(
+        assert!(!cycle_agreement::cycles_agree(
             &[Some(1_000_000_000), Some(2_000_000_000)],
             tolerance
         ));
-        assert!(!nvidia_sampler::cycles_agree(
+        assert!(!cycle_agreement::cycles_agree(
             &[Some(1_000_000_000), None, Some(1_002_000_000)],
             tolerance
         ));
-        assert!(!nvidia_sampler::cycles_agree(&[], tolerance));
+        assert!(!cycle_agreement::cycles_agree(&[], tolerance));
     }
 
     #[tokio::test]
