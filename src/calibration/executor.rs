@@ -2674,10 +2674,12 @@ mod tests {
     fn rollback_backup_round_trips_a_preset() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("apply-backups").join("one.json");
-        let mut preset = ModelPreset::default();
-        preset.id = "source".into();
-        preset.name = "Source".into();
-        preset.api_key = Some("secret".into());
+        let preset = ModelPreset {
+            id: "source".into(),
+            name: "Source".into(),
+            api_key: Some("secret".into()),
+            ..Default::default()
+        };
         write_rollback_backup(&path, &preset).expect("write backup");
         let restored = read_rollback_backup(&path).expect("read backup");
         assert_eq!(restored.id, preset.id);
@@ -2878,12 +2880,14 @@ mod tests {
         std::fs::create_dir_all(config.app_paths.calibration_apply_backups_dir())
             .expect("backup dir");
 
-        let mut preset = ModelPreset::default();
-        preset.id = "source".into();
-        preset.name = "Source".into();
-        preset.model_path = model.to_string_lossy().into_owned();
-        preset.batch_size = 512;
-        preset.ubatch_size = 512;
+        let preset = ModelPreset {
+            id: "source".into(),
+            name: "Source".into(),
+            model_path: model.to_string_lossy().into_owned(),
+            batch_size: 512,
+            ubatch_size: 512,
+            ..Default::default()
+        };
         let fingerprint = preset_fingerprint(&preset).expect("preset fingerprint");
         let candidate = CalibrationCandidate {
             id: "candidate".into(),

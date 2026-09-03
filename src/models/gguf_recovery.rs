@@ -2053,7 +2053,7 @@ mod tests {
     use super::*;
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    static WORKER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static WORKER_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn test_python_path() -> PathBuf {
@@ -2251,7 +2251,7 @@ mod tests {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[tokio::test]
     async fn active_worker_cancellation_stops_child_and_writes_sentinel() {
-        let _guard = WORKER_TEST_LOCK.lock().unwrap();
+        let _guard = WORKER_TEST_LOCK.lock().await;
         let temp = tempfile::tempdir().unwrap();
         let python = test_python_path();
         let worker = temp.path().join("worker.py");
@@ -2311,7 +2311,7 @@ mod tests {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[tokio::test]
     async fn worker_output_overflow_is_bounded_without_pipe_deadlock() {
-        let _guard = WORKER_TEST_LOCK.lock().unwrap();
+        let _guard = WORKER_TEST_LOCK.lock().await;
         let temp = tempfile::tempdir().unwrap();
         let python = test_python_path();
         let worker = temp.path().join("worker.py");
@@ -2336,7 +2336,7 @@ mod tests {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[tokio::test]
     async fn cancellation_kills_term_ignoring_descendant_after_leader_exits() {
-        let _guard = WORKER_TEST_LOCK.lock().unwrap();
+        let _guard = WORKER_TEST_LOCK.lock().await;
         let temp = tempfile::tempdir().unwrap();
         let python = test_python_path();
         let worker = temp.path().join("worker.py");
@@ -2378,7 +2378,7 @@ mod tests {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[tokio::test]
     async fn nominal_exit_closes_pipe_holding_descendant_group() {
-        let _guard = WORKER_TEST_LOCK.lock().unwrap();
+        let _guard = WORKER_TEST_LOCK.lock().await;
         let temp = tempfile::tempdir().unwrap();
         let python = test_python_path();
         let worker = temp.path().join("worker.py");

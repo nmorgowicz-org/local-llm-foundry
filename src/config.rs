@@ -726,6 +726,55 @@ impl AppConfig {
     }
 }
 
+fn ensure_db_admin_token(config_dir: &PathBuf) -> Option<String> {
+    let token_file = config_dir.join("db-admin-token");
+
+    // Try to read existing token (may be encrypted)
+    if let Ok(content) = fs::read_to_string(&token_file) {
+        let trimmed = content.trim().to_string();
+        if !trimmed.is_empty() {
+            let token = decrypt_value(&trimmed);
+            return Some(token);
+        }
+    }
+
+    // Generate new token
+    let token = generate_random_token();
+    let _ = fs::create_dir_all(config_dir);
+    let stored = encrypt_value(&token);
+    if fs::write(&token_file, &stored).is_ok() {
+        eprintln!("[config] Generated db-admin-token");
+    }
+    Some(token)
+}
+
+fn ensure_api_token(config_dir: &PathBuf) -> Option<String> {
+    let token_file = config_dir.join("api-token");
+
+    if let Ok(content) = fs::read_to_string(&token_file) {
+        let trimmed = content.trim().to_string();
+        if !trimmed.is_empty() {
+            let token = decrypt_value(&trimmed);
+            return Some(token);
+        }
+    }
+
+    let token = generate_random_token();
+    let _ = fs::create_dir_all(config_dir);
+    let stored = encrypt_value(&token);
+    if fs::write(&token_file, &stored).is_ok() {
+        eprintln!("[config] Generated api-token");
+    }
+    Some(token)
+}
+
+pub(crate) fn generate_random_token() -> String {
+    let mut buf = [0u8; 16];
+    SysRng.try_fill_bytes(&mut buf).expect("SysRng failed");
+    let value = u128::from_be_bytes(buf);
+    format!("{value:x}")
+}
+
 #[cfg(test)]
 mod path_resolution_tests {
     use super::*;
@@ -805,53 +854,4 @@ mod path_resolution_tests {
             Ok(Some("ユニコード暗号化値123456"))
         );
     }
-}
-
-fn ensure_db_admin_token(config_dir: &PathBuf) -> Option<String> {
-    let token_file = config_dir.join("db-admin-token");
-
-    // Try to read existing token (may be encrypted)
-    if let Ok(content) = fs::read_to_string(&token_file) {
-        let trimmed = content.trim().to_string();
-        if !trimmed.is_empty() {
-            let token = decrypt_value(&trimmed);
-            return Some(token);
-        }
-    }
-
-    // Generate new token
-    let token = generate_random_token();
-    let _ = fs::create_dir_all(config_dir);
-    let stored = encrypt_value(&token);
-    if fs::write(&token_file, &stored).is_ok() {
-        eprintln!("[config] Generated db-admin-token");
-    }
-    Some(token)
-}
-
-fn ensure_api_token(config_dir: &PathBuf) -> Option<String> {
-    let token_file = config_dir.join("api-token");
-
-    if let Ok(content) = fs::read_to_string(&token_file) {
-        let trimmed = content.trim().to_string();
-        if !trimmed.is_empty() {
-            let token = decrypt_value(&trimmed);
-            return Some(token);
-        }
-    }
-
-    let token = generate_random_token();
-    let _ = fs::create_dir_all(config_dir);
-    let stored = encrypt_value(&token);
-    if fs::write(&token_file, &stored).is_ok() {
-        eprintln!("[config] Generated api-token");
-    }
-    Some(token)
-}
-
-pub(crate) fn generate_random_token() -> String {
-    let mut buf = [0u8; 16];
-    SysRng.try_fill_bytes(&mut buf).expect("SysRng failed");
-    let value = u128::from_be_bytes(buf);
-    format!("{value:x}")
 }

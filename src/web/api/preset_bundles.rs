@@ -532,7 +532,7 @@ fn lookup_evidence(
             model_delta_bytes: receipt.model_delta_bytes,
             sample_count: receipt.sample_count,
             interval_ms: receipt.interval_ms,
-            noise_flags: warnings,
+            noise_flags: receipt.noise_flags.clone(),
             captured_unix_ms: receipt.captured_unix_ms,
         }),
     })
@@ -932,10 +932,12 @@ mod tests {
 
     #[test]
     fn resolve_response_and_cards_never_expose_local_paths_or_keys() {
-        let mut preset = ModelPreset::default();
-        preset.id = "preset-1".into();
-        preset.model_path = "/private/models/secret.gguf".into();
-        preset.api_key = Some("secret-key".into());
+        let preset = ModelPreset {
+            id: "preset-1".into(),
+            model_path: "/private/models/secret.gguf".into(),
+            api_key: Some("secret-key".into()),
+            ..Default::default()
+        };
         let card = card_view(&preset).to_string();
         assert!(!card.contains("secret.gguf"));
         assert!(!card.contains("secret-key"));
@@ -994,9 +996,11 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_requires_auth_and_does_not_write() {
-        let mut preset = ModelPreset::default();
-        preset.id = "bundle-1".into();
-        preset.bundle = Some(crate::presets::bundle::PresetBundleSpec::default());
+        let preset = ModelPreset {
+            id: "bundle-1".into(),
+            bundle: Some(crate::presets::bundle::PresetBundleSpec::default()),
+            ..Default::default()
+        };
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("presets.json");
         let ctx = test_context(vec![preset], path.clone());
@@ -1025,11 +1029,13 @@ mod tests {
 
     #[tokio::test]
     async fn copy_checks_revision_and_assigns_new_server_revision() {
-        let mut preset = ModelPreset::default();
-        preset.id = "bundle-1".into();
-        preset.name = "Original".into();
-        preset.revision = 1;
-        preset.bundle = Some(crate::presets::bundle::PresetBundleSpec::default());
+        let preset = ModelPreset {
+            id: "bundle-1".into(),
+            name: "Original".into(),
+            revision: 1,
+            bundle: Some(crate::presets::bundle::PresetBundleSpec::default()),
+            ..Default::default()
+        };
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("presets.json");
         let ctx = test_context(vec![preset], path.clone());
@@ -1067,15 +1073,17 @@ mod tests {
 
     #[tokio::test]
     async fn conversion_checks_revision_and_uses_bundle_constructor_defaults() {
-        let mut preset = ModelPreset::default();
-        preset.id = "flat-1".into();
-        preset.name = "Flat".into();
-        preset.revision = 1;
-        preset.context_size = 32_000;
-        preset.ctk = "f16".into();
-        preset.ctv = "f16".into();
-        preset.batch_size = 2_048;
-        preset.ubatch_size = 256;
+        let preset = ModelPreset {
+            id: "flat-1".into(),
+            name: "Flat".into(),
+            revision: 1,
+            context_size: 32_000,
+            ctk: "f16".into(),
+            ctv: "f16".into(),
+            batch_size: 2_048,
+            ubatch_size: 256,
+            ..Default::default()
+        };
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("presets.json");
         let ctx = test_context(vec![preset], path.clone());
@@ -1114,9 +1122,11 @@ mod tests {
     #[tokio::test]
     async fn bundled_put_rejects_conflicting_flat_projection() {
         let mut bundle = crate::presets::bundle::PresetBundleSpec::default();
-        let mut weights = crate::presets::bundle::PresetModelArtifact::default();
-        weights.id = "weights".into();
-        weights.local_path = Some("/models/model.gguf".into());
+        let weights = crate::presets::bundle::PresetModelArtifact {
+            id: "weights".into(),
+            local_path: Some("/models/model.gguf".into()),
+            ..Default::default()
+        };
         bundle.artifacts = vec![weights];
         bundle.context_options = vec![32_000];
         bundle.kv_policy_options = vec![crate::presets::bundle::LlamaKvPolicyId::F16F16];
@@ -1181,10 +1191,12 @@ mod tests {
 
     #[tokio::test]
     async fn destructive_routes_require_admin_confirmation_and_current_guards() {
-        let mut preset = ModelPreset::default();
-        preset.id = "preset-1".into();
-        preset.name = "Preset".into();
-        preset.revision = 1;
+        let preset = ModelPreset {
+            id: "preset-1".into(),
+            name: "Preset".into(),
+            revision: 1,
+            ..Default::default()
+        };
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("presets.json");
         let ctx = test_context(vec![preset], path.clone());
@@ -1287,9 +1299,11 @@ mod tests {
     async fn selection_patch_is_revision_guarded_and_persisted_before_response() {
         let mut preset = crate::presets::bundle::create_bundle_preset("Bundle", {
             let mut bundle = crate::presets::bundle::PresetBundleSpec::default();
-            let mut weights = crate::presets::bundle::PresetModelArtifact::default();
-            weights.id = "weights".into();
-            weights.local_path = Some("/models/model.gguf".into());
+            let weights = crate::presets::bundle::PresetModelArtifact {
+                id: "weights".into(),
+                local_path: Some("/models/model.gguf".into()),
+                ..Default::default()
+            };
             bundle.artifacts = vec![weights];
             bundle.context_options = vec![160_000, 200_000];
             bundle.kv_policy_options = vec![crate::presets::bundle::LlamaKvPolicyId::Q4Q4];

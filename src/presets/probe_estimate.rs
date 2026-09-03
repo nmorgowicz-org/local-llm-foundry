@@ -195,10 +195,12 @@ mod tests {
 
     #[test]
     fn unsupported_components_are_named() {
-        let mut preset = ModelPreset::default();
-        preset.mmproj = Some("mmproj.gguf".into());
-        preset.draft_model = "draft.gguf".into();
-        preset.cache_ram_mib = Some(8192);
+        let preset = ModelPreset {
+            mmproj: Some("mmproj.gguf".into()),
+            draft_model: "draft.gguf".into(),
+            cache_ram_mib: Some(8192),
+            ..Default::default()
+        };
         let mut formula = full_estimate(
             8_000_000_000,
             &ModelArch::standard_heuristic(7.0),
