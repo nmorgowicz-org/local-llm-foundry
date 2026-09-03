@@ -6,7 +6,8 @@
     "validate-wizard-groups": "node scripts/validate-wizard-groups.mjs",
     "validate-preset-bundle-contract": "node scripts/validate-preset-bundle-contract.mjs",
     "validate-rebrand": "node scripts/validate-rebrand-contract.mjs",
-    "validate-release-contract": "node scripts/validate-release-contract.mjs --self-test"
+    "validate-release-contract": "node scripts/validate-release-contract.mjs --self-test",
+    "check-stale-screenshots": "node scripts/check-stale-screenshot-scenarios.mjs"
   },
   "devDependencies": {
     "eslint": "10.8.1",
