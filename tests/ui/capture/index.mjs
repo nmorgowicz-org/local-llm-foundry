@@ -33,6 +33,7 @@ import scenarioDiscussions from './scenarios/presets/discussions.mjs';
 import scenarioPresetBundleEditor from './scenarios/presets/preset-bundle-editor.mjs';
 import scenarioPresetBundle from './scenarios/presets/preset-bundle.mjs';
 import scenarioLaunchGrid from './scenarios/presets/launch-grid.mjs';
+import scenarioWelcomeHero from './scenarios/presets/welcome-hero.mjs';
 import scenarioSpawnWizard from './scenarios/wizard-llamacpp/spawn-wizard.mjs';
 import scenarioSpawnWizardProBaseline from './scenarios/wizard-llamacpp/spawn-wizard-pro-baseline.mjs';
 import scenarioSpawnWizardLaunchFullConfig from './scenarios/wizard-llamacpp/spawn-wizard-launch-full-config.mjs';
@@ -252,6 +253,15 @@ export const SCENARIOS = {
                 'llamacpp-local--launch-grid-running-badge.png',
                 'llamacpp-local--launch-grid-delete-confirm.png',
             ],
+        },
+    },
+    'welcome-hero': {
+        run: scenarioWelcomeHero,
+        category: 'presets',
+        runtime: 'welcome-hero',
+        contract: {
+            intent: 'Provide a single README-showcase hero image of the welcome screen with bundled presets: names, quant badges, context, KV policy, and a populated collections filter all visible at once.',
+            expectedOutputs: ['welcome-hero--preset-bundle-hero.png'],
         },
     },
     'calibration': {
