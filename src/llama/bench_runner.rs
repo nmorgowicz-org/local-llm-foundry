@@ -28,6 +28,13 @@ pub const QUICK_BENCH_REPETITIONS: u32 = 1;
 /// three-sample cost on every candidate.
 pub const BALANCED_BENCH_REPETITIONS: u32 = 2;
 
+/// Telemetry is best-effort diagnostic context attached to a bench receipt,
+/// not a measurement input. The underlying GPU-metrics probe (`mactop`) has
+/// no timeout of its own and can take tens of seconds on some hosts (full
+/// SMC/volume/IOReport enumeration on first sample) — bound it so a slow
+/// probe never stalls a calibration trial.
+const TELEMETRY_CAPTURE_TIMEOUT: Duration = Duration::from_millis(750);
+
 static BENCH_LEASE: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 fn bench_lease() -> Arc<Semaphore> {
@@ -78,8 +85,12 @@ pub struct BenchTelemetry {
 }
 
 fn capture_telemetry() -> BenchTelemetry {
-    let backend = crate::gpu::detect_backend("auto");
-    let Ok(metrics) = backend.read_metrics() else {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let backend = crate::gpu::detect_backend("auto");
+        let _ = tx.send(backend.read_metrics());
+    });
+    let Ok(Ok(metrics)) = rx.recv_timeout(TELEMETRY_CAPTURE_TIMEOUT) else {
         return BenchTelemetry::default();
     };
     if metrics.is_empty() {
