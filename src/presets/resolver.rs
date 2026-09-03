@@ -878,6 +878,110 @@ mod tests {
         assert_eq!(first.selection_hash, second.selection_hash);
     }
 
+    fn moe_bundle_with_metadata(metadata: PresetArtifactMetadata) -> PresetBundleSpec {
+        let mut spec = bundle();
+        spec.artifacts[0].metadata = metadata;
+        spec
+    }
+
+    #[test]
+    fn n_cpu_moe_is_blocked_on_a_dense_model() {
+        let bundle = moe_bundle_with_metadata(PresetArtifactMetadata {
+            model_kind: PresetModelKind::Dense,
+            moe_layer_count: None,
+            ..Default::default()
+        });
+        let mut selection = bundle.default_selection.clone();
+        selection.n_cpu_moe = Some(4);
+        let issues = validate_runtime_selection(&bundle, &selection, &snapshot(), false);
+        assert!(issues.iter().any(|i| i.starts_with("N_CPU_MOE_DENSE_MODEL")));
+    }
+
+    #[test]
+    fn n_cpu_moe_is_blocked_on_unified_memory() {
+        let bundle = moe_bundle_with_metadata(PresetArtifactMetadata {
+            model_kind: PresetModelKind::Moe,
+            moe_layer_count: Some(16),
+            ..Default::default()
+        });
+        let mut selection = bundle.default_selection.clone();
+        selection.n_cpu_moe = Some(4);
+        let issues = validate_runtime_selection(&bundle, &selection, &snapshot(), true);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.starts_with("N_CPU_MOE_UNIFIED_MEMORY_UNQUALIFIED"))
+        );
+    }
+
+    /// Fixture 8 (Phase 10a): degraded/unknown GGUF metadata. An artifact
+    /// whose model_kind is Unknown, or whose moe_layer_count could not be
+    /// read, must block CPU expert placement with an explanation rather than
+    /// silently guessing it is safe.
+    #[test]
+    fn n_cpu_moe_is_blocked_when_metadata_is_unknown_or_degraded() {
+        let unknown_kind = moe_bundle_with_metadata(PresetArtifactMetadata {
+            model_kind: PresetModelKind::Unknown("gguf_parse_failed".into()),
+            moe_layer_count: Some(16),
+            ..Default::default()
+        });
+        let mut selection = unknown_kind.default_selection.clone();
+        selection.n_cpu_moe = Some(4);
+        let issues = validate_runtime_selection(&unknown_kind, &selection, &snapshot(), false);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.starts_with("N_CPU_MOE_METADATA_UNKNOWN")),
+            "unknown model_kind must block n_cpu_moe: {issues:?}"
+        );
+
+        let missing_layer_count = moe_bundle_with_metadata(PresetArtifactMetadata {
+            model_kind: PresetModelKind::Moe,
+            moe_layer_count: None,
+            ..Default::default()
+        });
+        let mut selection = missing_layer_count.default_selection.clone();
+        selection.n_cpu_moe = Some(4);
+        let issues =
+            validate_runtime_selection(&missing_layer_count, &selection, &snapshot(), false);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.starts_with("N_CPU_MOE_METADATA_UNKNOWN")),
+            "missing moe_layer_count must block n_cpu_moe: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn n_cpu_moe_is_blocked_when_it_exceeds_the_gguf_layer_count() {
+        let bundle = moe_bundle_with_metadata(PresetArtifactMetadata {
+            model_kind: PresetModelKind::Moe,
+            moe_layer_count: Some(4),
+            ..Default::default()
+        });
+        let mut selection = bundle.default_selection.clone();
+        selection.n_cpu_moe = Some(8);
+        let issues = validate_runtime_selection(&bundle, &selection, &snapshot(), false);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.starts_with("N_CPU_MOE_EXCEEDS_LAYER_COUNT"))
+        );
+    }
+
+    #[test]
+    fn n_cpu_moe_is_accepted_with_authoritative_moe_metadata() {
+        let bundle = moe_bundle_with_metadata(PresetArtifactMetadata {
+            model_kind: PresetModelKind::Moe,
+            moe_layer_count: Some(16),
+            ..Default::default()
+        });
+        let mut selection = bundle.default_selection.clone();
+        selection.n_cpu_moe = Some(4);
+        let issues = validate_runtime_selection(&bundle, &selection, &snapshot(), false);
+        assert!(issues.is_empty(), "unexpected issues: {issues:?}");
+    }
+
     fn golden_preset(fixture: &GoldenFingerprint) -> ModelPreset {
         let mut bundle = bundle();
         bundle.identity.bundle_id = fixture.bundle_id.clone();

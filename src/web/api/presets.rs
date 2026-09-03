@@ -629,6 +629,74 @@ mod tests {
         assert_eq!(presets[0].id, "preset-1", "custom preset must survive a failed reset");
     }
 
+    #[tokio::test]
+    async fn create_disk_failure_returns_500_and_leaves_state_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presets.json");
+        break_presets_write(&path);
+        let ctx = test_context(vec![], path);
+        let routes = routes(ctx.clone());
+
+        let response = warp::test::request()
+            .method("POST")
+            .path("/api/presets")
+            .header("authorization", "Bearer test-token")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({
+                "id": "",
+                "name": "New preset",
+                "model_path": "/models/new.gguf"
+            }))
+            .reply(&routes)
+            .await;
+        assert_eq!(
+            response.status(),
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let presets = ctx.state.presets.lock().unwrap();
+        assert!(presets.is_empty(), "no preset must have been added in memory");
+    }
+
+    #[tokio::test]
+    async fn update_disk_failure_returns_500_and_leaves_state_unchanged() {
+        let preset = ModelPreset {
+            id: "preset-1".into(),
+            name: "Original".into(),
+            revision: 1,
+            model_path: "/models/original.gguf".into(),
+            ..Default::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("presets.json");
+        break_presets_write(&path);
+        let ctx = test_context(vec![preset], path);
+        let routes = routes(ctx.clone());
+
+        let response = warp::test::request()
+            .method("PUT")
+            .path("/api/presets/preset-1")
+            .header("authorization", "Bearer test-token")
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({
+                "expected_revision": 1,
+                "preset": {
+                    "id": "preset-1",
+                    "name": "Renamed",
+                    "model_path": "/models/original.gguf"
+                }
+            }))
+            .reply(&routes)
+            .await;
+        assert_eq!(
+            response.status(),
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let presets = ctx.state.presets.lock().unwrap();
+        assert_eq!(presets.len(), 1);
+        assert_eq!(presets[0].name, "Original", "in-memory preset must be unchanged");
+        assert_eq!(presets[0].revision, 1);
+    }
+
     #[test]
     fn api_redacts_key_but_reports_configured_marker() {
         let preset = preset_for_api(ModelPreset {
