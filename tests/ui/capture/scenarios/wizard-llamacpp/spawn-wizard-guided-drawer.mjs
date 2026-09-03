@@ -124,6 +124,20 @@ export default async function(ctx) {
     // INTENT: Llama Guided drawer is open after a canonical edit and exposes the changed count.
     await captureShot(page, 'spawn-wizard-guided-drawer-llama-open.png', { fullPage: true, runtimeTag: 'llamacpp-local', expandSelector: '.wizard-body' });
 
+    // Keep the newly canonical Phase 6 controls legible in dedicated captures.
+    for (const [id, name] of [
+        ['spawn-cache-idle-slots', 'spawn-wizard-guided-cache-slots.png'],
+        ['spawn-mmproj-offload', 'spawn-wizard-guided-mmproj-offload.png'],
+        ['spawn-reasoning-effort', 'spawn-wizard-guided-reasoning.png'],
+    ]) {
+        await page.evaluate((controlId) => {
+            const control = document.getElementById(controlId);
+            control?.closest('details')?.setAttribute('open', '');
+            control?.scrollIntoView({ behavior: 'instant', block: 'center' });
+        }, id);
+        await captureShot(page, name, { fullPage: false, runtimeTag: 'llamacpp-local', expandSelector: `#${id}` });
+    }
+
     await page.evaluate(async () => {
         const { selectWizardEngine } = await import('/js/features/spawn-wizard.js');
         selectWizardEngine('rapid_mlx', true);

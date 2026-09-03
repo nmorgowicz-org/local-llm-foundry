@@ -252,6 +252,36 @@ This guidance is also shown in the preset editor.
 | Ubatch size | `spawn-ubatch-size` | 512 | Micro-batch for prompt processing |
 | MoE CPU experts | `spawn-n-cpu-moe` | Auto | Experts offloaded to CPU RAM |
 | Tensor split | `spawn-tensor-split` | — | Multi-GPU split ratios (e.g. `1,1`) |
+| Idle slot cache | `spawn-cache-idle-slots` | Default | Retain or release idle prompt-slot caches |
+| No continuous batching | `spawn-no-cont-batching` | Off | Disable continuous batching when a workload requires it |
+| Full SWA cache | `spawn-swa-full` | Off | Keep the full sliding-window attention cache |
+| Load mode | `spawn-load-mode` | Platform default | Select mmap/mlock behavior |
+| Verbosity | `spawn-verbosity` | 4 | llama.cpp server log detail |
+| Context checkpoints | `spawn-ctx-checkpoints` | 32 | Number of prompt-cache checkpoints |
+| Checkpoint minimum step | `spawn-checkpoint-min-step` | 8192 | Minimum token step between checkpoints |
+| Cache reuse threshold | `spawn-cache-reuse` | Default | Threshold for reusing prompt-cache state |
+
+The same controls are available in Guided's **All settings** drawer and in the
+searchable Pro view. They are one canonical set of DOM/state bindings, so
+switching views does not reset values or create a second payload. Pro places
+these rows under Memory & context, Performance, or Network & observability as
+appropriate.
+
+#### llama.cpp compatibility and reasoning
+
+These native controls are distinct from chat-template thinking kwargs and from
+Rapid-MLX reasoning mode:
+
+| Control | ID | Behavior |
+|---------|----|----------|
+| Projector offload | `spawn-mmproj-offload` | Default / On / Off for the multimodal projector; On/Off is disabled when the selected binary's capability snapshot does not advertise that polarity (`CAPABILITY_UNAVAILABLE` on resolve) |
+| Reasoning effort | `spawn-reasoning-effort` | Native `--reasoning-effort`; unsupported advertised values remain visible but disabled |
+| Reasoning format | `spawn-reasoning-format` | Native `--reasoning-format`; unsupported values remain visible but disabled |
+| Preserve reasoning | `spawn-reasoning-preserve` | Native `--reasoning-preserve`; disabled until both binary support and template compatibility are known |
+
+Capability-unavailable values are never hidden or serialized. Existing
+`preserve_thinking` remains a separate legacy chat-template kwarg for preset
+round-tripping; it is not migrated to native reasoning preservation.
 
 #### Speculative Decoding
 
@@ -297,6 +327,17 @@ to Launch.
 
 - **Save as Preset** — stores all parameters for quick reuse from the setup screen
 - Presets can be saved for different models or configurations
+- The Preset Editor's **Model variants** section can convert a legacy profile
+  into one explicitly managed bundle. Add each exact GGUF artifact separately;
+  the editor checks GGUF metadata and asks for confirmation when a candidate
+  does not match the existing tune. It never groups files from a shared name or
+  family automatically.
+- A bundle keeps the selected weights artifact, context, named K/V policy,
+  concrete batch/micro-batch pair, and (for proven MoE models) CPU expert
+  placement as one saved default. Dense models do not offer CPU MoE choices.
+- Saving an edited preset is revision-checked. Copy, delete, and reset actions
+  use the same current revision/catalog guards, so a stale editor cannot
+  overwrite a newer selection.
 - Saving is optional — click Next to go straight to launch
 - Rapid-MLX presets retain shared sampling and non-secret access values, including host,
   port, temperature, top-p/top-k/min-p, penalties, max tokens, and seed. An API key is

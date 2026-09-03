@@ -494,6 +494,8 @@ import { setTuneConfig, showTunePanel } from './tune-panel.js';
 import { renderSuggestionCards } from './tuning-cards.js';
 import { setHeaderMode } from './attach-detach.js';
 import { lastCapabilities, lastSystemMetrics } from '../core/app-state.js';
+let llamaBinaryCapabilitiesPromise = null;
+let llamaBinaryCapabilities = null;
 import {
   hfStartDownload,
   hfShowDownloadPanel,
@@ -669,8 +671,13 @@ export const wizardState = {
   ctxCheckpoints: 32,
   checkpointMinStep: 8192,
   cacheReuse: null,
+  cacheIdleSlots: null,
   noContBatching: false,
   swaFull: false,
+  mmprojOffload: null,
+  llamaReasoningEffort: 'default',
+  llamaReasoningFormat: null,
+  llamaReasoningPreserve: null,
     threads: null,
     threadsBatch: null,
     // MTP
@@ -922,8 +929,13 @@ export function openSpawnWizard(opts = {}) {
  if (t.ctx_checkpoints != null) wizardState.hardware.ctxCheckpoints = t.ctx_checkpoints;
  if (t.checkpoint_min_step != null) wizardState.hardware.checkpointMinStep = t.checkpoint_min_step;
  if (t.cache_reuse != null) wizardState.hardware.cacheReuse = t.cache_reuse;
+ if (t.cache_idle_slots != null) wizardState.hardware.cacheIdleSlots = !!t.cache_idle_slots;
  if (t.no_cont_batching != null) wizardState.hardware.noContBatching = !!t.no_cont_batching;
  if (t.swa_full != null) wizardState.hardware.swaFull = !!t.swa_full;
+ if (t.mmproj_offload != null) wizardState.hardware.mmprojOffload = !!t.mmproj_offload;
+ if (t.llama_reasoning_effort != null) wizardState.hardware.llamaReasoningEffort = t.llama_reasoning_effort;
+ if (t.llama_reasoning_format != null) wizardState.hardware.llamaReasoningFormat = t.llama_reasoning_format;
+ if (t.llama_reasoning_preserve != null) wizardState.hardware.llamaReasoningPreserve = !!t.llama_reasoning_preserve;
     if (t.temperature != null)   wizardState.hardware.temperature   = t.temperature;
     if (t.top_p != null)         wizardState.hardware.topP          = t.top_p;
     if (t.top_k != null)         wizardState.hardware.topK          = t.top_k;
@@ -1070,8 +1082,13 @@ function resetWizardState() {
   wizardState.hardware.ctxCheckpoints = 32;
   wizardState.hardware.checkpointMinStep = 8192;
   wizardState.hardware.cacheReuse = null;
+  wizardState.hardware.cacheIdleSlots = null;
   wizardState.hardware.noContBatching = false;
   wizardState.hardware.swaFull = false;
+  wizardState.hardware.mmprojOffload = null;
+  wizardState.hardware.llamaReasoningEffort = 'default';
+  wizardState.hardware.llamaReasoningFormat = null;
+  wizardState.hardware.llamaReasoningPreserve = null;
   wizardState.hardware.nCpuMoe = 0;
   wizardState.hardware.tensorSplit = '';
   wizardState.hardware.fitEnabled = null;
@@ -1549,8 +1566,13 @@ function cacheDom() {
   dom.ctxCheckpointsInput = document.getElementById('spawn-ctx-checkpoints');
   dom.checkpointMinStepInput = document.getElementById('spawn-checkpoint-min-step');
   dom.cacheReuseInput = document.getElementById('spawn-cache-reuse');
+  dom.cacheIdleSlotsSelect = document.getElementById('spawn-cache-idle-slots');
   dom.noContBatchingCheck = document.getElementById('spawn-no-cont-batching');
   dom.swaFullCheck = document.getElementById('spawn-swa-full');
+  dom.mmprojOffloadSelect = document.getElementById('spawn-mmproj-offload');
+  dom.llamaReasoningEffortSelect = document.getElementById('spawn-reasoning-effort');
+  dom.llamaReasoningFormatSelect = document.getElementById('spawn-reasoning-format');
+  dom.llamaReasoningPreserveSelect = document.getElementById('spawn-reasoning-preserve');
   dom.threadsInput       = document.getElementById('spawn-threads');
   dom.threadsBatchInput  = document.getElementById('spawn-threads-batch');
   dom.specDraftNMinInput = document.getElementById('spawn-spec-draft-n-min');
@@ -1842,7 +1864,9 @@ function bindEvents() {
     dom.kvUnifiedSelect, dom.flashAttnSelect, dom.mlockCheck, dom.prioSelect,
     dom.verbosityInput, dom.loadModeSelect,
     dom.ctxCheckpointsInput, dom.checkpointMinStepInput, dom.cacheReuseInput,
-    dom.noContBatchingCheck, dom.swaFullCheck,
+    dom.cacheIdleSlotsSelect, dom.noContBatchingCheck, dom.swaFullCheck,
+    dom.mmprojOffloadSelect, dom.llamaReasoningEffortSelect,
+    dom.llamaReasoningFormatSelect, dom.llamaReasoningPreserveSelect,
     dom.threadsInput, dom.threadsBatchInput,
     dom.fitEnableSelect, dom.fitTargetInput, dom.cacheRamInput, dom.cacheModeSelect,
     dom.specDraftNMinInput, dom.specDraftPMinInput,
@@ -2493,10 +2517,15 @@ export function showStep(index) {
       if (dom.loadModeSelect) dom.loadModeSelect.value = wizardState.hardware.loadMode || 'mmap';
       if (dom.verbosityInput) dom.verbosityInput.value = String(wizardState.hardware.verbosity ?? 4);
       if (dom.ctxCheckpointsInput) dom.ctxCheckpointsInput.value = wizardState.hardware.ctxCheckpoints ?? '';
-      if (dom.checkpointMinStepInput) dom.checkpointMinStepInput.value = wizardState.hardware.checkpointMinStep ?? '';
-      if (dom.cacheReuseInput) dom.cacheReuseInput.value = wizardState.hardware.cacheReuse ?? '';
-      if (dom.noContBatchingCheck) dom.noContBatchingCheck.checked = !!wizardState.hardware.noContBatching;
-      if (dom.swaFullCheck) dom.swaFullCheck.checked = !!wizardState.hardware.swaFull;
+ if (dom.checkpointMinStepInput) dom.checkpointMinStepInput.value = wizardState.hardware.checkpointMinStep ?? '';
+ if (dom.cacheReuseInput) dom.cacheReuseInput.value = wizardState.hardware.cacheReuse ?? '';
+ if (dom.cacheIdleSlotsSelect) dom.cacheIdleSlotsSelect.value = wizardState.hardware.cacheIdleSlots == null ? '' : String(wizardState.hardware.cacheIdleSlots);
+ if (dom.noContBatchingCheck) dom.noContBatchingCheck.checked = !!wizardState.hardware.noContBatching;
+ if (dom.swaFullCheck) dom.swaFullCheck.checked = !!wizardState.hardware.swaFull;
+ if (dom.mmprojOffloadSelect) dom.mmprojOffloadSelect.value = wizardState.hardware.mmprojOffload == null ? '' : String(wizardState.hardware.mmprojOffload);
+ if (dom.llamaReasoningEffortSelect) dom.llamaReasoningEffortSelect.value = wizardState.hardware.llamaReasoningEffort || 'default';
+ if (dom.llamaReasoningFormatSelect) dom.llamaReasoningFormatSelect.value = wizardState.hardware.llamaReasoningFormat || '';
+ if (dom.llamaReasoningPreserveSelect) dom.llamaReasoningPreserveSelect.value = wizardState.hardware.llamaReasoningPreserve == null ? '' : String(wizardState.hardware.llamaReasoningPreserve);
     if (!rapid) {
       updateCtxModelMaxHint();
       updateCtxQuickPickActive();
@@ -2529,6 +2558,7 @@ export function showStep(index) {
     if (!rapid) {
       renderMmprojSection();
       renderMtpSection();
+      void _refreshLlamaBinaryCapabilities();
     }
     // Speculation is never enabled from a filename. A qualified GGUF/profile
     // capability may populate an explicit recommendation; otherwise leave the
@@ -2627,6 +2657,122 @@ function _populateKvCacheOptions() {
 
   fillSelect(kSelect);
   fillSelect(vSelect);
+}
+
+function _capabilityAvailable(state) {
+  return state === 'Available' || (state && Object.prototype.hasOwnProperty.call(state, 'Available'));
+}
+
+function _capabilityReason(state, fallback) {
+  if (typeof state === 'string' && state !== 'Available') return state;
+  if (state?.Unavailable) return state.Unavailable;
+  return fallback;
+}
+
+function _setCapabilityHint(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text || '';
+}
+
+function _preserveUnknownSelectValue(select, value, label) {
+  if (!select || value == null || value === '') return;
+  const stringValue = String(value);
+  if ([...select.options].some(option => option.value === stringValue)) return;
+  const option = document.createElement('option');
+  option.value = stringValue;
+  option.textContent = label || `${stringValue} (stored; unsupported)`;
+  option.disabled = true;
+  select.appendChild(option);
+  select.value = stringValue;
+}
+
+function _applyLlamaCapabilityLocks(snapshot) {
+  const cache = snapshot?.cache || {};
+  const typed = snapshot?.typed || {};
+  const idleState = cache.idle_slot_cache;
+  const idleSupported = _capabilityAvailable(idleState);
+  if (dom.cacheIdleSlotsSelect) {
+    dom.cacheIdleSlotsSelect.disabled = !idleSupported;
+    dom.cacheIdleSlotsSelect.title = idleSupported ? '' : _capabilityReason(idleState, 'Capability evidence is unavailable for this binary.');
+  }
+  _setCapabilityHint('spawn-cache-idle-slots-hint', idleSupported
+    ? ''
+    : _capabilityReason(idleState, 'This binary does not advertise --cache-idle-slots.'));
+
+  const mmproj = typed.mmproj_offload || {};
+  const mmprojPositive = _capabilityAvailable(mmproj.positive);
+  const mmprojNegative = _capabilityAvailable(mmproj.negative);
+  if (dom.mmprojOffloadSelect) {
+    for (const option of dom.mmprojOffloadSelect.options) {
+      if (option.value === 'true') option.disabled = !mmprojPositive;
+      if (option.value === 'false') option.disabled = !mmprojNegative;
+    }
+  }
+  _setCapabilityHint('spawn-mmproj-offload-hint', mmprojPositive || mmprojNegative
+    ? ''
+    : _capabilityReason(mmproj.positive, 'This binary does not advertise projector offload controls.'));
+
+  const effort = typed.reasoning_effort || {};
+  const effortSupported = _capabilityAvailable(effort.supported);
+  _preserveUnknownSelectValue(dom.llamaReasoningEffortSelect, wizardState.hardware.llamaReasoningEffort);
+  if (dom.llamaReasoningEffortSelect) {
+    for (const option of dom.llamaReasoningEffortSelect.options) {
+      if (option.value === 'default') continue;
+      option.disabled = !effortSupported || (effort.accepted_values?.length > 0 && !effort.accepted_values.includes(option.value));
+      option.title = option.disabled ? _capabilityReason(effort.supported, 'Not advertised by this binary.') : '';
+    }
+  }
+  _setCapabilityHint('spawn-reasoning-effort-hint', effortSupported
+    ? ''
+    : _capabilityReason(effort.supported, 'This binary does not advertise --reasoning-effort.'));
+
+  const format = typed.reasoning_format || {};
+  const formatSupported = _capabilityAvailable(format.supported);
+  _preserveUnknownSelectValue(dom.llamaReasoningFormatSelect, wizardState.hardware.llamaReasoningFormat);
+  if (dom.llamaReasoningFormatSelect) {
+    for (const option of dom.llamaReasoningFormatSelect.options) {
+      if (option.value === '') continue;
+      option.disabled = !formatSupported || (format.accepted_values?.length > 0 && !format.accepted_values.includes(option.value));
+      option.title = option.disabled ? _capabilityReason(format.supported, 'Not advertised by this binary.') : '';
+    }
+  }
+  _setCapabilityHint('spawn-reasoning-format-hint', formatSupported
+    ? ''
+    : _capabilityReason(format.supported, 'This binary does not advertise --reasoning-format.'));
+
+  const preserve = typed.reasoning_preserve || {};
+  const templateState = typed.reasoning_preserve_template;
+  const templateSupported = _capabilityAvailable(templateState);
+  if (dom.llamaReasoningPreserveSelect) {
+    for (const option of dom.llamaReasoningPreserveSelect.options) {
+      if (option.value === 'true') option.disabled = !templateSupported || !preserve.positive || !_capabilityAvailable(preserve.positive);
+      if (option.value === 'false') option.disabled = !templateSupported || !preserve.negative || !_capabilityAvailable(preserve.negative);
+    }
+  }
+  _setCapabilityHint('spawn-reasoning-preserve-hint', !templateSupported
+    ? _capabilityReason(templateState, 'Template compatibility for native reasoning preservation is unverified.')
+    : _capabilityAvailable(preserve.positive) || _capabilityAvailable(preserve.negative)
+      ? ''
+      : _capabilityReason(preserve.positive, 'This binary does not advertise native reasoning preservation.'));
+}
+
+async function _refreshLlamaBinaryCapabilities() {
+  if (llamaBinaryCapabilitiesPromise) return llamaBinaryCapabilitiesPromise;
+  _applyLlamaCapabilityLocks(null);
+  llamaBinaryCapabilitiesPromise = (async () => {
+    try {
+      const headers = window.authHeaders ? window.authHeaders() : {};
+      const response = await fetch('/api/llama-binary/capabilities', { headers });
+      if (!response.ok) return null;
+      const data = await response.json();
+      return data?.ok ? data.snapshot : null;
+    } catch {
+      return null;
+    }
+  })();
+  llamaBinaryCapabilities = await llamaBinaryCapabilitiesPromise;
+  _applyLlamaCapabilityLocks(llamaBinaryCapabilities);
+  return llamaBinaryCapabilities;
 }
 
 // ── Guided disclosure & use-case ─────────────────────────────────────────────
@@ -3703,8 +3849,13 @@ function readHardwareState() {
  if (dom.ctxCheckpointsInput) { const v = dom.ctxCheckpointsInput.value; h.ctxCheckpoints = v !== '' ? Number(v) : null; }
  if (dom.checkpointMinStepInput) { const v = dom.checkpointMinStepInput.value; h.checkpointMinStep = v !== '' ? Number(v) : null; }
  if (dom.cacheReuseInput) { const v = dom.cacheReuseInput.value; h.cacheReuse = v !== '' ? Number(v) : null; }
+ if (dom.cacheIdleSlotsSelect) h.cacheIdleSlots = dom.cacheIdleSlotsSelect.value === '' ? null : dom.cacheIdleSlotsSelect.value === 'true';
  if (dom.noContBatchingCheck) h.noContBatching = dom.noContBatchingCheck.checked;
  if (dom.swaFullCheck) h.swaFull = dom.swaFullCheck.checked;
+ if (dom.mmprojOffloadSelect) h.mmprojOffload = dom.mmprojOffloadSelect.value === '' ? null : dom.mmprojOffloadSelect.value === 'true';
+ if (dom.llamaReasoningEffortSelect) h.llamaReasoningEffort = dom.llamaReasoningEffortSelect.value || 'default';
+ if (dom.llamaReasoningFormatSelect) h.llamaReasoningFormat = dom.llamaReasoningFormatSelect.value || null;
+ if (dom.llamaReasoningPreserveSelect) h.llamaReasoningPreserve = dom.llamaReasoningPreserveSelect.value === '' ? null : dom.llamaReasoningPreserveSelect.value === 'true';
   if (dom.threadsInput) { const v = dom.threadsInput.value; h.threads = v !== '' ? Number(v) : null; }
   if (dom.threadsBatchInput) { const v = dom.threadsBatchInput.value; h.threadsBatch = v !== '' ? Number(v) : null; }
   if (dom.specDraftNMinInput) { const v = dom.specDraftNMinInput.value; h.mtpDraftNMin = v !== '' ? Number(v) : null; }

@@ -46,8 +46,20 @@ const GROUPS = [
     critical: false, view: 'both',
     controls: [
       'spawn-cache-mode', 'spawn-cache-ram', 'spawn-ctx-checkpoints',
-      'spawn-checkpoint-min-step', 'spawn-cache-reuse',
+      'spawn-checkpoint-min-step', 'spawn-cache-reuse', 'spawn-cache-idle-slots',
     ],
+  },
+  {
+    supersection: 'advanced-tuning', id: 'model-compatibility', title: 'Model & compatibility',
+    description: 'Native llama.cpp projector placement and model compatibility controls.',
+    critical: false, view: 'both',
+    controls: ['spawn-mmproj-offload'],
+  },
+  {
+    supersection: 'advanced-tuning', id: 'reasoning-controls', title: 'Generation & reasoning',
+    description: 'Native llama.cpp reasoning behavior, separate from chat-template thinking kwargs.',
+    critical: false, view: 'both',
+    controls: ['spawn-reasoning-effort', 'spawn-reasoning-format', 'spawn-reasoning-preserve'],
   },
   {
     supersection: 'advanced-tuning', id: 'fit-memory', title: 'Auto-fit & memory',

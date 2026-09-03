@@ -1,0 +1,5 @@
+0.00.030.009 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...
+0.00.221.575 I common_memory_breakdown_print: | memory breakdown [MiB]  | total    free     self   model   context   compute    unaccounted |
+0.00.221.579 I common_memory_breakdown_print: |   - MTL0 (Apple M5 Max) | 57344 = 57280 + (17500 = 11484 +    5182 +     832) +      -17436 |
+0.00.221.579 I common_memory_breakdown_print: |   - Host                |                   1156 =   515 +       0 +     641                |
+0.00.221.579 I common_memory_breakdown_print: |   - CPU_REPACK          |                   9280 =  9280 +       0 +       0                |

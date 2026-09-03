@@ -8,9 +8,11 @@ use warp::Filter;
 
 use crate::config::AppConfig;
 use crate::inference::launch::{
-    launch_local, request_from_api_payload, request_from_preset, request_from_session,
+    launch_local, launch_local_with_resolved_preset, request_from_api_payload, request_from_preset,
+    request_from_session,
 };
 use crate::llama::server::stop_server;
+use crate::presets::bundle::PresetBundleSelection;
 use crate::state::{
     self as app_state, AppState, DoctorFinding, DoctorFindingType, DoctorSeverity, FixAction,
     SessionMode, SessionStatus,
@@ -1107,7 +1109,120 @@ fn api_spawn_session_with_preset(
                     }
                 };
 
-                let request = match request_from_preset(&preset, requested_port) {
+                let requested_selection = match payload.get("selection") {
+                    None => None,
+                    Some(value) => match serde_json::from_value::<PresetBundleSelection>(value.clone()) {
+                        Ok(selection) => Some(selection),
+                        Err(error) => {
+                            return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                                warp::reply::with_status(
+                                    warp::reply::json(&serde_json::json!({"ok": false, "code": "invalid_selection", "error": error.to_string()})),
+                                    warp::http::StatusCode::BAD_REQUEST,
+                                ),
+                            ));
+                        }
+                    },
+                };
+                let expected_revision = payload
+                    .get("expected_revision")
+                    .and_then(serde_json::Value::as_u64);
+                if requested_selection.is_some() && expected_revision.is_none() {
+                    return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                        warp::reply::with_status(
+                            warp::reply::json(&serde_json::json!({"ok": false, "code": "expected_revision_required", "error": "expected_revision is required with a selection"})),
+                            warp::http::StatusCode::BAD_REQUEST,
+                        ),
+                    ));
+                }
+                if let Some(expected) = expected_revision
+                    && expected != preset.revision
+                {
+                    return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                        warp::reply::with_status(
+                            warp::reply::json(&serde_json::json!({"ok": false, "code": "revision_conflict", "error": "preset revision is stale", "revision": preset.revision})),
+                            warp::http::StatusCode::CONFLICT,
+                        ),
+                    ));
+                }
+
+                let (launch_preset, resolved_selection_hash) = if preset.bundle.is_some() {
+                    let capabilities = super::preset_bundles::current_capabilities(&app_config).await;
+
+                    // current_capabilities().await is the only suspension point between the
+                    // initial preset snapshot above and its use below; re-fetch and re-validate
+                    // here so a concurrent mutation during that await can't let a stale preset
+                    // reach resolve_preset/launch.
+                    let preset = {
+                        let presets = state.presets.lock().unwrap();
+                        match presets.iter().find(|p| p.id == preset_id).cloned() {
+                            Some(p) => p,
+                            None => {
+                                return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(warp::reply::json(
+                                    &serde_json::json!({"ok": false, "error": "Preset not found"}),
+                                )));
+                            }
+                        }
+                    };
+                    if let Some(expected) = expected_revision
+                        && expected != preset.revision
+                    {
+                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                            warp::reply::with_status(
+                                warp::reply::json(&serde_json::json!({"ok": false, "code": "revision_conflict", "error": "preset revision is stale", "revision": preset.revision})),
+                                warp::http::StatusCode::CONFLICT,
+                            ),
+                        ));
+                    }
+
+                    let resolved = match crate::presets::resolver::resolve_preset(
+                        &preset,
+                        requested_selection.as_ref(),
+                        &capabilities,
+                    ) {
+                        Ok(resolved) => resolved,
+                        Err(issues) => {
+                            return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                                warp::reply::with_status(
+                                    warp::reply::json(&serde_json::json!({"ok": false, "code": "selection_invalid", "error": issues})),
+                                    warp::http::StatusCode::BAD_REQUEST,
+                                ),
+                            ));
+                        }
+                    };
+                    if let Some(expected_hash) = payload.get("expected_resolved_config_hash").and_then(serde_json::Value::as_str)
+                        && expected_hash != resolved.config_hash
+                    {
+                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                            warp::reply::with_status(
+                                warp::reply::json(&serde_json::json!({"ok": false, "code": "preview_stale", "error": "resolved configuration changed", "resolved_config_hash": resolved.config_hash})),
+                                warp::http::StatusCode::PRECONDITION_FAILED,
+                            ),
+                        ));
+                    }
+                    (resolved.preset, Some(resolved.selection_hash))
+                } else {
+                    (preset.clone(), None)
+                };
+
+                // Final live-state check immediately before the resolved config is
+                // frozen into a session/launch request: closes the window even if a
+                // future refactor adds an await between here and the checks above.
+                if let Some(expected) = expected_revision {
+                    let live_revision = {
+                        let presets = state.presets.lock().unwrap();
+                        presets.iter().find(|p| p.id == preset_id).map(|p| p.revision)
+                    };
+                    if live_revision != Some(expected) {
+                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                            warp::reply::with_status(
+                                warp::reply::json(&serde_json::json!({"ok": false, "code": "revision_conflict", "error": "preset revision is stale", "revision": live_revision})),
+                                warp::http::StatusCode::CONFLICT,
+                            ),
+                        ));
+                    }
+                }
+
+                let request = match request_from_preset(&launch_preset, requested_port) {
                     Ok(request) => request,
                     Err(error) => {
                         return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
@@ -1129,6 +1244,7 @@ fn api_spawn_session_with_preset(
                     request.backend(),
                     Some(request.model_identity()),
                 );
+                session.selection_hash = resolved_selection_hash;
                 session.launch = Some(request.for_persistence());
 
                 if !state.add_session(session) {
@@ -1141,7 +1257,14 @@ fn api_spawn_session_with_preset(
                 let response_backend = request.backend();
                 let response_port = request.port();
 
-                match launch_local(Arc::new(state.clone()), request, &app_config).await {
+                match launch_local_with_resolved_preset(
+                    Arc::new(state.clone()),
+                    request,
+                    &app_config,
+                    Some(launch_preset),
+                )
+                .await
+                {
                     Ok(()) => {
                         state.update_session_status(&session_id, SessionStatus::Running);
                         Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(warp::reply::json(

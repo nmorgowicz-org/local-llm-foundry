@@ -43,7 +43,7 @@ const configuredAttachTimeout = Number.parseInt(process.env.CAPTURE_ATTACH_TIMEO
 export const CAPTURE_ATTACH_TIMEOUT_MS = Number.isFinite(configuredAttachTimeout) && configuredAttachTimeout > 0
     ? configuredAttachTimeout
     : 120000;
-export const BINARY_PATH = join(ROOT_DIR, 'target/release/llama-monitor');
+export const BINARY_PATH = join(ROOT_DIR, 'target/release/local-llm-foundry');
 export const CAPTURE_FORM_AUTH = process.env.SCREENSHOT_FORM_AUTH || 'admin:secret123';
 export const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 

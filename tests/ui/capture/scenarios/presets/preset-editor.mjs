@@ -3,7 +3,7 @@
 import { join } from 'path';
 import { attachToServer } from '../../harness/attach.mjs';
 import { gotoApp } from '../../harness/browser.mjs';
-import { currentArtifactsDir, tagFilename, sleep } from '../../harness/paths.mjs';
+import { DEFAULT_VIEWPORT, currentArtifactsDir, tagFilename, sleep } from '../../harness/paths.mjs';
 import { captureShot } from '../../harness/shot.mjs';
 
 export default async function(ctx, options) {
@@ -27,6 +27,24 @@ export default async function(ctx, options) {
 
     // Capture Model+Context section (default active)
     await captureShot(page, 'preset-editor-model-tab.png', { fullPage: true });
+
+    // Phase 5: the typed generation controls need an explicit dark/light and
+    // narrow-width receipt; the general editor capture is not sufficient UX
+    // evidence for the added reasoning rows.
+    await page.evaluate(() => {
+        document.querySelector('#preset-modal .preset-editor-nav [data-section="generation"]')?.click();
+    });
+    await sleep(350);
+    await captureShot(page, 'preset-editor-generation-dark.png', { fullPage: true });
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+    await sleep(250);
+    await captureShot(page, 'preset-editor-generation-light.png', { fullPage: true });
+    await page.setViewport({ width: 430, height: 900, deviceScaleFactor: 1 });
+    await sleep(250);
+    await captureShot(page, 'preset-editor-generation-narrow.png', { fullPage: true });
+    await page.setViewport(DEFAULT_VIEWPORT);
+    await page.evaluate(() => document.documentElement.removeAttribute('data-theme'));
+    await sleep(250);
 
     // 2. Capture Context section at the host-cache recommendation.
     await page.evaluate(() => {

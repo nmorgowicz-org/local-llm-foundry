@@ -34,6 +34,7 @@
     <link rel="stylesheet" href="/css/tune-panel.css">
     <link rel="stylesheet" href="/css/calibration.css">
     <link rel="stylesheet" href="/css/evidence-drawer.css">
+    <link rel="stylesheet" href="/css/preset-bundle-drawer.css">
     <link rel="stylesheet" href="/css/modal-sizing.css">
 <!-- Self-hosted vendor scripts (no CDN) -->
 <script src="/vendor/js/marked.min.js"></script>
@@ -2620,6 +2621,11 @@
                         <span class="pni-dot" style="--dot-color: rgba(99,102,241,0.8)"></span>
                         <span class="pni-label">Model</span>
                     </button>
+                    <button type="button" class="preset-nav-item" role="tab" aria-pressed="false" data-section="variants">
+                        <svg class="pni-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                        <span class="pni-dot" style="--dot-color: rgba(20,184,166,0.8)"></span>
+                        <span class="pni-label">Variants</span>
+                    </button>
                     <button type="button" class="preset-nav-item" role="tab" aria-pressed="false" data-section="context">
                         <svg class="pni-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
                         <span class="pni-dot" style="--dot-color: rgba(6,182,212,0.8)"></span>
@@ -2700,6 +2706,15 @@
                                     <button type="button" class="btn-sm btn-preset" id="preset-browse-mmproj-btn" title="Browse filesystem for .mmproj.gguf files">Browse</button>
                                 </div>
                             </div>
+                            <div class="pe-field">
+                                <label class="pe-label" for="modal-mmproj-offload" title="Whether the multimodal projector is placed on the GPU. Default follows llama.cpp.">Projector offload</label>
+                                <select class="pe-select" id="modal-mmproj-offload">
+                                    <option value="">Default</option>
+                                    <option value="true">On</option>
+                                    <option value="false">Off</option>
+                                </select>
+                                <div class="pe-field-hint" id="modal-mmproj-offload-hint"></div>
+                            </div>
 <div class="pe-field">
                                 <label class="pe-label" for="modal-chat-template-file" title="Path to a chat template file. Wizard-created presets can auto-install one for models that need a custom template.">Chat Template File (--chat-template-file)</label>
                                 <div class="pe-field-hint" id="preset-chat-template-status" style="margin-bottom:4px;">Chat template: built-in — using the model's built-in template</div>
@@ -2746,7 +2761,75 @@
                     </div>
                 </div>
 
-                    <!-- 2: Context & KV Cache -->
+                    <!-- 2: Model variants and exact launch choices -->
+                    <div class="preset-editor-section" data-section="variants">
+                        <div class="pe-section-header">
+                            <span class="pe-section-accent" style="--accent: rgba(20,184,166,0.7)"></span>
+                            <div>
+                                <h3 class="pe-section-title">Model variants</h3>
+                                <p class="pe-section-desc">Keep exact artifacts and reproducible launch choices together</p>
+                            </div>
+                        </div>
+                        <div class="pe-section-body">
+                            <div id="preset-bundle-empty" class="preset-bundle-empty">
+                                <strong>This preset is a legacy single-artifact profile.</strong>
+                                <p>Convert it to manage explicitly confirmed model artifacts, context, K/V, batch, and MoE choices. Conversion does not group it with similarly named files.</p>
+                                <button type="button" class="btn-sm btn-preset" id="preset-convert-bundle">Convert to managed bundle</button>
+                            </div>
+                            <div id="preset-bundle-editor" hidden>
+                                <div class="pe-field-hint preset-bundle-policy">Bundle membership is explicit. Suggested metadata is provisional until you confirm each artifact.</div>
+                                <div id="preset-bundle-artifacts" class="preset-bundle-artifacts"></div>
+                                <div class="pe-row pe-row-3 preset-bundle-add-row">
+                                    <div class="pe-field">
+                                        <label class="pe-label" for="modal-bundle-artifact-path">Add artifact path</label>
+                                        <div class="pe-input-row">
+                                            <input type="text" class="pe-input" id="modal-bundle-artifact-path" placeholder="/path/to/variant.gguf">
+                                            <button type="button" class="btn-sm btn-preset" id="preset-bundle-browse" title="Browse for a GGUF artifact">Browse</button>
+                                        </div>
+                                    </div>
+                                    <div class="pe-field">
+                                        <label class="pe-label" for="modal-bundle-artifact-role">Artifact role</label>
+                                        <select class="pe-select" id="modal-bundle-artifact-role">
+                                            <option value="weights">Weights</option>
+                                            <option value="mmproj">Multimodal projector</option>
+                                            <option value="draft">Draft model</option>
+                                        </select>
+                                    </div>
+                                    <div class="pe-field preset-bundle-add-action">
+                                        <label class="pe-label">&nbsp;</label>
+                                        <button type="button" class="btn-sm btn-preset" id="preset-bundle-add">Confirm and add artifact</button>
+                                    </div>
+                                </div>
+                                <div class="pe-field-hint" id="modal-bundle-artifact-warning" role="alert"></div>
+                                <div class="pe-field">
+                                    <label class="pe-label" for="modal-bundle-artifact">Selected weights artifact</label>
+                                    <select class="pe-select" id="modal-bundle-artifact"></select>
+                                    <div class="pe-field-hint" id="modal-bundle-artifact-meta"></div>
+                                </div>
+                                <div class="pe-row pe-row-3">
+                                    <div class="pe-field">
+                                        <label class="pe-label" for="modal-bundle-context">Context choice</label>
+                                        <select class="pe-select" id="modal-bundle-context"></select>
+                                    </div>
+                                    <div class="pe-field">
+                                        <label class="pe-label" for="modal-bundle-kv">K/V policy</label>
+                                        <select class="pe-select" id="modal-bundle-kv"></select>
+                                    </div>
+                                    <div class="pe-field">
+                                        <label class="pe-label" for="modal-bundle-performance">Batch / micro-batch</label>
+                                        <select class="pe-select" id="modal-bundle-performance"></select>
+                                    </div>
+                                </div>
+                                <div class="pe-field" id="preset-bundle-moe-wrap" hidden>
+                                    <label class="pe-label" for="modal-bundle-cpu-moe">CPU MoE placement</label>
+                                    <select class="pe-select" id="modal-bundle-cpu-moe"></select>
+                                    <div class="pe-field-hint">Dense artifacts do not expose CPU MoE choices.</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 3: Context & KV Cache -->
                     <div class="preset-editor-section" data-section="context">
                         <div class="pe-section-header">
                             <span class="pe-section-accent" style="--accent: rgba(6,182,212,0.7)"></span>
@@ -2780,10 +2863,11 @@
                                 <div class="pe-field">
                                     <label class="pe-label" for="modal-ctk" title="KV cache key quantization. q8_0 is the best quality-per-byte for keys. f16 = lossless. q4_0/iq4_nl = 4-bit for aggressive VRAM savings.">KV Key Type (-ctk)</label>
                                     <select class="pe-select" id="modal-ctk">
-                                        <option value="q8_0">q8_0 (recommended)</option>
                                         <option value="f16">f16 (lossless)</option>
-                                        <option value="bf16">bf16</option>
+                                        <option value="q8_0">q8_0 (recommended)</option>
                                         <option value="q4_0">q4_0</option>
+                                        <option disabled>────────</option>
+                                        <option value="bf16">bf16</option>
                                         <option value="q4_1">q4_1</option>
                                         <option value="iq4_nl">iq4_nl</option>
                                         <option value="q5_0">q5_0</option>
@@ -2796,8 +2880,9 @@
                                     <select class="pe-select" id="modal-ctv">
                                         <option value="f16">f16 (default)</option>
                                         <option value="q8_0">q8_0</option>
-                                        <option value="bf16">bf16</option>
                                         <option value="q4_0">q4_0</option>
+                                        <option disabled>────────</option>
+                                        <option value="bf16">bf16</option>
                                         <option value="q4_1">q4_1</option>
                                         <option value="iq4_nl">iq4_nl</option>
                                         <option value="q5_0">q5_0</option>
@@ -2821,6 +2906,15 @@
                                         <option value="">Default</option>
                                         <option value="true">On (--kv-unified)</option>
                                         <option value="false">Off (--no-kv-unified)</option>
+                                    </select>
+                                </div>
+                                <div class="pe-field" id="modal-workload-policy-wrap" style="display:none;">
+                                    <label class="pe-label" for="modal-workload-policy" title="Bundle workload eligibility policy. Flat presets do not have a workload policy.">Bundle Workload</label>
+                                    <select class="pe-select" id="modal-workload-policy">
+                                        <option value="general_chat">General chat</option>
+                                        <option value="agentic_tools">Agentic tools</option>
+                                        <option value="roleplay_creative">Roleplay / creative</option>
+                                        <option value="custom_unknown">Custom / unknown</option>
                                     </select>
                                 </div>
                                 <div class="pe-field">
@@ -3024,6 +3118,20 @@
                                          <option value="off">off</option>
                                      </select>
                                  </div>
+                                 <div class="pe-field">
+                                     <label class="pe-label" for="modal-llama-reasoning-effort" title="Native llama.cpp reasoning effort. The available values come from the selected binary.">llama.cpp Reasoning Effort</label>
+                                     <select class="pe-select" id="modal-llama-reasoning-effort">
+                                         <option value="default">Default</option>
+                                     </select>
+                                     <div class="pe-field-hint" id="modal-llama-reasoning-effort-hint"></div>
+                                 </div>
+                                 <div class="pe-field">
+                                     <label class="pe-label" for="modal-llama-reasoning-format" title="Native llama.cpp reasoning format. Auto is represented by Default and emits no flag.">llama.cpp Reasoning Format</label>
+                                     <select class="pe-select" id="modal-llama-reasoning-format">
+                                         <option value="">Default (auto)</option>
+                                     </select>
+                                     <div class="pe-field-hint" id="modal-llama-reasoning-format-hint"></div>
+                                 </div>
                              </div>
                              <div class="pe-row">
                                  <div class="pe-field">
@@ -3040,6 +3148,15 @@
                                           <option value="">(default)</option>
                                           <option value="json">json</option>
                                       </select>
+                                  </div>
+                                  <div class="pe-field">
+                                      <label class="pe-label" for="modal-llama-reasoning-preserve" title="Preserve native llama.cpp reasoning output across the full conversation history.">llama.cpp Preserve Reasoning</label>
+                                      <select class="pe-select" id="modal-llama-reasoning-preserve">
+                                          <option value="">Default</option>
+                                          <option value="true">On</option>
+                                          <option value="false">Off</option>
+                                      </select>
+                                      <div class="pe-field-hint" id="modal-llama-reasoning-preserve-hint"></div>
                                   </div>
                               </div>
                          </div>
@@ -4728,6 +4845,47 @@
                                 <input type="number" id="spawn-cache-reuse" min="0" step="1" placeholder="disabled">
                             </div>
                             <div class="hardware-field">
+                                <label for="spawn-cache-idle-slots" title="Whether idle slot prompt caches are retained by llama.cpp.">Idle slot cache</label>
+                                <select id="spawn-cache-idle-slots">
+                                    <option value="">(default)</option>
+                                    <option value="true">On</option>
+                                    <option value="false">Off</option>
+                                </select>
+                                <div class="field-hint" id="spawn-cache-idle-slots-hint"></div>
+                            </div>
+                            <div class="hardware-field">
+                                <label for="spawn-reasoning-effort" title="Native llama.cpp reasoning effort. Values are enabled only when advertised by the selected binary.">llama.cpp effort</label>
+                                <select id="spawn-reasoning-effort">
+                                    <option value="default">Default</option>
+                                    <option value="minimal">minimal</option>
+                                    <option value="low">low</option>
+                                    <option value="medium">medium</option>
+                                    <option value="high">high</option>
+                                    <option value="xhigh">xhigh</option>
+                                    <option value="max">max</option>
+                                </select>
+                                <div class="field-hint" id="spawn-reasoning-effort-hint"></div>
+                            </div>
+                            <div class="hardware-field">
+                                <label for="spawn-reasoning-format" title="Native llama.cpp reasoning format. Default leaves format selection to the runtime.">llama.cpp format</label>
+                                <select id="spawn-reasoning-format">
+                                    <option value="">Default (auto)</option>
+                                    <option value="none">none</option>
+                                    <option value="deepseek">deepseek</option>
+                                    <option value="deepseek-legacy">deepseek-legacy</option>
+                                </select>
+                                <div class="field-hint" id="spawn-reasoning-format-hint"></div>
+                            </div>
+                            <div class="hardware-field">
+                                <label for="spawn-reasoning-preserve" title="Native llama.cpp reasoning preservation; distinct from chat-template preserve_thinking.">llama.cpp preserve</label>
+                                <select id="spawn-reasoning-preserve">
+                                    <option value="">Default</option>
+                                    <option value="true">On</option>
+                                    <option value="false">Off</option>
+                                </select>
+                                <div class="field-hint" id="spawn-reasoning-preserve-hint"></div>
+                            </div>
+                            <div class="hardware-field">
                                 <label><input type="checkbox" id="spawn-no-cont-batching"> Disable continuous batching</label>
                             </div>
                             <div class="hardware-field">
@@ -4744,6 +4902,15 @@
                                     <option value="dio">dio</option>
                                 </select>
                                 <div class="field-hint">Opt-in; non-default modes can change startup memory behavior.</div>
+                            </div>
+                            <div class="hardware-field">
+                                <label for="spawn-mmproj-offload" title="Whether the multimodal projector is placed on the GPU. Default follows llama.cpp.">Projector offload</label>
+                                <select id="spawn-mmproj-offload">
+                                    <option value="">(default)</option>
+                                    <option value="true">On</option>
+                                    <option value="false">Off</option>
+                                </select>
+                                <div class="field-hint" id="spawn-mmproj-offload-hint"></div>
                             </div>
                             <div class="hardware-field">
                                 <label for="spawn-threads" title="-t: CPU thread count for inference. On Apple Silicon, Apple recommends 1 (Metal GPU handles compute). Never exceed your chip's P-core count. Leave blank for server default.">Threads (-t)</label>

@@ -20,6 +20,40 @@ The Spawn Wizard is the guided flow for creating a model server. It provides:
 - Per-backend settings isolation
 - Workload scenario mapping (page-1 use-case selection drives backend VRAM policy)
 
+## Preset Editor llama.cpp field parity
+
+The Preset Editor and Spawn Wizard share the canonical field registry in
+`static/js/features/spawn-wizard-groups.js`. The generated parity snapshot is
+`tests/ui/core/fixtures/llama-config-field-catalog.json`; it records the
+persisted key, editor control, wizard status, value type, and Pro category for
+each llama.cpp setting. This prevents an editor-only serializer from silently
+drifting away from the wizard contract.
+
+The editor's `ctk` and `ctv` controls are binary-capability sourced. `f16`,
+`q8_0`, and `q4_0` are shown first, followed by a separator and values
+advertised by the selected llama.cpp binary. Unsupported stored values remain
+visible and disabled with the capability reason, so an unrelated edit cannot
+erase them. Native llama.cpp reasoning effort, format, preservation, and
+multimodal-projector offload are separate from Rapid-MLX request-default
+reasoning settings. Bundle workload policy is shown only for bundled presets;
+flat presets do not gain that field.
+
+### Canonical llama.cpp wizard controls
+
+The wizard uses one same-field Guided/Pro path for llama.cpp runtime settings.
+Guided exposes them through the All settings drawer; Pro
+places them in the searchable category rail. Both presentations read and write
+the same control node and `wizardState`, and therefore produce identical spawn
+and preset payloads.
+
+The canonical additions are idle-slot cache retention, projector offload,
+native reasoning effort/format/preserve, plus the previously existing
+continuous-batching, SWA, load-mode, verbosity, checkpoint, and cache-reuse
+controls. Native reasoning preservation is fail-closed: it is rendered with a
+reason and cannot be selected while the selected binary or chat-template
+compatibility is unknown. It is separate from `preserve_thinking`, which is a
+legacy chat-template kwarg retained for compatibility.
+
 ## Frontend module map
 
 `static/js/features/spawn-wizard.js` was a single ~5,900-line file through Phase 7. It has
@@ -288,8 +322,6 @@ The wizard supports two inference backends:
 - Rapid-MLX — optimized for MLX-ecosystem models on Apple Silicon
 
 Engine selection appears on Step 0 (Model) as two cards.
-
-![Engine selection](../screenshots/spawn-wizard-engines--neutral--dark.png)
 
 The wizard:
 

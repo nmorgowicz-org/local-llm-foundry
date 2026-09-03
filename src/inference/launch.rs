@@ -112,6 +112,12 @@ pub fn request_from_api_payload(payload: &serde_json::Value) -> Result<LocalLaun
 }
 
 pub fn validate_preset_backend_config(preset: &ModelPreset) -> Result<()> {
+    if preset.bundle.is_some() && preset.backend != InferenceBackend::LlamaCpp {
+        anyhow::bail!(
+            "preset '{}' contains a llama.cpp bundle but is not a llama.cpp preset",
+            preset.name
+        );
+    }
     match preset.backend {
         InferenceBackend::LlamaCpp if preset.rapid_mlx.is_some() => anyhow::bail!(
             "llama_cpp preset '{}' must not include rapid_mlx configuration",
@@ -155,7 +161,29 @@ pub fn validate_preset_backend_config(preset: &ModelPreset) -> Result<()> {
             }
             Ok(())
         }
-        InferenceBackend::LlamaCpp => Ok(()),
+        InferenceBackend::LlamaCpp => {
+            let issues = crate::presets::validation::validate_llama_launch_policy(preset, None);
+            if !issues.is_empty() {
+                let codes: Vec<String> = issues
+                    .iter()
+                    .map(|i| format!("{} ({})", i.code, i.message))
+                    .collect();
+                anyhow::bail!(
+                    "llama.cpp preset '{}' failed launch validation: {}",
+                    preset.name,
+                    codes.join("; ")
+                );
+            }
+            let bundle_issues = crate::presets::bundle::validate_bundle_structural(preset);
+            if !bundle_issues.is_empty() {
+                anyhow::bail!(
+                    "llama.cpp preset '{}' failed bundle validation: {}",
+                    preset.name,
+                    bundle_issues.join("; ")
+                );
+            }
+            Ok(())
+        }
     }
 }
 
@@ -163,7 +191,14 @@ pub fn request_from_preset(
     preset: &ModelPreset,
     port_override: Option<u16>,
 ) -> Result<LocalLaunchRequest> {
-    validate_preset_backend_config(preset)?;
+    // Bundle defaults are an explicit compatibility projection. Keep the
+    // persisted bundle authoritative while giving the existing launcher the
+    // ordinary flat request it already understands.
+    let mut preset = preset.clone();
+    if preset.bundle.is_some() {
+        crate::presets::bundle::materialize_default_projection(&mut preset);
+    }
+    validate_preset_backend_config(&preset)?;
     match preset.backend {
         InferenceBackend::RapidMlx => {
             let mut config = preset.rapid_mlx.clone().ok_or_else(|| {
@@ -287,6 +322,11 @@ pub fn request_from_preset(
             reasoning: preset.reasoning.clone(),
             reasoning_budget: preset.reasoning_budget,
             reasoning_budget_message: preset.reasoning_budget_message.clone(),
+            mmproj_offload: preset.mmproj_offload,
+            llama_reasoning_effort: preset.llama_reasoning_effort.clone(),
+            llama_reasoning_format: preset.llama_reasoning_format.clone(),
+            llama_reasoning_preserve: preset.llama_reasoning_preserve,
+            bundle: preset.bundle.clone(),
             image_min_tokens: preset.image_min_tokens,
             image_max_tokens: preset.image_max_tokens,
             ..Default::default()
@@ -361,18 +401,82 @@ pub async fn construct_adapter(
             // Capability claims must be tied to the exact selected llama-server
             // binary rather than the build bundled during development. Snapshot
             // generation is bounded; validation below remains the launch gate.
-            if app_config.llama_server_path.is_file() {
+            let snapshot = if app_config.llama_server_path.is_file() {
                 let _ = crate::inference::llama_cpp_capabilities::generate_snapshot(
                     &app_config.llama_server_path,
                 )
                 .await;
+                match crate::inference::llama_cpp_capabilities::ExecutableIdentity::from_path(
+                    &app_config.llama_server_path,
+                ) {
+                    Ok(identity) => {
+                        crate::inference::llama_cpp_capabilities::cached_snapshot(&identity)
+                    }
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
+            // Launch gate: binary-specific policy (e.g. mixed main-K/V) is
+            // enforced against the live snapshot before any process is spawned.
+            // Structural checks already ran at request construction time.
+            if let Some(snap) = &snapshot
+                && let Some(issue) = crate::presets::validation::validate_main_kv_policy(
+                    &config.ctk,
+                    &config.ctv,
+                    snap,
+                )
+            {
+                anyhow::bail!(
+                    "llama.cpp launch blocked: {} ({})",
+                    issue.code,
+                    issue.message
+                );
+            }
+            if (config.ctk.eq_ignore_ascii_case("q8_0") && config.ctv.eq_ignore_ascii_case("q4_0"))
+                && snapshot.is_none()
+            {
+                anyhow::bail!(
+                    "llama.cpp launch blocked: capability probe unavailable for mixed main K/V"
+                );
             }
             let gpu_env = state.gpu_env.lock().unwrap().clone();
-            Ok(BackendAdapter::LlamaCpp(Arc::new(LlamaCppAdapter::new(
-                app_config.clone(),
-                config.as_ref().clone(),
-                gpu_env,
-            ))))
+            if let Some(bundle) = &config.bundle {
+                match &snapshot {
+                    Some(snapshot) => {
+                        let issues = crate::presets::resolver::validate_runtime_selection(
+                            bundle,
+                            &bundle.default_selection,
+                            snapshot,
+                            cfg!(target_os = "macos"),
+                        );
+                        if !issues.is_empty() {
+                            anyhow::bail!(
+                                "llama.cpp bundle launch blocked by runtime validation: {}",
+                                issues.join("; ")
+                            );
+                        }
+                    }
+                    None if bundle
+                        .default_selection
+                        .n_cpu_moe
+                        .is_some_and(|value| value > 0) =>
+                    {
+                        anyhow::bail!(
+                            "llama.cpp bundle launch blocked: capability probe unavailable for n_cpu_moe validation"
+                        );
+                    }
+                    None => {}
+                }
+            }
+            Ok(BackendAdapter::LlamaCpp(Arc::new(
+                LlamaCppAdapter::new_with_capabilities(
+                    app_config.clone(),
+                    config.as_ref().clone(),
+                    gpu_env,
+                    snapshot,
+                ),
+            )))
         }
         LocalLaunchRequest::RapidMlx(config) => {
             crate::inference::rapid_mlx::ensure_local_platform_supported()?;
@@ -499,6 +603,20 @@ pub async fn launch_local(
     request: LocalLaunchRequest,
     app_config: &AppConfig,
 ) -> Result<()> {
+    launch_local_with_resolved_preset(state, request, app_config, None).await
+}
+
+/// Same as `launch_local`, but also carries the fully resolved `ModelPreset`
+/// behind this launch when the caller has one (bundle/preset launches do; a
+/// direct `ServerConfig` payload or a restored session without a matching
+/// preset does not). Only the launch-evidence sampler (architecture 12)
+/// consumes it; every other code path behaves identically either way.
+pub async fn launch_local_with_resolved_preset(
+    state: Arc<AppState>,
+    request: LocalLaunchRequest,
+    app_config: &AppConfig,
+    resolved_preset: Option<ModelPreset>,
+) -> Result<()> {
     let adapter = construct_adapter(&request, &state, app_config).await?;
     let legacy_llama_config = match &request {
         LocalLaunchRequest::LlamaCpp(config) => Some(config.as_ref().clone()),
@@ -513,6 +631,10 @@ pub async fn launch_local(
         port,
         model_identity,
         legacy_llama_config,
+        crate::llama::server::EvidenceContext {
+            app_config: app_config.clone(),
+            resolved_preset,
+        },
     )
     .await
 }
@@ -572,6 +694,39 @@ mod tests {
                     .contains("llama_cpp launch must not include")
             );
         }
+    }
+
+    fn valid_rapid_mlx_preset() -> ModelPreset {
+        ModelPreset {
+            name: "Rapid".into(),
+            backend: InferenceBackend::RapidMlx,
+            rapid_mlx: Some(crate::inference::rapid_mlx::RapidMlxConfig {
+                model_path: "/models/rapid".into(),
+                port: 8123,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Fixture 9 (Phase 10a): a Rapid-MLX preset proving no llama field
+    /// leakage — a valid Rapid-MLX preset (llama-only fields left at their
+    /// defaults) passes, while carrying a llama.cpp bundle or an api_key
+    /// nested under rapid_mlx (instead of the shared top-level field) is
+    /// rejected by the same gate llama_cpp presets are held to in reverse.
+    #[test]
+    fn rapid_mlx_preset_with_no_llama_fields_passes() {
+        let preset = valid_rapid_mlx_preset();
+        assert!(preset.bundle.is_none());
+        validate_preset_backend_config(&preset).unwrap();
+    }
+
+    #[test]
+    fn rapid_mlx_preset_rejects_a_llama_bundle() {
+        let mut preset = valid_rapid_mlx_preset();
+        preset.bundle = Some(crate::presets::bundle::PresetBundleSpec::default());
+        let error = validate_preset_backend_config(&preset).unwrap_err();
+        assert!(error.to_string().contains("not a llama.cpp preset"));
     }
 
     #[tokio::test]

@@ -1,0 +1,53 @@
+[
+  {
+    "name": "default selection",
+    "bundle_id": "bundle-golden-default",
+    "tune_id": "tune-golden-default",
+    "workload_policy": "general_chat",
+    "tensor_split": "1,0",
+    "api_key": null,
+    "selection": {
+      "artifact_id": "weights",
+      "context_size": 160000,
+      "kv_policy": "q4_0_q4_0",
+      "performance_id": "balanced",
+      "n_cpu_moe": 0
+    },
+    "expected_selection_hash": "sel-v1:fc0b70c567dfc677cad25dc2303a559f3fe32c565e97d8dc1d22b9bef997dfb3",
+    "expected_config_hash": "cfg-v1:06510fff0f58470bdb8291910f0421c8aa1365ee42d1c1098b8c1f9d5298fff8"
+  },
+  {
+    "name": "agentic larger context",
+    "bundle_id": "bundle-golden-agentic",
+    "tune_id": "tune-golden-agentic",
+    "workload_policy": "agentic_tools",
+    "tensor_split": "",
+    "api_key": "redacted-secret",
+    "selection": {
+      "artifact_id": "weights",
+      "context_size": 200000,
+      "kv_policy": "f16_f16",
+      "performance_id": "balanced",
+      "n_cpu_moe": null
+    },
+    "expected_selection_hash": "sel-v1:4b7dddcd9bd4f7aa94f5bcbb86a8f32b1d21d252ab5604a734b999090ddb7919",
+    "expected_config_hash": "cfg-v1:388fc39be9ab02cfda7e8a09809ecc37bae25de548074420c3deaf59255c9c59"
+  },
+  {
+    "name": "creative throughput",
+    "bundle_id": "bundle-golden-creative",
+    "tune_id": "tune-golden-creative",
+    "workload_policy": "roleplay_creative",
+    "tensor_split": "0.75,0.25",
+    "api_key": null,
+    "selection": {
+      "artifact_id": "weights",
+      "context_size": 160000,
+      "kv_policy": "q8_0_q8_0",
+      "performance_id": "balanced",
+      "n_cpu_moe": 0
+    },
+    "expected_selection_hash": "sel-v1:b9222e20faa0b3f0ab4a142cbd96344475dadb60cce2236dd2c50385bd70d2af",
+    "expected_config_hash": "cfg-v1:ccca19fc9af4028d7c94de89a93b7c87723a765a368776db5a6c25c6bfa90889"
+  }
+]

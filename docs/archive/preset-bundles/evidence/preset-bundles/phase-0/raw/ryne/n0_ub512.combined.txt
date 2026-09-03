@@ -1,0 +1,7 @@
+** WARNING: connection is not using a post-quantum key exchange algorithm.
+** This session may be vulnerable to "store now, decrypt later" attacks.
+** The server may need to be upgraded. See https://openssh.com/pq.html
+0.00.127.756 I llama_fit_params: printing estimated memory in MiB to stdout (device, model, context, compute) ...
+0.00.734.921 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+0.00.734.925 I common_memory_breakdown_print: |   - CUDA0 (RTX 5090)   | 32579 = 29860 + (23577 = 20798 +    2140 +     638) +      -20858 |
+0.00.734.926 I common_memory_breakdown_print: |   - Host               |                    719 =   515 +       0 +     203                |

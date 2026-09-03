@@ -289,11 +289,14 @@ Request:
 {
   "preset_id": "default-1",
   "name": "Session on port 8001",
-  "port": 8001
+  "port": 8001,
+  "selection": null,
+  "expected_revision": 1,
+  "expected_resolved_config_hash": "cfg-v1:<sha256>"
 }
 ```
 
-`preset_id` is required. `name` defaults to `Session on port {port}`. `port` defaults to `8001`.
+`preset_id` is required. For a bundled preset, the server resolves the saved default or the optional exact `selection`; it never trusts a client-submitted flat preset. `expected_revision` is checked when supplied and is required with a one-shot selection. `expected_resolved_config_hash` protects a preview-to-start action and returns `412 preview_stale` if the effective configuration changed. `name` defaults to `Session on port {port}`. `port` defaults to `8001`.
 
 Success response:
 
@@ -428,8 +431,9 @@ Emergency process kill for `llama-server`.
 
 ## Presets
 
-Presets are stored in `presets.json` and use the `ModelPreset` struct.
-Route handlers: `src/web/api/presets.rs`.
+Presets are stored in `presets.json` and use the `ModelPreset` struct. Bundle
+cards and selection resolution are handled separately from legacy CRUD in
+`src/web/api/preset_bundles.rs`.
 
 ### `GET /api/presets`
 Auth: api-token.
@@ -481,6 +485,56 @@ Auth: api-token.
   }
 ]
 ```
+
+### `GET /api/preset-cards`
+Auth: api-token.
+
+Returns the redacted setup-card projection and a catalog concurrency token. Cards expose safe artifact labels and availability, saved bundle selections, and bundle identity; local paths and API keys are not included.
+
+```json
+{
+  "cards": [{"id": "preset-1", "revision": 1, "name": "Qwen bundle", "bundle": {"bundle_id": "qwen38", "tune_id": "brainwaves-q4-q5", "default_selection": {"artifact_id": "weights-q4", "context_size": 160000, "kv_policy": "q4_0_q4_0", "performance_id": "balanced", "n_cpu_moe": 0}}}],
+  "catalog_etag": "catalog-v1:<sha256>"
+}
+```
+
+### `POST /api/presets/{id}/resolve`
+Auth: api-token.
+
+Resolves the saved bundle selection or an optional one-shot `selection` through the server-owned resolver. Resolution does not write state. The optional top-level `workload_policy` overrides the bundle policy for this preview only; it is not part of the typed selection. The response includes `sel-v1:` and `cfg-v1:` identifiers, normalized selection, changes, capability reasons, and a tagged estimate status. It never includes a flat preset, local artifact paths, API keys, or raw launch arguments.
+
+```json
+{"selection": {"artifact_id": "weights-q4", "context_size": 160000, "kv_policy": "q4_0_q4_0", "performance_id": "balanced", "n_cpu_moe": 0}, "workload_policy": "general_chat"}
+```
+
+### `PATCH /api/presets/{id}/selection`
+Auth: api-token.
+
+Updates a bundled preset’s saved default selection and, when supplied, its bundle-level `workload_policy`. `expected_revision` is required; the server strips any submitted `intent_source`, validates the candidate, durably saves it, then changes in-memory state. A stale revision returns `409` and leaves state unchanged. Workload policy is a top-level PATCH field, not a member of the typed selection.
+
+```json
+{"expected_revision": 1, "selection": {"artifact_id": "weights-q5", "context_size": 200000, "kv_policy": "q4_0_q4_0", "performance_id": "throughput", "n_cpu_moe": 6}, "workload_policy": "general_chat"}
+```
+
+#### Resolver issue codes
+
+`resolve`, `selection` (PATCH), and a session launch that resolves a bundled preset all share `crate::presets::resolver::resolve_preset`. When resolution fails, all three return `400` with `{"ok": false, "code": "selection_invalid", "error": <issues>}`, where `error` is the serialized `Vec<ValidationIssue>` (`{field, code, message, repair}`); the `/resolve` and PATCH routes JSON-stringify it into `error`, the session-launch route embeds the array directly. A successful `/resolve` response never carries these codes — its `capability_reasons` field only reports kv_policy quality-floor and mixed-K/V warnings, which are advisory, not blocking.
+
+| Code | Field | Trigger |
+|---|---|---|
+| `PRESET_NOT_BUNDLED` | `selection` | a one-shot `selection` was supplied for a non-bundled preset |
+| `INVALID_BUNDLE` | `bundle` | `bundle::validate_bundle_structural` rejected the bundle shape |
+| `INVALID_BACKEND_CONFIG` | `backend` | `validate_preset_backend_config` rejected the backend/rapid_mlx combination |
+| `artifact_not_found` | `selection` | the selected `artifact_id` is not present in the bundle |
+| `artifact_not_weights` | `selection` | the selected artifact is not a `Weights`-role artifact |
+| `artifact_not_local` | `selection` | the selected artifact has no adopted local path |
+| `MIXED_MAIN_KV_UNSUPPORTED` | `selection` | `kv_policy` is `q4_0`/`q8_0` mixed and the binary capability snapshot does not advertise `mixed_main_kv` |
+| `N_CPU_MOE_NEGATIVE` | `selection` | `n_cpu_moe` is negative |
+| `N_CPU_MOE_UNIFIED_MEMORY_UNQUALIFIED` | `selection` | `n_cpu_moe > 0` on a unified-memory host (CPU expert placement is not qualified there) |
+| `N_CPU_MOE_DENSE_MODEL` | `selection` | `n_cpu_moe > 0` but the artifact's `model_kind` is `Dense` |
+| `N_CPU_MOE_METADATA_UNKNOWN` | `selection` | `n_cpu_moe > 0` but the artifact's `model_kind` is `Unknown` or its GGUF metadata has no `moe_layer_count` — CPU expert placement requires authoritative MoE layer metadata, not just a MoE-shaped guess |
+| `N_CPU_MOE_EXCEEDS_LAYER_COUNT` | `selection` | `n_cpu_moe` exceeds the artifact's GGUF `moe_layer_count` |
+| `CAPABILITY_UNAVAILABLE` | `mmproj_offload`, `llama_reasoning_effort`, `llama_reasoning_format`, `llama_reasoning_preserve` | the requested typed flag's polarity is `Unavailable` in the binary's capability snapshot (e.g. `mmproj_offload: Some(true)` requires `typed.mmproj_offload.positive` to be `Available`) |
 
 ### `POST /api/model-defaults`
 Auth: api-token.
@@ -589,6 +643,10 @@ Request body (full `ModelPreset` shape, all fields optional with defaults):
 
 All fields use `#[serde(default)]` for backward compatibility.
 
+**KV cache fields:**
+
+`ctk` and `ctv` (strings, default empty = llama-server default) are the canonical K/V cache-type fields (schema v5). Launch validation reads only these. `cache_type_k`/`cache_type_v` below are retained for read-compatibility only; new writes should use the canonical fields.
+
 **Spawn V2 extended fields** (added after initial preset schema):
 
 | Field | Type | Default | Notes |
@@ -598,8 +656,8 @@ All fields use `#[serde(default)]` for backward compatibility.
 | `mmproj` | Option<String> | null | Multimodal projector path |
 | `grammar` | Option<String> | null | Grammar constraint file |
 | `json_schema` | Option<String> | null | JSON schema constraint |
-| `cache_type_k` | Option<String> | null | KV cache type for keys |
-| `cache_type_v` | Option<String> | null | KV cache type for values |
+| `cache_type_k` | Option<String> | null | Deprecated: use `ctk`. Retained for backward compatibility |
+| `cache_type_v` | Option<String> | null | Deprecated: use `ctv`. Retained for backward compatibility |
 | `max_tokens` | Option<u64> | null | Max tokens limit |
 | `enable_thinking` | Option<bool> | null | Enable thinking mode |
 | `preserve_thinking` | Option<bool> | null | Preserve thinking content |
@@ -666,22 +724,69 @@ Response:
 
 ### `PUT /api/presets/{id}`
 Auth: api-token.
-Updates the preset matched by the path `id`. Accepts the same `ModelPreset` shape as POST.
+Updates the preset matched by the path `id`. Accepts the same `ModelPreset`
+shape as POST. Updates must be sent as
+`{"expected_revision": <revision>, "preset": <model-preset>}` for both flat
+and bundled presets. The submitted flat projection must agree with
+`bundle.default_selection`; the server assigns the next revision and returns
+`409` for a stale revision or `400` for a projection conflict.
+
+### `POST /api/presets/{id}/copy`
+Auth: api-token.
+
+Creates a new preset from the current preset after checking its revision. The
+source is unchanged; the new preset receives a server-generated ID and
+`revision: 1`.
+
+```json
+{"expected_revision": 2, "new_name": "Qwen copy"}
+```
+
+### `POST /api/presets/{id}/convert-to-bundle`
+Auth: api-token.
+
+Explicitly converts one legacy flat preset into a one-artifact bundle. The
+conversion is transactional, uses the saved flat values and adopted companion
+paths, and assigns a fresh bundle/tune identity. `conversion` is reserved for
+future bounded conversion options.
+
+```json
+{"expected_revision": 1, "conversion": {}}
+```
+
+The Preset Editor uses this operation for an explicit legacy conversion. The
+result contains one confirmed weights artifact, `CustomUnknown` workload
+policy, one curated default selection, and only concrete nonzero batch/
+micro-batch choices. Additional Q4/Q5 or companion artifacts are added one at
+a time after GGUF metadata is checked; similarly named files are never grouped
+automatically. Duplicate local paths and duplicate HF repo/file/revision
+coordinates are rejected.
 
 ### `DELETE /api/presets/{id}`
-Auth: api-token.
+Auth: db-admin-token. Requires the exact confirmation string and the current
+preset revision.
 
 ```json
-{ "ok": true }
+{ "expected_revision": 2, "expected_catalog_etag": "catalog-v1:<sha256>", "confirmation": "DELETE PRESET" }
 ```
+
+`expected_catalog_etag` is optional for compatibility but the editor fetches a
+fresh value immediately before showing the confirmation prompt. A stale value
+returns `409` and makes no change. Successful deletion also removes the preset
+from saved collections.
 
 ### `POST /api/presets/reset`
-Auth: api-token.
-Replaces the in-memory and on-disk preset list with factory defaults.
+Auth: db-admin-token. Requires the current catalog etag and the exact
+confirmation string. Replaces the in-memory and on-disk preset list with
+factory defaults only after both guards pass.
 
 ```json
-{ "ok": true }
+{ "expected_catalog_etag": "catalog-v1:<sha256>", "confirmation": "RESET PRESETS" }
 ```
+
+Successful mutations return the updated `revision` where applicable and a
+fresh `catalog_etag`. Persistence failures return a non-success response and
+leave the live in-memory catalog unchanged.
 
 ## Templates
 

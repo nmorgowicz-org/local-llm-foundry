@@ -361,7 +361,6 @@ impl CapabilitySnapshot {
     pub fn is_valid_for(&self, current: &ExecutableIdentity) -> bool {
         self.executable_identity.path == current.path
             && self.executable_identity.file_hash == current.file_hash
-            && self.help_hash == hash_help(&self.serve_flags.join(" "))
     }
 
     /// Generate fingerprint that uniquely identifies this snapshot's subject.
@@ -2039,11 +2038,16 @@ Options:
             file_hash: "def456".into(),
             file_mtime_unix: 2000,
         };
+        // help_hash is deliberately built from raw --help text, not from
+        // `serve_flags.join(" ")`, so this test cannot pass against the
+        // help_hash-re-derivation bug by accident.
         let snap = CapabilitySnapshot {
             executable_identity: identity1.clone(),
             rapid_mlx_version: "0.10.10".into(),
-            help_hash: hash_help(""),
-            serve_flags: vec![],
+            help_hash: hash_help(
+                "usage: rapid-mlx serve [options]\n  --model PATH\n  --port PORT\n",
+            ),
+            serve_flags: vec!["--model".into(), "--port".into()],
             package_versions: vec![],
             installed_extras: InstalledExtras::default(),
             qualified_features: QualifiedFeatures::default(),
@@ -2057,6 +2061,53 @@ Options:
         };
         assert!(snap.is_valid_for(&identity1));
         assert!(!snap.is_valid_for(&identity2));
+    }
+
+    #[test]
+    fn cached_snapshot_hits_for_unchanged_executable_identity() {
+        // Regression test for the help_hash re-derivation bug: is_valid_for
+        // used to recompute help_hash from serve_flags.join(" ") at lookup
+        // time and compare it against a hash stored from real raw --help
+        // text at probe time. Those two strings differ for every real probe,
+        // so every lookup missed the cache even for an unchanged binary.
+        let identity = ExecutableIdentity {
+            path: "/tmp/rapid-mlx-cache-hit-test".into(),
+            file_hash: "unchanged-hash".into(),
+            file_mtime_unix: 1000,
+        };
+        let snap = CapabilitySnapshot {
+            executable_identity: identity.clone(),
+            rapid_mlx_version: "0.10.10".into(),
+            help_hash: hash_help(
+                "usage: rapid-mlx serve [options]\n  --model PATH\n  --draft PATH\n",
+            ),
+            serve_flags: vec!["--model".into(), "--draft".into()],
+            package_versions: vec![],
+            installed_extras: InstalledExtras::default(),
+            qualified_features: QualifiedFeatures::default(),
+            mtp_concurrency: MtpConcurrencyState::SingleActiveGreedy,
+            sampling_defaults: SamplingDefaultFields::default(),
+            sampling_cascade: SamplingCascade::default(),
+            evidence_timestamp: 0,
+            source: CapabilitySnapshotSource::AutoProbed,
+            measured_spec_decode: None,
+            superseded_spec_decode: None,
+        };
+        cache_snapshot(snap);
+        assert!(
+            cached_snapshot(&identity).is_some(),
+            "unchanged executable identity must hit the cache without re-probing"
+        );
+
+        let changed_identity = ExecutableIdentity {
+            path: "/tmp/rapid-mlx-cache-hit-test".into(),
+            file_hash: "changed-hash".into(),
+            file_mtime_unix: 2000,
+        };
+        assert!(
+            cached_snapshot(&changed_identity).is_none(),
+            "a changed file_hash must still miss the cache and re-probe"
+        );
     }
 
     #[test]

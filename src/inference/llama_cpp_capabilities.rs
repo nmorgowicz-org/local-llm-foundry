@@ -83,8 +83,40 @@ pub struct CapabilitySnapshot {
     pub tools: ToolCapabilities,
     /// Speculative decoding capabilities
     pub speculation: SpeculationCapabilities,
+    /// Typed evidence for Phase 2 llama.cpp-native options. Unlike a raw
+    /// substring check, this records both forms and the accepted value set.
+    #[serde(default)]
+    pub typed: TypedLlamaCapabilities,
+    /// Mixed main-K/V support gate (`q8_0` K + `q4_0` V fused-attention pair).
+    /// Product default is `supported: false` until a trusted build manifest is integrated.
+    pub mixed_main_kv: MixedMainKv,
     pub evidence_timestamp: u64,
     pub source: CapabilitySnapshotSource,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct EnumCapability {
+    pub supported: FeatureState,
+    #[serde(default)]
+    pub accepted_values: Vec<String>,
+    pub default_value: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct BooleanFlagCapability {
+    pub positive: FeatureState,
+    pub negative: FeatureState,
+    pub default_value: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct TypedLlamaCapabilities {
+    pub mmproj_offload: BooleanFlagCapability,
+    pub reasoning_effort: EnumCapability,
+    pub reasoning_format: EnumCapability,
+    pub reasoning_preserve: BooleanFlagCapability,
+    /// Help advertises the flag, but does not prove template support.
+    pub reasoning_preserve_template: FeatureState,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -93,6 +125,10 @@ pub struct CacheCapabilities {
     pub ram_cache: FeatureState,
     pub idle_slot_cache: FeatureState,
     pub cache_reuse: FeatureState,
+    /// Values advertised by the binary for the canonical `-ctk`/`-ctv` pair.
+    /// An empty list means the bounded help output did not expose a value set.
+    #[serde(default)]
+    pub kv_type_values: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -142,11 +178,104 @@ pub struct SpeculationCapabilities {
     pub ngram_spec: FeatureState,
 }
 
+/// Backend-owned mixed main-K/V support gate.
+///
+/// Only a trusted build manifest with exact SHA-256 binding may set `supported: true`.
+/// The only shipped provider (Phase 1b) sets `supported: false` unconditionally.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct MixedMainKv {
+    pub supported: bool,
+    /// Human-readable reason; load-bearing per invariant 17 — rendered in UI alongside the option.
+    pub reason: String,
+    /// How the value was determined: "product_default_denied", "build_manifest", etc.
+    pub source: String,
+}
+
+impl MixedMainKv {
+    /// Canonical product-default construction: rejected because we have no build
+    /// manifest binding to prove the fused-attention kernel property.
+    pub fn product_default_denied() -> Self {
+        Self {
+            supported: false,
+            reason: "Requires a llama.cpp build compiled with GGML_CUDA_FA_ALL_QUANTS advertising mixed main-K/V support through a product build manifest. Separate -ctk and -ctv value lists do not prove this kernel property.".into(),
+            source: "product_default_denied".into(),
+        }
+    }
+}
+
 impl CapabilitySnapshot {
+    /// Conservative snapshot used when no executable is configured (for
+    /// schema/API tests and degraded preview). It never authorizes optional
+    /// binary-specific behavior.
+    pub fn product_default() -> Self {
+        Self {
+            executable_identity: ExecutableIdentity {
+                path: String::new(),
+                file_hash: String::new(),
+                file_mtime_unix: 0,
+            },
+            version_text: String::new(),
+            help_hash: String::new(),
+            serve_flags: Vec::new(),
+            cache: CacheCapabilities::default(),
+            context: ContextCapabilities::default(),
+            concurrency: ConcurrencyCapabilities::default(),
+            endpoints: EndpointCapabilities::default(),
+            streaming: StreamingCapabilities::default(),
+            templates: TemplateCapabilities::default(),
+            tools: ToolCapabilities::default(),
+            speculation: SpeculationCapabilities::default(),
+            typed: TypedLlamaCapabilities::default(),
+            mixed_main_kv: MixedMainKv::product_default_denied(),
+            evidence_timestamp: 0,
+            source: CapabilitySnapshotSource::ManualOverride,
+        }
+    }
+
+    /// Whether the exact binary advertised a flag in its bounded `--help`
+    /// probe. This is deliberately the only generic flag lookup used by typed
+    /// launch validation; callers must still apply the option-specific policy.
+    pub fn supports_flag(&self, flag: &str) -> bool {
+        self.serve_flags.iter().any(|candidate| candidate == flag)
+    }
+
+    /// Current llama.cpp reasoning-effort values observed by the product
+    /// contract. Help proves the flag exists; the typed enum still rejects an
+    /// unknown stored value before launch.
+    pub fn supports_reasoning_effort(&self, value: &str) -> bool {
+        self.supports_flag("--reasoning-effort")
+            && (self.typed.reasoning_effort.accepted_values.is_empty()
+                || self
+                    .typed
+                    .reasoning_effort
+                    .accepted_values
+                    .iter()
+                    .any(|candidate| candidate == value))
+    }
+
+    /// Current explicit reasoning-format values observed by the product
+    /// contract. `auto` is intentionally absent: no argument means auto.
+    pub fn supports_reasoning_format(&self, value: &str) -> bool {
+        self.supports_flag("--reasoning-format")
+            && (self.typed.reasoning_format.accepted_values.is_empty()
+                || self
+                    .typed
+                    .reasoning_format
+                    .accepted_values
+                    .iter()
+                    .any(|candidate| candidate == value))
+    }
+
+    /// The current product has no authoritative template capability contract
+    /// for native reasoning preservation. Keep this fail-closed until a
+    /// bounded template inspection rule is qualified with fixtures.
+    pub fn reasoning_preserve_template_compatibility(&self) -> FeatureState {
+        self.typed.reasoning_preserve_template.clone()
+    }
+
     pub fn is_valid_for(&self, current: &ExecutableIdentity) -> bool {
         self.executable_identity.path == current.path
             && self.executable_identity.file_hash == current.file_hash
-            && self.help_hash == hash_help(&self.serve_flags.join(" "))
     }
 
     pub fn fingerprint(&self) -> String {
@@ -193,7 +322,7 @@ pub async fn generate_snapshot(binary: &Path) -> Result<CapabilitySnapshot> {
     let (help_text, flags) = probe_help(binary).await?;
     let help_hash = hash_help(&help_text);
 
-    let cache = derive_cache_capabilities(&flags);
+    let cache = derive_cache_capabilities(&flags, &help_text);
     let context = derive_context_capabilities(&flags);
     let concurrency = derive_concurrency_capabilities(&flags);
     let endpoints = derive_endpoint_capabilities(&flags);
@@ -201,6 +330,7 @@ pub async fn generate_snapshot(binary: &Path) -> Result<CapabilitySnapshot> {
     let templates = derive_template_capabilities(&flags);
     let tools = derive_tool_capabilities(&flags);
     let speculation = derive_speculation_capabilities(&flags);
+    let typed = derive_typed_capabilities(&flags, &help_text);
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -220,12 +350,88 @@ pub async fn generate_snapshot(binary: &Path) -> Result<CapabilitySnapshot> {
         templates,
         tools,
         speculation,
+        typed,
+        // Phase 1b: only shipped provider — product default denied.
+        mixed_main_kv: MixedMainKv::product_default_denied(),
         evidence_timestamp: now,
         source: CapabilitySnapshotSource::AutoProbed,
     };
 
     cache_snapshot(snapshot.clone());
     Ok(snapshot)
+}
+
+fn derive_typed_capabilities(flags: &[String], help_text: &str) -> TypedLlamaCapabilities {
+    let has = |flag: &str| flag_state(flags, flag);
+    let default_value = |flag: &str| help_default(help_text, flag);
+    TypedLlamaCapabilities {
+        mmproj_offload: BooleanFlagCapability {
+            positive: has("--mmproj-offload"),
+            negative: has("--no-mmproj-offload"),
+            default_value: default_value("--mmproj-offload").and_then(|value| {
+                match value.as_str() {
+                    "enabled" | "true" => Some(true),
+                    "disabled" | "false" => Some(false),
+                    _ => None,
+                }
+            }),
+        },
+        reasoning_effort: EnumCapability {
+            supported: has("--reasoning-effort"),
+            accepted_values: if flags.iter().any(|flag| flag == "--reasoning-effort") {
+                ["minimal", "low", "medium", "high", "xhigh", "max"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            default_value: default_value("--reasoning-effort"),
+        },
+        reasoning_format: EnumCapability {
+            supported: has("--reasoning-format"),
+            accepted_values: if flags.iter().any(|flag| flag == "--reasoning-format") {
+                ["none", "deepseek", "deepseek-legacy"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            default_value: default_value("--reasoning-format"),
+        },
+        reasoning_preserve: BooleanFlagCapability {
+            positive: has("--reasoning-preserve"),
+            negative: has("--no-reasoning-preserve"),
+            default_value: default_value("--reasoning-preserve").and_then(|value| {
+                match value.as_str() {
+                    "enabled" | "true" => Some(true),
+                    "disabled" | "false" => Some(false),
+                    _ => None,
+                }
+            }),
+        },
+        // Per llama-server --help: "compatible with certain templates having
+        // 'supports_preserve_reasoning'". That marker isn't reliably present in
+        // real GGUF chat templates (checked against a real 23GB model — no
+        // match), so it can't be verified up front. llama.cpp itself already
+        // handles an unsupported template gracefully — the flag is honored or
+        // silently ignored by the template, same as any other chat-template
+        // kwarg — so there is nothing to gate here.
+        reasoning_preserve_template: FeatureState::Available,
+    }
+}
+
+fn help_default(help_text: &str, flag: &str) -> Option<String> {
+    help_text.lines().find_map(|line| {
+        if !line.split([',', ' ']).any(|token| token == flag) {
+            return None;
+        }
+        let marker = "(default:";
+        let start = line.find(marker)? + marker.len();
+        let value = line[start..].split(')').next()?.trim();
+        (!value.is_empty()).then(|| value.to_string())
+    })
 }
 
 fn recognizable_version_line(text: &str) -> Option<String> {
@@ -302,13 +508,54 @@ fn extract_flags(help: &str) -> Vec<String> {
     flags.into_keys().collect()
 }
 
-fn derive_cache_capabilities(flags: &[String]) -> CacheCapabilities {
+fn derive_cache_capabilities(flags: &[String], help_text: &str) -> CacheCapabilities {
     CacheCapabilities {
         prompt_cache: flag_state(flags, "--cache-prompt"),
         ram_cache: flag_state(flags, "--cache-ram"),
         idle_slot_cache: flag_state(flags, "--cache-idle-slots"),
         cache_reuse: flag_state(flags, "--cache-reuse"),
+        kv_type_values: advertised_kv_type_values(help_text),
     }
+}
+
+/// Read the value list following the canonical cache-type help entries. The
+/// list is intentionally sourced from the selected executable's help output;
+/// the UI may provide common choices, but it must never invent binary-specific
+/// values (for example a future IQ format).
+fn advertised_kv_type_values(help_text: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut in_allowed_values = false;
+    for line in help_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("-ctk,") || trimmed.starts_with("-ctv,") {
+            in_allowed_values = false;
+        }
+        if in_allowed_values || trimmed.to_ascii_lowercase().starts_with("allowed values:") {
+            if trimmed.to_ascii_lowercase().starts_with("allowed values:") {
+                in_allowed_values = true;
+            }
+            let list = trimmed
+                .split_once(':')
+                .map(|(_, rest)| rest)
+                .unwrap_or(trimmed);
+            for value in list.split(',').map(str::trim) {
+                if !value.is_empty()
+                    && value
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                    && !values.iter().any(|known| known == value)
+                {
+                    values.push(value.to_string());
+                }
+            }
+            if !trimmed.ends_with(',')
+                && !trimmed.to_ascii_lowercase().starts_with("allowed values:")
+            {
+                in_allowed_values = false;
+            }
+        }
+    }
+    values
 }
 
 fn derive_context_capabilities(flags: &[String]) -> ContextCapabilities {
@@ -497,6 +744,34 @@ mod tests {
     }
 
     #[test]
+    fn typed_capability_evidence_records_forms_values_and_defaults() {
+        let help = "Options:\n  --mmproj-offload, --no-mmproj-offload (default: enabled)\n  --reasoning-format FORMAT\n  --reasoning-effort LEVEL\n  --reasoning-preserve, --no-reasoning-preserve (default: template default)";
+        let flags = extract_flags(help);
+        let typed = derive_typed_capabilities(&flags, help);
+        assert!(matches!(
+            typed.mmproj_offload.positive,
+            FeatureState::Available
+        ));
+        assert!(matches!(
+            typed.mmproj_offload.negative,
+            FeatureState::Available
+        ));
+        assert_eq!(typed.mmproj_offload.default_value, Some(true));
+        assert_eq!(
+            typed.reasoning_effort.accepted_values,
+            vec!["minimal", "low", "medium", "high", "xhigh", "max"]
+        );
+        assert_eq!(
+            typed.reasoning_format.accepted_values,
+            vec!["none", "deepseek", "deepseek-legacy"]
+        );
+        assert!(matches!(
+            typed.reasoning_preserve_template,
+            FeatureState::Available
+        ));
+    }
+
+    #[test]
     fn version_probe_accepts_help_without_a_version_banner() {
         let help = "Usage: llama-server [OPTIONS]\nOptions:\n  --model PATH\n  --load-mode MODE";
         assert_eq!(recognizable_version_line(help), None);
@@ -536,7 +811,7 @@ Options:
             "--cache-ram".into(),
             "--cache-idle-slots".into(),
         ];
-        let caps = derive_cache_capabilities(&flags);
+        let caps = derive_cache_capabilities(&flags, "");
         assert!(matches!(caps.prompt_cache, FeatureState::Available));
         assert!(matches!(caps.ram_cache, FeatureState::Available));
         assert!(matches!(caps.idle_slot_cache, FeatureState::Available));
@@ -579,10 +854,13 @@ Options:
             file_hash: "def456".into(),
             file_mtime_unix: 2000,
         };
+        // help_hash is deliberately built from raw --help text, not from
+        // `serve_flags.join(" ")`, so this test cannot pass against the
+        // help_hash-re-derivation bug by accident.
         let snap = CapabilitySnapshot {
             executable_identity: identity1.clone(),
             version_text: "b10068".into(),
-            help_hash: hash_help("--host --port"),
+            help_hash: hash_help("usage: llama-server [options]\n  --host HOST\n  --port PORT\n"),
             serve_flags: vec!["--host".into(), "--port".into()],
             cache: Default::default(),
             context: Default::default(),
@@ -592,11 +870,62 @@ Options:
             templates: Default::default(),
             tools: Default::default(),
             speculation: Default::default(),
+            typed: Default::default(),
+            mixed_main_kv: MixedMainKv::product_default_denied(),
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::AutoProbed,
         };
         assert!(snap.is_valid_for(&identity1));
         assert!(!snap.is_valid_for(&identity2));
+    }
+
+    #[test]
+    fn cached_snapshot_hits_for_unchanged_executable_identity() {
+        // Regression test for the help_hash re-derivation bug: is_valid_for
+        // used to recompute help_hash from serve_flags.join(" ") at lookup
+        // time and compare it against a hash stored from real raw --help
+        // text at probe time. Those two strings differ for every real probe,
+        // so every lookup missed the cache even for an unchanged binary.
+        let identity = ExecutableIdentity {
+            path: "/tmp/llama-server-cache-hit-test".into(),
+            file_hash: "unchanged-hash".into(),
+            file_mtime_unix: 1000,
+        };
+        let snap = CapabilitySnapshot {
+            executable_identity: identity.clone(),
+            version_text: "b10068".into(),
+            help_hash: hash_help(
+                "usage: llama-server [options]\n  --host HOST\n  --cache-reuse N\n",
+            ),
+            serve_flags: vec!["--host".into(), "--cache-reuse".into()],
+            cache: Default::default(),
+            context: Default::default(),
+            concurrency: Default::default(),
+            endpoints: Default::default(),
+            streaming: Default::default(),
+            templates: Default::default(),
+            tools: Default::default(),
+            speculation: Default::default(),
+            typed: Default::default(),
+            mixed_main_kv: MixedMainKv::product_default_denied(),
+            evidence_timestamp: 0,
+            source: CapabilitySnapshotSource::AutoProbed,
+        };
+        cache_snapshot(snap);
+        assert!(
+            cached_snapshot(&identity).is_some(),
+            "unchanged executable identity must hit the cache without re-probing"
+        );
+
+        let changed_identity = ExecutableIdentity {
+            path: "/tmp/llama-server-cache-hit-test".into(),
+            file_hash: "changed-hash".into(),
+            file_mtime_unix: 2000,
+        };
+        assert!(
+            cached_snapshot(&changed_identity).is_none(),
+            "a changed file_hash must still miss the cache and re-probe"
+        );
     }
 
     #[test]
@@ -609,8 +938,8 @@ Options:
             "--continuous-batching".into(),
             "--spec-type".into(),
         ];
-        let old_caps = derive_cache_capabilities(&old_flags);
-        let new_caps = derive_cache_capabilities(&new_flags);
+        let old_caps = derive_cache_capabilities(&old_flags, "");
+        let new_caps = derive_cache_capabilities(&new_flags, "");
         match old_caps.cache_reuse {
             FeatureState::Unavailable(_) => {}
             _ => panic!("Old binary should not have cache_reuse"),
@@ -637,6 +966,8 @@ Options:
             templates: Default::default(),
             tools: Default::default(),
             speculation: Default::default(),
+            typed: Default::default(),
+            mixed_main_kv: MixedMainKv::product_default_denied(),
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::AutoProbed,
         };

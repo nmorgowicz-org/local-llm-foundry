@@ -10,6 +10,7 @@ use crate::config::AppConfig;
 use crate::gpu::env::{GpuEnv, build_nvidia_env, build_rocm_env};
 use crate::inference::InferenceBackend;
 use crate::inference::capabilities::CapabilitySet;
+use crate::inference::llama_cpp_capabilities::CapabilitySnapshot;
 use crate::inference::metrics::{HealthState, InferenceMetricsSnapshot};
 use crate::inference::supervisor::SupervisedLaunch;
 use crate::llama::metrics::{parse_prometheus_metrics, parse_slot_metrics};
@@ -146,6 +147,161 @@ impl LoadMode {
     }
 }
 
+/// Typed llama.cpp reasoning-effort value (Phase 2).
+///
+/// Separate from Rapid-MLX `reasoning_effort` (request-default field with
+/// different runtime meaning). The `Default` variant is the runtime/template
+/// default and emits **no** `--reasoning-effort` argument; only an explicit
+/// non-default level is emitted. `Unknown(s)` preserves an unrecognized future
+/// level verbatim (round-trips unchanged through save/edit/save) and remains
+/// non-launchable. Bounded open-string serde per architecture §9/§10.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum LlamaReasoningEffort {
+    #[default]
+    Default,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+    /// Unknown future effort level — preserved verbatim, non-launchable.
+    Unknown(String),
+}
+
+impl LlamaReasoningEffort {
+    /// The exact `--reasoning-effort` flag value to emit, or `None` for the
+    /// runtime/template default (and for `Unknown`, which is non-launchable).
+    pub fn as_flag_value(&self) -> Option<&str> {
+        match self {
+            Self::Default => None,
+            Self::Minimal => Some("minimal"),
+            Self::Low => Some("low"),
+            Self::Medium => Some("medium"),
+            Self::High => Some("high"),
+            Self::Xhigh => Some("xhigh"),
+            Self::Max => Some("max"),
+            Self::Unknown(_) => None,
+        }
+    }
+
+    /// Parse a wire/stored string into the enum, preserving unknown values.
+    fn from_wire(s: &str) -> Self {
+        match s {
+            "default" => Self::Default,
+            "minimal" => Self::Minimal,
+            "low" => Self::Low,
+            "medium" => Self::Medium,
+            "high" => Self::High,
+            "xhigh" => Self::Xhigh,
+            "max" => Self::Max,
+            _ => Self::Unknown(s.to_string()),
+        }
+    }
+
+    /// The exact wire string (known variant name, or the preserved raw value).
+    fn to_wire(&self) -> &str {
+        match self {
+            Self::Default => "default",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+            Self::Unknown(s) => s,
+        }
+    }
+}
+
+impl serde::Serialize for LlamaReasoningEffort {
+    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        s.serialize_str(self.to_wire())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for LlamaReasoningEffort {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(d)?;
+        Ok(Self::from_wire(&s))
+    }
+}
+
+/// Typed llama.cpp reasoning-format value (Phase 2).
+///
+/// `None` (the outer Option on the field) means runtime default/auto — no
+/// argument is emitted. Explicit known variants come from exact runtime
+/// capability evidence; observed explicit values are `none`, `deepseek`,
+/// `deepseek-legacy`. `Unknown(s)` preserves unrecognized future values
+/// verbatim but remains non-launchable.
+///
+/// Architecture §9: never emit `--reasoning-format auto` unless a future
+/// exact binary advertises `auto` as an accepted explicit value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LlamaReasoningFormat {
+    None,
+    Deepseek,
+    DeepseekLegacy,
+    /// Unknown future format — preserved, non-launchable.
+    Unknown(String),
+}
+
+impl LlamaReasoningFormat {
+    /// The exact `--reasoning-format` flag value to emit for an explicit format
+    /// variant. Returns `None` for `Unknown` (non-launchable).
+    pub fn as_flag_value(&self) -> Option<&str> {
+        match self {
+            Self::None => Some("none"),
+            Self::Deepseek => Some("deepseek"),
+            Self::DeepseekLegacy => Some("deepseek-legacy"),
+            Self::Unknown(_) => None,
+        }
+    }
+
+    fn from_wire(s: &str) -> Self {
+        match s {
+            "none" => Self::None,
+            "deepseek" => Self::Deepseek,
+            "deepseek-legacy" => Self::DeepseekLegacy,
+            _ => Self::Unknown(s.to_string()),
+        }
+    }
+
+    fn to_wire(&self) -> &str {
+        match self {
+            Self::None => "none",
+            Self::Deepseek => "deepseek",
+            Self::DeepseekLegacy => "deepseek-legacy",
+            Self::Unknown(s) => s,
+        }
+    }
+}
+
+impl serde::Serialize for LlamaReasoningFormat {
+    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        s.serialize_str(self.to_wire())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for LlamaReasoningFormat {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(d)?;
+        Ok(Self::from_wire(&s))
+    }
+}
+
 /// Phase 6: cross-backend prompt-cache mode (llama.cpp side).
 ///
 /// `Custom` is the serde default (not `Auto`) so that configs saved before this field existed
@@ -172,6 +328,20 @@ impl CacheMode {
             CacheMode::Auto | CacheMode::Off => Some(0),
             CacheMode::Custom => configured_cache_ram_mib,
         }
+    }
+}
+
+/// Phase 1b: macOS llama.cpp has no `--cache-ram` support, so the value is
+/// forced to `Some(0)` there regardless of stored `cache_ram_mib` or
+/// `cache_mode`. On other platforms the configured resolution is returned
+/// unchanged. Resolving to `0` also suppresses `--cache-idle-slots`, which
+/// requires cache-ram to be nonzero.
+fn effective_cache_ram(configured_cache_ram_mib: Option<i32>, mode: CacheMode) -> Option<i32> {
+    let resolved = mode.resolve(configured_cache_ram_mib);
+    if cfg!(target_os = "macos") {
+        Some(0)
+    } else {
+        resolved
     }
 }
 
@@ -300,6 +470,36 @@ pub struct ServerConfig {
     pub image_min_tokens: Option<u32>,
     #[serde(default)]
     pub image_max_tokens: Option<u32>,
+    /// Phase 2: multimodal-projector GPU offload (architecture §9).
+    /// `None` = exact runtime default (no arg); `Some(true)` = emit the
+    /// positive flag when supported; `Some(false)` = emit `--no-mmproj-offload`
+    /// when supported. Emission is capability-gated.
+    #[serde(default)]
+    pub mmproj_offload: Option<bool>,
+    /// Phase 2: typed llama.cpp reasoning-effort level (architecture §9).
+    /// Distinct from Rapid-MLX `reasoning_effort`. `Default`/`Unknown` emit no
+    /// argument; explicit levels emit `--reasoning-effort <level>` when
+    /// supported.
+    #[serde(default)]
+    pub llama_reasoning_effort: LlamaReasoningEffort,
+    /// Phase 2: typed llama.cpp reasoning format (architecture §9).
+    /// `None` = runtime default/auto (no arg); explicit values emit
+    /// `--reasoning-format <value>` when supported. Never emits `auto`.
+    #[serde(default)]
+    pub llama_reasoning_format: Option<LlamaReasoningFormat>,
+    /// Phase 2: preserve the reasoning trace across the full history
+    /// (architecture §9). Valueless flag — `Some(true)` emits
+    /// `--reasoning-preserve`, `Some(false)` emits nothing (unless the snapshot
+    /// advertises `--no-reasoning-preserve`, in which case it emits that),
+    /// `None` emits nothing. Requires binary support plus a compatible
+    /// reasoning mode. Distinct from `preserve_thinking`.
+    #[serde(default)]
+    pub llama_reasoning_preserve: Option<bool>,
+    /// Internal launch envelope for Phase 2 runtime validation. It is not
+    /// serialized into API/session payloads; persisted presets remain the
+    /// source of truth for bundle data.
+    #[serde(skip)]
+    pub bundle: Option<crate::presets::bundle::PresetBundleSpec>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -330,6 +530,7 @@ pub struct LlamaCppAdapter {
     pub app_config: AppConfig,
     pub config: ServerConfig,
     gpu_env: GpuEnv,
+    capabilities: Option<CapabilitySnapshot>,
     previous_counters: Mutex<Option<CounterSnapshot>>,
     previous_counter_session: Mutex<Option<String>>,
 }
@@ -337,10 +538,20 @@ pub struct LlamaCppAdapter {
 #[allow(dead_code)]
 impl LlamaCppAdapter {
     pub fn new(app_config: AppConfig, config: ServerConfig, gpu_env: GpuEnv) -> Self {
+        Self::new_with_capabilities(app_config, config, gpu_env, None)
+    }
+
+    pub fn new_with_capabilities(
+        app_config: AppConfig,
+        config: ServerConfig,
+        gpu_env: GpuEnv,
+        capabilities: Option<CapabilitySnapshot>,
+    ) -> Self {
         Self {
             app_config,
             config,
             gpu_env,
+            capabilities,
             previous_counters: Mutex::new(None),
             previous_counter_session: Mutex::new(None),
         }
@@ -418,6 +629,7 @@ impl LlamaCppAdapter {
     }
 
     pub async fn build_launch(&self) -> Result<SupervisedLaunch> {
+        self.validate_typed_capabilities()?;
         let mut cmd = TokioCommand::new(&self.app_config.llama_server_path);
         crate::platform::no_window_tokio(&mut cmd);
         cmd.current_dir(&self.app_config.llama_server_cwd);
@@ -673,7 +885,7 @@ impl LlamaCppAdapter {
         if let Some(pp) = self.config.presence_penalty {
             cmd.arg("--presence-penalty").arg(format!("{:.4}", pp));
         }
-        if let Some(n) = self.config.n_cpu_moe {
+        if let Some(n) = self.config.n_cpu_moe.filter(|value| *value > 0) {
             cmd.arg("--n-cpu-moe").arg(n.to_string());
         }
 
@@ -721,6 +933,35 @@ impl LlamaCppAdapter {
             && !msg.is_empty()
         {
             cmd.arg("--reasoning-budget-message").arg(msg);
+        }
+
+        if let Some(value) = self.config.mmproj_offload {
+            cmd.arg(if value {
+                "--mmproj-offload"
+            } else {
+                "--no-mmproj-offload"
+            });
+        }
+        if let Some(value) = self.config.llama_reasoning_effort.as_flag_value() {
+            cmd.arg("--reasoning-effort").arg(value);
+        }
+        if let Some(value) = self
+            .config
+            .llama_reasoning_format
+            .as_ref()
+            .and_then(LlamaReasoningFormat::as_flag_value)
+        {
+            cmd.arg("--reasoning-format").arg(value);
+        }
+        if self.config.llama_reasoning_preserve == Some(true) {
+            cmd.arg("--reasoning-preserve");
+        } else if self.config.llama_reasoning_preserve == Some(false)
+            && self
+                .capabilities
+                .as_ref()
+                .is_some_and(|caps| caps.supports_flag("--no-reasoning-preserve"))
+        {
+            cmd.arg("--no-reasoning-preserve");
         }
 
         cmd.arg("--metrics");
@@ -795,10 +1036,89 @@ impl LlamaCppAdapter {
         })
     }
 
+    fn validate_typed_capabilities(&self) -> Result<()> {
+        let has_typed_value = self.config.mmproj_offload.is_some()
+            || !matches!(
+                &self.config.llama_reasoning_effort,
+                LlamaReasoningEffort::Default
+            )
+            || self.config.llama_reasoning_format.is_some()
+            || self.config.llama_reasoning_preserve.is_some();
+        if !has_typed_value {
+            return Ok(());
+        }
+
+        let caps = self.capabilities.as_ref().ok_or_else(|| {
+            anyhow!(
+                "typed llama.cpp launch settings require a capability snapshot for the exact binary"
+            )
+        })?;
+
+        if let Some(value) = self.config.mmproj_offload {
+            let flag = if value {
+                "--mmproj-offload"
+            } else {
+                "--no-mmproj-offload"
+            };
+            if !caps.supports_flag(flag) {
+                anyhow::bail!("typed llama.cpp setting is unsupported: {flag}");
+            }
+        }
+
+        match &self.config.llama_reasoning_effort {
+            LlamaReasoningEffort::Default => {}
+            LlamaReasoningEffort::Unknown(value) => anyhow::bail!(
+                "unknown llama.cpp reasoning effort '{value}' is preserved but not launchable"
+            ),
+            value => {
+                let flag_value = value
+                    .as_flag_value()
+                    .expect("known effort has a flag value");
+                if !caps.supports_reasoning_effort(flag_value) {
+                    anyhow::bail!(
+                        "llama.cpp reasoning effort '{flag_value}' is unavailable in the exact binary"
+                    );
+                }
+            }
+        }
+
+        if let Some(format) = &self.config.llama_reasoning_format {
+            let value = format.as_flag_value().ok_or_else(|| {
+                anyhow!("unknown llama.cpp reasoning format is preserved but not launchable")
+            })?;
+            if !caps.supports_reasoning_format(value) {
+                anyhow::bail!(
+                    "llama.cpp reasoning format '{value}' is unavailable in the exact binary"
+                );
+            }
+        }
+
+        if let Some(preserve) = self.config.llama_reasoning_preserve {
+            let flag = if preserve {
+                "--reasoning-preserve"
+            } else {
+                "--no-reasoning-preserve"
+            };
+            if !caps.supports_flag(flag) {
+                anyhow::bail!("typed llama.cpp setting is unsupported: {flag}");
+            }
+            if preserve && self.config.reasoning.as_deref().is_none_or(str::is_empty) {
+                anyhow::bail!(
+                    "native reasoning preservation requires an explicit compatible reasoning mode"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     fn append_kv_cache_args(&self, cmd: &mut TokioCommand) {
         // Phase 6: resolve the effective cache_ram_mib through CacheMode before it drives
         // either --cache-idle-slots eligibility or --cache-ram itself.
-        let cache_ram_mib = self.config.cache_mode.resolve(self.config.cache_ram_mib);
+        // macOS has no --cache-ram support in llama.cpp; it is forced to 0
+        // regardless of stored cache_ram_mib or cache_mode, which also
+        // suppresses --cache-idle-slots via the eligibility gate below.
+        let cache_ram_mib = effective_cache_ram(self.config.cache_ram_mib, self.config.cache_mode);
 
         if let Some(v) = self.config.kv_unified {
             cmd.arg(if v { "--kv-unified" } else { "--no-kv-unified" });
@@ -1133,6 +1453,62 @@ mod tests {
             .collect()
     }
 
+    fn typed_capabilities(flags: &[&str]) -> CapabilitySnapshot {
+        CapabilitySnapshot {
+            executable_identity: crate::inference::llama_cpp_capabilities::ExecutableIdentity {
+                path: "/tmp/llama-server".into(),
+                file_hash: "phase2-test".into(),
+                file_mtime_unix: 0,
+            },
+            version_text: "test".into(),
+            help_hash: "test-help".into(),
+            serve_flags: flags.iter().map(|flag| (*flag).to_string()).collect(),
+            cache: Default::default(),
+            context: Default::default(),
+            concurrency: Default::default(),
+            endpoints: Default::default(),
+            streaming: Default::default(),
+            templates: Default::default(),
+            tools: Default::default(),
+            speculation: Default::default(),
+            typed: Default::default(),
+            mixed_main_kv:
+                crate::inference::llama_cpp_capabilities::MixedMainKv::product_default_denied(),
+            evidence_timestamp: 0,
+            source:
+                crate::inference::llama_cpp_capabilities::CapabilitySnapshotSource::ManualOverride,
+        }
+    }
+
+    async fn launch_args_with_capabilities(
+        config: ServerConfig,
+        capabilities: CapabilitySnapshot,
+    ) -> anyhow::Result<Vec<String>> {
+        let config_dir = tempfile::tempdir().unwrap();
+        let args = crate::cli::AppArgs::parse_from([
+            "llama-monitor",
+            "--config-dir",
+            config_dir.path().to_str().unwrap(),
+            "--llama-server-path",
+            "llama-server",
+            "--gpu-backend",
+            "none",
+        ]);
+        let adapter = LlamaCppAdapter::new_with_capabilities(
+            AppConfig::from_args(args),
+            config,
+            GpuEnv::default(),
+            Some(capabilities),
+        );
+        Ok(adapter
+            .build_launch()
+            .await?
+            .args
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect())
+    }
+
     #[test]
     fn readiness_uses_loopback_for_wildcard_bind_hosts() {
         assert_eq!(readiness_host(None), "127.0.0.1");
@@ -1178,32 +1554,37 @@ mod tests {
         })
         .await;
 
+        let mut expected: Vec<&str> = vec![
+            "-m",
+            "/models/test.gguf",
+            "-ngl",
+            "all",
+            "-ctk",
+            "q8_0",
+            "-ctv",
+            "q8_0",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8080",
+            "--no-warmup",
+            "--jinja",
+            "--no-context-shift",
+            "--ctx-checkpoints",
+            "32",
+            "--keep",
+            "-1",
+            "-fa",
+            "on",
+            "--metrics",
+        ];
+        // macOS has no --cache-ram support; it is forced to 0 always.
+        if cfg!(target_os = "macos") {
+            expected.extend_from_slice(&["--cache-ram", "0"]);
+        }
         assert_eq!(
             args,
-            [
-                "-m",
-                "/models/test.gguf",
-                "-ngl",
-                "all",
-                "-ctk",
-                "q8_0",
-                "-ctv",
-                "q8_0",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "8080",
-                "--no-warmup",
-                "--jinja",
-                "--no-context-shift",
-                "--ctx-checkpoints",
-                "32",
-                "--keep",
-                "-1",
-                "-fa",
-                "on",
-                "--metrics",
-            ]
+            expected.iter().map(|s| s.to_string()).collect::<Vec<_>>()
         );
     }
 
@@ -1277,6 +1658,24 @@ mod tests {
         assert!(!args.iter().any(|arg| arg == "--mlock"));
     }
 
+    /// Phase 10a Windows-safety requirement: argv is built via `Command::arg`,
+    /// which never invokes a shell, so a Windows-style path must survive into
+    /// argv byte-for-byte — no backslash escaping/doubling and no forward-
+    /// slash normalization, either of which would corrupt the real path.
+    #[tokio::test]
+    async fn windows_style_model_path_passes_through_argv_unmodified() {
+        let windows_path = r"C:\Users\test\models\model.gguf";
+        let args = launch_args(ServerConfig {
+            model_path: windows_path.into(),
+            port: 8080,
+            ..Default::default()
+        })
+        .await;
+
+        let m_index = args.iter().position(|a| a == "-m").expect("-m present");
+        assert_eq!(args[m_index + 1], windows_path);
+    }
+
     #[tokio::test]
     async fn empty_ctk_and_ctv_are_omitted_rather_than_passed_as_empty_strings() {
         let args = launch_args(ServerConfig {
@@ -1288,6 +1687,173 @@ mod tests {
 
         assert!(!args.iter().any(|a| a == "-ctk"));
         assert!(!args.iter().any(|a| a == "-ctv"));
+    }
+
+    #[tokio::test]
+    async fn phase2_typed_reasoning_and_mmproj_flags_emit_exact_argv() {
+        let capabilities = typed_capabilities(&[
+            "--mmproj-offload",
+            "--no-mmproj-offload",
+            "--reasoning-effort",
+            "--reasoning-format",
+            "--reasoning-preserve",
+            "--no-reasoning-preserve",
+        ]);
+        let args = launch_args_with_capabilities(
+            ServerConfig {
+                model_path: "/models/test.gguf".into(),
+                port: 8080,
+                mmproj_offload: Some(true),
+                llama_reasoning_effort: LlamaReasoningEffort::High,
+                llama_reasoning_format: Some(LlamaReasoningFormat::None),
+                llama_reasoning_preserve: Some(false),
+                ..Default::default()
+            },
+            capabilities,
+        )
+        .await
+        .unwrap();
+        assert!(args.iter().any(|arg| arg == "--mmproj-offload"));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--reasoning-effort", "high"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--reasoning-format", "none"])
+        );
+        assert!(args.iter().any(|arg| arg == "--no-reasoning-preserve"));
+        assert!(!args.iter().any(|arg| arg == "auto"));
+        assert!(!args.iter().any(|arg| arg == "true"));
+        assert!(!args.iter().any(|arg| arg == "false"));
+    }
+
+    #[tokio::test]
+    async fn phase2_typed_values_fail_closed_without_capability_evidence() {
+        let adapter = LlamaCppAdapter::new(
+            AppConfig::from_args(crate::cli::AppArgs::parse_from([
+                "llama-monitor",
+                "--config-dir",
+                tempfile::tempdir().unwrap().path().to_str().unwrap(),
+                "--llama-server-path",
+                "llama-server",
+                "--gpu-backend",
+                "none",
+            ])),
+            ServerConfig {
+                model_path: "/models/test.gguf".into(),
+                port: 8080,
+                llama_reasoning_effort: LlamaReasoningEffort::Low,
+                ..Default::default()
+            },
+            GpuEnv::default(),
+        );
+        let error = adapter.build_launch().await.unwrap_err().to_string();
+        assert!(error.contains("capability snapshot"));
+    }
+
+    #[tokio::test]
+    async fn phase2_reasoning_preserve_launches_when_binary_advertises_the_flag() {
+        // Template compatibility for --reasoning-preserve cannot be verified up
+        // front (llama.cpp's own 'supports_preserve_reasoning' marker isn't
+        // reliably present in real GGUF chat templates), so an unsupported
+        // template is expected to honor-or-ignore the flag at runtime rather
+        // than be blocked here.
+        let capabilities = typed_capabilities(&["--reasoning-preserve"]);
+        let args = launch_args_with_capabilities(
+            ServerConfig {
+                model_path: "/models/test.gguf".into(),
+                port: 8080,
+                reasoning: Some("on".into()),
+                llama_reasoning_preserve: Some(true),
+                ..Default::default()
+            },
+            capabilities,
+        )
+        .await
+        .unwrap();
+        assert!(
+            args.iter().any(|arg| arg == "--reasoning-preserve"),
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn phase2_reasoning_effort_values_round_trip_through_serde() {
+        for wire in [
+            "default", "minimal", "low", "medium", "high", "xhigh", "max",
+        ] {
+            let encoded = format!("\"{wire}\"");
+            let value: LlamaReasoningEffort = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(serde_json::to_string(&value).unwrap(), encoded);
+        }
+    }
+
+    #[test]
+    fn phase2_unknown_reasoning_values_round_trip_but_remain_unknown() {
+        let effort: LlamaReasoningEffort = serde_json::from_str("\"future\"").unwrap();
+        let format: LlamaReasoningFormat = serde_json::from_str("\"future-format\"").unwrap();
+        assert!(matches!(&effort, LlamaReasoningEffort::Unknown(value) if value == "future"));
+        assert!(
+            matches!(&format, LlamaReasoningFormat::Unknown(value) if value == "future-format")
+        );
+        assert_eq!(serde_json::to_string(&effort).unwrap(), "\"future\"");
+        assert_eq!(serde_json::to_string(&format).unwrap(), "\"future-format\"");
+    }
+
+    #[tokio::test]
+    async fn phase2_mmproj_none_and_false_have_distinct_argv_behavior() {
+        let absent = launch_args(ServerConfig {
+            model_path: "/models/test.gguf".into(),
+            ..Default::default()
+        })
+        .await;
+        assert!(!absent.iter().any(|arg| arg == "--mmproj-offload"));
+        assert!(!absent.iter().any(|arg| arg == "--no-mmproj-offload"));
+
+        let disabled = launch_args_with_capabilities(
+            ServerConfig {
+                model_path: "/models/test.gguf".into(),
+                mmproj_offload: Some(false),
+                ..Default::default()
+            },
+            typed_capabilities(&["--no-mmproj-offload"]),
+        )
+        .await
+        .unwrap();
+        assert!(disabled.iter().any(|arg| arg == "--no-mmproj-offload"));
+        assert!(!disabled.iter().any(|arg| arg == "--mmproj-offload"));
+    }
+
+    #[tokio::test]
+    async fn phase2_outer_none_reasoning_format_emits_no_auto_argument() {
+        let args = launch_args(ServerConfig {
+            model_path: "/models/test.gguf".into(),
+            llama_reasoning_format: None,
+            ..Default::default()
+        })
+        .await;
+        assert!(!args.iter().any(|arg| arg == "--reasoning-format"));
+        assert!(!args.iter().any(|arg| arg == "auto"));
+    }
+
+    #[tokio::test]
+    async fn phase2_unknown_reasoning_format_fails_closed_at_launch() {
+        let error = launch_args_with_capabilities(
+            ServerConfig {
+                model_path: "/models/test.gguf".into(),
+                llama_reasoning_format: Some(LlamaReasoningFormat::Unknown("future".into())),
+                ..Default::default()
+            },
+            typed_capabilities(&["--reasoning-format"]),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("unknown llama.cpp reasoning format"),
+            "{error}"
+        );
     }
 
     #[tokio::test]
@@ -1347,15 +1913,12 @@ mod tests {
         })
         .await;
 
-        let expected_tail = [
+        let mut expected_tail: Vec<&str> = vec![
             "--api-key",
             "secret",
             "--alias",
             "full-model",
             "--kv-unified",
-            "--cache-idle-slots",
-            "--cache-ram",
-            "2048",
             "--fit",
             "on",
             "--fit-target",
@@ -1364,7 +1927,21 @@ mod tests {
             "--log-colors",
             "off",
         ];
-        assert!(args.ends_with(&expected_tail.map(str::to_string)));
+        // On macOS, --cache-ram is forced to 0 and --cache-idle-slots is
+        // suppressed because it requires cache-ram to be nonzero.
+        if cfg!(target_os = "macos") {
+            expected_tail.splice(5..5, ["--cache-ram", "0"]);
+        } else {
+            expected_tail.splice(5..5, ["--cache-idle-slots", "--cache-ram", "2048"]);
+        }
+        assert!(
+            args.ends_with(
+                &expected_tail
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+            )
+        );
         for required in [
             "--no-mmap",
             "--mlock",
@@ -1394,14 +1971,62 @@ mod tests {
             })
             .await;
 
+            // macOS has no --cache-ram support; the value is forced to 0.
+            if cfg!(target_os = "macos") {
+                assert!(
+                    args.windows(2).any(|pair| pair == ["--cache-ram", "0"]),
+                    "macOS must emit --cache-ram 0, got {args:?}"
+                );
+                assert!(
+                    !args.iter().any(|arg| arg == "--cache-idle-slots"),
+                    "macOS must suppress --cache-idle-slots"
+                );
+            } else {
+                assert!(
+                    args.windows(2).any(|pair| {
+                        pair == ["--cache-ram", cache_ram_mib.to_string().as_str()]
+                    })
+                );
+                assert_eq!(
+                    args.iter().any(|arg| arg == "--cache-idle-slots"),
+                    idle_slot_cache_expected,
+                    "cache_ram_mib={cache_ram_mib}"
+                );
+            }
+        }
+    }
+
+    /// Plan §Phase 1b: a preset storing cache_ram_mib: Some(16384) must emit
+    /// `--cache-ram 0` on macOS and the configured value elsewhere, and the
+    /// macOS branch must also suppress --cache-idle-slots.
+    #[tokio::test]
+    async fn stored_cache_ram_16384_is_zeroed_on_macos_passthrough_elsewhere() {
+        let args = launch_args(ServerConfig {
+            model_path: "/models/test.gguf".into(),
+            cache_ram_mib: Some(16384),
+            cache_mode: CacheMode::Custom,
+            cache_idle_slots: Some(true),
+            ..Default::default()
+        })
+        .await;
+
+        if cfg!(target_os = "macos") {
             assert!(
-                args.windows(2)
-                    .any(|pair| { pair == ["--cache-ram", cache_ram_mib.to_string().as_str()] })
+                args.windows(2).any(|pair| pair == ["--cache-ram", "0"]),
+                "macOS must emit --cache-ram 0 regardless of stored value, got {args:?}"
             );
-            assert_eq!(
+            assert!(
+                !args.iter().any(|arg| arg == "--cache-idle-slots"),
+                "macOS must suppress --cache-idle-slots (it requires cache-ram)"
+            );
+        } else {
+            assert!(
+                args.windows(2).any(|pair| pair == ["--cache-ram", "16384"]),
+                "non-macOS must pass the configured value through, got {args:?}"
+            );
+            assert!(
                 args.iter().any(|arg| arg == "--cache-idle-slots"),
-                idle_slot_cache_expected,
-                "cache_ram_mib={cache_ram_mib}"
+                "non-macOS must keep --cache-idle-slots when cache-ram is nonzero"
             );
         }
     }
@@ -1410,6 +2035,22 @@ mod tests {
     fn cache_mode_custom_preserves_configured_value_untouched() {
         assert_eq!(CacheMode::Custom.resolve(Some(4096)), Some(4096));
         assert_eq!(CacheMode::Custom.resolve(None), None);
+    }
+
+    #[test]
+    fn effective_cache_ram_is_zero_on_macos_passthrough_elsewhere() {
+        // Direct helper test: on macOS the value is always 0 regardless of
+        // stored value or mode. On other platforms it passes through.
+        let result = effective_cache_ram(Some(16384), CacheMode::Custom);
+        if cfg!(target_os = "macos") {
+            assert_eq!(result, Some(0));
+            let result2 = effective_cache_ram(Some(-1), CacheMode::Off);
+            assert_eq!(result2, Some(0));
+        } else {
+            assert_eq!(result, Some(16384));
+            let result2 = effective_cache_ram(Some(4096), CacheMode::Auto);
+            assert_eq!(result2, Some(0));
+        }
     }
 
     #[test]

@@ -1,0 +1,597 @@
+# Phase 9 receipt (partial) — record exact launch memory evidence
+
+Baseline commit: `b9e53c48ba9ad7cce2723fea91d7c392f4bb336d`
+
+## Slice 5 addendum (this checkpoint)
+
+Baseline for this slice: `e11e5970b7d016baa880a79efe9cf2eb77ab3c64` (slice 4,
+below).
+
+This slice ships the two items slice 2's "Outstanding" list deferred: the
+frontend evidence-details drawer action, and the `core/preset-flow.spec.js`
+playwright coverage for the exact/compatible/related/stale evidence classes.
+It does **not** touch either platform sampler or seek any real-host
+qualification run.
+
+### Backend: `EvidenceMatch` carries full receipt detail
+
+`resolver::EvidenceMatch` gained an optional `detail: Option<EvidenceDetail>`
+field (new `EvidenceDetail` struct: method, before/peak/after bytes, model
+delta, sample count, interval, noise flags, captured-at timestamp) so a
+details view has something to render beyond the existing one-line summary.
+Confirmed via grep that `preset_bundles.rs::lookup_evidence` is the only
+construction site for `EvidenceMatch`, so extending it in place (rather than
+building a parallel payload type) was safe. `lookup_evidence` now populates
+`detail` from the matched `LaunchObservationReceipt`, using a new
+`launch_evidence::method_label(Option<LaunchEvidenceMethod>)` helper for a
+human-readable method string (`"unknown"` for a receipt with no recorded
+method, rather than panicking or omitting the field). `resolve_response`'s
+JSON now nests a `"detail"` object under `"evidence"`.
+
+### Frontend: reuse the generic evidence drawer, don't build a new one
+
+Added `evidenceFromLaunchObservation(evidence)` to
+`evidence-drawer.js`, alongside the existing `evidenceFromEstimate` /
+`evidenceFromCommandPreview` builders — it maps the four `EvidenceMatchClass`
+values to the drawer's existing status/title vocabulary and formats the
+receipt detail (GiB-formatted before/peak/after/model-delta, sample count and
+interval, captured-at as a locale string, noise flags as warnings). No new
+drawer markup, styling, or accessibility wiring was needed; the drawer is
+already shared across surfaces and every untrusted value still goes through
+`textContent`.
+
+`preset-bundle-drawer.js`'s `renderEvidence` now appends a "Details" button
+when `evidence.detail` is present (omitted entirely when absent, e.g. a
+match with no carryable receipt), wired via the drawer's existing delegated
+click handler to call `openEvidenceDrawer(evidenceFromLaunchObservation(...),
+button)`.
+
+### Bug found and fixed: evidence-drawer/bundle-drawer z-index collision
+
+Opening the evidence drawer from inside the already-open bundle Configure
+drawer put the *bundle* drawer's close button on top, intercepting clicks
+meant for the evidence drawer's own close button — both `.evidence-drawer`
+and `.bundle-drawer` used `z-index: 920`, and DOM/paint order (not z-index
+alone) decided the tie in the bundle drawer's favor. This is a real product
+bug, not a test artifact: any future surface that opens the evidence drawer
+from within another open drawer would hit it. Fixed by bumping
+`.evidence-drawer` to `z-index: 930` in `evidence-drawer.css`, with a comment
+explaining why it must outrank other drawers.
+
+### Test-harness trap: `LLAMA_MONITOR_USE_RELEASE=1` serves a stale binary
+
+Phase 9's mandated verification command sets
+`LLAMA_MONITOR_USE_RELEASE=1`, which `tests/ui/run-server.mjs` uses to spawn
+the pre-built `target/release/local-llm-foundry` binary instead of running
+`cargo run`. A `cargo build` (debug) rebuild does not update this binary — a
+Playwright run against it will silently serve stale backend behavior with no
+error, confusing debugging (a temporary `console.log` traced the new
+`evidence.detail` field never reaching the page even though `class`/
+`summary` rendered correctly). Fixed by running `cargo build --release`
+before the release-mode Playwright run. Worth remembering for any future
+backend change verified this way.
+
+### Testing
+
+Added 5 tests to `core/preset-flow.spec.js`: one per `EvidenceMatchClass`
+(`exact`/`compatible`/`related`/`stale`) opening the Details drawer from a
+live bundle card and asserting the summary, technical detail (method,
+sample count/interval), and clean close; plus one asserting that evidence
+with `detail: null` renders the summary line with no Details button at all.
+
+### Verification (slice 5)
+
+- `rtk cargo build` — passed
+- `rtk cargo clippy -- -D warnings` — no issues
+- `rtk cargo fmt -- --check` — no diff
+- `rtk cargo test calibration::` — passed (no logic changes since slice 4;
+  covered by slice 4's own run)
+- `rtk cargo test preset_bundles` — passed (`EvidenceMatch`/`EvidenceDetail`
+  construction covered by existing suite plus the new playwright coverage
+  below)
+- `cd tests/ui && rtk env CI=1 LLAMA_MONITOR_USE_RELEASE=1
+  LLAMA_MONITOR_TEST_PORT=17778 npx playwright test core/preset-flow.spec.js
+  --workers=1 --reporter=list` — **33 passed** (29 pre-existing + 4 new
+  class-loop evidence tests + 1 new no-detail test), after the release
+  rebuild and z-index fixes above.
+
+### Files changed (slice 5)
+
+- `src/calibration/launch_evidence.rs` (`method_label` helper)
+- `src/presets/resolver.rs` (`EvidenceMatch.detail`, new `EvidenceDetail`)
+- `src/web/api/preset_bundles.rs` (`lookup_evidence` populates `detail`;
+  `resolve_response` nests it in the JSON response)
+- `static/css/evidence-drawer.css` (z-index fix)
+- `static/js/features/evidence-drawer.js` (`evidenceFromLaunchObservation`)
+- `static/js/features/preset-bundle-drawer.js` (Details button + click
+  wiring)
+- `tests/ui/core/preset-flow.spec.js` (5 new tests)
+
+## Slice 4 addendum
+
+Baseline for this slice: `60113a7` (slice 3, below).
+
+### Why: an asymmetry between the two samplers
+
+Reviewing slice 3's data noted a real gap: `metal_sampler`'s signal
+(`wired_bytes`) is **system-wide**, not process-scoped — it can be inflated
+by anything else touching unified memory during the ~4.5s sampling window
+(Chrome, Spotlight, background sync). `nvidia_sampler`'s signal
+(total-device VRAM) is comparatively more stable, yet it was the one that
+got repeated-cycle agreement checking (Phase 9's "repeated observation"
+requirement) and background-process noise detection, while `metal_sampler`
+shipped as a single-shot 6-sample poll with no repeat and no way to flag
+disagreement across attempts. The noisier signal had the thinner
+verification — backwards from what a noisy measurement needs.
+
+### Change: `metal_sampler` now runs repeated cycles too
+
+`metal_sampler::run` was restructured to mirror `nvidia_sampler::run`'s
+cycle shape: 3 repeated peak/after cycles (`REPEAT_CYCLES = 3`), each
+re-baselined against the previous cycle's `after` sample, with
+per-cycle deltas checked via the same `nvidia_sampler::cycles_agree`
+helper (reused directly via `super::nvidia_sampler::cycles_agree`, not
+duplicated). Disagreement is recorded as an explicit `noise_flags` entry
+(`"repeated observation cycles did not agree within tolerance: ..."`)
+rather than silently averaged away.
+
+The agreement tolerance (`CYCLE_AGREEMENT_TOLERANCE_BYTES = 64 MiB`) is
+wider than `nvidia_sampler`'s 16 MiB, since a system-wide wired-memory
+reading is expected to swing more between samples than a discrete GPU's
+total-device VRAM reading — a deliberately looser bar for a deliberately
+noisier signal, rather than pretending the two are equally precise.
+
+Total sample count per receipt rises from 6 to 18 (`SAMPLE_COUNT *
+REPEAT_CYCLES`), and the sampler's total runtime from ~4.5s to ~13.5s — it
+remains fully detached (`tokio::spawn`, after readiness) and cannot block a
+stop or restart. The existing system-wide-signal caveat in `noise_flags` is
+unchanged; the disagreement flag is additive, not a replacement.
+
+`CudaRocmProcessDelta`'s open per-process-attribution question (slice 3) is
+untouched by this change — this slice only closes the repeated-observation
+gap on the macOS side.
+
+### Verification (slice 4)
+
+- `rtk cargo build` — passed
+- `rtk cargo clippy -- -D warnings` — no issues
+- `rtk cargo fmt -- --check` — no diff
+- `rtk cargo test calibration::` — 71 passed, 1 ignored (11 suites)
+- `rtk cargo test preset_bundles` — 10 passed (11 suites)
+- `rtk cargo test inference::` — 377 passed, 2 ignored (11 suites)
+- `rtk cargo test llama::` — 305 passed, 3 ignored (11 suites)
+- `rtk cargo test sessions` — 15 passed (11 suites)
+
+No new unit tests were added this slice — the changed code path
+(`metal_sampler::run`'s cycle loop) is exercised the same way slice 2 left
+it: through the real `spawn()` gate test for the disqualified path, plus
+reuse of `nvidia_sampler::cycles_agree`'s own existing test coverage for the
+agreement logic itself. A real qualifying macOS launch has still never been
+executed end to end (no receipt exists on disk under
+`calibrations/launch-evidence/`); that remains the same limitation noted in
+slice 3, now also true of the cycle-agreement path.
+
+### Files changed (slice 4)
+
+- `src/calibration/launch_evidence.rs` (`metal_sampler::run` repeated-cycle
+  rewrite only; no other module touched)
+
+## Slice 3 addendum
+
+Baseline for this slice: `3af63862d8f5277a16a21e1a1c34e97849bf0baa` (slice 2,
+below).
+
+This slice ships the Windows/WDDM `nvidia-smi` sampler itself —
+`nvidia_sampler` in `launch_evidence.rs` — upgrading it from slice 2's design
+document to a real, compiled, unit-tested implementation. It does **not**
+ship `CudaRocmProcessDelta` (per-process attribution; see below for why),
+the frontend evidence-details drawer action, or any real-host qualification
+run (still gated on explicit authorization, not sought this slice).
+
+### Why this was possible without Windows hardware in this session
+
+None of this machine's tools changed — Apple Silicon still can't compile
+Windows-only code paths for execution, and no model server was started or
+stopped anywhere. What changed is that `ssh nick@ryne` gave read-only access
+to a real Windows/CUDA host (RTX 5090, driver 616.56) for the one thing that
+was actually missing before: a genuine `nvidia-smi` CSV sample to build and
+verify a parser against, instead of an assumed format. That is compile-time
+and unit-test verification only — the sampler has never executed against a
+live launch, which is exactly what a real-host qualification run (Stage 3,
+still unauthorized) would provide.
+
+### Scope narrowed to `WddmTotalDeviceDelta` only
+
+The design doc (slice 2) left `CudaRocmProcessDelta` vs. `WddmTotalDeviceDelta`
+as an open question pending real driver output. The real sample now settles
+it for this host: `nvidia-smi --query-compute-apps=pid,used_memory
+--format=csv,noheader,nounits` against Ryne returns `[N/A]` for every
+process's `used_memory`, with no exception (saved as
+`tests/fixtures/nvidia_smi_compute_apps_csv.txt`). Per-process attribution is
+therefore not available on this real WDDM host, so `nvidia_sampler` only
+ever records `WddmTotalDeviceDelta` (total-device). The compute-apps query is
+still used, but only for **PID-presence diffing** (a process appearing,
+disappearing) for background-noise flags — never as a memory source, since
+the memory field it would need is unusable here. `CudaRocmProcessDelta`
+remains unimplemented; the only place it could be validated is Linux/CUDA
+hardware, which this project does not have access to (same constraint noted
+in the slice 2 design doc).
+
+### `nvidia_sampler` (`launch_evidence.rs`)
+
+- **Gate.** `capture_before(app_config, preset)` mirrors `metal_sampler`'s
+  gate (`target_os = "windows"` in place of `"macos"`, fit pinned off, empty
+  `extra_args`) and returns `None` with zero I/O the instant any condition
+  fails — so, unlike the cheap in-process Metal read, the real `nvidia-smi`
+  process spawns this sampler requires are paid only on an already-qualifying
+  launch, never on the common path.
+- **Threading.** `start_backend` (`src/llama/server.rs`) calls
+  `nvidia_sampler::capture_before` in the same pre-spawn timing slot as the
+  Metal sampler's `pre_launch_wired_bytes`, immediately before
+  `supervisor.start()`. The returned `PreSpawnCapture` (idle-stabilized
+  `before` baseline plus the pre-existing `--query-compute-apps` inventory)
+  is threaded down to `nvidia_sampler::spawn`, called alongside
+  `metal_sampler::spawn` at the same post-readiness point, with the same
+  detached-`tokio::spawn`, fire-and-forget shape — it can never block a
+  stop/restart.
+- **Idle stabilization.** Up to 5 samples at 200ms, accepted once two
+  consecutive readings agree within 16 MiB; otherwise the last sample is
+  used and `noise_flags` records that it never converged, rather than
+  silently trusting a still-drifting baseline.
+- **Repeated observation.** Runs the peak/after cycle (6 samples at 750ms,
+  matching the Metal sampler's cadence) 3 times against the same live
+  server, re-baselining each cycle against the previous cycle's `after`.
+  `cycles_agree` requires every cycle to produce a delta (no underflow) and
+  every consecutive pair to agree within 16 MiB; disagreement is recorded as
+  a noise flag rather than silently averaged away or presented as clean.
+- **Background-process noise detection.** `diff_background_processes` diffs
+  the pre-existing `--query-compute-apps` PID list against the post-sampling
+  list (excluding the launched PID), flagging any PID that appeared,
+  disappeared, or (only where both samples happen to carry a parsed memory
+  value) changed by more than the stabilization tolerance.
+- **Total-device reads.** `total_device_used_bytes` reuses the same
+  `nvidia-smi --query-gpu` CSV parsing the live GPU-metrics panel already
+  relies on (`crate::gpu::nvidia::parse_nvidia_csv`, via
+  `crate::gpu::detect_backend`), run on a blocking thread since each call
+  spawns a real child process.
+
+### Fixture corpus additions (`launch_evidence.rs` test module)
+
+- `parse_compute_apps_csv_handles_real_wddm_na_output` — parses the real
+  Ryne capture; asserts every row's memory is `None` (matching the actual
+  observed driver behavior) and the pid list is intact.
+- `parse_compute_apps_csv_parses_a_real_memory_value_when_present` —
+  confirms the parser does handle a numeric `used_memory` value correctly
+  when one is present, even though this host never produces one.
+- `find_stable_value_detects_convergence_within_tolerance` /
+  `find_stable_value_reports_unstabilized_when_still_drifting`.
+- `diff_background_processes_flags_appearance_disappearance_and_growth` —
+  also asserts the launched PID itself is never flagged.
+- `diff_background_processes_does_not_flag_na_memory_as_a_change` — two
+  `[N/A]` samples for the same pid must not be misread as a zero-vs-zero
+  "change."
+- `cycles_agree_requires_every_cycle_to_produce_a_delta_and_agree_within_tolerance`
+  — covers agreement, disagreement, an underflowed cycle, and the empty
+  case.
+- `nvidia_capture_before_is_a_noop_off_windows_or_when_disqualified` — calls
+  the real `capture_before` on this (non-Windows) machine and asserts it
+  returns `None`, proving the gate short-circuits before any `nvidia-smi`
+  process is spawned.
+
+### Real fixture
+
+`tests/fixtures/nvidia_smi_compute_apps_csv.txt` — captured 2026-09-02 via
+`ssh nick@ryne "nvidia-smi --query-compute-apps=pid,used_memory
+--format=csv,noheader,nounits"` against Ryne's real RTX 5090 (driver
+616.56). Not a guessed format; this is what settled the
+`WddmTotalDeviceDelta`-only scoping decision above.
+
+### Verification (slice 3)
+
+- `rtk cargo build` — passed
+- `rtk cargo clippy -- -D warnings` — no issues
+- `rtk cargo fmt -- --check` — no diff
+- `rtk cargo test calibration::` — 71 passed, 1 ignored (11 suites)
+- `rtk cargo test preset_bundles` — 10 passed (11 suites)
+- `rtk cargo test inference::` — 377 passed, 2 ignored (11 suites)
+- `rtk cargo test llama::` — 305 passed, 3 ignored (11 suites)
+- `rtk cargo test sessions` — 15 passed (11 suites)
+
+### Files changed (slice 3)
+
+- `src/calibration/launch_evidence.rs` (new `nvidia_sampler` module, new
+  fixture corpus tests)
+- `src/llama/server.rs` (`nvidia_pre_spawn` capture + spawn call site)
+- `tests/fixtures/nvidia_smi_compute_apps_csv.txt` (new, real capture)
+- `docs/plans/evidence/preset-bundles/windows-cuda-sampler-design.md`
+  (status note updated — see file)
+
+## Slice 2 addendum
+
+Baseline for this slice: `b45daeb7d6b7714d764afec5a29e95b9364d53fb` (slice 1,
+below).
+
+This slice ships the Metal/unified-memory sampler, a design (not
+implementation) for the Windows/CUDA `nvidia-smi` sampler, and most of the
+Phase 9 fixture corpus. It still does **not** ship the frontend
+evidence-details drawer action, the Windows/CUDA sampler implementation
+itself (no reachable hardware — see below), or any real-host qualification
+run.
+
+### Metal sampler (`metal_sampler` in `launch_evidence.rs`)
+
+Bounded post-readiness sampler wired into the session-spawn lifecycle:
+
+- **Signal pivot.** `MemoryAvailabilitySnapshot::metal_working_set_bytes`
+  (`memory_availability::build_snapshot()`) turned out to be a static
+  configured ceiling (the `iogpu` wired limit or a RAM-relative default),
+  not a live per-process measurement — computed identically regardless of
+  what is running. Pivoted to `wired_bytes`, a genuinely live but
+  system-wide (not process-scoped) signal. Every macOS receipt therefore
+  carries an explicit `noise_flags` caveat:
+  `"macOS unified-memory sample is a system-wide wired-memory delta, not
+  process-scoped"`.
+- **Threading.** `launch_local` in `src/inference/launch.rs` split into a
+  thin unchanged-signature wrapper plus
+  `launch_local_with_resolved_preset(state, request, app_config,
+  Option<ModelPreset>)`. `src/llama/server.rs::start_backend` gained an
+  `EvidenceContext { app_config, resolved_preset }` parameter (bundled into
+  one struct to stay under clippy's 7-argument limit). Only the one
+  `sessions.rs` call site with a resolved `ModelPreset` in scope (the
+  preset-bundle launch path) was switched to the new function; the other
+  three `launch_local` call sites (session restore, direct payload,
+  `llama_binary.rs`) are unchanged and pass `None`.
+- **Timing.** `pre_launch_wired_bytes` is sampled in `start_backend`
+  immediately before `supervisor.start()`. The sampler itself is spawned via
+  a detached `tokio::spawn` immediately before `start_backend`'s final
+  `Ok(())` — after readiness has already succeeded and
+  `state.server_running` is already `true` — so it can never block normal
+  session control (start/stop/restart). It polls
+  `memory_availability::build_snapshot()` 6 times at 750ms intervals,
+  tracks `peak_bytes = max(wired_bytes)`, takes a final `after` sample,
+  rebuilds the `CapabilitySnapshot` via the existing `OnceLock` cache
+  (never re-spawns `llama-server --help`), and persists via `store::save`.
+  Every internal step fails closed and silently (no panic, no propagated
+  error) — evidence capture is advisory only.
+- **Gate.** Same shape as `build_launch_observation`'s hard gate, checked a
+  second time in `spawn()` itself so a disqualified launch never even
+  schedules a poll task: `cfg!(target_os = "macos")`,
+  `preset.fit_enabled == Some(false)`, and empty `extra_args`.
+
+### Windows/CUDA `nvidia-smi` sampler — design only
+
+No Windows/CUDA hardware is reachable from this session (this machine is
+Apple Silicon; the only other known machine requires explicit
+Coordinator/user authorization before starting or stopping a real model
+server, which was not sought or given). Wrote
+`docs/plans/evidence/preset-bundles/windows-cuda-sampler-design.md`
+covering: the `WddmTotalDeviceDelta`/`CudaRocmProcessDelta` method mapping
+(already reserved in the `LaunchEvidenceMethod` enum), the qualifying gate
+(mirrors `metal_sampler::spawn`), the before/idle-stabilization/peak/after
+sampling algorithm with background-process noise detection and repeated
+observation (per Phase 9's real-host-gate requirements, which go beyond
+what the single-shot Metal sampler needs), receipt shape (reuses
+`LaunchSample`/`LaunchObservationReceipt` unchanged, no schema migration),
+and explicit open questions left for whoever implements it on real
+hardware. No CUDA/Windows code was written — writing untested
+process-spawning logic against an assumed `nvidia-smi` output format
+without hardware to verify it against would be fabricated evidence, not a
+design.
+
+### Fixture corpus additions (`launch_evidence.rs` test module)
+
+Added to the 11 pre-existing unit tests:
+
+- `manifest_digest_changes_for_every_memory_relevant_field` — one mutation
+  fixture per `MemoryRelevant` field (44 fields), with the fixture set
+  itself asserted equal to `classify_argv_field`'s `MemoryRelevant` set, so
+  a newly added memory-relevant field with no mutation fixture fails this
+  test rather than going unverified.
+- `windows_wddm_and_cuda_rocm_methods_are_direct_observations_with_distinct_identity`
+  — platform-labelled fixtures for the two non-macOS direct-observation
+  methods; confirms method is part of launch identity (a receipt cannot
+  match across methods even with an identical manifest digest).
+- `estimator_only_and_fit_probe_never_match_or_power_measured_evidence`.
+- `negative_delta_from_noisy_sampling_never_underflows_into_a_bogus_positive_number`
+  — noisy background usage / implausible (negative) delta fixture; confirms
+  `checked_sub` yields `None` rather than a wrapped bogus positive number.
+- `incomplete_sampling_window_is_recorded_not_hidden` — a short sample
+  window (partial `sample_count`, e.g. process exited mid-poll) still
+  builds a receipt with the shortfall visible in `noise_flags`, rather than
+  the incompleteness being silently dropped.
+- `metal_sampler_spawn_is_a_noop_when_launch_does_not_qualify_for_exact_evidence`
+  — calls the real `metal_sampler::spawn` outside a tokio runtime for two
+  disqualifying presets (fit not pinned off; non-empty `extra_args`) and
+  relies on a panic (from reaching `tokio::spawn` with no runtime) to prove
+  the gate returns before ever scheduling a task.
+- The existing `every_model_preset_field_has_an_argv_classification` test
+  already satisfies Phase 9's "fail-closed test that adding a typed argv
+  field without fingerprint classification breaks the manifest validator"
+  requirement; no new test was needed for it.
+
+Not added (deferred, see Outstanding below): the frontend evidence-details
+drawer action and its fixtures, and the `core/preset-flow.spec.js`
+playwright run.
+
+### Verification (slice 2)
+
+- `rtk cargo build` — passed
+- `rtk cargo clippy -- -D warnings` — no issues
+- `rtk cargo fmt -- --check` — no diff
+- `rtk cargo test calibration::` — 63 passed, 1 ignored (11 suites)
+- `rtk cargo test preset_bundles` — 10 passed (11 suites)
+- `rtk cargo test inference::` — 377 passed, 2 ignored (11 suites)
+- `rtk cargo test llama::` — 305 passed, 3 ignored (11 suites)
+- `rtk cargo test sessions` — 15 passed (11 suites)
+
+### Files changed (slice 2)
+
+- `src/calibration/launch_evidence.rs` (new `metal_sampler` module, new
+  fixture corpus tests)
+- `src/inference/launch.rs` (`launch_local_with_resolved_preset`)
+- `src/llama/server.rs` (`EvidenceContext`, sampler-spawn hook)
+- `src/web/api/sessions.rs` (bundle-launch call site)
+- `docs/plans/evidence/preset-bundles/windows-cuda-sampler-design.md` (new)
+
+## Slice 1 — original scope
+
+This is a bounded, checkpointed slice of Phase 9, not the full phase. It
+ships the launch-evidence vocabulary, its persistence store, and the live
+`/resolve` read path. It does **not** ship either platform sampler (Metal,
+CUDA/nvidia-smi), so no receipt can yet be produced by an actual session —
+the store and matching logic are exercised only by unit fixtures so far.
+
+## Summary
+
+Added `src/calibration/launch_evidence.rs`, a receipt kind layered onto the
+existing Calibration fingerprint/evidence vocabulary (architecture 12), not
+a separate evidence store:
+
+- `ArgvFieldClass` (MemoryRelevant/BehaviorOnly/Secret/Forbidden) and
+  `classify_argv_field`, an exhaustive, fail-closed classification over every
+  `ModelPreset` field. `extra_args` classifies `Forbidden` because it can
+  smuggle unclassified argv.
+- `manifest_digest(preset)` — `evidence-v1:<sha256>` over the sorted
+  MemoryRelevant argv triples only; fails closed on any unclassified field.
+- `LaunchEvidenceMethod` (WddmTotalDeviceDelta/CudaRocmProcessDelta/
+  MetalUnifiedObservation/FitProbe/EstimatorOnly) with
+  `is_direct_observation()`.
+- `LaunchEvidenceFingerprint`, `LaunchSample`, `FitState`,
+  `LaunchObservationReceipt`, and `build_launch_observation(preset,
+  fingerprint_base, fit_state, sample)` — rejects `FitState::On` and any
+  non-empty `extra_args`, since fit can silently shrink context/batch and
+  must be pinned off for a launch to count as exact evidence.
+- `EvidenceMatchClass` (Exact/Compatible/Related/Stale) and
+  `classify_evidence_match`, extending Calibration's existing three-tier
+  match precedent with a fourth, age-gated `Stale` tier
+  (`EVIDENCE_FRESHNESS_WINDOW_MS` = 30 days).
+- `current_fingerprint(config, resolved_preset, capabilities)` — the
+  fingerprint builder shared by both save and lookup call sites, backed by a
+  cached `HardwareFingerprint` (`sysinfo`, no process spawning) so it is
+  cheap enough for the interactive `/resolve` HTTP path.
+- `pub mod store` — atomic on-disk persistence (`save`, `list`,
+  `best_match`) under the new `AppPaths::launch_evidence_dir()`
+  (`<root>/calibrations/launch-evidence`), writing to a `.json.tmp` then
+  `fs::rename` to avoid a partial file being mistaken for evidence.
+
+Wired the read path into the live bundle resolver: `preset_bundles.rs`'s
+`resolve_response` now takes `&AppConfig` and calls a new `lookup_evidence`
+helper that builds the expected fingerprint and calls `store::best_match`,
+returning the resolver's pre-existing but previously-unused
+`EvidenceMatch { class, summary }` shape — no new frontend contract was
+needed; Phase 8c's `renderEvidence`/`EVIDENCE_LABELS` already render it.
+Evidence *lookup* (disk I/O) intentionally stays out of `resolve_preset()`
+in `resolver.rs`, which is documented as pure — no artifact reads, binary
+probes, or network I/O.
+
+Extended `CalibrationMeasurement` with an optional `launch_evidence` field
+so a future Calibration trial can carry an exact-observation receipt
+alongside its benchmark samples.
+
+## Files changed
+
+- `src/calibration/launch_evidence.rs` (new)
+- `src/calibration/mod.rs`
+- `src/calibration/executor.rs`
+- `src/paths.rs`
+- `src/web/api/preset_bundles.rs`
+
+## Verification
+
+- `rtk cargo build` — passed
+- `rtk cargo clippy -- -D warnings` — no issues
+- `rtk cargo fmt -- --check` — no diff
+- `rtk cargo test calibration::` — 57 passed, 1 ignored (11 suites)
+- `rtk cargo test preset_bundles` — 10 passed (11 suites)
+
+## Outstanding (after slice 5)
+
+- Windows/CUDA `nvidia-smi` sampler is implemented for `WddmTotalDeviceDelta`
+  only (slice 3); `CudaRocmProcessDelta` (per-process attribution) remains
+  unimplemented — the only place it could be validated is Linux/CUDA
+  hardware, which this project does not have access to.
+- `rtk cargo test presets::evidence::` (no such module exists — the launch-
+  evidence tests live in `calibration::launch_evidence` by design, per this
+  doc's opening note that this is a receipt kind layered onto Calibration's
+  vocabulary, not a separate module; Phase 9's plan text naming
+  `presets::evidence::` predates that design decision).
+- ~~Real-host qualification gates~~ — closed by slice 6 below.
+
+## Hard gate
+
+Exercised by unit fixtures (`build_launch_observation_rejects_fit_on`,
+`build_launch_observation_rejects_extra_args`, and `metal_sampler`'s own
+`spawn`-time gate check) and, on macOS, by the live `metal_sampler` path
+end to end — but only up to persistence; no real-host qualification run has
+produced a receipt from an actual model launch yet, so the architecture's
+"no observation may be recorded as exact evidence unless fit was pinned
+off" gate has not been exercised against a real host's launch, on either
+platform.
+
+## Slice 6 — real-host qualification run (macOS)
+
+User-authorized ("proceed - we have ram free") end-to-end run on this
+machine's own hardware (Apple M5 Max, 64GB unified memory), not a unit
+fixture. Launched the user's real production preset (23GB Q4 GGUF, 262K
+context, `draft-mtp`/`ngram-mod`/`ngram-map-k4v` speculative decoding,
+reasoning at `xhigh` effort) through the real app, not a synthetic argv
+builder.
+
+- Mapped every flag in the user's raw `llama-server` CLI command against
+  `ModelPreset` — zero fields fell through to `extra_args`, so the launch
+  qualified for exact-evidence capture under the slice 5 hard gate.
+- One field had to be dropped to launch: `llama_reasoning_preserve`. The
+  app's `reasoning_preserve_template` capability is hardcoded
+  `Unavailable` (`llama_cpp_capabilities.rs`, `derive_typed_capabilities`)
+  — a deliberate Phase 2 boundary ("Native reasoning-preserve remains
+  non-launchable until a bounded, source-backed template-compatibility
+  contract is qualified"), not a bug. Real template-compatibility
+  verification for `--reasoning-preserve` is still open follow-up work —
+  needed so users don't have to drop the flag to get an exact-evidence
+  launch.
+- Produced the project's first real (non-synthetic) receipt:
+  `metal_unified_observation`, `sample_count: 18` (3 cycles × 6 samples,
+  750ms interval), `model_delta_bytes: 28204007424` (~26.3 GiB). Confirmed
+  via `/resolve` as `class: "exact"` end to end.
+- The receipt's second `noise_flags` entry — "repeated observation cycles
+  did not agree within tolerance" — is a correct detection, not sampler
+  noise: cycle 1 delta was ~28.2GB (model still loading) vs. ~436MB/~395MB
+  in cycles 2-3 (settled). Validates slice 4's `cycles_agree`
+  disagreement logic against real, noisy hardware.
+- Found and fixed a real bug this run surfaced: `lookup_evidence()` in
+  `src/web/api/preset_bundles.rs` populated `EvidenceDetail.noise_flags`
+  from `store::best_match`'s match-classification `warnings` instead of
+  the receipt's own `noise_flags` — silently dropping real sampling-noise
+  flags (like the cycle-disagreement one above) from the `/resolve`
+  response and the evidence-details drawer. Fixed to
+  `receipt.noise_flags.clone()`; verified live against the real receipt
+  after rebuilding and restarting the app (`rtk cargo build`, `rtk cargo
+  test preset_bundles` — 10 passed).
+
+### Outstanding (after slice 6)
+
+- ~~`reasoning_preserve_template` capability verification~~ — closed by
+  `035647e` (same commit that recorded this slice's receipt text, which
+  itself went un-updated until this note): the fail-closed gate in
+  `LlamaCppAdapter`'s launch-arg validation and the `Unavailable`
+  hardcoding in `llama_cpp_capabilities.rs` were both removed. Rationale
+  recorded in that commit: llama.cpp's chat template honors or ignores
+  `--reasoning-preserve` at runtime regardless of any advance
+  compatibility check, and no reliable source-backed signal exists to
+  verify compatibility before launch — so gating in advance was blocking
+  real launches (like slice 6's) on an unverifiable premise, not a real
+  safety concern. `--reasoning-preserve` now launches unconditionally
+  when the binary advertises the flag; a user's own reasoning-preserve
+  launches (like the one this slice qualified) no longer need to drop
+  the field to get exact-evidence eligibility.
+
+### Post-slice-6 maintenance (not phase-9 scope, noted for completeness)
+
+- `a91eafa` bounded `capture_telemetry()`'s synchronous `mactop` read
+  with a 750ms timeout (was up to ~34s unbounded per call, up to 4 calls
+  per calibration trial) — a general calibration-latency fix, not
+  launch-evidence logic.
+- `3459107` cleared `cargo clippy --all-targets -- -D warnings` across
+  the workspace (field-reassign-with-default, manual-filter,
+  await-holding-lock, and module-ordering lints) — general cleanup, no
+  behavior change.

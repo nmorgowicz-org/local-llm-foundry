@@ -1134,3 +1134,44 @@ When a new architecture is released:
 | `src/inference/rapid_mlx/mlx_meta.rs` | MLX metadata reader (Rapid-MLX); `MlxMetadata::to_arch()`; safetensors index; evidence |
 | `src/web/api/vram.rs` | `/api/vram/*` route handlers; dual-backend routing; `build_arch_from_body()` |
 | `docs/reference/setup-wizard.md` | Wizard UI and API reference; links here for estimation details |
+## Preset fit intents and the optional fit probe
+
+Preset bundles can produce three deterministic, estimate-only fit intents:
+Quality-first, Balanced, and Low-VRAM. Each proposal is materialized as one
+complete selection and can be replayed with the same artifact, context, K/V,
+performance, and MoE-placement inputs. The proposal does not start a model or
+silently rewrite the saved default.
+
+For Balanced and Low-VRAM, the resolver considers explicit bundle choices in a
+fixed order: lower local artifact, lower listed context, lower listed
+batch/ubatch pair, and then bounded CPU expert placement for authoritative MoE
+metadata. `ubatch` is never allowed to exceed `batch`. Local artifact
+down-selection requires a local path, exact size, and non-empty full-file
+digest. Curated-only bundles reject combinations that are not explicitly
+listed; validated-custom bundles still pass through every resolver check.
+
+Workload policy is a quality floor, not a hidden optimization hint. Agentic
+and unknown workloads never silently select `q4/q4`; mixed `q8/q4` is not an
+automatic intent choice. Unknown or incomplete architecture metadata produces
+fewer choices and an explicit unavailable reason. Automatic CPU expert
+placement is also unavailable for Low-VRAM intents on unified-memory systems
+until that behavior has qualified evidence.
+
+The optional `llama-fit-params` executable is configured by
+`AppConfig::llama_fit_params_path` and is absent by default. Its bounded
+`ProcessFitReader` captures stdout and stderr separately: compact device rows
+come from stdout, while the complete memory table on stderr supplies the
+device total and the sum of every non-device host row. Results are estimate
+class (`fit_probe`), never measured runtime evidence. Binary identity is bound
+to canonical path, SHA-256, modification time, and version line, and repeated
+points are cached by the artifact/config/binary identity and `n_cpu_moe`.
+Missing, changed, timed-out, oversized, or unparsable probe output remains a
+disabled-with-reason result; it is never converted into zero memory.
+
+Bundle resolve responses expose this status as tagged `estimate` JSON. A
+request with `fit_automatically` set uses the probe only for that explicit
+action. Dense models use one `n_cpu_moe=0` reading; MoE models search the
+device suffix and host prefix independently, then return the smallest feasible
+placement. The returned selection is re-resolved before hashing, so its change
+list and configuration identity describe the exact proposal. A zero-placement
+proposal does not emit `--n-cpu-moe 0`.

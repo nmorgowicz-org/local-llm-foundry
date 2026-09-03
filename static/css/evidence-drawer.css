@@ -1,7 +1,10 @@
 .evidence-drawer {
   position: fixed;
   inset: 0;
-  z-index: 920;
+  /* Must layer above other drawers (e.g. the bundle Configure drawer,
+     z-index: 920) since it can be opened from within one via a details
+     action. */
+  z-index: 930;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(340px, 520px);
   visibility: hidden;

@@ -137,13 +137,18 @@ export async function doStartWithConfig(config, options = {}, buttonArg = null) 
             return;
         }
 
+        // Phase 8a: for a bundle the launch is resolve-and-launch, so we ship only
+        // the preset id + expected_revision (never the selection). Flat presets omit
+        // expected_revision entirely to keep the legacy payload byte-for-byte.
+        const spawnBody = { ...config };
+        if (options.expectedRevision != null) spawnBody.expected_revision = options.expectedRevision;
         const resp = await fetch('/api/sessions/spawn', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${adminToken}`,
             },
-            body: JSON.stringify(config),
+            body: JSON.stringify(spawnBody),
         });
 
         if (!resp.ok) {
@@ -161,6 +166,29 @@ export async function doStartWithConfig(config, options = {}, buttonArg = null) 
                     showToast('Start failed: too soon; please wait', 'warning');
                 }
                 hideConnectingState();
+                return;
+            }
+
+            // Phase 8a resolve-and-launch refusals. These mean the saved selection or
+            // the bundle revision moved under us — one-shot re-render + re-ask, never
+            // a silent retry with a stale revision (architecture invariant: 409 is
+            // terminal, the user re-asks explicitly).
+            if (resp.status === 409 || resp.status === 412 || resp.status === 400) {
+                let serverError = '';
+                try { serverError = (await resp.json().catch(() => ({}))).error || ''; } catch { /* non-JSON */ }
+                let message;
+                if (resp.status === 409 || serverError === 'revision_conflict') {
+                    message = 'This preset changed since it was last loaded. Reloaded the current selection — review and start again.';
+                } else if (resp.status === 412 || serverError === 'preview_stale') {
+                    message = 'The selection preview is stale. Reloaded the latest settings — start again.';
+                } else {
+                    message = 'This selection can no longer launch with the current system settings. Start again to review the current configuration.';
+                }
+                showToast(message, 'warning', serverError, { duration: 8000 });
+                hideConnectingState();
+                import('./presets.js')
+                    .then(({ loadPresets }) => loadPresets())
+                    .catch(() => {});
                 return;
             }
 
@@ -463,14 +491,14 @@ export async function doAttachFromSetup() {
     }
 }
 
-export function doStartFromSetup() {
+export function doStartFromSetup(options = {}) {
     const select = document.getElementById('setup-preset-select');
     if (select) {
         const presetSelect = document.getElementById('preset-select');
         if (presetSelect) presetSelect.value = select.value;
     }
     showConnectingState();
-    doStart(document.getElementById('setup-start-btn'));
+    doStart(document.getElementById('setup-start-btn'), options);
 }
 
 // ── Button init ────────────────────────────────────────────────────────────────

@@ -1,8 +1,16 @@
 use crate::inference::InferenceBackend;
-use crate::inference::llama_cpp::LoadMode;
+use crate::inference::llama_cpp::{LlamaReasoningEffort, LlamaReasoningFormat, LoadMode};
 use crate::inference::rapid_mlx::RapidMlxConfig;
 use anyhow::Result;
 use std::path::Path;
+
+pub mod bundle;
+pub mod fit_probe;
+pub mod fit_search;
+pub mod intent;
+pub mod probe_estimate;
+pub mod resolver;
+pub mod validation;
 
 /// Current preset schema version (D32).
 /// v1: initial version with schema_version field; typed Rapid-MLX model_source
@@ -11,13 +19,34 @@ use std::path::Path;
 ///     existing presets default to prefix_cache_enabled=false (safe default).
 /// v3: Phase 7A — all Phase 7 config fields (KV/cache, batching, GPU, Web UI, safety);
 ///     existing presets load with None/defaults (safe degraded mode).
-pub const PRESET_SCHEMA_VERSION: u32 = 4;
+/// v4: explicit llama.cpp load_mode alongside legacy no_mmap boolean.
+/// v5: canonical K/V — ctk/ctv become the single source of truth; cache_type_k/v
+///     remain as deprecated read-compat projections only. Conflicting pairs are
+///     preserved (never deleted) and surfaced as non-launchable via validation.
+/// v6: optional typed launch `bundle` field (see `presets::bundle`). Migration
+///     only bumps the schema marker; `bundle` stays `None` for every migrated
+///     preset and is populated only via the server-owned bundle constructor on
+///     a later, explicit user action. A preset with `bundle: None` emits no new
+///     argv, so a v5 preset migrated to v6 launches identically. Migration is
+///     forward-only: a v6 file cannot be read by an earlier build, and no
+///     downgrade is ever written.
+pub const PRESET_SCHEMA_VERSION: u32 = 6;
+
+fn default_preset_revision() -> u64 {
+    1
+}
 
 /// Forward-migrate a preset from any known version to current.
 /// Returns `true` if migration was applied, `false` if already current.
 pub fn migrate_preset(preset: &mut ModelPreset) -> bool {
     let from_version = preset.schema_version.unwrap_or(0);
     let mut migrated = false;
+    // Revision is assigned on the first write of every legacy preset. A zero
+    // value is only the Rust construction default; it is never persisted.
+    if preset.revision == 0 {
+        preset.revision = default_preset_revision();
+        migrated = true;
+    }
     // Typed Rapid-MLX source is authoritative. Run this normalization at every
     // persistence boundary too, so API-created/updated legacy presets cannot
     // reintroduce a divergent secondary `model_path` identity.
@@ -73,6 +102,24 @@ pub fn migrate_preset(preset: &mut ModelPreset) -> bool {
         preset.schema_version = Some(4);
         migrated = true;
     }
+    // v4 -> v5: canonical K/V — ctk/ctv become the single source of truth.
+    // `cache_type_k`/`cache_type_v` are retained as deprecated read-compat
+    // projections; conflicts are preserved and surfaced via validation.
+    if preset.schema_version.unwrap_or(4) < 5 {
+        validation::migrate_kv_fields(preset);
+        preset.schema_version = Some(5);
+        migrated = true;
+    }
+    // v5 -> v6: optional typed launch bundle. `bundle` is not touched here —
+    // it stays `None` for every migrated preset (only the server-owned
+    // `bundle::create_bundle_preset` constructor ever seeds it) — so this
+    // arm only bumps the schema marker. A preset with `bundle: None` emits
+    // no new argv, so a v5 preset migrated to v6 launches identically.
+    if preset.schema_version.unwrap_or(5) < 6 {
+        preset.schema_version = Some(6);
+        migrated = true;
+    }
+    // Safety net: any future version bump keeps tracking.
     if preset.schema_version.unwrap_or(0) < PRESET_SCHEMA_VERSION {
         preset.schema_version = Some(PRESET_SCHEMA_VERSION);
         migrated = true;
@@ -101,6 +148,9 @@ pub struct ModelPreset {
     /// Schema version for forward migration (D32). `None` means v0 (pre-migration).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_version: Option<u32>,
+    /// Optimistic-concurrency token for the whole preset, including bundles.
+    #[serde(default = "default_preset_revision")]
+    pub revision: u64,
     /// Missing in legacy presets; serde defaults those to llama.cpp.
     #[serde(default)]
     pub backend: InferenceBackend,
@@ -272,6 +322,13 @@ pub struct ModelPreset {
     pub fit_target: Option<String>,
     #[serde(default)]
     pub fit_print: Option<bool>,
+    // Bundle (v6)
+    /// Optional typed launch bundle (schema v6+). `None` for legacy flat
+    /// presets and for presets that have never gone through the
+    /// server-owned bundle constructor. Absence must not change launch
+    /// behavior versus a bare flat preset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<bundle::PresetBundleSpec>,
     // Advanced
     #[serde(default)]
     pub seed: Option<i64>,
@@ -318,6 +375,16 @@ pub struct ModelPreset {
     pub reasoning_budget: Option<i32>,
     #[serde(default)]
     pub reasoning_budget_message: Option<String>,
+    /// Native llama.cpp reasoning controls. These are intentionally separate
+    /// from Rapid-MLX request defaults and from chat-template kwargs.
+    #[serde(default)]
+    pub mmproj_offload: Option<bool>,
+    #[serde(default)]
+    pub llama_reasoning_effort: LlamaReasoningEffort,
+    #[serde(default)]
+    pub llama_reasoning_format: Option<LlamaReasoningFormat>,
+    #[serde(default)]
+    pub llama_reasoning_preserve: Option<bool>,
     /// Persisted in the protected preset file; API responses always redact it.
     #[serde(default)]
     pub api_key: Option<String>,
@@ -911,6 +978,96 @@ mod tests {
     }
 
     #[test]
+    fn v5_to_v6_migration_preserves_flat_fit_and_bundle_creation_defaults_fit_off() {
+        let mut legacy = ModelPreset {
+            schema_version: Some(5),
+            model_path: "/models/legacy.gguf".into(),
+            context_size: 4096,
+            ctk: "f16".into(),
+            ctv: "f16".into(),
+            batch_size: 0,
+            ubatch_size: 0,
+            ..Default::default()
+        };
+        assert!(migrate_preset(&mut legacy));
+        assert_eq!(legacy.schema_version, Some(PRESET_SCHEMA_VERSION));
+        assert_eq!(legacy.revision, 1);
+        assert!(legacy.bundle.is_none());
+        assert_eq!(legacy.fit_enabled, None);
+        assert_eq!(legacy.batch_size, 0);
+        assert_eq!(legacy.ubatch_size, 0);
+
+        let bundle = crate::presets::bundle::PresetBundleSpec {
+            identity: crate::presets::bundle::PresetBundleIdentity {
+                bundle_id: "bundle_test".into(),
+                tune_id: "tune_test".into(),
+                display_name: "Test".into(),
+            },
+            artifacts: vec![crate::presets::bundle::PresetModelArtifact {
+                id: "weights".into(),
+                local_path: Some("/models/legacy.gguf".into()),
+                ..Default::default()
+            }],
+            performance_options: vec![crate::presets::bundle::PresetPerformanceOption {
+                id: "p".into(),
+                batch_size: 2048,
+                ubatch_size: 256,
+                ..Default::default()
+            }],
+            context_options: vec![4096],
+            kv_policy_options: vec![crate::presets::bundle::LlamaKvPolicyId::F16F16],
+            cpu_moe_options: vec![0],
+            curated_selections: vec![crate::presets::bundle::PresetBundleSelection {
+                artifact_id: "weights".into(),
+                context_size: 4096,
+                performance_id: "p".into(),
+                n_cpu_moe: Some(0),
+                ..Default::default()
+            }],
+            default_selection: crate::presets::bundle::PresetBundleSelection {
+                artifact_id: "weights".into(),
+                context_size: 4096,
+                performance_id: "p".into(),
+                n_cpu_moe: Some(0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let created = crate::presets::bundle::create_bundle_preset("Created", bundle);
+        assert_eq!(created.fit_enabled, Some(false));
+    }
+
+    #[test]
+    fn schema_v6_fixtures_preserve_bundle_axes_and_typed_fields() {
+        let bundle = load_fixture("schema-v6/q4-q5-exact-tune.json");
+        assert_eq!(bundle.schema_version, Some(6));
+        assert_eq!(bundle.revision, 1);
+        let spec = bundle.bundle.as_ref().unwrap();
+        assert_eq!(spec.context_options, vec![160_000, 200_000, 262_144]);
+        assert_eq!(spec.performance_options[0].batch_size, 2048);
+        assert_eq!(spec.performance_options[0].ubatch_size, 256);
+        assert_eq!(spec.artifacts.len(), 3);
+        assert_eq!(
+            spec.artifacts[0].mmproj_artifact_id.as_deref(),
+            Some("projector")
+        );
+        assert_eq!(
+            spec.artifacts[0].draft_artifact_id.as_deref(),
+            Some("draft")
+        );
+
+        let typed: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/presets/schema-v6/typed_llama_fields.json"
+        ))
+        .unwrap();
+        assert_eq!(typed["llama_reasoning_effort"].as_array().unwrap().len(), 7);
+        assert_eq!(
+            typed["argv_rules"]["preserve_enabled"][0],
+            "--reasoning-preserve"
+        );
+    }
+
+    #[test]
     fn legacy_preset_without_backend_defaults_to_llama_cpp() {
         let preset: ModelPreset = serde_json::from_value(serde_json::json!({
             "name": "Legacy",
@@ -1221,5 +1378,68 @@ mod tests {
         assert!(rapid.embeddings.is_none());
         assert!(rapid.gpu_memory_utilization.is_none());
         assert!(rapid.sampling_mode.is_none());
+    }
+
+    // Phase 1b: fixture-driven K/V migration tests against the real legacy JSON
+    // corpus under tests/fixtures/presets/.
+
+    fn load_fixture(name: &str) -> ModelPreset {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("presets")
+            .join(name);
+        let contents = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read fixture {}: {e}", path.display()));
+        serde_json::from_str(&contents)
+            .unwrap_or_else(|e| panic!("failed to parse fixture {name}: {e}"))
+    }
+
+    #[test]
+    fn fixture_v4_deprecated_only_migrates_into_canonical_fields() {
+        let mut p = load_fixture("schema-v4/deprecated_k_and_v_only.json");
+        assert!(migrate_preset(&mut p));
+        assert_eq!(p.ctk, "q8_0");
+        assert_eq!(p.ctv, "q8_0");
+        assert_eq!(p.schema_version, Some(PRESET_SCHEMA_VERSION));
+        // Launch policy: clean (no conflict, known values).
+        assert!(crate::presets::validation::validate_llama_launch_policy(&p, None).is_empty());
+    }
+
+    #[test]
+    fn fixture_v4_both_equal_is_noop_migration() {
+        let mut p = load_fixture("schema-v4/both_fields_equal.json");
+        migrate_preset(&mut p);
+        assert_eq!(p.ctk, "f16");
+        assert_eq!(p.ctv, "f16");
+        assert_eq!(p.schema_version, Some(PRESET_SCHEMA_VERSION));
+        assert!(crate::presets::validation::validate_llama_launch_policy(&p, None).is_empty());
+    }
+
+    #[test]
+    fn fixture_v4_kv_conflict_is_preserved_not_deleted() {
+        let mut p = load_fixture("schema-v4/kv_conflict_preserved.json");
+        migrate_preset(&mut p);
+        // Both sides retained as-is — migration never guesses.
+        assert_eq!(p.ctk, "q8_0");
+        assert_eq!(p.ctv, "q8_0");
+        assert_eq!(p.cache_type_k.as_deref(), Some("f16"));
+        assert_eq!(p.cache_type_v.as_deref(), Some("f16"));
+        assert_eq!(p.schema_version, Some(PRESET_SCHEMA_VERSION));
+        // But validation marks it non-launchable until resolved.
+        let issues = crate::presets::validation::validate_llama_launch_policy(&p, None);
+        assert!(
+            issues.iter().any(|i| i.code == "KV_FIELD_CONFLICT"),
+            "conflicting K/V must be flagged, got: {:?}",
+            issues.iter().map(|i| i.code.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn fixture_v5_canonical_clean_is_launchable() {
+        let mut p = load_fixture("schema-v5/canonical_kv_clean.json");
+        migrate_preset(&mut p);
+        assert_eq!(p.schema_version, Some(PRESET_SCHEMA_VERSION));
+        assert!(crate::presets::validation::validate_llama_launch_policy(&p, None).is_empty());
     }
 }

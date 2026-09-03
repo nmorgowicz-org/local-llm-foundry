@@ -132,7 +132,7 @@ pub fn dense_weight_split(model_size_bytes: u64, arch: &ModelArch, gpu_layers: i
             .saturating_mul(gpu_layers as u64)
             .min(model_size_bytes)
     } else {
-        (model_size_bytes as f64 * gpu_layers as f64 / arch.n_layers as f64) as u64
+        (model_size_bytes as f64 * gpu_layers as f64 / arch.n_layers as f64).round() as u64
     };
     (gpu_bytes, model_size_bytes.saturating_sub(gpu_bytes))
 }

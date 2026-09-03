@@ -236,6 +236,59 @@ export async function openEstimateEvidenceDrawer(estimate = {}, surface = 'Memor
     openEvidenceDrawer(evidenceFromEstimate(enriched, surface), trigger);
 }
 
+const EVIDENCE_CLASS_STATUS = {
+    exact: 'good',
+    compatible: 'caution',
+    related: 'caution',
+    stale: 'blocked',
+};
+
+const EVIDENCE_CLASS_TITLES = {
+    exact: 'Measured on this machine',
+    compatible: 'Compatible model evidence',
+    related: 'Related model evidence',
+    stale: 'Stale evidence',
+};
+
+function formatGiB(bytes) {
+    if (bytes === undefined || bytes === null) return null;
+    return `${(Number(bytes) / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+}
+
+export function evidenceFromLaunchObservation(evidence = {}) {
+    const evidenceClass = evidence.class || 'related';
+    const status = EVIDENCE_CLASS_STATUS[evidenceClass] || 'info';
+    const detail = evidence.detail || null;
+    const capturedAt = detail?.captured_unix_ms
+        ? new Date(Number(detail.captured_unix_ms)).toLocaleString()
+        : null;
+    return {
+        title: EVIDENCE_CLASS_TITLES[evidenceClass] || 'Launch memory evidence',
+        status,
+        summary: evidence.summary || 'Measured launch memory evidence is available for this configuration.',
+        consequence: evidenceClass === 'stale'
+            ? 'This receipt has aged past the freshness window and may no longer reflect the current binary or arguments.'
+            : evidenceClass === 'exact'
+                ? 'This is a direct measurement of this exact launch configuration on this machine.'
+                : 'This measurement comes from a related configuration, not an exact match.',
+        remediation: evidenceClass === 'stale' ? 'Re-launch this configuration to refresh the evidence.' : '',
+        evidence: detail ? [
+            `Method: ${detail.method}`,
+            `Before: ${formatGiB(detail.before_bytes)}`,
+            `Peak: ${formatGiB(detail.peak_bytes)}`,
+            `After: ${formatGiB(detail.after_bytes)}`,
+            detail.model_delta_bytes !== undefined && detail.model_delta_bytes !== null
+                ? `Model delta: ${formatGiB(detail.model_delta_bytes)}`
+                : '',
+            `Samples: ${detail.sample_count} (${detail.interval_ms}ms interval)`,
+            capturedAt ? `Captured: ${capturedAt}` : '',
+        ] : [],
+        warnings: detail?.noise_flags || [],
+        technicalLabel: 'Measurement detail',
+        expanded: evidenceClass === 'stale',
+    };
+}
+
 export function evidenceFromCommandPreview(preview = {}) {
     const diffs = preview.requested_vs_effective && typeof preview.requested_vs_effective === 'object'
         ? Object.entries(preview.requested_vs_effective)

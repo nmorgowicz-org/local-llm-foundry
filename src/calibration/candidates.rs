@@ -469,8 +469,8 @@ mod tests {
     use super::*;
     use crate::inference::llama_cpp_capabilities::{
         CacheCapabilities, CapabilitySnapshot, CapabilitySnapshotSource, ConcurrencyCapabilities,
-        ContextCapabilities, EndpointCapabilities, ExecutableIdentity, SpeculationCapabilities,
-        StreamingCapabilities, TemplateCapabilities, ToolCapabilities,
+        ContextCapabilities, EndpointCapabilities, ExecutableIdentity, MixedMainKv,
+        SpeculationCapabilities, StreamingCapabilities, TemplateCapabilities, ToolCapabilities,
     };
 
     fn snapshot_with_flash() -> CapabilitySnapshot {
@@ -491,6 +491,8 @@ mod tests {
             templates: TemplateCapabilities::default(),
             tools: ToolCapabilities::default(),
             speculation: SpeculationCapabilities::default(),
+            typed: Default::default(),
+            mixed_main_kv: MixedMainKv::product_default_denied(),
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::ManualOverride,
         }
@@ -498,9 +500,11 @@ mod tests {
 
     #[test]
     fn quick_candidates_are_deterministic_and_capability_gated() {
-        let mut preset = ModelPreset::default();
-        preset.batch_size = 2048;
-        preset.ubatch_size = 512;
+        let preset = ModelPreset {
+            batch_size: 2048,
+            ubatch_size: 512,
+            ..Default::default()
+        };
         let workload = CalibrationWorkload::default();
         let without = quick_candidates(&preset, &workload, None).expect("baseline candidates");
         assert_eq!(
@@ -519,9 +523,11 @@ mod tests {
 
     #[test]
     fn balanced_plan_is_stable_and_within_budget() {
-        let mut preset = ModelPreset::default();
-        preset.batch_size = 2048;
-        preset.ubatch_size = 512;
+        let preset = ModelPreset {
+            batch_size: 2048,
+            ubatch_size: 512,
+            ..Default::default()
+        };
         let workload = CalibrationWorkload::default();
         let first =
             balanced_plan(&preset, &workload, Some(&snapshot_with_flash())).expect("balanced plan");
@@ -541,9 +547,11 @@ mod tests {
 
     #[test]
     fn balanced_plan_covers_batch_range_without_crossing_ubatch_bound() {
-        let mut preset = ModelPreset::default();
-        preset.batch_size = 2048;
-        preset.ubatch_size = 2048;
+        let preset = ModelPreset {
+            batch_size: 2048,
+            ubatch_size: 2048,
+            ..Default::default()
+        };
         let plan =
             balanced_plan(&preset, &CalibrationWorkload::default(), None).expect("balanced plan");
         let mut observed = Vec::new();
@@ -589,8 +597,10 @@ mod tests {
 
     #[test]
     fn rapid_preset_is_rejected_before_candidate_generation() {
-        let mut preset = ModelPreset::default();
-        preset.backend = InferenceBackend::RapidMlx;
+        let preset = ModelPreset {
+            backend: InferenceBackend::RapidMlx,
+            ..Default::default()
+        };
         assert!(balanced_candidates(&preset, &CalibrationWorkload::default(), None).is_err());
     }
 

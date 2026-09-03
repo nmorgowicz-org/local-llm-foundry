@@ -790,7 +790,7 @@ fn test_qwen3_coder_next_vram_estimate_integration() {
     let home = std::env::var("HOME").ok();
     let path = home.as_ref().map(|h| {
         std::path::Path::new(h).join(".config/llama-monitor/models/Qwen3-Coder-Next-Huihui-Opus-4.6-Reasoning-Distilled-abliterated-IQ4_XS.gguf")
-    }).and_then(|p| if p.exists() { Some(p) } else { None });
+    }).filter(|p| p.exists());
     let Some(path) = path else {
         return;
     };

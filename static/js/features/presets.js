@@ -29,6 +29,7 @@ import {
 } from '../core/rapid-mlx-sidecars.js';
 import { openEstimateEvidenceDrawer } from './evidence-drawer.js';
 import { initCalibrationUi } from './calibration.js';
+import { FIELD_CATALOG } from './spawn-wizard-groups.js';
 import {
     chatTemplateStatusText,
     openChatTemplateManageModal,
@@ -40,6 +41,8 @@ import {
 let newPresetSeed = null;
 let _presetRapidMlxPrefillExplicit = false;
 let _presetEditorNavInitialized = false;
+let _llamaCapabilitiesPromise = null;
+let _presetBundleDraft = null;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -64,6 +67,130 @@ function nullableBoolOpt(id) {
     if (v === 'true') return true;
     if (v === 'false') return false;
     return null;
+}
+
+function capabilityAvailable(state) {
+    return state === 'Available' || (state && Object.prototype.hasOwnProperty.call(state, 'Available'));
+}
+
+function capabilityReason(state, fallback) {
+    if (typeof state === 'string' && state !== 'Available') return state;
+    if (state?.Unavailable) return state.Unavailable;
+    return fallback;
+}
+
+async function loadLlamaCapabilities() {
+    if (_llamaCapabilitiesPromise) return _llamaCapabilitiesPromise;
+    _llamaCapabilitiesPromise = (async () => {
+        try {
+            const headers = window.authHeaders ? window.authHeaders() : {};
+            const response = await fetch('/api/llama-binary/capabilities', { headers });
+            if (!response.ok) return null;
+            const data = await response.json();
+            return data?.ok ? data.snapshot : null;
+        } catch {
+            return null;
+        }
+    })();
+    return _llamaCapabilitiesPromise;
+}
+
+function replaceOptions(select, options, selected) {
+    if (!select) return;
+    select.replaceChildren(...options.map(option => {
+        const el = document.createElement('option');
+        if (option.separator) {
+            el.disabled = true;
+            el.textContent = '────────';
+        } else {
+            el.value = option.value;
+            el.textContent = option.label || option.value;
+            el.disabled = !!option.disabled;
+            if (option.title) el.title = option.title;
+        }
+        return el;
+    }));
+    if (selected != null && [...select.options].some(option => option.value === String(selected))) {
+        select.value = String(selected);
+    }
+}
+
+function configureCapabilityFields(snapshot, preset) {
+    const typed = snapshot?.typed || {};
+    const cacheValues = snapshot?.cache?.kv_type_values || [];
+    const editorId = key => FIELD_CATALOG.find(field => field.presetKey === key)?.editorId;
+    const storedCtk = preset?.ctk || document.getElementById(editorId('ctk') || 'modal-ctk')?.value || 'q8_0';
+    const storedCtv = preset?.ctv || document.getElementById(editorId('ctv') || 'modal-ctv')?.value || 'f16';
+    const advertised = new Set(cacheValues);
+    const common = ['f16', 'q8_0', 'q4_0'];
+    const buildKvOptions = (storedValue) => {
+        const kvValues = [...new Set([...common, ...cacheValues, storedValue])];
+        const options = kvValues.map(value => ({
+        value,
+        disabled: advertised.size > 0 && !advertised.has(value),
+        title: advertised.size > 0 && !advertised.has(value) ? 'Not advertised by the selected llama.cpp binary' : '',
+        }));
+        options.splice(common.length, 0, { separator: true });
+        return options;
+    };
+    replaceOptions(document.getElementById(editorId('ctk') || 'modal-ctk'), buildKvOptions(storedCtk), storedCtk);
+    replaceOptions(document.getElementById(editorId('ctv') || 'modal-ctv'), buildKvOptions(storedCtv), storedCtv);
+
+    const effort = typed.reasoning_effort || {};
+    const effortValues = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+    const effortSelected = preset?.llama_reasoning_effort || 'default';
+    replaceOptions(document.getElementById('modal-llama-reasoning-effort'), [
+        { value: 'default', label: 'Default' },
+        ...effortValues.map(value => ({
+            value,
+            disabled: !capabilityAvailable(effort.supported) || (effort.accepted_values?.length > 0 && !effort.accepted_values.includes(value)),
+            title: !capabilityAvailable(effort.supported) ? capabilityReason(effort.supported, 'Not advertised by this binary') : '',
+        })),
+        ...(String(effortSelected) !== 'default' && !effortValues.includes(String(effortSelected)) ? [{ value: effortSelected, label: `${effortSelected} (stored; unsupported)`, disabled: true }] : []),
+    ], effortSelected);
+    const effortHint = document.getElementById('modal-llama-reasoning-effort-hint');
+    if (effortHint) effortHint.textContent = capabilityAvailable(effort.supported) ? '' : capabilityReason(effort.supported, 'This binary does not advertise --reasoning-effort.');
+
+    const format = typed.reasoning_format || {};
+    const formatValues = ['none', 'deepseek', 'deepseek-legacy'];
+    const formatSelected = preset?.llama_reasoning_format || '';
+    replaceOptions(document.getElementById('modal-llama-reasoning-format'), [
+        { value: '', label: 'Default (auto)' },
+        ...formatValues.map(value => ({
+            value,
+            disabled: !capabilityAvailable(format.supported) || (format.accepted_values?.length > 0 && !format.accepted_values.includes(value)),
+            title: !capabilityAvailable(format.supported) ? capabilityReason(format.supported, 'Not advertised by this binary') : '',
+        })),
+        ...(formatSelected && !formatValues.includes(String(formatSelected)) ? [{ value: formatSelected, label: `${formatSelected} (stored; unsupported)`, disabled: true }] : []),
+    ], formatSelected);
+    const formatHint = document.getElementById('modal-llama-reasoning-format-hint');
+    if (formatHint) formatHint.textContent = capabilityAvailable(format.supported) ? '' : capabilityReason(format.supported, 'This binary does not advertise --reasoning-format.');
+
+    const preserve = typed.reasoning_preserve || {};
+    const preserveSelect = document.getElementById('modal-llama-reasoning-preserve');
+    if (preserveSelect) {
+        for (const option of preserveSelect.options) {
+            if (option.value === 'true') option.disabled = !capabilityAvailable(preserve.positive);
+            if (option.value === 'false') option.disabled = !capabilityAvailable(preserve.negative);
+        }
+    }
+    const preserveHint = document.getElementById('modal-llama-reasoning-preserve-hint');
+    if (preserveHint && !capabilityAvailable(preserve.positive) && !capabilityAvailable(preserve.negative)) {
+        preserveHint.textContent = capabilityReason(preserve.positive, 'This binary does not advertise native reasoning preservation.');
+    } else if (preserveHint) preserveHint.textContent = '';
+
+    const mmproj = typed.mmproj_offload || {};
+    const mmprojSelect = document.getElementById('modal-mmproj-offload');
+    if (mmprojSelect) {
+        for (const option of mmprojSelect.options) {
+            if (option.value === 'true') option.disabled = !capabilityAvailable(mmproj.positive);
+            if (option.value === 'false') option.disabled = !capabilityAvailable(mmproj.negative);
+        }
+    }
+    const mmprojHint = document.getElementById('modal-mmproj-offload-hint');
+    if (mmprojHint && !capabilityAvailable(mmproj.positive) && !capabilityAvailable(mmproj.negative)) {
+        mmprojHint.textContent = capabilityReason(mmproj.positive, 'This binary does not advertise projector offload controls.');
+    } else if (mmprojHint) mmprojHint.textContent = '';
 }
 
 function getStructuredOutputMode() {
@@ -108,6 +235,263 @@ export function presetModelSource(preset) {
 function _currentModalPreset() {
     const id = document.getElementById('modal-preset-id')?.value;
     return id ? (sessionState.presets.find(p => p.id === id) || {}) : (newPresetSeed || {});
+}
+
+function bundleClone(value) {
+    return value ? structuredClone(value) : null;
+}
+
+function bundleArtifactLabel(artifact) {
+    const quant = artifact.quantization?.value ? ` · ${artifact.quantization.value}` : '';
+    const role = artifact.role || 'weights';
+    return `${artifact.display_name || artifact.local_path || artifact.id || 'Artifact'}${quant} · ${role}`;
+}
+
+function bundleMetadataFromResponse(data) {
+    const modelKind = data.expert_count || data.expert_used_count ? 'moe' : 'dense';
+    return {
+        gguf_architecture: data.architecture || null,
+        model_kind: modelKind,
+        block_count: data.block_count || null,
+        moe_layer_count: data.expert_count ? (data.block_count || null) : null,
+        native_context_limit: data.context_length || null,
+        metadata_digest: null,
+    };
+}
+
+function quantizationHint(path) {
+    const match = path.match(/(?:^|[-_.])(q(?:2|3|4|5|6|8)(?:[_-](?:k[_-])?(?:s|m|l|xl)|[_-]0|[_-]1)?)(?:[-_.]|$)/i);
+    return match ? match[1].toLowerCase().replaceAll('-', '_') : '';
+}
+
+function selectedBundleArtifact() {
+    if (!_presetBundleDraft) return null;
+    return (_presetBundleDraft.artifacts || []).find(a => a.id === _presetBundleDraft.default_selection?.artifact_id) || null;
+}
+
+function updateBundleSelectionFromEditor() {
+    if (!_presetBundleDraft) return;
+    const selected = _presetBundleDraft.default_selection || {};
+    const value = id => document.getElementById(id)?.value || '';
+    const number = id => {
+        const n = Number(value(id));
+        return Number.isFinite(n) ? n : null;
+    };
+    selected.artifact_id = value('modal-bundle-artifact');
+    const context = number('modal-bundle-context');
+    if (context != null) selected.context_size = context;
+    selected.kv_policy = value('modal-bundle-kv') || selected.kv_policy;
+    selected.performance_id = value('modal-bundle-performance') || selected.performance_id;
+    const moe = number('modal-bundle-cpu-moe');
+    selected.n_cpu_moe = moe == null || moe === 0 ? (moe === 0 ? 0 : null) : moe;
+    _presetBundleDraft.default_selection = selected;
+    if (selected.context_size) setVal('modal-context-size', selected.context_size);
+    const kvPair = { f16_f16: ['f16', 'f16'], q8_0_q8_0: ['q8_0', 'q8_0'], q4_0_q4_0: ['q4_0', 'q4_0'], q8_0_q4_0: ['q8_0', 'q4_0'] }[selected.kv_policy];
+    if (kvPair) {
+        setOpt('modal-ctk', kvPair[0]);
+        setOpt('modal-ctv', kvPair[1]);
+    }
+    const performance = (_presetBundleDraft.performance_options || []).find(option => option.id === selected.performance_id);
+    if (performance) {
+        setVal('modal-batch-size', performance.batch_size);
+        setVal('modal-ubatch-size', performance.ubatch_size);
+    }
+    setVal('modal-n-cpu-moe', selected.n_cpu_moe ?? '');
+    const artifact = selectedBundleArtifact();
+    if (artifact?.local_path) setVal('modal-model-path', artifact.local_path);
+    if (artifact?.mmproj_artifact_id) {
+        const mmproj = _presetBundleDraft.artifacts.find(item => item.id === artifact.mmproj_artifact_id);
+        if (mmproj?.local_path) setVal('modal-mmproj', mmproj.local_path);
+    }
+    if (artifact?.draft_artifact_id) {
+        const draft = _presetBundleDraft.artifacts.find(item => item.id === artifact.draft_artifact_id);
+        if (draft?.local_path) setVal('modal-draft-model', draft.local_path);
+    }
+    if (artifact?.metadata?.model_kind) {
+        const hint = document.getElementById('modal-bundle-artifact-meta');
+        if (hint) hint.textContent = `${artifact.metadata.gguf_architecture || 'Unknown architecture'} · ${artifact.metadata.model_kind}${artifact.metadata.block_count ? ` · ${artifact.metadata.block_count} layers` : ''}`;
+    }
+}
+
+function renderPresetBundleEditor() {
+    const section = document.querySelector('.preset-editor-section[data-section="variants"]');
+    if (!section) return;
+    const empty = section.querySelector('#preset-bundle-empty');
+    const body = section.querySelector('#preset-bundle-editor');
+    if (!_presetBundleDraft) {
+        if (empty) empty.hidden = false;
+        if (body) body.hidden = true;
+        return;
+    }
+    if (empty) empty.hidden = true;
+    if (body) body.hidden = false;
+    const artifacts = _presetBundleDraft.artifacts || [];
+    const artifactList = section.querySelector('#preset-bundle-artifacts');
+    if (artifactList) {
+        artifactList.replaceChildren(...artifacts.map(artifact => {
+            const row = document.createElement('div');
+            row.className = 'preset-bundle-artifact';
+            row.dataset.artifactId = artifact.id;
+            const info = document.createElement('div');
+            info.className = 'preset-bundle-artifact-info';
+            const title = document.createElement('strong');
+            title.textContent = bundleArtifactLabel(artifact);
+            const path = document.createElement('span');
+            path.textContent = artifact.local_path || 'Not adopted locally';
+            info.append(title, path);
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'btn-sm btn-preset preset-bundle-remove';
+            remove.dataset.artifactId = artifact.id;
+            remove.textContent = 'Remove';
+            remove.disabled = artifact.id === _presetBundleDraft.default_selection?.artifact_id;
+            remove.title = remove.disabled ? 'Select a replacement artifact before removing the active one' : 'Remove this artifact';
+            row.append(info, remove);
+            return row;
+        }));
+    }
+    const weights = artifacts.filter(a => a.role === 'weights');
+    const artifactSelect = section.querySelector('#modal-bundle-artifact');
+    if (artifactSelect) {
+        replaceOptions(artifactSelect, weights.map(a => ({ value: a.id, label: bundleArtifactLabel(a) })), _presetBundleDraft.default_selection?.artifact_id);
+    }
+    const contextSelect = section.querySelector('#modal-bundle-context');
+    if (contextSelect) replaceOptions(contextSelect, (_presetBundleDraft.context_options || []).map(v => ({ value: v, label: `${v.toLocaleString()} tokens` })), _presetBundleDraft.default_selection?.context_size);
+    const kvSelect = section.querySelector('#modal-bundle-kv');
+    if (kvSelect) replaceOptions(kvSelect, (_presetBundleDraft.kv_policy_options || []).map(v => ({ value: v, label: v.replaceAll('_', ' / ') })), _presetBundleDraft.default_selection?.kv_policy);
+    const performanceSelect = section.querySelector('#modal-bundle-performance');
+    if (performanceSelect) replaceOptions(performanceSelect, (_presetBundleDraft.performance_options || []).map(option => ({ value: option.id, label: option.label || `${option.batch_size} / ${option.ubatch_size}` })), _presetBundleDraft.default_selection?.performance_id);
+    const selected = selectedBundleArtifact();
+    const moeWrap = section.querySelector('#preset-bundle-moe-wrap');
+    const moeSelect = section.querySelector('#modal-bundle-cpu-moe');
+    const isMoe = selected?.metadata?.model_kind === 'moe' || selected?.metadata?.model_kind === 'hybrid_moe';
+    if (moeWrap) {
+        moeWrap.hidden = !isMoe;
+        if (isMoe) moeWrap.style.removeProperty('display');
+        else moeWrap.style.setProperty('display', 'none', 'important');
+    }
+    if (moeSelect && isMoe) replaceOptions(moeSelect, (_presetBundleDraft.cpu_moe_options || []).map(v => ({ value: v, label: v === 0 ? 'All experts on GPU (0)' : `${v} expert layers on CPU` })), _presetBundleDraft.default_selection?.n_cpu_moe ?? 0);
+    const meta = section.querySelector('#modal-bundle-artifact-meta');
+    if (meta && selected) meta.textContent = `${selected.metadata?.gguf_architecture || 'Unknown architecture'} · ${selected.metadata?.model_kind || 'unknown'}${selected.metadata?.block_count ? ` · ${selected.metadata.block_count} layers` : ''}`;
+    updateBundleSelectionFromEditor();
+}
+
+async function freshPresetCatalogEtag() {
+    const response = await fetch('/api/preset-cards', { headers: window.authHeaders ? window.authHeaders() : {} });
+    if (!response.ok) throw new Error(`Catalog unavailable (HTTP ${response.status})`);
+    const data = await response.json();
+    return data.catalog_etag || null;
+}
+
+async function convertCurrentPresetToBundle() {
+    const id = document.getElementById('modal-preset-id')?.value;
+    const current = sessionState.presets.find(preset => preset.id === id);
+    if (!id || !current || current.bundle) return;
+    const confirmed = await showConfirmDialog(
+        'Convert to managed bundle',
+        'This creates one explicitly managed artifact from the current preset. Files with similar names are not grouped automatically.',
+        'Convert'
+    );
+    if (!confirmed) return;
+    try {
+        const response = await fetch(`/api/presets/${encodeURIComponent(id)}/convert-to-bundle`, {
+            method: 'POST',
+            headers: { ...(window.authHeaders ? window.authHeaders() : {}), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expected_revision: current.revision, conversion: {} }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        await loadPresets(id);
+        _presetBundleDraft = bundleClone(data.preset?.bundle || sessionState.presets.find(p => p.id === id)?.bundle);
+        renderPresetBundleEditor();
+        showToast('Preset converted to a managed bundle', 'success');
+    } catch (error) {
+        showToast(`Bundle conversion failed: ${error.message || error}`, 'error');
+    }
+}
+
+async function addBundleArtifact() {
+    if (!_presetBundleDraft) return;
+    const pathEl = document.getElementById('modal-bundle-artifact-path');
+    const role = document.getElementById('modal-bundle-artifact-role')?.value || 'weights';
+    const path = pathEl?.value.trim() || '';
+    const warning = document.getElementById('modal-bundle-artifact-warning');
+    if (!path) {
+        if (warning) warning.textContent = 'Choose a local GGUF artifact first.';
+        return;
+    }
+    if ((_presetBundleDraft.artifacts || []).some(artifact => artifact.local_path === path)) {
+        if (warning) warning.textContent = 'That local artifact is already in this bundle.';
+        return;
+    }
+    const headers = { ...(window.authHeaders ? window.authHeaders() : {}), 'Content-Type': 'application/json' };
+    let metadata;
+    try {
+        const response = await fetch('/api/models/gguf-meta', { method: 'POST', headers, body: JSON.stringify({ model_path: path }) });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        metadata = bundleMetadataFromResponse(data);
+    } catch (error) {
+        if (warning) warning.textContent = `GGUF metadata could not be verified: ${error.message || error}`;
+        return;
+    }
+    const existingWeights = (_presetBundleDraft.artifacts || []).find(artifact => artifact.role === 'weights');
+    const mismatch = existingWeights && role === 'weights' && (
+        (existingWeights.metadata?.gguf_architecture && metadata.gguf_architecture && existingWeights.metadata.gguf_architecture !== metadata.gguf_architecture)
+        || (existingWeights.metadata?.block_count && metadata.block_count && existingWeights.metadata.block_count !== metadata.block_count)
+    );
+    if (mismatch) {
+        const message = `GGUF metadata does not match the existing tune (${existingWeights.metadata.gguf_architecture || 'unknown'} / ${existingWeights.metadata.block_count || '?'} layers versus ${metadata.gguf_architecture || 'unknown'} / ${metadata.block_count || '?'} layers). Add it only if you have confirmed this is the same exact tune.`;
+        if (warning) warning.textContent = message;
+        if (!await showConfirmDialog('Metadata mismatch', message, 'Add artifact anyway')) return;
+    }
+    const id = `artifact_${crypto.randomUUID()}`;
+    const filename = path.split(/[\\/]/).pop() || 'Artifact';
+    const artifact = {
+        id,
+        role,
+        display_name: filename,
+        local_path: path,
+        hf_origin: null,
+        size_bytes: null,
+        digest: null,
+        quantization: { value: quantizationHint(filename), provenance: 'filename_hint' },
+        metadata,
+        mmproj_artifact_id: null,
+        draft_artifact_id: null,
+        extensions: {},
+    };
+    _presetBundleDraft.artifacts = [...(_presetBundleDraft.artifacts || []), artifact];
+    if (role === 'mmproj' || role === 'draft') {
+        const weights = _presetBundleDraft.artifacts.find(item => item.role === 'weights');
+        if (weights) weights[role === 'mmproj' ? 'mmproj_artifact_id' : 'draft_artifact_id'] = id;
+    }
+    if (role === 'weights' && !_presetBundleDraft.default_selection?.artifact_id) {
+        _presetBundleDraft.default_selection.artifact_id = id;
+    }
+    if (warning) warning.textContent = 'Artifact metadata verified. Review the bundle and save to persist it.';
+    if (pathEl) pathEl.value = '';
+    renderPresetBundleEditor();
+}
+
+function removeBundleArtifact(artifactId) {
+    if (!_presetBundleDraft) return;
+    const artifact = _presetBundleDraft.artifacts.find(item => item.id === artifactId);
+    if (!artifact) return;
+    if (artifactId === _presetBundleDraft.default_selection?.artifact_id) {
+        const replacement = _presetBundleDraft.artifacts.find(item => item.role === 'weights' && item.id !== artifactId);
+        if (!replacement) {
+            showToast('Select a replacement weights artifact before removing the active one.', 'warn');
+            return;
+        }
+        _presetBundleDraft.default_selection.artifact_id = replacement.id;
+    }
+    _presetBundleDraft.artifacts = _presetBundleDraft.artifacts.filter(item => item.id !== artifactId);
+    for (const item of _presetBundleDraft.artifacts) {
+        if (item.mmproj_artifact_id === artifactId) item.mmproj_artifact_id = null;
+        if (item.draft_artifact_id === artifactId) item.draft_artifact_id = null;
+    }
+    renderPresetBundleEditor();
 }
 
 export function syncSelectedPresetSelection(presetId, options = {}) {
@@ -360,17 +744,22 @@ export async function loadPresets(selectId) {
         return;
     }
 
-    sessionState.presets = await presetsResp.json();
-    if (collectionsResp && collectionsResp.ok) {
-        try {
-            const collectionsData = await collectionsResp.json();
-            sessionState.collections = collectionsData.collections || [];
-        } catch {
-            sessionState.collections = [];
-        }
-    } else {
-        sessionState.collections = [];
-    }
+    // Parse both bodies before writing either to sessionState. The old code awaited
+    // presetsResp.json() and *then* awaited collectionsResp.json(), leaving an await
+    // gap between the two sessionState writes. initLaunchFilters() (invoked from a
+    // concurrent renderLaunchGrid()) could land in that gap, see a populated
+    // sessionState.presets but an empty sessionState.collections, and — because it
+    // sets the `bar.dataset.initialized` guard once it gets past the "no presets"
+    // early return — permanently skip populating the collections dropdown for the
+    // rest of the session. Resolving both JSON bodies together removes that gap.
+    const [presetsData, collectionsData] = await Promise.all([
+        presetsResp.json(),
+        (collectionsResp && collectionsResp.ok)
+            ? collectionsResp.json().catch(() => ({ collections: [] }))
+            : Promise.resolve({ collections: [] }),
+    ]);
+    sessionState.presets = presetsData;
+    sessionState.collections = collectionsData.collections || [];
     let saved = null;
     if (settingsResp) {
         if (settingsResp.status === 401) {
@@ -383,8 +772,10 @@ export async function loadPresets(selectId) {
     const sel = document.getElementById('preset-select');
     sel.innerHTML = '';
     sessionState.presets.forEach(p => {
-        // Skip built-in/example presets that have no model (they are templates, not usable)
-        if (!presetModelSource(p)) return;
+        // Skip built-in/example presets that have no model (they are templates, not usable).
+        // Bundle presets stay even when their selected artifact has no local file yet:
+        // the card degrades to "Set up model" and the bundle is a real preset, not a template.
+        if (!presetModelSource(p) && !p.bundle) return;
         const opt = document.createElement('option');
         opt.value = p.id;
         opt.textContent = p.name;
@@ -1306,6 +1697,7 @@ export function openPresetModal(mode, section, seedPreset = null) {
         const id = document.getElementById('preset-select').value;
         const p = sessionState.presets.find(pr => pr.id === id);
         if (!p) { showToast('No preset selected', 'warn'); return; }
+        _presetBundleDraft = bundleClone(p.bundle);
         title.textContent = 'Edit Preset';
         if (subtitle) {
             subtitle.textContent = 'Model profile';
@@ -1371,7 +1763,10 @@ export function openPresetModal(mode, section, seedPreset = null) {
         setOpt('modal-enable-thinking', p.enable_thinking == null ? '' : String(!!p.enable_thinking));
         setOpt('modal-preserve-thinking', p.preserve_thinking == null ? '' : String(!!p.preserve_thinking));
         setOpt('modal-tool-call-format', p.tool_call_format || '');
-        setOpt('modal-reasoning', p.reasoning || '');
+ setOpt('modal-reasoning', p.reasoning || '');
+ setOpt('modal-llama-reasoning-effort', p.llama_reasoning_effort || 'default');
+ setOpt('modal-llama-reasoning-format', p.llama_reasoning_format || '');
+ setOpt('modal-llama-reasoning-preserve', p.llama_reasoning_preserve == null ? '' : String(p.llama_reasoning_preserve));
         numOrEmpty('modal-reasoning-budget', p.reasoning_budget);
         setVal('modal-reasoning-budget-message', (p.reasoning_budget_message || '').replace(/\n/g, '\\n'));
         // GPU
@@ -1465,6 +1860,7 @@ export function openPresetModal(mode, section, seedPreset = null) {
         _toggleCacheRamField(p.cache_mode || 'custom');
         // Model extras
         setVal('modal-mmproj', p.mmproj || '');
+        setOpt('modal-mmproj-offload', p.mmproj_offload == null ? '' : String(p.mmproj_offload));
         _toggleVisionTokens(!!p.mmproj);
         setVal('modal-chat-template-file', p.chat_template_file || '');
         updatePresetChatTemplateStatusLine();
@@ -1550,7 +1946,11 @@ export function openPresetModal(mode, section, seedPreset = null) {
         numOrEmpty('modal-image-min-tokens', qwenVLImageTokens(p).min_tokens);
         numOrEmpty('modal-image-max-tokens', p.image_max_tokens);
         _configureBackendPresetEditor(p);
+        const workloadWrap = document.getElementById('modal-workload-policy-wrap');
+        if (workloadWrap) workloadWrap.style.display = p.bundle ? '' : 'none';
+        setOpt('modal-workload-policy', p.bundle?.workload_policy || 'general_chat');
     } else {
+        _presetBundleDraft = bundleClone(newPresetSeed?.bundle);
         title.textContent = 'New Preset';
         if (subtitle) {
             subtitle.textContent = newPresetSeed?.backend === 'rapid_mlx'
@@ -1573,6 +1973,13 @@ export function openPresetModal(mode, section, seedPreset = null) {
         setVal('modal-batch-size', 2048);
         setVal('modal-ubatch-size', 2048);
         setVal('modal-parallel-slots', 1);
+        setOpt('modal-mmproj-offload', '');
+        setOpt('modal-llama-reasoning-effort', 'default');
+        setOpt('modal-llama-reasoning-format', '');
+        setOpt('modal-llama-reasoning-preserve', '');
+        const workloadWrap = document.getElementById('modal-workload-policy-wrap');
+        if (workloadWrap) workloadWrap.style.display = newPresetSeed?.bundle ? '' : 'none';
+        setOpt('modal-workload-policy', newPresetSeed?.bundle?.workload_policy || 'general_chat');
         numOrEmpty('modal-port', newPresetSeed?.backend === 'rapid_mlx'
             ? newPresetSeed.rapid_mlx?.port
             : newPresetSeed?.port);
@@ -1581,6 +1988,11 @@ export function openPresetModal(mode, section, seedPreset = null) {
         setStructuredOutputMode('');
         _configureBackendPresetEditor(newPresetSeed);
         _presetRapidMlxPrefillExplicit = newPresetSeed?.rapid_mlx?.prefill_step_size != null;
+    }
+
+    const editorPreset = _currentModalPreset();
+    if (editorPreset?.backend !== 'rapid_mlx') {
+        void loadLlamaCapabilities().then(snapshot => configureCapabilityFields(snapshot, editorPreset));
     }
 
     const presetModel = document.getElementById('modal-model-path')?.value.trim();
@@ -1605,6 +2017,15 @@ export function openPresetModal(mode, section, seedPreset = null) {
         if (calibrateBtn) calibrateBtn.style.display = 'none';
     }
 
+    const variantsNav = modal.querySelector('.preset-nav-item[data-section="variants"]');
+    const variantsSection = modal.querySelector('.preset-editor-section[data-section="variants"]');
+    const supportsBundles = newPresetSeed?.backend !== 'rapid_mlx'
+        && _currentModalPreset()?.backend !== 'rapid_mlx';
+    if (variantsNav) variantsNav.hidden = !supportsBundles;
+    if (variantsSection) variantsSection.hidden = !supportsBundles;
+    const convertButton = modal.querySelector('#preset-convert-bundle');
+    if (convertButton) convertButton.hidden = !supportsBundles || !document.getElementById('modal-preset-id')?.value;
+    renderPresetBundleEditor();
     modal.classList.add('open');
     // Navigate to specified section, or reset to first section
     const targetSection = section || 'model';
@@ -1639,6 +2060,7 @@ export function openPresetModal(mode, section, seedPreset = null) {
 export function closePresetModal() {
     document.getElementById('preset-modal').classList.remove('open');
     newPresetSeed = null;
+    _presetBundleDraft = null;
 }
 
 // ── Presets Panel ──────────────────────────────────────────────────────────────
@@ -2618,6 +3040,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function _buildFormPreset(existing) {
+    updateBundleSelectionFromEditor();
     if (existing.backend === 'rapid_mlx') {
         const rapidPort = intOrNull('modal-port');
         return {
@@ -2741,6 +3164,7 @@ function _buildFormPreset(existing) {
         hf_repo: modelSource.hf_repo,
         alias: strVal('modal-alias') || null,
         mmproj: strVal('modal-mmproj') || null,
+        mmproj_offload: nullableBoolOpt('modal-mmproj-offload'),
         chat_template_file: strVal('modal-chat-template-file') || null,
         gpu_layers: intOrNull('modal-gpu-layers'),
     no_mmap: document.getElementById('modal-no-mmap').checked,
@@ -2778,6 +3202,9 @@ function _buildFormPreset(existing) {
         preserve_thinking: nullableBoolOpt('modal-preserve-thinking'),
         tool_call_format: strVal('modal-tool-call-format') || null,
         reasoning: strVal('modal-reasoning') || null,
+        llama_reasoning_effort: strVal('modal-llama-reasoning-effort') || 'default',
+        llama_reasoning_format: valOrNull('modal-llama-reasoning-format'),
+        llama_reasoning_preserve: nullableBoolOpt('modal-llama-reasoning-preserve'),
         reasoning_budget: intOrNull('modal-reasoning-budget'),
         reasoning_budget_message: (document.getElementById('modal-reasoning-budget-message').value || '').replace(/\\n/g, '\n') || null,
         tensor_split: strVal('modal-tensor-split'),
@@ -2817,11 +3244,18 @@ function _buildFormPreset(existing) {
         spec_draft_p_split: floatOrNull('modal-spec-draft-p-split'),
         image_min_tokens: intOrNull('modal-image-min-tokens'),
         image_max_tokens: intOrNull('modal-image-max-tokens'),
+        ...(_presetBundleDraft ? {
+            bundle: {
+                ..._presetBundleDraft,
+                workload_policy: strVal('modal-workload-policy') || _presetBundleDraft.workload_policy || 'general_chat',
+            },
+        } : {}),
     };
 }
 const CHANGE_LABELS = {
     name: 'Name', model_path: 'Model (local path or HF repo)', hf_repo: 'HuggingFace Repo',
     alias: 'Server Alias', mmproj: 'Multimodal Projector', chat_template_file: 'Chat Template File',
+    mmproj_offload: 'Projector Offload',
     image_min_tokens: 'Vision Min Tokens', image_max_tokens: 'Vision Max Tokens',
     gpu_layers: 'GPU Layers', no_mmap: 'no-mmap', mlock: 'mlock',
     context_size: 'Context Size', ctk: 'KV Key Type', ctv: 'KV Value Type',
@@ -2836,6 +3270,9 @@ const CHANGE_LABELS = {
     tool_call_format: 'Tool Call Format',
     reasoning: 'Reasoning', reasoning_budget: 'Reasoning Budget',
     reasoning_budget_message: 'Reasoning Budget Message',
+    llama_reasoning_effort: 'llama.cpp Reasoning Effort',
+    llama_reasoning_format: 'llama.cpp Reasoning Format',
+    llama_reasoning_preserve: 'llama.cpp Preserve Reasoning',
     tensor_split: 'Tensor Split', split_mode: 'Split Mode', main_gpu: 'Main GPU',
     n_cpu_moe: 'CPU MoE Threads',
     rope_scaling: 'RoPE Scaling', rope_freq_base: 'RoPE Freq Base', rope_freq_scale: 'RoPE Freq Scale',
@@ -2898,6 +3335,15 @@ function _buildChangeSummary(existing, incoming) {
                 changes.push({ label: RAPID_CHANGE_LABELS[key], from: fPrev, to: fNext });
             }
         }
+    }
+    const prevBundle = existing?.bundle ? JSON.stringify(existing.bundle) : '';
+    const nextBundle = incoming?.bundle ? JSON.stringify(incoming.bundle) : '';
+    if (prevBundle !== nextBundle) {
+        changes.push({
+            label: 'Model variants and launch choices',
+            from: existing?.bundle ? `${existing.bundle.artifacts?.length || 0} artifacts` : 'single artifact',
+            to: incoming?.bundle ? `${incoming.bundle.artifacts?.length || 0} artifacts` : 'single artifact',
+        });
     }
     return changes;
 }
@@ -3007,7 +3453,7 @@ export async function savePreset(event) {
                 headers: window.authHeaders
                     ? { ...window.authHeaders(), 'Content-Type': 'application/json' }
                     : { 'Content-Type': 'application/json' },
-                body: JSON.stringify(preset),
+                body: JSON.stringify({ ...preset, expected_revision: existing.revision ?? 1 }),
             });
             if (!resp.ok) {
                 const err = await resp.text().catch(() => 'Unknown error');
@@ -3070,17 +3516,13 @@ async function duplicatePresetById(id, options = {}) {
     const p = sessionState.presets.find(pr => pr.id === id);
     if (!p) { showToast('No preset selected', 'warn'); return; }
 
-    const copy = Object.assign({}, p);
-    delete copy.id;
-    copy.name = buildDuplicatePresetName(p.name);
-
     try {
-        const resp = await fetch('/api/presets', {
+        const resp = await fetch('/api/presets/' + encodeURIComponent(id) + '/copy', {
             method: 'POST',
             headers: window.authHeaders
                 ? { ...window.authHeaders(), 'Content-Type': 'application/json' }
                 : { 'Content-Type': 'application/json' },
-            body: JSON.stringify(copy),
+            body: JSON.stringify({ expected_revision: p.revision ?? 1, new_name: buildDuplicatePresetName(p.name) }),
         });
         if (!resp.ok) {
             const err = await resp.text().catch(() => 'Unknown error');
@@ -3105,13 +3547,21 @@ export async function deletePreset() {
     const p = sessionState.presets.find(pr => pr.id === id);
     if (!p) { showToast('No preset selected', 'warn'); return; }
 
+    let catalogEtag;
+    try {
+        catalogEtag = await freshPresetCatalogEtag();
+    } catch (error) {
+        showToast(`Delete cancelled: ${error.message || error}`, 'error');
+        return;
+    }
     const confirmed = await _showConfirm('Delete preset', 'Delete preset "' + escapeHtml(p.name) + '"? This cannot be undone.');
     if (!confirmed) return;
 
     try {
         const resp = await fetch('/api/presets/' + encodeURIComponent(id), {
             method: 'DELETE',
-            headers: window.authHeaders ? window.authHeaders() : {},
+            headers: { ...(window.authHeaders ? window.authHeaders() : {}), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expected_revision: p.revision ?? 1, expected_catalog_etag: catalogEtag, confirmation: 'DELETE PRESET' }),
         });
         if (!resp.ok) {
             const err = await resp.text().catch(() => 'Unknown error');
@@ -3126,6 +3576,13 @@ export async function deletePreset() {
 }
 
 export async function resetPresets() {
+    let catalogEtag;
+    try {
+        catalogEtag = await freshPresetCatalogEtag();
+    } catch (error) {
+        showToast(`Reset cancelled: ${error.message || error}`, 'error');
+        return;
+    }
     const ok = await showConfirmDialog(
         'Reset presets',
         'Reset all presets to built-in defaults? Custom presets will be removed.',
@@ -3135,7 +3592,8 @@ export async function resetPresets() {
     try {
         const resp = await fetch('/api/presets/reset', {
             method: 'POST',
-            headers: window.authHeaders ? window.authHeaders() : {},
+            headers: { ...(window.authHeaders ? window.authHeaders() : {}), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ expected_catalog_etag: catalogEtag, confirmation: 'RESET PRESETS' }),
         });
         if (!resp.ok) {
             const err = await resp.text().catch(() => 'Unknown error');
@@ -3627,6 +4085,19 @@ export function initPresets() {
     document.getElementById('preset-modal-cancel')?.addEventListener('click', closePresetModal);
     document.getElementById('preset-modal-back')?.addEventListener('click', _hideSummary);
     document.getElementById('preset-vram-auto-size')?.addEventListener('click', autoSizePreset);
+    document.getElementById('preset-convert-bundle')?.addEventListener('click', convertCurrentPresetToBundle);
+    document.getElementById('preset-bundle-add')?.addEventListener('click', addBundleArtifact);
+    document.getElementById('preset-bundle-browse')?.addEventListener('click', () => openModelFileBrowser('modal-bundle-artifact-path', 'gguf', null, 'model'));
+    document.querySelector('.preset-editor-section[data-section="variants"]')?.addEventListener('change', event => {
+        if (event.target.matches('#modal-bundle-artifact, #modal-bundle-context, #modal-bundle-kv, #modal-bundle-performance, #modal-bundle-cpu-moe')) {
+            updateBundleSelectionFromEditor();
+            renderPresetBundleEditor();
+        }
+    });
+    document.querySelector('.preset-editor-section[data-section="variants"]')?.addEventListener('click', event => {
+        const remove = event.target.closest('.preset-bundle-remove');
+        if (remove) removeBundleArtifact(remove.dataset.artifactId);
+    });
 
     // Chat Template Manage modal — shared with the Spawn Wizard(s) via chat-template-panel.js.
     bindChatTemplateManageModalChrome();
@@ -3661,6 +4132,13 @@ export function initPresets() {
         const id = document.getElementById('modal-preset-id').value;
         const p = sessionState.presets.find(pr => pr.id === id);
         if (!p) { showToast('No preset selected', 'warn'); return; }
+        let catalogEtag;
+        try {
+            catalogEtag = await freshPresetCatalogEtag();
+        } catch (error) {
+            showToast(`Delete cancelled: ${error.message || error}`, 'error');
+            return;
+        }
         const ok = await showConfirmDialog(
             'Delete preset',
             `Delete preset "${p.name}"? This cannot be undone.`,
@@ -3670,7 +4148,8 @@ export function initPresets() {
         try {
             const resp = await fetch('/api/presets/' + encodeURIComponent(id), {
                 method: 'DELETE',
-                headers: window.authHeaders ? window.authHeaders() : {},
+                headers: { ...(window.authHeaders ? window.authHeaders() : {}), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ expected_revision: p.revision ?? 1, expected_catalog_etag: catalogEtag, confirmation: 'DELETE PRESET' }),
             });
             if (!resp.ok) {
                 const err = await resp.text().catch(() => 'Unknown error');

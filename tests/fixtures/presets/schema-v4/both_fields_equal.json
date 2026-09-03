@@ -1,0 +1,12 @@
+{
+  "id": "v4-both-equal",
+  "name": "Legacy v4 with both K/V equal",
+  "schema_version": 4,
+  "backend": "llama_cpp",
+  "model_path": "/models/both-equal.gguf",
+  "context_size": 4096,
+  "ctk": "f16",
+  "ctv": "f16",
+  "cache_type_k": "f16",
+  "cache_type_v": "f16"
+}

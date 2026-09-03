@@ -51,6 +51,22 @@ export const CONTROLS = [
   // is a §2.6 scenario axis and must be Balanced on the MLX side (plan §2.8
   // cross-cutting note).
   { id: 'spawn-parallel-slots', loaders: ['llama_cpp'], critical: true, view: 'both' },
+  // Existing hardware controls that were previously registered only by their
+  // IA group. Keeping them here makes the editor/wizard parity contract
+  // complete and gives Phase 6 one stable semantic id to extend.
+  { id: 'spawn-no-cont-batching', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-swa-full', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-load-mode', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-verbosity', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-ctx-checkpoints', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-checkpoint-min-step', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-cache-reuse', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-repeat-last-n', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-cache-idle-slots', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-mmproj-offload', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-reasoning-effort', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-reasoning-format', loaders: ['llama_cpp'], critical: false, view: 'both' },
+  { id: 'spawn-reasoning-preserve', loaders: ['llama_cpp'], critical: false, view: 'both' },
 
   // Generation, structured output, access, and escape-hatch controls live in
   // the same Tune step and are relocated into Pro's canonical pane.
@@ -109,7 +125,75 @@ export const CONTROLS = [
   { id: 'spawn-rapid-completion-batch-size', loaders: ['rapid_mlx'], group: 'scheduler', critical: false, view: 'both' },
   { id: 'spawn-rapid-auto-tool-choice', loaders: ['rapid_mlx'], group: 'tool-integration', critical: true, view: 'both' },
   { id: 'spawn-rapid-speculative-enabled', loaders: ['rapid_mlx'], group: 'companions', nested: 'companions', critical: false, view: 'both' },
+  // Editor-only typed llama.cpp controls. The wizard status is explicit so
+  // Phase 6 can add the wizard mount without inventing a second catalog.
+  { id: 'preset-workload-policy', wizardId: null, loaders: ['llama_cpp'], critical: false, view: 'both' },
 ];
+
+// The editor's DOM ids and persisted paths are metadata on the canonical
+// wizard catalog. This deliberately contains no compatibility or VRAM logic.
+// A null wizardId means the editor row is implemented while the wizard row is
+// owned by the next phase.
+const PRESET_FIELD_META = Object.freeze({
+  'spawn-context-size': { editorId: 'modal-context-size', presetKey: 'context_size', valueType: 'integer' },
+  'spawn-batch-size': { editorId: 'modal-batch-size', presetKey: 'batch_size', valueType: 'integer' },
+  'spawn-gpu-layers': { editorId: 'modal-gpu-layers', presetKey: 'gpu_layers', valueType: 'integer' },
+  'spawn-cache-type-k': { editorId: 'modal-ctk', presetKey: 'ctk', valueType: 'enum' },
+  'spawn-cache-type-v': { editorId: 'modal-ctv', presetKey: 'ctv', valueType: 'enum' },
+  'spawn-kv-unified': { editorId: 'modal-kv-unified', presetKey: 'kv_unified', valueType: 'boolean-optional' },
+  'hw-quant-select': { editorId: null, presetKey: null, valueType: 'wrapper' },
+  'hw-mmproj-select': { editorId: 'modal-mmproj', presetKey: 'mmproj', valueType: 'string' },
+  'hw-use-mtp': { editorId: null, presetKey: null, valueType: 'wrapper' },
+  'spawn-parallel-slots': { editorId: 'modal-parallel-slots', presetKey: 'parallel_slots', valueType: 'integer' },
+  'spawn-ubatch-size': { editorId: 'modal-ubatch-size', presetKey: 'ubatch_size', valueType: 'integer' },
+  'spawn-flash-attn': { editorId: 'modal-flash-attn', presetKey: 'flash_attn', valueType: 'enum' },
+  'spawn-prio': { editorId: 'modal-prio', presetKey: 'prio', valueType: 'integer-optional' },
+  'spawn-threads': { editorId: 'modal-threads', presetKey: 'threads', valueType: 'integer-optional' },
+  'spawn-threads-batch': { editorId: 'modal-threads-batch', presetKey: 'threads_batch', valueType: 'integer-optional' },
+  'spawn-n-cpu-moe': { editorId: 'modal-n-cpu-moe', presetKey: 'n_cpu_moe', valueType: 'integer-optional' },
+  'spawn-tensor-split': { editorId: 'modal-tensor-split', presetKey: 'tensor_split', valueType: 'string' },
+  'spawn-cache-mode': { editorId: 'modal-cache-mode', presetKey: 'cache_mode', valueType: 'enum' },
+  'spawn-cache-ram': { editorId: 'modal-cache-ram-mib', presetKey: 'cache_ram_mib', valueType: 'integer-optional' },
+  'spawn-fit-enable': { editorId: 'modal-fit-enabled', presetKey: 'fit_enabled', valueType: 'boolean-optional' },
+  'spawn-fit-target': { editorId: 'modal-fit-target', presetKey: 'fit_target', valueType: 'integer-optional' },
+  'spawn-mlock': { editorId: 'modal-mlock', presetKey: 'mlock', valueType: 'boolean' },
+  'spawn-no-cont-batching': { editorId: 'modal-no-cont-batching', presetKey: 'no_cont_batching', valueType: 'boolean' },
+  'spawn-swa-full': { editorId: 'modal-swa-full', presetKey: 'swa_full', valueType: 'boolean' },
+  'spawn-load-mode': { editorId: 'modal-load-mode', presetKey: 'load_mode', valueType: 'enum' },
+  'spawn-verbosity': { editorId: 'modal-verbosity', presetKey: 'verbosity', valueType: 'integer-optional' },
+  'spawn-ctx-checkpoints': { editorId: 'modal-ctx-checkpoints', presetKey: 'ctx_checkpoints', valueType: 'integer-optional' },
+  'spawn-checkpoint-min-step': { editorId: 'modal-checkpoint-min-step', presetKey: 'checkpoint_min_step', valueType: 'integer-optional' },
+  'spawn-cache-reuse': { editorId: 'modal-cache-reuse', presetKey: 'cache_reuse', valueType: 'integer-optional' },
+  'spawn-repeat-last-n': { editorId: 'modal-repeat-last-n', presetKey: 'repeat_last_n', valueType: 'integer-optional' },
+  'spawn-temperature': { editorId: 'modal-temperature', presetKey: 'temperature', valueType: 'float-optional' },
+  'spawn-top-p': { editorId: 'modal-top-p', presetKey: 'top_p', valueType: 'float-optional' },
+  'spawn-min-p': { editorId: 'modal-min-p', presetKey: 'min_p', valueType: 'float-optional' },
+  'spawn-repeat-penalty': { editorId: 'modal-repeat-penalty', presetKey: 'repeat_penalty', valueType: 'float-optional' },
+  'spawn-presence-penalty': { editorId: 'modal-presence-penalty', presetKey: 'presence_penalty', valueType: 'float-optional' },
+  'spawn-top-k': { editorId: 'modal-top-k', presetKey: 'top_k', valueType: 'integer-optional' },
+  'spawn-max-tokens': { editorId: 'modal-max-tokens', presetKey: 'max_tokens', valueType: 'integer-optional' },
+  'spawn-seed': { editorId: 'modal-seed', presetKey: 'seed', valueType: 'integer-optional' },
+  'spawn-mmproj-offload': { editorId: 'modal-mmproj-offload', presetKey: 'mmproj_offload', valueType: 'boolean-optional' },
+  'spawn-enable-thinking': { editorId: 'modal-enable-thinking', presetKey: 'enable_thinking', valueType: 'boolean-optional' },
+  'spawn-preserve-thinking': { editorId: 'modal-preserve-thinking', presetKey: 'preserve_thinking', valueType: 'boolean-optional' },
+  'spawn-reasoning-budget': { editorId: 'modal-reasoning-budget', presetKey: 'reasoning_budget', valueType: 'integer-optional' },
+  'spawn-reasoning-budget-message': { editorId: 'modal-reasoning-budget-message', presetKey: 'reasoning_budget_message', valueType: 'string' },
+  'spawn-output-mode': { editorId: 'modal-structured-output-mode', presetKey: null, valueType: 'wrapper' },
+  'spawn-grammar': { editorId: 'modal-grammar', presetKey: 'grammar', valueType: 'string' },
+  'spawn-json-schema': { editorId: 'modal-json-schema', presetKey: 'json_schema', valueType: 'string' },
+  'spawn-tool-call-format': { editorId: 'modal-tool-call-format', presetKey: 'tool_call_format', valueType: 'enum' },
+  'spawn-reasoning-mode': { editorId: 'modal-reasoning', presetKey: 'reasoning', valueType: 'enum' },
+  'spawn-port': { editorId: 'modal-port', presetKey: 'port', valueType: 'integer-optional' },
+  'spawn-bind-host': { editorId: 'modal-bind-host', presetKey: 'bind_host', valueType: 'string' },
+  'spawn-alias': { editorId: 'modal-alias', presetKey: 'alias', valueType: 'string' },
+  'spawn-api-key': { editorId: 'modal-api-key', presetKey: 'api_key', valueType: 'secret' },
+  'spawn-extra-args': { editorId: 'modal-extra-args', presetKey: 'extra_args', valueType: 'string' },
+  'spawn-cache-idle-slots': { editorId: 'modal-cache-idle-slots', presetKey: 'cache_idle_slots', valueType: 'boolean-optional' },
+  'spawn-reasoning-effort': { editorId: 'modal-llama-reasoning-effort', presetKey: 'llama_reasoning_effort', valueType: 'enum' },
+  'spawn-reasoning-format': { editorId: 'modal-llama-reasoning-format', presetKey: 'llama_reasoning_format', valueType: 'enum' },
+  'spawn-reasoning-preserve': { editorId: 'modal-llama-reasoning-preserve', presetKey: 'llama_reasoning_preserve', valueType: 'boolean-optional' },
+  'preset-workload-policy': { editorId: 'modal-workload-policy', presetKey: 'bundle.workload_policy', valueType: 'enum', wizardStatus: 'planned' },
+});
 
 // Phase 4 presentation descriptors are derived once from the canonical
 // control registry. They describe placement/search/ownership only; payload,
@@ -130,6 +214,13 @@ const RAPID_GROUP_CATEGORY = {
 function llamaCategory(id) {
   if (id === 'spawn-context-size' || id.startsWith('spawn-cache-type') || id === 'spawn-kv-unified' || id === 'spawn-fit-enable' || id === 'spawn-fit-target' || id === 'spawn-cache-mode' || id === 'spawn-cache-ram') return 'Memory & context';
   if (id === 'hw-quant-select' || id === 'hw-mmproj-select') return 'Model & compatibility';
+  if (id === 'spawn-mmproj-offload') return 'Model & compatibility';
+  if (id === 'spawn-no-cont-batching') return 'Performance';
+  if (id === 'spawn-swa-full' || id === 'spawn-load-mode' || id === 'spawn-ctx-checkpoints'
+    || id === 'spawn-checkpoint-min-step' || id === 'spawn-cache-reuse' || id === 'spawn-cache-idle-slots') {
+    return 'Memory & context';
+  }
+  if (id === 'spawn-verbosity') return 'Network & observability';
   if (id.startsWith('spawn-temperature') || id.startsWith('spawn-top-') || id.startsWith('spawn-min-p') || id.startsWith('spawn-repeat-') || id.startsWith('spawn-presence-') || id.startsWith('spawn-max-tokens') || id.startsWith('spawn-seed') || id.startsWith('spawn-enable-thinking') || id.startsWith('spawn-preserve-thinking') || id.startsWith('spawn-reasoning-')) return 'Generation & reasoning';
   if (id === 'spawn-output-mode' || id === 'spawn-grammar' || id === 'spawn-json-schema' || id === 'spawn-tool-call-format') return 'Tools & conversation formatting';
   if (id === 'spawn-port' || id === 'spawn-bind-host' || id === 'spawn-alias' || id === 'spawn-api-key') return 'Network & observability';
@@ -141,6 +232,7 @@ function llamaCategory(id) {
 
 function descriptorForControl(control) {
   const loader = control.loaders[0];
+  const fieldMeta = PRESET_FIELD_META[control.id] || {};
   const category = loader === 'rapid_mlx' ? (RAPID_GROUP_CATEGORY[control.group] || 'Advanced') : llamaCategory(control.id);
   const labelWords = control.id.replace(/^hw-/, '').replace(/^spawn-/, '').split('-');
   const aliases = [control.id, ...labelWords, control.group].filter(Boolean);
@@ -154,10 +246,21 @@ function descriptorForControl(control) {
     proCategory: category,
     aliases: [...new Set(aliases)],
     searchText: aliases.join(' '),
+    editorId: fieldMeta.editorId ?? null,
+    presetKey: fieldMeta.presetKey ?? null,
+    valueType: fieldMeta.valueType || 'unknown',
+    editorStatus: fieldMeta.editorId ? 'implemented' : fieldMeta.valueType === 'wrapper' ? 'wrapper' : 'not_applicable',
+    wizardId: control.wizardId === undefined ? control.id : control.wizardId,
+    wizardStatus: fieldMeta.wizardStatus || (control.wizardId === null ? 'planned' : 'implemented'),
   });
 }
 
 export const PRESENTATION_CONTROLS = Object.freeze(CONTROLS.map(descriptorForControl));
+
+// Exported for the Preset Editor and contract validator. It is derived from
+// CONTROLS, so no second hand-maintained field catalog can drift from the
+// wizard registry.
+export const FIELD_CATALOG = PRESENTATION_CONTROLS;
 
 export function validatePresentationDescriptors(loader) {
   const controls = PRESENTATION_CONTROLS.filter(c => c.loaders.includes(loader));
@@ -172,6 +275,7 @@ export function validatePresentationDescriptors(loader) {
     if (!control.mountKind || !['setting-control', 'read-only-status'].includes(control.mountKind)) errors.push(`invalid mountKind: ${control.id}`);
     if (!control.guidedPlacement || !['decision', 'drawer'].includes(control.guidedPlacement)) errors.push(`invalid Guided placement: ${control.id}`);
     if (!control.proCategory || !control.aliases?.length || !control.searchText) errors.push(`incomplete descriptor: ${control.id}`);
+    if (!control.editorStatus || !control.wizardStatus || !control.valueType) errors.push(`incomplete field metadata: ${control.id}`);
   });
   return { ok: errors.length === 0, controls, errors };
 }

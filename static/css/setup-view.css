@@ -2808,6 +2808,18 @@ body.setup-active .sidebar-nav {
   opacity: 0.45;
 }
 
+/* Phase 8a: the saved performance ("tune") selection shown on a bundle card. */
+.launch-card-tune {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--color-accent);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .launch-card-last-launched {
   font-size: 11px;
   color: var(--fg-muted, var(--color-text-muted));
@@ -3287,6 +3299,37 @@ body.setup-active .sidebar-nav {
   padding-top: 4px;
 }
 
+/* Phase 8a: bundle cards add a Configure button, making a 4-button row that
+   no longer fits on one line — Start's flex:1 was squeezed to near-zero and
+   its label wrapped/clipped. Stack Configure+Edit above a full-width Start,
+   with Trash anchored on the right spanning both rows. */
+.launch-card-actions--bundle {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  grid-template-rows: auto auto;
+}
+
+.launch-card-actions--bundle .launch-card-btn-configure {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.launch-card-actions--bundle .launch-card-btn-edit {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.launch-card-actions--bundle .launch-card-btn-start {
+  grid-column: 1 / span 2;
+  grid-row: 2;
+}
+
+.launch-card-actions--bundle .launch-card-btn-trash {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
 .launch-card-btn-start {
   flex: 1;
   display: inline-flex;
@@ -3376,6 +3419,31 @@ body.setup-active .sidebar-nav {
   background: rgba(255, 255, 255, 0.08);
   border-color: rgba(255, 255, 255, 0.18);
   color: var(--color-text-secondary);
+}
+
+/* Phase 8a: bundle drawer entry point. Distinct from the flat Edit button —
+   it opens the selection drawer, not the legacy preset modal. */
+.launch-card-btn-configure {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--acc-40);
+  background: var(--acc-10);
+  color: var(--color-accent);
+  transition: all 180ms ease;
+  white-space: nowrap;
+}
+
+.launch-card-btn-configure:hover {
+  background: var(--acc-15);
+  border-color: var(--acc-60, var(--acc-40));
+  color: var(--color-accent);
+  transform: translateY(-1px);
 }
 
 /* ── Attach drawer ────────────────────────────────────────────────────────── */
@@ -3520,6 +3588,17 @@ body.setup-active .sidebar-nav {
   background: rgba(15, 23, 42, 0.09);
   border-color: rgba(15, 23, 42, 0.2);
   color: var(--color-text-secondary);
+}
+
+[data-theme="light"] .launch-card-btn-configure {
+  background: var(--acc-05);
+  border-color: var(--acc-40);
+  color: var(--color-accent-deep);
+}
+
+[data-theme="light"] .launch-card-btn-configure:hover {
+  background: var(--acc-10);
+  border-color: var(--acc-50, var(--acc-40));
 }
 
 [data-theme="light"] .launch-card-btn-start--configure {

@@ -1,0 +1,12 @@
+{
+  "id": "v4-deprecated-only",
+  "name": "Legacy v4 with deprecated K/V only",
+  "schema_version": 4,
+  "backend": "llama_cpp",
+  "model_path": "/models/legacy-q8.gguf",
+  "context_size": 8192,
+  "ctk": "",
+  "ctv": "",
+  "cache_type_k": "q8_0",
+  "cache_type_v": "q8_0"
+}

@@ -1,0 +1,1034 @@
+{
+  "schema_version": 1,
+  "generated_from": "static/js/features/spawn-wizard-groups.js::FIELD_CATALOG",
+  "fields": [
+    {
+      "semantic_id": "spawn-context-size",
+      "wizard_id": "spawn-context-size",
+      "wizard_status": "implemented",
+      "editor_id": "modal-context-size",
+      "editor_status": "implemented",
+      "preset_key": "context_size",
+      "value_type": "integer",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "card",
+      "critical": true,
+      "pro_category": "Memory & context",
+      "guided_placement": "decision"
+    },
+    {
+      "semantic_id": "hw-mtp-depth",
+      "wizard_id": "hw-mtp-depth",
+      "wizard_status": "implemented",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-batch-size",
+      "wizard_id": "spawn-batch-size",
+      "wizard_status": "implemented",
+      "editor_id": "modal-batch-size",
+      "editor_status": "implemented",
+      "preset_key": "batch_size",
+      "value_type": "integer",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": true,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-gpu-layers",
+      "wizard_id": "spawn-gpu-layers",
+      "wizard_status": "implemented",
+      "editor_id": "modal-gpu-layers",
+      "editor_status": "implemented",
+      "preset_key": "gpu_layers",
+      "value_type": "integer",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": true,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-cache-type-k",
+      "wizard_id": "spawn-cache-type-k",
+      "wizard_status": "implemented",
+      "editor_id": "modal-ctk",
+      "editor_status": "implemented",
+      "preset_key": "ctk",
+      "value_type": "enum",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "card",
+      "critical": true,
+      "pro_category": "Memory & context",
+      "guided_placement": "decision"
+    },
+    {
+      "semantic_id": "spawn-cache-type-v",
+      "wizard_id": "spawn-cache-type-v",
+      "wizard_status": "implemented",
+      "editor_id": "modal-ctv",
+      "editor_status": "implemented",
+      "preset_key": "ctv",
+      "value_type": "enum",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "card",
+      "critical": true,
+      "pro_category": "Memory & context",
+      "guided_placement": "decision"
+    },
+    {
+      "semantic_id": "spawn-kv-unified",
+      "wizard_id": "spawn-kv-unified",
+      "wizard_status": "implemented",
+      "editor_id": "modal-kv-unified",
+      "editor_status": "implemented",
+      "preset_key": "kv_unified",
+      "value_type": "boolean-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": true,
+      "pro_category": "Memory & context",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "hw-quant-select",
+      "wizard_id": "hw-quant-select",
+      "wizard_status": "implemented",
+      "editor_id": null,
+      "editor_status": "wrapper",
+      "preset_key": null,
+      "value_type": "wrapper",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": true,
+      "pro_category": "Model & compatibility",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "hw-mmproj-select",
+      "wizard_id": "hw-mmproj-select",
+      "wizard_status": "implemented",
+      "editor_id": "modal-mmproj",
+      "editor_status": "implemented",
+      "preset_key": "mmproj",
+      "value_type": "string",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "card",
+      "critical": true,
+      "pro_category": "Model & compatibility",
+      "guided_placement": "decision"
+    },
+    {
+      "semantic_id": "hw-use-mtp",
+      "wizard_id": "hw-use-mtp",
+      "wizard_status": "implemented",
+      "editor_id": null,
+      "editor_status": "wrapper",
+      "preset_key": null,
+      "value_type": "wrapper",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "card",
+      "critical": true,
+      "pro_category": "Advanced",
+      "guided_placement": "decision"
+    },
+    {
+      "semantic_id": "spawn-parallel-slots",
+      "wizard_id": "spawn-parallel-slots",
+      "wizard_status": "implemented",
+      "editor_id": "modal-parallel-slots",
+      "editor_status": "implemented",
+      "preset_key": "parallel_slots",
+      "value_type": "integer",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": true,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-no-cont-batching",
+      "wizard_id": "spawn-no-cont-batching",
+      "wizard_status": "implemented",
+      "editor_id": "modal-no-cont-batching",
+      "editor_status": "implemented",
+      "preset_key": "no_cont_batching",
+      "value_type": "boolean",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-swa-full",
+      "wizard_id": "spawn-swa-full",
+      "wizard_status": "implemented",
+      "editor_id": "modal-swa-full",
+      "editor_status": "implemented",
+      "preset_key": "swa_full",
+      "value_type": "boolean",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Memory & context",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-load-mode",
+      "wizard_id": "spawn-load-mode",
+      "wizard_status": "implemented",
+      "editor_id": "modal-load-mode",
+      "editor_status": "implemented",
+      "preset_key": "load_mode",
+      "value_type": "enum",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Memory & context",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-verbosity",
+      "wizard_id": "spawn-verbosity",
+      "wizard_status": "implemented",
+      "editor_id": "modal-verbosity",
+      "editor_status": "implemented",
+      "preset_key": "verbosity",
+      "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Network & observability",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-ctx-checkpoints",
+      "wizard_id": "spawn-ctx-checkpoints",
+      "wizard_status": "implemented",
+      "editor_id": "modal-ctx-checkpoints",
+      "editor_status": "implemented",
+      "preset_key": "ctx_checkpoints",
+      "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Memory & context",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-checkpoint-min-step",
+      "wizard_id": "spawn-checkpoint-min-step",
+      "wizard_status": "implemented",
+      "editor_id": "modal-checkpoint-min-step",
+      "editor_status": "implemented",
+      "preset_key": "checkpoint_min_step",
+      "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Memory & context",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-cache-reuse",
+      "wizard_id": "spawn-cache-reuse",
+      "wizard_status": "implemented",
+      "editor_id": "modal-cache-reuse",
+      "editor_status": "implemented",
+      "preset_key": "cache_reuse",
+      "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Memory & context",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-repeat-last-n",
+      "wizard_id": "spawn-repeat-last-n",
+      "wizard_status": "implemented",
+      "editor_id": "modal-repeat-last-n",
+      "editor_status": "implemented",
+      "preset_key": "repeat_last_n",
+      "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-cache-idle-slots",
+      "wizard_id": "spawn-cache-idle-slots",
+      "wizard_status": "implemented",
+      "editor_id": "modal-cache-idle-slots",
+      "editor_status": "implemented",
+      "preset_key": "cache_idle_slots",
+      "value_type": "boolean-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Memory & context",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-mmproj-offload",
+      "wizard_id": "spawn-mmproj-offload",
+      "wizard_status": "implemented",
+      "editor_id": "modal-mmproj-offload",
+      "editor_status": "implemented",
+      "preset_key": "mmproj_offload",
+      "value_type": "boolean-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Model & compatibility",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-reasoning-effort",
+      "wizard_id": "spawn-reasoning-effort",
+      "wizard_status": "implemented",
+      "editor_id": "modal-llama-reasoning-effort",
+      "editor_status": "implemented",
+      "preset_key": "llama_reasoning_effort",
+      "value_type": "enum",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-reasoning-format",
+      "wizard_id": "spawn-reasoning-format",
+      "wizard_status": "implemented",
+      "editor_id": "modal-llama-reasoning-format",
+      "editor_status": "implemented",
+      "preset_key": "llama_reasoning_format",
+      "value_type": "enum",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-reasoning-preserve",
+      "wizard_id": "spawn-reasoning-preserve",
+      "wizard_status": "implemented",
+      "editor_id": "modal-llama-reasoning-preserve",
+      "editor_status": "implemented",
+      "preset_key": "llama_reasoning_preserve",
+      "value_type": "boolean-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-temperature",
+      "wizard_id": "spawn-temperature",
+      "wizard_status": "implemented",
+      "editor_id": "modal-temperature",
+      "editor_status": "implemented",
+      "preset_key": "temperature",
+      "value_type": "float-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-top-p",
+      "wizard_id": "spawn-top-p",
+      "wizard_status": "implemented",
+      "editor_id": "modal-top-p",
+      "editor_status": "implemented",
+      "preset_key": "top_p",
+      "value_type": "float-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-min-p",
+      "wizard_id": "spawn-min-p",
+      "wizard_status": "implemented",
+      "editor_id": "modal-min-p",
+      "editor_status": "implemented",
+      "preset_key": "min_p",
+      "value_type": "float-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-repeat-penalty",
+      "wizard_id": "spawn-repeat-penalty",
+      "wizard_status": "implemented",
+      "editor_id": "modal-repeat-penalty",
+      "editor_status": "implemented",
+      "preset_key": "repeat_penalty",
+      "value_type": "float-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-presence-penalty",
+      "wizard_id": "spawn-presence-penalty",
+      "wizard_status": "implemented",
+      "editor_id": "modal-presence-penalty",
+      "editor_status": "implemented",
+      "preset_key": "presence_penalty",
+      "value_type": "float-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-top-k",
+      "wizard_id": "spawn-top-k",
+      "wizard_status": "implemented",
+      "editor_id": "modal-top-k",
+      "editor_status": "implemented",
+      "preset_key": "top_k",
+      "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-max-tokens",
+      "wizard_id": "spawn-max-tokens",
+      "wizard_status": "implemented",
+      "editor_id": "modal-max-tokens",
+      "editor_status": "implemented",
+      "preset_key": "max_tokens",
+      "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-seed",
+      "wizard_id": "spawn-seed",
+      "wizard_status": "implemented",
+      "editor_id": "modal-seed",
+      "editor_status": "implemented",
+      "preset_key": "seed",
+      "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-enable-thinking",
+      "wizard_id": "spawn-enable-thinking",
+      "wizard_status": "implemented",
+      "editor_id": "modal-enable-thinking",
+      "editor_status": "implemented",
+      "preset_key": "enable_thinking",
+      "value_type": "boolean-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-preserve-thinking",
+      "wizard_id": "spawn-preserve-thinking",
+      "wizard_status": "implemented",
+      "editor_id": "modal-preserve-thinking",
+      "editor_status": "implemented",
+      "preset_key": "preserve_thinking",
+      "value_type": "boolean-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-reasoning-mode",
+      "wizard_id": "spawn-reasoning-mode",
+      "wizard_status": "implemented",
+      "editor_id": "modal-reasoning",
+      "editor_status": "implemented",
+      "preset_key": "reasoning",
+      "value_type": "enum",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-reasoning-budget",
+      "wizard_id": "spawn-reasoning-budget",
+      "wizard_status": "implemented",
+      "editor_id": "modal-reasoning-budget",
+      "editor_status": "implemented",
+      "preset_key": "reasoning_budget",
+      "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Generation & reasoning",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-output-mode",
+      "wizard_id": "spawn-output-mode",
+      "wizard_status": "implemented",
+      "editor_id": "modal-structured-output-mode",
+      "editor_status": "implemented",
+      "preset_key": null,
+      "value_type": "wrapper",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Tools & conversation formatting",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-grammar",
+      "wizard_id": "spawn-grammar",
+      "wizard_status": "implemented",
+      "editor_id": "modal-grammar",
+      "editor_status": "implemented",
+      "preset_key": "grammar",
+      "value_type": "string",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Tools & conversation formatting",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-json-schema",
+      "wizard_id": "spawn-json-schema",
+      "wizard_status": "implemented",
+      "editor_id": "modal-json-schema",
+      "editor_status": "implemented",
+      "preset_key": "json_schema",
+      "value_type": "string",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Tools & conversation formatting",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-tool-call-format",
+      "wizard_id": "spawn-tool-call-format",
+      "wizard_status": "implemented",
+      "editor_id": "modal-tool-call-format",
+      "editor_status": "implemented",
+      "preset_key": "tool_call_format",
+      "value_type": "enum",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Tools & conversation formatting",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-port",
+      "wizard_id": "spawn-port",
+      "wizard_status": "implemented",
+      "editor_id": "modal-port",
+      "editor_status": "implemented",
+      "preset_key": "port",
+      "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp",
+        "rapid_mlx"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Network & observability",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-bind-host",
+      "wizard_id": "spawn-bind-host",
+      "wizard_status": "implemented",
+      "editor_id": "modal-bind-host",
+      "editor_status": "implemented",
+      "preset_key": "bind_host",
+      "value_type": "string",
+      "loaders": [
+        "llama_cpp",
+        "rapid_mlx"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Network & observability",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-alias",
+      "wizard_id": "spawn-alias",
+      "wizard_status": "implemented",
+      "editor_id": "modal-alias",
+      "editor_status": "implemented",
+      "preset_key": "alias",
+      "value_type": "string",
+      "loaders": [
+        "llama_cpp",
+        "rapid_mlx"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Network & observability",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-api-key",
+      "wizard_id": "spawn-api-key",
+      "wizard_status": "implemented",
+      "editor_id": "modal-api-key",
+      "editor_status": "implemented",
+      "preset_key": "api_key",
+      "value_type": "secret",
+      "loaders": [
+        "llama_cpp",
+        "rapid_mlx"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Network & observability",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-extra-args",
+      "wizard_id": "spawn-extra-args",
+      "wizard_status": "implemented",
+      "editor_id": "modal-extra-args",
+      "editor_status": "implemented",
+      "preset_key": "extra_args",
+      "value_type": "string",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Advanced",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-ubatch-size",
+      "wizard_id": "spawn-ubatch-size",
+      "wizard_status": "implemented",
+      "editor_id": "modal-ubatch-size",
+      "editor_status": "implemented",
+      "preset_key": "ubatch_size",
+      "value_type": "integer",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-flash-attn",
+      "wizard_id": "spawn-flash-attn",
+      "wizard_status": "implemented",
+      "editor_id": "modal-flash-attn",
+      "editor_status": "implemented",
+      "preset_key": "flash_attn",
+      "value_type": "enum",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-prio",
+      "wizard_id": "spawn-prio",
+      "wizard_status": "implemented",
+      "editor_id": "modal-prio",
+      "editor_status": "implemented",
+      "preset_key": "prio",
+      "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-threads",
+      "wizard_id": "spawn-threads",
+      "wizard_status": "implemented",
+      "editor_id": "modal-threads",
+      "editor_status": "implemented",
+      "preset_key": "threads",
+      "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-threads-batch",
+      "wizard_id": "spawn-threads-batch",
+      "wizard_status": "implemented",
+      "editor_id": "modal-threads-batch",
+      "editor_status": "implemented",
+      "preset_key": "threads_batch",
+      "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-n-cpu-moe",
+      "wizard_id": "spawn-n-cpu-moe",
+      "wizard_status": "implemented",
+      "editor_id": "modal-n-cpu-moe",
+      "editor_status": "implemented",
+      "preset_key": "n_cpu_moe",
+      "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-tensor-split",
+      "wizard_id": "spawn-tensor-split",
+      "wizard_status": "implemented",
+      "editor_id": "modal-tensor-split",
+      "editor_status": "implemented",
+      "preset_key": "tensor_split",
+      "value_type": "string",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-cache-mode",
+      "wizard_id": "spawn-cache-mode",
+      "wizard_status": "implemented",
+      "editor_id": "modal-cache-mode",
+      "editor_status": "implemented",
+      "preset_key": "cache_mode",
+      "value_type": "enum",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Memory & context",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-cache-ram",
+      "wizard_id": "spawn-cache-ram",
+      "wizard_status": "implemented",
+      "editor_id": "modal-cache-ram-mib",
+      "editor_status": "implemented",
+      "preset_key": "cache_ram_mib",
+      "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Memory & context",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-fit-enable",
+      "wizard_id": "spawn-fit-enable",
+      "wizard_status": "implemented",
+      "editor_id": "modal-fit-enabled",
+      "editor_status": "implemented",
+      "preset_key": "fit_enabled",
+      "value_type": "boolean-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Memory & context",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-fit-target",
+      "wizard_id": "spawn-fit-target",
+      "wizard_status": "implemented",
+      "editor_id": "modal-fit-target",
+      "editor_status": "implemented",
+      "preset_key": "fit_target",
+      "value_type": "integer-optional",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Memory & context",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-mlock",
+      "wizard_id": "spawn-mlock",
+      "wizard_status": "implemented",
+      "editor_id": "modal-mlock",
+      "editor_status": "implemented",
+      "preset_key": "mlock",
+      "value_type": "boolean",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Advanced",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-spec-type",
+      "wizard_id": "spawn-spec-type",
+      "wizard_status": "implemented",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-spec-draft-type-k",
+      "wizard_id": "spawn-spec-draft-type-k",
+      "wizard_status": "implemented",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-spec-draft-type-v",
+      "wizard_id": "spawn-spec-draft-type-v",
+      "wizard_status": "implemented",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-draft-model",
+      "wizard_id": "spawn-draft-model",
+      "wizard_status": "implemented",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-spec-draft-n-min",
+      "wizard_id": "spawn-spec-draft-n-min",
+      "wizard_status": "implemented",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "spawn-spec-draft-p-min",
+      "wizard_id": "spawn-spec-draft-p-min",
+      "wizard_status": "implemented",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Performance",
+      "guided_placement": "drawer"
+    },
+    {
+      "semantic_id": "preset-workload-policy",
+      "wizard_id": null,
+      "wizard_status": "planned",
+      "editor_id": "modal-workload-policy",
+      "editor_status": "implemented",
+      "preset_key": "bundle.workload_policy",
+      "value_type": "enum",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "presentation_view": "both",
+      "critical": false,
+      "pro_category": "Advanced",
+      "guided_placement": "drawer"
+    }
+  ]
+}

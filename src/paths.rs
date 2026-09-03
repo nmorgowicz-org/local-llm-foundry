@@ -180,6 +180,12 @@ impl AppPaths {
         self.calibrations_dir().join("apply-backups")
     }
 
+    /// Sibling to `calibration_receipts_dir`: exact launch-observation
+    /// evidence (architecture 12), not a tuning-sweep receipt.
+    pub fn launch_evidence_dir(&self) -> PathBuf {
+        self.calibrations_dir().join("launch-evidence")
+    }
+
     pub fn presets_file(&self) -> PathBuf {
         self.config_file("presets.json")
     }

@@ -34,7 +34,48 @@
       ],
       "effective_read_path": "wizardState -> canonical payload; no separate effective value",
       "group_membership": [],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-context-size",
+      "editor_status": "implemented",
+      "preset_key": "context_size",
+      "value_type": "integer",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "hw-mtp-depth",
+      "mount_id": "llama_cpp:hw-mtp-depth",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Performance",
+      "aliases": [
+        "hw-mtp-depth",
+        "mtp",
+        "depth"
+      ],
+      "id": "hw-mtp-depth",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "hw-mtp-depth",
+      "payload_keys": [
+        "spec_draft_n_max"
+      ],
+      "preset_keys": [
+        "spec_draft_n_max"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -67,7 +108,12 @@
       "group_membership": [
         "spawn-wizard-llama-ia.js:advanced-tuning"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-batch-size",
+      "editor_status": "implemented",
+      "preset_key": "batch_size",
+      "value_type": "integer",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -98,7 +144,12 @@
       ],
       "effective_read_path": "wizardState -> canonical payload; no separate effective value",
       "group_membership": [],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-gpu-layers",
+      "editor_status": "implemented",
+      "preset_key": "gpu_layers",
+      "value_type": "integer",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -130,7 +181,12 @@
       ],
       "effective_read_path": "wizardState -> canonical payload; no separate effective value",
       "group_membership": [],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-ctk",
+      "editor_status": "implemented",
+      "preset_key": "ctk",
+      "value_type": "enum",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -162,7 +218,12 @@
       ],
       "effective_read_path": "wizardState -> canonical payload; no separate effective value",
       "group_membership": [],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-ctv",
+      "editor_status": "implemented",
+      "preset_key": "ctv",
+      "value_type": "enum",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -193,7 +254,12 @@
       ],
       "effective_read_path": "wizardState -> canonical payload; no separate effective value",
       "group_membership": [],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-kv-unified",
+      "editor_status": "implemented",
+      "preset_key": "kv_unified",
+      "value_type": "boolean-optional",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -220,7 +286,12 @@
       "preset_keys": [],
       "effective_read_path": "wizardState -> canonical payload; no separate effective value",
       "group_membership": [],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "wrapper",
+      "preset_key": null,
+      "value_type": "wrapper",
+      "wizard_status": "implemented",
       "launch_classification": "read-only or model-selection wrapper"
     },
     {
@@ -251,7 +322,12 @@
       ],
       "effective_read_path": "wizardState -> canonical payload; no separate effective value",
       "group_membership": [],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-mmproj",
+      "editor_status": "implemented",
+      "preset_key": "mmproj",
+      "value_type": "string",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -284,7 +360,12 @@
       ],
       "effective_read_path": "wizardState -> canonical payload; no separate effective value",
       "group_membership": [],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "wrapper",
+      "preset_key": null,
+      "value_type": "wrapper",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -317,7 +398,1259 @@
       "group_membership": [
         "spawn-wizard-llama-ia.js:advanced-tuning"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-parallel-slots",
+      "editor_status": "implemented",
+      "preset_key": "parallel_slots",
+      "value_type": "integer",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-no-cont-batching",
+      "mount_id": "llama_cpp:spawn-no-cont-batching",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Performance",
+      "aliases": [
+        "spawn-no-cont-batching",
+        "no",
+        "cont",
+        "batching"
+      ],
+      "id": "spawn-no-cont-batching",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-no-cont-batching",
+      "payload_keys": [
+        "no_cont_batching"
+      ],
+      "preset_keys": [
+        "no_cont_batching"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [
+        "spawn-wizard-llama-ia.js:advanced-tuning"
+      ],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-no-cont-batching",
+      "editor_status": "implemented",
+      "preset_key": "no_cont_batching",
+      "value_type": "boolean",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-swa-full",
+      "mount_id": "llama_cpp:spawn-swa-full",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Memory & context",
+      "aliases": [
+        "spawn-swa-full",
+        "swa",
+        "full"
+      ],
+      "id": "spawn-swa-full",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-swa-full",
+      "payload_keys": [
+        "swa_full"
+      ],
+      "preset_keys": [
+        "swa_full"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [
+        "spawn-wizard-llama-ia.js:advanced-tuning"
+      ],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-swa-full",
+      "editor_status": "implemented",
+      "preset_key": "swa_full",
+      "value_type": "boolean",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-load-mode",
+      "mount_id": "llama_cpp:spawn-load-mode",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Memory & context",
+      "aliases": [
+        "spawn-load-mode",
+        "load",
+        "mode"
+      ],
+      "id": "spawn-load-mode",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-load-mode",
+      "payload_keys": [
+        "load_mode"
+      ],
+      "preset_keys": [
+        "load_mode"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [
+        "spawn-wizard-llama-ia.js:advanced-tuning"
+      ],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-load-mode",
+      "editor_status": "implemented",
+      "preset_key": "load_mode",
+      "value_type": "enum",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-verbosity",
+      "mount_id": "llama_cpp:spawn-verbosity",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Network & observability",
+      "aliases": [
+        "spawn-verbosity",
+        "verbosity"
+      ],
+      "id": "spawn-verbosity",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-verbosity",
+      "payload_keys": [
+        "verbosity"
+      ],
+      "preset_keys": [
+        "verbosity"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [
+        "spawn-wizard-llama-ia.js:diagnostics"
+      ],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-verbosity",
+      "editor_status": "implemented",
+      "preset_key": "verbosity",
+      "value_type": "integer-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-ctx-checkpoints",
+      "mount_id": "llama_cpp:spawn-ctx-checkpoints",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Memory & context",
+      "aliases": [
+        "spawn-ctx-checkpoints",
+        "ctx",
+        "checkpoints"
+      ],
+      "id": "spawn-ctx-checkpoints",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-ctx-checkpoints",
+      "payload_keys": [
+        "ctx_checkpoints"
+      ],
+      "preset_keys": [
+        "ctx_checkpoints"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [
+        "spawn-wizard-llama-ia.js:prompt-cache"
+      ],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-ctx-checkpoints",
+      "editor_status": "implemented",
+      "preset_key": "ctx_checkpoints",
+      "value_type": "integer-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-checkpoint-min-step",
+      "mount_id": "llama_cpp:spawn-checkpoint-min-step",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Memory & context",
+      "aliases": [
+        "spawn-checkpoint-min-step",
+        "checkpoint",
+        "min",
+        "step"
+      ],
+      "id": "spawn-checkpoint-min-step",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-checkpoint-min-step",
+      "payload_keys": [
+        "checkpoint_min_step"
+      ],
+      "preset_keys": [
+        "checkpoint_min_step"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [
+        "spawn-wizard-llama-ia.js:prompt-cache"
+      ],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-checkpoint-min-step",
+      "editor_status": "implemented",
+      "preset_key": "checkpoint_min_step",
+      "value_type": "integer-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-cache-reuse",
+      "mount_id": "llama_cpp:spawn-cache-reuse",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Memory & context",
+      "aliases": [
+        "spawn-cache-reuse",
+        "cache",
+        "reuse"
+      ],
+      "id": "spawn-cache-reuse",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-cache-reuse",
+      "payload_keys": [
+        "cache_reuse"
+      ],
+      "preset_keys": [
+        "cache_reuse"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [
+        "spawn-wizard-llama-ia.js:prompt-cache"
+      ],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-cache-reuse",
+      "editor_status": "implemented",
+      "preset_key": "cache_reuse",
+      "value_type": "integer-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-repeat-last-n",
+      "mount_id": "llama_cpp:spawn-repeat-last-n",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Generation & reasoning",
+      "aliases": [
+        "spawn-repeat-last-n",
+        "repeat",
+        "last",
+        "n"
+      ],
+      "id": "spawn-repeat-last-n",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-repeat-last-n",
+      "payload_keys": [
+        "repeat_last_n"
+      ],
+      "preset_keys": [
+        "repeat_last_n"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-repeat-last-n",
+      "editor_status": "implemented",
+      "preset_key": "repeat_last_n",
+      "value_type": "integer-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-cache-idle-slots",
+      "mount_id": "llama_cpp:spawn-cache-idle-slots",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Memory & context",
+      "aliases": [
+        "spawn-cache-idle-slots",
+        "cache",
+        "idle",
+        "slots"
+      ],
+      "id": "spawn-cache-idle-slots",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-cache-idle-slots",
+      "payload_keys": [
+        "cache_idle_slots"
+      ],
+      "preset_keys": [
+        "cache_idle_slots"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [
+        "spawn-wizard-llama-ia.js:prompt-cache"
+      ],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-cache-idle-slots",
+      "editor_status": "implemented",
+      "preset_key": "cache_idle_slots",
+      "value_type": "boolean-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-mmproj-offload",
+      "mount_id": "llama_cpp:spawn-mmproj-offload",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Model & compatibility",
+      "aliases": [
+        "spawn-mmproj-offload",
+        "mmproj",
+        "offload"
+      ],
+      "id": "spawn-mmproj-offload",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-mmproj-offload",
+      "payload_keys": [
+        "mmproj_offload"
+      ],
+      "preset_keys": [
+        "mmproj_offload"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [
+        "spawn-wizard-llama-ia.js:model-compatibility"
+      ],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-mmproj-offload",
+      "editor_status": "implemented",
+      "preset_key": "mmproj_offload",
+      "value_type": "boolean-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-reasoning-effort",
+      "mount_id": "llama_cpp:spawn-reasoning-effort",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Generation & reasoning",
+      "aliases": [
+        "spawn-reasoning-effort",
+        "reasoning",
+        "effort"
+      ],
+      "id": "spawn-reasoning-effort",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-reasoning-effort",
+      "payload_keys": [
+        "llama_reasoning_effort"
+      ],
+      "preset_keys": [
+        "llama_reasoning_effort"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [
+        "spawn-wizard-llama-ia.js:reasoning-controls"
+      ],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-llama-reasoning-effort",
+      "editor_status": "implemented",
+      "preset_key": "llama_reasoning_effort",
+      "value_type": "enum",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-reasoning-format",
+      "mount_id": "llama_cpp:spawn-reasoning-format",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Generation & reasoning",
+      "aliases": [
+        "spawn-reasoning-format",
+        "reasoning",
+        "format"
+      ],
+      "id": "spawn-reasoning-format",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-reasoning-format",
+      "payload_keys": [
+        "llama_reasoning_format"
+      ],
+      "preset_keys": [
+        "llama_reasoning_format"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [
+        "spawn-wizard-llama-ia.js:reasoning-controls"
+      ],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-llama-reasoning-format",
+      "editor_status": "implemented",
+      "preset_key": "llama_reasoning_format",
+      "value_type": "enum",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-reasoning-preserve",
+      "mount_id": "llama_cpp:spawn-reasoning-preserve",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Generation & reasoning",
+      "aliases": [
+        "spawn-reasoning-preserve",
+        "reasoning",
+        "preserve"
+      ],
+      "id": "spawn-reasoning-preserve",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-reasoning-preserve",
+      "payload_keys": [
+        "llama_reasoning_preserve"
+      ],
+      "preset_keys": [
+        "llama_reasoning_preserve"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [
+        "spawn-wizard-llama-ia.js:reasoning-controls"
+      ],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-llama-reasoning-preserve",
+      "editor_status": "implemented",
+      "preset_key": "llama_reasoning_preserve",
+      "value_type": "boolean-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-temperature",
+      "mount_id": "llama_cpp:spawn-temperature",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Generation & reasoning",
+      "aliases": [
+        "spawn-temperature",
+        "temperature"
+      ],
+      "id": "spawn-temperature",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-temperature",
+      "payload_keys": [
+        "temperature"
+      ],
+      "preset_keys": [
+        "temperature"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-temperature",
+      "editor_status": "implemented",
+      "preset_key": "temperature",
+      "value_type": "float-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-top-p",
+      "mount_id": "llama_cpp:spawn-top-p",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Generation & reasoning",
+      "aliases": [
+        "spawn-top-p",
+        "top",
+        "p"
+      ],
+      "id": "spawn-top-p",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-top-p",
+      "payload_keys": [
+        "top_p"
+      ],
+      "preset_keys": [
+        "top_p"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-top-p",
+      "editor_status": "implemented",
+      "preset_key": "top_p",
+      "value_type": "float-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-min-p",
+      "mount_id": "llama_cpp:spawn-min-p",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Generation & reasoning",
+      "aliases": [
+        "spawn-min-p",
+        "min",
+        "p"
+      ],
+      "id": "spawn-min-p",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-min-p",
+      "payload_keys": [
+        "min_p"
+      ],
+      "preset_keys": [
+        "min_p"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-min-p",
+      "editor_status": "implemented",
+      "preset_key": "min_p",
+      "value_type": "float-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-repeat-penalty",
+      "mount_id": "llama_cpp:spawn-repeat-penalty",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Generation & reasoning",
+      "aliases": [
+        "spawn-repeat-penalty",
+        "repeat",
+        "penalty"
+      ],
+      "id": "spawn-repeat-penalty",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-repeat-penalty",
+      "payload_keys": [
+        "repeat_penalty"
+      ],
+      "preset_keys": [
+        "repeat_penalty"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-repeat-penalty",
+      "editor_status": "implemented",
+      "preset_key": "repeat_penalty",
+      "value_type": "float-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-presence-penalty",
+      "mount_id": "llama_cpp:spawn-presence-penalty",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Generation & reasoning",
+      "aliases": [
+        "spawn-presence-penalty",
+        "presence",
+        "penalty"
+      ],
+      "id": "spawn-presence-penalty",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-presence-penalty",
+      "payload_keys": [
+        "presence_penalty"
+      ],
+      "preset_keys": [
+        "presence_penalty"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-presence-penalty",
+      "editor_status": "implemented",
+      "preset_key": "presence_penalty",
+      "value_type": "float-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-top-k",
+      "mount_id": "llama_cpp:spawn-top-k",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Generation & reasoning",
+      "aliases": [
+        "spawn-top-k",
+        "top",
+        "k"
+      ],
+      "id": "spawn-top-k",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-top-k",
+      "payload_keys": [
+        "top_k"
+      ],
+      "preset_keys": [
+        "top_k"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-top-k",
+      "editor_status": "implemented",
+      "preset_key": "top_k",
+      "value_type": "integer-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-max-tokens",
+      "mount_id": "llama_cpp:spawn-max-tokens",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Generation & reasoning",
+      "aliases": [
+        "spawn-max-tokens",
+        "max",
+        "tokens"
+      ],
+      "id": "spawn-max-tokens",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-max-tokens",
+      "payload_keys": [
+        "max_tokens"
+      ],
+      "preset_keys": [
+        "max_tokens"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-max-tokens",
+      "editor_status": "implemented",
+      "preset_key": "max_tokens",
+      "value_type": "integer-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-seed",
+      "mount_id": "llama_cpp:spawn-seed",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Generation & reasoning",
+      "aliases": [
+        "spawn-seed",
+        "seed"
+      ],
+      "id": "spawn-seed",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-seed",
+      "payload_keys": [
+        "seed"
+      ],
+      "preset_keys": [
+        "seed"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-seed",
+      "editor_status": "implemented",
+      "preset_key": "seed",
+      "value_type": "integer-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-enable-thinking",
+      "mount_id": "llama_cpp:spawn-enable-thinking",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Generation & reasoning",
+      "aliases": [
+        "spawn-enable-thinking",
+        "enable",
+        "thinking"
+      ],
+      "id": "spawn-enable-thinking",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-enable-thinking",
+      "payload_keys": [
+        "enable_thinking"
+      ],
+      "preset_keys": [
+        "enable_thinking"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-enable-thinking",
+      "editor_status": "implemented",
+      "preset_key": "enable_thinking",
+      "value_type": "boolean-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-preserve-thinking",
+      "mount_id": "llama_cpp:spawn-preserve-thinking",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Generation & reasoning",
+      "aliases": [
+        "spawn-preserve-thinking",
+        "preserve",
+        "thinking"
+      ],
+      "id": "spawn-preserve-thinking",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-preserve-thinking",
+      "payload_keys": [
+        "preserve_thinking"
+      ],
+      "preset_keys": [
+        "preserve_thinking"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-preserve-thinking",
+      "editor_status": "implemented",
+      "preset_key": "preserve_thinking",
+      "value_type": "boolean-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-reasoning-mode",
+      "mount_id": "llama_cpp:spawn-reasoning-mode",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Generation & reasoning",
+      "aliases": [
+        "spawn-reasoning-mode",
+        "reasoning",
+        "mode"
+      ],
+      "id": "spawn-reasoning-mode",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-reasoning-mode",
+      "payload_keys": [
+        "reasoning"
+      ],
+      "preset_keys": [
+        "reasoning"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-reasoning",
+      "editor_status": "implemented",
+      "preset_key": "reasoning",
+      "value_type": "enum",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-reasoning-budget",
+      "mount_id": "llama_cpp:spawn-reasoning-budget",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Generation & reasoning",
+      "aliases": [
+        "spawn-reasoning-budget",
+        "reasoning",
+        "budget"
+      ],
+      "id": "spawn-reasoning-budget",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-reasoning-budget",
+      "payload_keys": [
+        "reasoning_budget"
+      ],
+      "preset_keys": [
+        "reasoning_budget"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-reasoning-budget",
+      "editor_status": "implemented",
+      "preset_key": "reasoning_budget",
+      "value_type": "integer-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-output-mode",
+      "mount_id": "llama_cpp:spawn-output-mode",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Tools & conversation formatting",
+      "aliases": [
+        "spawn-output-mode",
+        "output",
+        "mode"
+      ],
+      "id": "spawn-output-mode",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-output-mode",
+      "payload_keys": [],
+      "preset_keys": [],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-structured-output-mode",
+      "editor_status": "implemented",
+      "preset_key": null,
+      "value_type": "wrapper",
+      "wizard_status": "implemented",
+      "launch_classification": "read-only or model-selection wrapper"
+    },
+    {
+      "semantic_id": "spawn-grammar",
+      "mount_id": "llama_cpp:spawn-grammar",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Tools & conversation formatting",
+      "aliases": [
+        "spawn-grammar",
+        "grammar"
+      ],
+      "id": "spawn-grammar",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-grammar",
+      "payload_keys": [
+        "grammar"
+      ],
+      "preset_keys": [
+        "grammar"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-grammar",
+      "editor_status": "implemented",
+      "preset_key": "grammar",
+      "value_type": "string",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-json-schema",
+      "mount_id": "llama_cpp:spawn-json-schema",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Tools & conversation formatting",
+      "aliases": [
+        "spawn-json-schema",
+        "json",
+        "schema"
+      ],
+      "id": "spawn-json-schema",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-json-schema",
+      "payload_keys": [
+        "json_schema"
+      ],
+      "preset_keys": [
+        "json_schema"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-json-schema",
+      "editor_status": "implemented",
+      "preset_key": "json_schema",
+      "value_type": "string",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-tool-call-format",
+      "mount_id": "llama_cpp:spawn-tool-call-format",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Tools & conversation formatting",
+      "aliases": [
+        "spawn-tool-call-format",
+        "tool",
+        "call",
+        "format"
+      ],
+      "id": "spawn-tool-call-format",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-tool-call-format",
+      "payload_keys": [
+        "tool_call_format"
+      ],
+      "preset_keys": [
+        "tool_call_format"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-tool-call-format",
+      "editor_status": "implemented",
+      "preset_key": "tool_call_format",
+      "value_type": "enum",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-port",
+      "mount_id": "llama_cpp:spawn-port",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Network & observability",
+      "aliases": [
+        "spawn-port",
+        "port"
+      ],
+      "id": "spawn-port",
+      "loaders": [
+        "llama_cpp",
+        "rapid_mlx"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-port",
+      "payload_keys": [
+        "port"
+      ],
+      "preset_keys": [
+        "port"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-port",
+      "editor_status": "implemented",
+      "preset_key": "port",
+      "value_type": "integer-optional",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-bind-host",
+      "mount_id": "llama_cpp:spawn-bind-host",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Network & observability",
+      "aliases": [
+        "spawn-bind-host",
+        "bind",
+        "host"
+      ],
+      "id": "spawn-bind-host",
+      "loaders": [
+        "llama_cpp",
+        "rapid_mlx"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-bind-host",
+      "payload_keys": [
+        "bind_host"
+      ],
+      "preset_keys": [
+        "bind_host"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-bind-host",
+      "editor_status": "implemented",
+      "preset_key": "bind_host",
+      "value_type": "string",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-alias",
+      "mount_id": "llama_cpp:spawn-alias",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Network & observability",
+      "aliases": [
+        "spawn-alias",
+        "alias"
+      ],
+      "id": "spawn-alias",
+      "loaders": [
+        "llama_cpp",
+        "rapid_mlx"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-alias",
+      "payload_keys": [
+        "alias"
+      ],
+      "preset_keys": [
+        "alias"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-alias",
+      "editor_status": "implemented",
+      "preset_key": "alias",
+      "value_type": "string",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-api-key",
+      "mount_id": "llama_cpp:spawn-api-key",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Network & observability",
+      "aliases": [
+        "spawn-api-key",
+        "api",
+        "key"
+      ],
+      "id": "spawn-api-key",
+      "loaders": [
+        "llama_cpp",
+        "rapid_mlx"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-api-key",
+      "payload_keys": [
+        "api_key"
+      ],
+      "preset_keys": [
+        "api_key"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-api-key",
+      "editor_status": "implemented",
+      "preset_key": "api_key",
+      "value_type": "secret",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "spawn-extra-args",
+      "mount_id": "llama_cpp:spawn-extra-args",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Advanced",
+      "aliases": [
+        "spawn-extra-args",
+        "extra",
+        "args"
+      ],
+      "id": "spawn-extra-args",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": "spawn-extra-args",
+      "payload_keys": [
+        "extra_args"
+      ],
+      "preset_keys": [
+        "extra_args"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-extra-args",
+      "editor_status": "implemented",
+      "preset_key": "extra_args",
+      "value_type": "string",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -350,7 +1683,12 @@
       "group_membership": [
         "spawn-wizard-llama-ia.js:advanced-tuning"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-ubatch-size",
+      "editor_status": "implemented",
+      "preset_key": "ubatch_size",
+      "value_type": "integer",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -383,7 +1721,12 @@
       "group_membership": [
         "spawn-wizard-llama-ia.js:advanced-tuning"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-flash-attn",
+      "editor_status": "implemented",
+      "preset_key": "flash_attn",
+      "value_type": "enum",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -415,7 +1758,12 @@
       "group_membership": [
         "spawn-wizard-llama-ia.js:advanced-tuning"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-prio",
+      "editor_status": "implemented",
+      "preset_key": "prio",
+      "value_type": "integer-optional",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -447,7 +1795,12 @@
       "group_membership": [
         "spawn-wizard-llama-ia.js:advanced-tuning"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-threads",
+      "editor_status": "implemented",
+      "preset_key": "threads",
+      "value_type": "integer-optional",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -480,7 +1833,12 @@
       "group_membership": [
         "spawn-wizard-llama-ia.js:advanced-tuning"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-threads-batch",
+      "editor_status": "implemented",
+      "preset_key": "threads_batch",
+      "value_type": "integer-optional",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -514,7 +1872,12 @@
       "group_membership": [
         "spawn-wizard-llama-ia.js:moe-multigpu"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-n-cpu-moe",
+      "editor_status": "implemented",
+      "preset_key": "n_cpu_moe",
+      "value_type": "integer-optional",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -547,7 +1910,12 @@
       "group_membership": [
         "spawn-wizard-llama-ia.js:moe-multigpu"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-tensor-split",
+      "editor_status": "implemented",
+      "preset_key": "tensor_split",
+      "value_type": "string",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -580,7 +1948,12 @@
       "group_membership": [
         "spawn-wizard-llama-ia.js:prompt-cache"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-cache-mode",
+      "editor_status": "implemented",
+      "preset_key": "cache_mode",
+      "value_type": "enum",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -613,7 +1986,12 @@
       "group_membership": [
         "spawn-wizard-llama-ia.js:prompt-cache"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-cache-ram-mib",
+      "editor_status": "implemented",
+      "preset_key": "cache_ram_mib",
+      "value_type": "integer-optional",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -646,7 +2024,12 @@
       "group_membership": [
         "spawn-wizard-llama-ia.js:fit-memory"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-fit-enabled",
+      "editor_status": "implemented",
+      "preset_key": "fit_enabled",
+      "value_type": "boolean-optional",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -679,7 +2062,12 @@
       "group_membership": [
         "spawn-wizard-llama-ia.js:fit-memory"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-fit-target",
+      "editor_status": "implemented",
+      "preset_key": "fit_target",
+      "value_type": "integer-optional",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -711,7 +2099,12 @@
       "group_membership": [
         "spawn-wizard-llama-ia.js:fit-memory"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-mlock",
+      "editor_status": "implemented",
+      "preset_key": "mlock",
+      "value_type": "boolean",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -742,7 +2135,12 @@
       ],
       "effective_read_path": "wizardState -> canonical payload; no separate effective value",
       "group_membership": [],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -775,7 +2173,12 @@
       ],
       "effective_read_path": "wizardState -> canonical payload; no separate effective value",
       "group_membership": [],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -808,7 +2211,12 @@
       ],
       "effective_read_path": "wizardState -> canonical payload; no separate effective value",
       "group_membership": [],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -839,7 +2247,12 @@
       ],
       "effective_read_path": "wizardState -> canonical payload; no separate effective value",
       "group_membership": [],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -872,7 +2285,12 @@
       ],
       "effective_read_path": "wizardState -> canonical payload; no separate effective value",
       "group_membership": [],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -905,7 +2323,12 @@
       ],
       "effective_read_path": "wizardState -> canonical payload; no separate effective value",
       "group_membership": [],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -943,7 +2366,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:generation"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -980,7 +2408,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:protocol"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -1016,7 +2449,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:protocol"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -1052,7 +2490,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:protocol"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -1086,7 +2529,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:sampling"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -1122,7 +2570,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:active-memory"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -1159,7 +2612,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:active-memory"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -1194,7 +2652,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:active-memory"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -1232,7 +2695,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:retained-cache"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -1269,7 +2737,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:retained-cache"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -1306,7 +2779,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:scheduler"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -1343,7 +2821,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:scheduler"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -1380,7 +2863,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:scheduler"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -1416,7 +2904,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:scheduler"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -1453,7 +2946,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:scheduler"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -1490,7 +2988,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:scheduler"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -1527,7 +3030,12 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:tool-integration"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
       "launch_classification": "payload-backed"
     },
     {
@@ -1563,7 +3071,49 @@
       "group_membership": [
         "spawn-wizard-mlx-ia.js:companions"
       ],
-      "pro_classification": "pro-pane (planned; current renderer absent)",
+      "pro_classification": "pro-pane",
+      "editor_id": null,
+      "editor_status": "not_applicable",
+      "preset_key": null,
+      "value_type": "unknown",
+      "wizard_status": "implemented",
+      "launch_classification": "payload-backed"
+    },
+    {
+      "semantic_id": "preset-workload-policy",
+      "mount_id": "llama_cpp:preset-workload-policy",
+      "mount_kind": "setting-control",
+      "guided_placement": "drawer",
+      "pro_category": "Advanced",
+      "aliases": [
+        "preset-workload-policy",
+        "preset",
+        "workload",
+        "policy"
+      ],
+      "id": "preset-workload-policy",
+      "loaders": [
+        "llama_cpp"
+      ],
+      "classification": "guided-drawer",
+      "presentation_view": "both",
+      "effective_tag": null,
+      "source": "static/js/features/spawn-wizard-groups.js::CONTROLS",
+      "canonical_dom_id": null,
+      "payload_keys": [
+        "bundle.workload_policy"
+      ],
+      "preset_keys": [
+        "bundle.workload_policy"
+      ],
+      "effective_read_path": "wizardState -> canonical payload; no separate effective value",
+      "group_membership": [],
+      "pro_classification": "pro-pane",
+      "editor_id": "modal-workload-policy",
+      "editor_status": "implemented",
+      "preset_key": "bundle.workload_policy",
+      "value_type": "enum",
+      "wizard_status": "planned",
       "launch_classification": "payload-backed"
     }
   ],

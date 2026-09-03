@@ -687,6 +687,17 @@ Device-local appearance choices (palette, theme, spacing, chat style, font scale
 
 The endpoint you attach to is still chosen from the main session/setup flow. Configuration does not replace the attach/spawn session controls.
 
+### Appearance & Theming
+
+Four accent palettes (Carbon Mint, Cyber Rose, Solar Violet, Lava Core) pair with dark and light modes for 8 total combinations. Switch palettes from **Settings → Appearance** — cards, sparklines, charts, and glows all update instantly. Choice is saved per device (see the Settings ownership table above).
+
+![Light mode dashboard](../screenshots/neutral--appearance-light-dashboard.png)
+
+![Carbon Mint appearance](../screenshots/appearance-palette--neutral--carbon-mint.png)
+![Cyber Rose appearance](../screenshots/appearance-palette--neutral--cyber-rose.png)
+![Solar Violet appearance](../screenshots/appearance-palette--neutral--solar-violet.png)
+![Lava Core appearance](../screenshots/appearance-palette--neutral--lava-core.png)
+
 ### Log console
 
 The **Logs** page keeps each llama-server output entry on one line and provides horizontal scrolling for long entries. Use the `-` and `+` toolbar controls to adjust the console font from 8px to 18px. The selected size is stored in browser `localStorage`; click the size readout to reset it to 13px. The console retains the latest 500 lines and continues following new output as older entries rotate out.

@@ -1006,25 +1006,31 @@ async fn run_job(
         };
         let depths = vec![screen_workload.minimum_context.max(1)];
         let model_path_string = model_path.to_string_lossy().into_owned();
-        let bench = run_sweep_with_tokens_repetitions(
-            &bench_path,
-            &config.llama_server_cwd,
-            &model_path_string,
-            ngl,
-            flash_attn,
-            &ctk,
-            &ctv,
-            batch_size,
-            ubatch_size,
-            &depths,
-            candidate_preset.n_cpu_moe,
-            screen_workload.prompt_tokens,
-            screen_workload.generation_tokens,
-            QUICK_BENCH_REPETITIONS,
-        );
-        let result = tokio::select! {
-            result = bench => Some(result),
-            _ = runtime.cancel_notify.notified() => None,
+        let snapshot = calibration_capability_snapshot(&config).await;
+        let result = if let Some(error) = calibration_kv_policy_error(snapshot.as_ref(), &ctk, &ctv)
+        {
+            Some(Err(error))
+        } else {
+            let bench = run_sweep_with_tokens_repetitions(
+                &bench_path,
+                &config.llama_server_cwd,
+                &model_path_string,
+                ngl,
+                flash_attn,
+                &ctk,
+                &ctv,
+                batch_size,
+                ubatch_size,
+                &depths,
+                candidate_preset.n_cpu_moe,
+                screen_workload.prompt_tokens,
+                screen_workload.generation_tokens,
+                QUICK_BENCH_REPETITIONS,
+            );
+            tokio::select! {
+                result = bench => Some(result),
+                _ = runtime.cancel_notify.notified() => None,
+            }
         };
         if runtime.cancel.load(Ordering::Acquire) {
             let _ = finish_cancelled(&runtime);
@@ -1521,24 +1527,30 @@ pub async fn apply_with_validation(
         applied.ubatch_size
     };
     let depth = workload.minimum_context.clamp(1, 4096);
-    let measurement = match run_sweep_with_tokens_repetitions(
-        &bench_path,
-        &config.llama_server_cwd,
-        &model_path.to_string_lossy(),
-        ngl,
-        flash_attn,
-        &ctk,
-        &ctv,
-        batch_size,
-        ubatch_size,
-        &[depth],
-        applied.n_cpu_moe,
-        workload.prompt_tokens.min(512),
-        workload.generation_tokens.min(256),
-        QUICK_BENCH_REPETITIONS,
-    )
-    .await
-    {
+    let snapshot = calibration_capability_snapshot(config).await;
+    let sweep_result =
+        if let Some(error) = calibration_kv_policy_error(snapshot.as_ref(), &ctk, &ctv) {
+            Err(error)
+        } else {
+            run_sweep_with_tokens_repetitions(
+                &bench_path,
+                &config.llama_server_cwd,
+                &model_path.to_string_lossy(),
+                ngl,
+                flash_attn,
+                &ctk,
+                &ctv,
+                batch_size,
+                ubatch_size,
+                &[depth],
+                applied.n_cpu_moe,
+                workload.prompt_tokens.min(512),
+                workload.generation_tokens.min(256),
+                QUICK_BENCH_REPETITIONS,
+            )
+            .await
+        };
+    let measurement = match sweep_result {
         Ok(points) => measurement_from_points(points),
         Err(error) => CalibrationMeasurement {
             trial_id: result.candidate_id.clone(),
@@ -1707,10 +1719,30 @@ async fn run_preset_qualification(
     };
     server_config.parallel_slots = request.parallel_requests;
     server_config.benchmark_mode = true;
-    let adapter = crate::inference::llama_cpp::LlamaCppAdapter::new(
+    // Same launch gate as `construct_adapter`: binary-specific K/V policy must
+    // be enforced here too, since calibration builds its own adapter instead
+    // of going through the shared launch path.
+    let snapshot = ExecutableIdentity::from_path(&config.llama_server_path)
+        .ok()
+        .and_then(|identity| crate::inference::llama_cpp_capabilities::cached_snapshot(&identity));
+    if let Some(snap) = &snapshot
+        && let Some(issue) = presets::validation::validate_main_kv_policy(
+            &server_config.ctk,
+            &server_config.ctv,
+            snap,
+        )
+    {
+        bail!(
+            "llama.cpp calibration launch blocked: {} ({})",
+            issue.code,
+            issue.message
+        );
+    }
+    let adapter = crate::inference::llama_cpp::LlamaCppAdapter::new_with_capabilities(
         config.clone(),
         *server_config,
         crate::gpu::env::GpuEnv::default(),
+        snapshot,
     );
     let launch = adapter.build_launch().await?;
     server_qualification::run_managed_server_with_capabilities(launch, request, capabilities).await
@@ -1812,25 +1844,30 @@ async fn run_candidate_measurement(
     };
     let depths = vec![workload.minimum_context.max(1)];
     let model_path_string = model_path.to_string_lossy().into_owned();
-    let bench = run_sweep_with_tokens_repetitions(
-        bench_path,
-        &config.llama_server_cwd,
-        &model_path_string,
-        ngl,
-        flash_attn,
-        &ctk,
-        &ctv,
-        batch_size,
-        ubatch_size,
-        &depths,
-        candidate_preset.n_cpu_moe,
-        workload.prompt_tokens,
-        workload.generation_tokens,
-        repetitions,
-    );
-    let result = tokio::select! {
-        result = bench => Some(result),
-        _ = runtime.cancel_notify.notified() => None,
+    let snapshot = calibration_capability_snapshot(config).await;
+    let result = if let Some(error) = calibration_kv_policy_error(snapshot.as_ref(), &ctk, &ctv) {
+        Some(Err(error))
+    } else {
+        let bench = run_sweep_with_tokens_repetitions(
+            bench_path,
+            &config.llama_server_cwd,
+            &model_path_string,
+            ngl,
+            flash_attn,
+            &ctk,
+            &ctv,
+            batch_size,
+            ubatch_size,
+            &depths,
+            candidate_preset.n_cpu_moe,
+            workload.prompt_tokens,
+            workload.generation_tokens,
+            repetitions,
+        );
+        tokio::select! {
+            result = bench => Some(result),
+            _ = runtime.cancel_notify.notified() => None,
+        }
     }?;
     if runtime.cancel.load(Ordering::Acquire) {
         return None;
@@ -2175,6 +2212,7 @@ fn measurement_from_points(points: Vec<SweepPoint>) -> CalibrationMeasurement {
         wall_time_ms: 0,
         memory_peak_bytes: None,
         bounded_diagnostics: Vec::new(),
+        launch_evidence: None,
     }
 }
 
@@ -2201,6 +2239,43 @@ fn calibration_flash_attn(preset: &ModelPreset) -> &'static str {
         "off" | "0" | "false" => "off",
         _ => "auto",
     }
+}
+
+/// Refresh and fetch the live capability snapshot for the configured
+/// llama-server binary, mirroring the launch gate in
+/// `inference::launch::construct_adapter`. Every calibration path that
+/// spawns llama-server for a bench sweep must consult this before launch so
+/// the K/V policy cannot fork across call sites.
+async fn calibration_capability_snapshot(
+    config: &AppConfig,
+) -> Option<crate::inference::llama_cpp_capabilities::CapabilitySnapshot> {
+    if !config.llama_server_path.is_file() {
+        return None;
+    }
+    let _ = crate::inference::llama_cpp_capabilities::generate_snapshot(&config.llama_server_path)
+        .await;
+    ExecutableIdentity::from_path(&config.llama_server_path)
+        .ok()
+        .and_then(|identity| crate::inference::llama_cpp_capabilities::cached_snapshot(&identity))
+}
+
+/// Build the same "launch blocked" message `construct_adapter` returns when
+/// the live snapshot rejects this K/V pair. `None` means the launch may
+/// proceed. Returns `String` (not `anyhow::Error`) to match
+/// `run_sweep_with_tokens_repetitions`'s error type, so callers can route
+/// this through the same handling as a bench-sweep failure and apply-time
+/// rollback still triggers.
+fn calibration_kv_policy_error(
+    snapshot: Option<&crate::inference::llama_cpp_capabilities::CapabilitySnapshot>,
+    ctk: &str,
+    ctv: &str,
+) -> Option<String> {
+    let snap = snapshot?;
+    let issue = presets::validation::validate_main_kv_policy(ctk, ctv, snap)?;
+    Some(format!(
+        "llama.cpp calibration launch blocked: {} ({})",
+        issue.code, issue.message
+    ))
 }
 
 fn calibration_baseline(
@@ -2599,10 +2674,12 @@ mod tests {
     fn rollback_backup_round_trips_a_preset() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("apply-backups").join("one.json");
-        let mut preset = ModelPreset::default();
-        preset.id = "source".into();
-        preset.name = "Source".into();
-        preset.api_key = Some("secret".into());
+        let preset = ModelPreset {
+            id: "source".into(),
+            name: "Source".into(),
+            api_key: Some("secret".into()),
+            ..Default::default()
+        };
         write_rollback_backup(&path, &preset).expect("write backup");
         let restored = read_rollback_backup(&path).expect("read backup");
         assert_eq!(restored.id, preset.id);
@@ -2775,10 +2852,18 @@ mod tests {
         let server = bin.join("llama-server");
         std::fs::write(&server, b"fake server").expect("server fixture");
         let bench = bin.join("llama-bench");
+        // avg_ts is deliberately modest (not the 100000+ tok/s a fake
+        // instant-return script could "support"): validate_wall_clock_plausibility
+        // compares this rate's implied duration against the real wall-clock
+        // time of spawning the fixture process, and under full-suite test
+        // parallelism that spawn can take hundreds of ms of scheduling
+        // delay. A too-fast fake rate implies a near-zero duration that
+        // false-positives as implausible once real spawn latency exceeds
+        // it; 1000 tok/s keeps comfortable headroom against that.
         let output = if valid {
             r#"[
-                {"n_depth":4096,"n_gen":0,"n_prompt":512,"avg_ts":100000,"stddev":0.1,"n_rep":3,"samples_ts":[99999,100000,100001]},
-                {"n_depth":4096,"n_gen":256,"n_prompt":0,"avg_ts":100000,"stddev":0.1,"n_rep":3,"samples_ts":[99999,100000,100001]}
+                {"n_depth":4096,"n_gen":0,"n_prompt":512,"avg_ts":1000,"stddev":0.1,"n_rep":3,"samples_ts":[999,1000,1001]},
+                {"n_depth":4096,"n_gen":256,"n_prompt":0,"avg_ts":1000,"stddev":0.1,"n_rep":3,"samples_ts":[999,1000,1001]}
             ]"#
         } else {
             r#"[{"n_depth":4096,"n_gen":256,"n_prompt":0,"avg_ts":0,"stddev":0,"n_rep":3}]"#
@@ -2803,12 +2888,14 @@ mod tests {
         std::fs::create_dir_all(config.app_paths.calibration_apply_backups_dir())
             .expect("backup dir");
 
-        let mut preset = ModelPreset::default();
-        preset.id = "source".into();
-        preset.name = "Source".into();
-        preset.model_path = model.to_string_lossy().into_owned();
-        preset.batch_size = 512;
-        preset.ubatch_size = 512;
+        let preset = ModelPreset {
+            id: "source".into(),
+            name: "Source".into(),
+            model_path: model.to_string_lossy().into_owned(),
+            batch_size: 512,
+            ubatch_size: 512,
+            ..Default::default()
+        };
         let fingerprint = preset_fingerprint(&preset).expect("preset fingerprint");
         let candidate = CalibrationCandidate {
             id: "candidate".into(),

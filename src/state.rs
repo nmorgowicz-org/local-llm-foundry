@@ -469,6 +469,9 @@ pub struct Session {
     pub status: SessionStatus,
     #[serde(default)]
     pub preset_id: String,
+    /// Selection identity used for a bundled launch, when applicable.
+    #[serde(default)]
+    pub selection_hash: Option<String>,
     #[serde(default)]
     pub created_at: u64,
     #[serde(default)]
@@ -536,6 +539,7 @@ impl Session {
             },
             status: SessionStatus::Stopped,
             preset_id,
+            selection_hash: None,
             created_at: now,
             last_active: now,
             last_connected_at: 0,
@@ -557,6 +561,7 @@ impl Session {
             mode: SessionMode::Attach { endpoint, api_key },
             status: SessionStatus::Disconnected,
             preset_id: String::new(),
+            selection_hash: None,
             created_at: now,
             last_active: now,
             last_connected_at: 0,
