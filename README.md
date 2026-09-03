@@ -31,6 +31,14 @@ Quick start:
 
 ## Features
 
+### Preset Bundles
+
+Group a model's quantizations, context/KV-cache options, and performance tunes into one named preset. The welcome screen shows a single compact launch card per bundle — pick a quant, context size, and KV policy from dropdowns instead of managing a separate preset per variant.
+
+![Bundled presets on the welcome screen](docs/screenshots/welcome-preset-bundle-hero.png)
+
+**Details**: [Setup wizard](docs/reference/setup-wizard.md)
+
 ### llama.cpp + GGUF (the core path)
 
 llama.cpp is the original engine Local LLM Foundry was built around, and GGUF
@@ -99,11 +107,6 @@ Ask questions about your conversation in a dedicated sliding panel. It searches 
 
 ![History Q&A](docs/screenshots/chat-history-qa--neutral--panel.png)
 
-### Benchmarking & MTP Sweep
-Run live throughput tests and empirical sweeps for Multi-Token Prediction (MTP) draft models directly in the Tuning panel.
-
-![Benchmarking](docs/screenshots/neutral--benchmark-results.png)
-
 ### Guided Generation & Prompt Tooling
 A per-tab notes sidebar, AI-generated suggestions, quick guide flows, and director/surprise tools help you steer replies without rebuilding the prompt stack.
 
@@ -114,14 +117,11 @@ A per-tab notes sidebar, AI-generated suggestions, quick guide flows, and direct
 
 ### Appearance & Theming
 
-Four accent palettes (Carbon Mint, Cyber Rose, Solar Violet, Lava Core) pair with dark and light modes for 8 total combinations. Switch palettes from **Settings → Appearance** — cards, sparklines, charts, and glows all update instantly. Choice is saved per device.
-
-![Light mode dashboard](docs/screenshots/neutral--appearance-light-dashboard.png)
+Four accent palettes pair with dark and light modes for 8 total combinations, switchable from **Settings → Appearance** with instant live updates.
 
 ![Carbon Mint appearance](docs/screenshots/appearance-palette--neutral--carbon-mint.png)
-![Cyber Rose appearance](docs/screenshots/appearance-palette--neutral--cyber-rose.png)
-![Solar Violet appearance](docs/screenshots/appearance-palette--neutral--solar-violet.png)
-![Lava Core appearance](docs/screenshots/appearance-palette--neutral--lava-core.png)
+
+Full palette gallery: [Dashboard Capabilities](docs/reference/dashboard.md#appearance--theming)
 
 ### TLS, ACME & mTLS
 
