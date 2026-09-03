@@ -933,7 +933,11 @@ mod tests {
         let mut selection = bundle.default_selection.clone();
         selection.n_cpu_moe = Some(4);
         let issues = validate_runtime_selection(&bundle, &selection, &snapshot(), false);
-        assert!(issues.iter().any(|i| i.starts_with("N_CPU_MOE_DENSE_MODEL")));
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.starts_with("N_CPU_MOE_DENSE_MODEL"))
+        );
     }
 
     #[test]

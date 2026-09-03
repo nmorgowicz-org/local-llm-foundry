@@ -729,7 +729,6 @@ mod tests {
         assert!(error.to_string().contains("not a llama.cpp preset"));
     }
 
-
     #[tokio::test]
     async fn factory_selects_llama_cpp_adapter() {
         let dir = tempfile::tempdir().unwrap();

@@ -1491,9 +1491,15 @@ mod tests {
             }))
             .reply(&routes)
             .await;
-        assert_eq!(response.status(), warp::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response.status(),
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
         let state_preset = ctx.state.presets.lock().unwrap()[0].clone();
-        assert_eq!(state_preset.revision, 1, "in-memory preset must be unchanged");
+        assert_eq!(
+            state_preset.revision, 1,
+            "in-memory preset must be unchanged"
+        );
         assert_eq!(state_preset.name, preset.name);
     }
 
@@ -1520,9 +1526,15 @@ mod tests {
             .json(&serde_json::json!({"expected_revision": 1, "conversion": {}}))
             .reply(&routes)
             .await;
-        assert_eq!(response.status(), warp::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response.status(),
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
         let state_preset = ctx.state.presets.lock().unwrap()[0].clone();
-        assert!(state_preset.bundle.is_none(), "must not have been converted in memory");
+        assert!(
+            state_preset.bundle.is_none(),
+            "must not have been converted in memory"
+        );
         assert_eq!(state_preset.revision, 1);
     }
 
@@ -1543,7 +1555,10 @@ mod tests {
             .json(&serde_json::json!({"expected_revision": 1, "new_name": "Copy"}))
             .reply(&routes)
             .await;
-        assert_eq!(response.status(), warp::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response.status(),
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
         assert_eq!(
             ctx.state.presets.lock().unwrap().len(),
             1,

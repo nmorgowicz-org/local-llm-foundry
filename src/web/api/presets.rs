@@ -590,7 +590,11 @@ mod tests {
             warp::http::StatusCode::INTERNAL_SERVER_ERROR
         );
         let presets = ctx.state.presets.lock().unwrap();
-        assert_eq!(presets.len(), 1, "preset must not have been removed from memory");
+        assert_eq!(
+            presets.len(),
+            1,
+            "preset must not have been removed from memory"
+        );
         assert_eq!(presets[0].id, "preset-1");
     }
 
@@ -625,8 +629,15 @@ mod tests {
             warp::http::StatusCode::INTERNAL_SERVER_ERROR
         );
         let presets = ctx.state.presets.lock().unwrap();
-        assert_eq!(presets.len(), 1, "reset must not have replaced in-memory presets");
-        assert_eq!(presets[0].id, "preset-1", "custom preset must survive a failed reset");
+        assert_eq!(
+            presets.len(),
+            1,
+            "reset must not have replaced in-memory presets"
+        );
+        assert_eq!(
+            presets[0].id, "preset-1",
+            "custom preset must survive a failed reset"
+        );
     }
 
     #[tokio::test]
@@ -654,7 +665,10 @@ mod tests {
             warp::http::StatusCode::INTERNAL_SERVER_ERROR
         );
         let presets = ctx.state.presets.lock().unwrap();
-        assert!(presets.is_empty(), "no preset must have been added in memory");
+        assert!(
+            presets.is_empty(),
+            "no preset must have been added in memory"
+        );
     }
 
     #[tokio::test]
@@ -693,7 +707,10 @@ mod tests {
         );
         let presets = ctx.state.presets.lock().unwrap();
         assert_eq!(presets.len(), 1);
-        assert_eq!(presets[0].name, "Original", "in-memory preset must be unchanged");
+        assert_eq!(
+            presets[0].name, "Original",
+            "in-memory preset must be unchanged"
+        );
         assert_eq!(presets[0].revision, 1);
     }
 
