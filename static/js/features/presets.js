@@ -744,17 +744,22 @@ export async function loadPresets(selectId) {
         return;
     }
 
-    sessionState.presets = await presetsResp.json();
-    if (collectionsResp && collectionsResp.ok) {
-        try {
-            const collectionsData = await collectionsResp.json();
-            sessionState.collections = collectionsData.collections || [];
-        } catch {
-            sessionState.collections = [];
-        }
-    } else {
-        sessionState.collections = [];
-    }
+    // Parse both bodies before writing either to sessionState. The old code awaited
+    // presetsResp.json() and *then* awaited collectionsResp.json(), leaving an await
+    // gap between the two sessionState writes. initLaunchFilters() (invoked from a
+    // concurrent renderLaunchGrid()) could land in that gap, see a populated
+    // sessionState.presets but an empty sessionState.collections, and — because it
+    // sets the `bar.dataset.initialized` guard once it gets past the "no presets"
+    // early return — permanently skip populating the collections dropdown for the
+    // rest of the session. Resolving both JSON bodies together removes that gap.
+    const [presetsData, collectionsData] = await Promise.all([
+        presetsResp.json(),
+        (collectionsResp && collectionsResp.ok)
+            ? collectionsResp.json().catch(() => ({ collections: [] }))
+            : Promise.resolve({ collections: [] }),
+    ]);
+    sessionState.presets = presetsData;
+    sessionState.collections = collectionsData.collections || [];
     let saved = null;
     if (settingsResp) {
         if (settingsResp.status === 401) {

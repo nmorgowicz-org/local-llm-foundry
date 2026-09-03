@@ -1579,7 +1579,24 @@ export function updateRunningCardHighlight() {
     document.querySelectorAll('.launch-card[data-preset-id]').forEach(card => {
         const isRunning = sessionState.serverRunning && card.dataset.presetId === activePresetId && activePresetId;
         card.classList.toggle('launch-card--running', !!isRunning);
-        const badge = card.querySelector('.launch-card-running-badge');
+        let badge = card.querySelector('.launch-card-running-badge');
+        // _buildLaunchCard() only writes the badge <span> into a card's initial
+        // innerHTML when it happened to be running at render time (isExample cards
+        // never get one at all). A card built while stopped therefore has no badge
+        // element to toggle here, so a later live "now running" transition would
+        // otherwise leave the card highlighted (border/pulse) but silently missing
+        // its "● Running" label. Create it lazily so the badge tracks isRunning the
+        // same way the border class does, instead of only ever appearing on cards
+        // that happened to start out running.
+        if (isRunning && !badge && !card.classList.contains('launch-card--example')) {
+            const top = card.querySelector('.launch-card-top');
+            if (top) {
+                badge = document.createElement('span');
+                badge.className = 'launch-card-running-badge';
+                badge.textContent = '● Running';
+                top.appendChild(badge);
+            }
+        }
         if (badge) badge.style.display = isRunning ? '' : 'none';
     });
 

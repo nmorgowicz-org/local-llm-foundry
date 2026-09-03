@@ -32,6 +32,7 @@ import scenarioCommunitySources from './scenarios/presets/community-sources.mjs'
 import scenarioDiscussions from './scenarios/presets/discussions.mjs';
 import scenarioPresetBundleEditor from './scenarios/presets/preset-bundle-editor.mjs';
 import scenarioPresetBundle from './scenarios/presets/preset-bundle.mjs';
+import scenarioLaunchGrid from './scenarios/presets/launch-grid.mjs';
 import scenarioSpawnWizard from './scenarios/wizard-llamacpp/spawn-wizard.mjs';
 import scenarioSpawnWizardProBaseline from './scenarios/wizard-llamacpp/spawn-wizard-pro-baseline.mjs';
 import scenarioSpawnWizardLaunchFullConfig from './scenarios/wizard-llamacpp/spawn-wizard-launch-full-config.mjs';
@@ -235,6 +236,21 @@ export const SCENARIOS = {
                 'llamacpp-local--preset-bundle-drawer-evidence-exact.png',
                 'llamacpp-local--preset-bundle-drawer-evidence-related.png',
                 'llamacpp-local--preset-bundle-drawer-revision-conflict.png',
+            ],
+        },
+    },
+    'launch-grid': {
+        run: scenarioLaunchGrid,
+        category: 'presets',
+        runtime: 'llamacpp-local',
+        contract: {
+            intent: 'Prove the launch grid\'s sort order, collections filter, running badge, and per-card delete confirm all render correctly.',
+            expectedOutputs: [
+                'llamacpp-local--launch-grid-sort-name.png',
+                'llamacpp-local--launch-grid-sort-size.png',
+                'llamacpp-local--launch-grid-collections-filtered.png',
+                'llamacpp-local--launch-grid-running-badge.png',
+                'llamacpp-local--launch-grid-delete-confirm.png',
             ],
         },
     },
