@@ -30,6 +30,15 @@ function fail(message) {
     throw new Error(message);
 }
 
+// True once policyVersion is 2.1.0 or later (legacy llama-monitor-* assets retired).
+function dropsLegacyAssets(policyVersion) {
+    const parts = policyVersion.split('.').map((n) => parseInt(n, 10));
+    const [major, minor, patch] = [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0];
+    if (major !== 2) return major > 2;
+    if (minor !== 1) return minor > 1;
+    return patch >= 0;
+}
+
 function sha256(file) {
     return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
@@ -50,7 +59,7 @@ function archiveEntries(file) {
 
 function validateAssets(root, releaseVersion) {
     const policyVersion = releaseVersion.replace(/^v/, '');
-    const names = policyVersion.startsWith('2.1.') ? canonical : [...canonical, ...legacy];
+    const names = dropsLegacyAssets(policyVersion) ? canonical : [...canonical, ...legacy];
     const checksumsPath = path.join(root, 'checksums.json');
     if (!fs.existsSync(checksumsPath)) fail('checksums.json is missing');
     const checksums = JSON.parse(fs.readFileSync(checksumsPath, 'utf8'));

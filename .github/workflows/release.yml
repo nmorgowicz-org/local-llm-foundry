@@ -144,20 +144,45 @@ jobs:
           merge-multiple: true
           path: .
 
-      - name: Generate SHA-256 checksums
+      - name: Determine expected release assets
+        id: assets
         run: |
           set -euo pipefail
           VERSION="${{ github.event_name == 'release' && github.ref_name || github.event.inputs.tag_name }}"
+          POLICY_VERSION="${VERSION#v}"
+          IFS='.' read -r MAJOR MINOR _ <<< "$POLICY_VERSION"
+          # Mirrors dropsLegacyAssets() in scripts/validate-release-contract.mjs:
+          # llama-monitor-* legacy assets are retired starting at 2.1.0.
+          if [ "$MAJOR" -gt 2 ] || { [ "$MAJOR" -eq 2 ] && [ "$MINOR" -ge 1 ]; }; then
+            DROP_LEGACY=true
+          else
+            DROP_LEGACY=false
+          fi
+          ASSETS="local-llm-foundry-linux-x86_64
+          local-llm-foundry-linux-aarch64
+          local-llm-foundry-windows-x86_64.zip
+          local-llm-foundry-macos-aarch64.tar.gz"
+          if [ "$DROP_LEGACY" = "false" ]; then
+            ASSETS="$ASSETS
+          llama-monitor-linux-x86_64
+          llama-monitor-linux-aarch64
+          llama-monitor-windows-x86_64.zip
+          llama-monitor-macos-aarch64.tar.gz"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          {
+            echo "assets<<ASSETS_EOF"
+            echo "$ASSETS"
+            echo "ASSETS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate SHA-256 checksums
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.assets.outputs.version }}"
           JSON='{"version":"'${VERSION}'","checksums":{}}'
-          for f in \
-            local-llm-foundry-linux-x86_64 \
-            local-llm-foundry-linux-aarch64 \
-            local-llm-foundry-windows-x86_64.zip \
-            local-llm-foundry-macos-aarch64.tar.gz \
-            llama-monitor-linux-x86_64 \
-            llama-monitor-linux-aarch64 \
-            llama-monitor-windows-x86_64.zip \
-            llama-monitor-macos-aarch64.tar.gz; do
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
             if [ -f "$f" ]; then
               H=$(sha256sum "$f" | awk '{print $1}')
               JSON=$(echo "$JSON" | jq --arg n "$f" --arg h "$H" \
@@ -166,7 +191,7 @@ jobs:
               echo "ERROR: missing required release asset $f" >&2
               exit 1
             fi
-          done
+          done <<< "${{ steps.assets.outputs.assets }}"
           echo "$JSON" | jq . > checksums.json
           cat checksums.json
           node scripts/validate-release-contract.mjs --dir . --version "$VERSION"
@@ -178,14 +203,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           body: ${{ github.event.release.body }}
           files: |
-            local-llm-foundry-linux-x86_64
-            local-llm-foundry-linux-aarch64
-            local-llm-foundry-windows-x86_64.zip
-            local-llm-foundry-macos-aarch64.tar.gz
-            llama-monitor-linux-x86_64
-            llama-monitor-linux-aarch64
-            llama-monitor-windows-x86_64.zip
-            llama-monitor-macos-aarch64.tar.gz
+            ${{ steps.assets.outputs.assets }}
             checksums.json
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -197,14 +215,7 @@ jobs:
           tag_name: ${{ github.event.inputs.tag_name }}
           generate_release_notes: true
           files: |
-            local-llm-foundry-linux-x86_64
-            local-llm-foundry-linux-aarch64
-            local-llm-foundry-windows-x86_64.zip
-            local-llm-foundry-macos-aarch64.tar.gz
-            llama-monitor-linux-x86_64
-            llama-monitor-linux-aarch64
-            llama-monitor-windows-x86_64.zip
-            llama-monitor-macos-aarch64.tar.gz
+            ${{ steps.assets.outputs.assets }}
             checksums.json
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
