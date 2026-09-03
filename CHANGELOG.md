@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.0.13...v2.1.0) (2026-09-03)
+
+
+### Features
+
+* **calibration:** implement WddmTotalDeviceDelta nvidia-smi sampler ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **presets:** add bounded llama-fit-params probe ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **presets:** add evidence-details drawer action for bundle launch memory ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **presets:** add two-sided n_cpu_moe placement search ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **presets:** add typed launch bundles and reasoning flags ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **presets:** manage explicit model artifact bundles ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **presets:** render bundle presets as a single compact launch card ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **ui:** add preset bundle configure drawer ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **vram:** back launch estimates with fit probe ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **vram:** launch-evidence vocabulary, store, and resolve wiring ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **vram:** resolve explicit preset fit intents ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **wizard:** expose canonical llama runtime controls ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+
+
+### Bug Fixes
+
+* **api:** don't commit preset mutations to memory when save fails ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **api:** run mixed K/V hard-gate check in Doctor independent of tool_enabled ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **api:** surface non-blocking K/V policy signal on vram-estimate ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **brand:** center the social-preview export correctly ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **calibration:** bound telemetry capture with a timeout ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **calibration:** enforce K/V launch policy gate at every calibration launch site ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **calibration:** fix flaky apply-validation fixture under parallel test load ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **calibration:** repeated-cycle agreement for metal_sampler ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **capabilities:** stop re-deriving help_hash from serve_flags at lookup ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **inference:** remove fail-closed gate on reasoning-preserve flag ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **presets:** close two Greptile-flagged bundle-launch races ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **presets:** enforce canonical llama launch validation ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **presets:** fix reachable resolve panic and extract shared cycle-agreement helper ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **presets:** remove dead fallback and close bundle.rs test gaps ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **vram:** enforce exact preset intent provenance ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **vram:** preserve context for low-vram intents ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+* **vram:** round layer-split fallback, handle nvidia-smi N/A, fix wired-limit tier gap ([44226a5](https://github.com/nmorgowicz-org/local-llm-foundry/commit/44226a50aab366a8506304363c23d2fe4711360a))
+
 ## [2.0.13](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.0.12...v2.0.13) (2026-08-30)
 
 
