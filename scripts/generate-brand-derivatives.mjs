@@ -25,7 +25,13 @@ async function render(page, file, width, height, padding = 0) {
     const encoded = Buffer.from(source).toString('base64');
     const scale = padding ? 1 - padding * 2 : 1;
     await page.setViewportSize({ width, height });
-    await page.setContent(`<!doctype html><style>html,body{margin:0;width:100%;height:100%;background:transparent;overflow:hidden}img{display:block;width:${scale * 100}%;height:${scale * 100}%;margin:${padding * 100}% auto 0;object-fit:contain}</style><img src="data:image/svg+xml;base64,${encoded}" />`);
+    // Flex-centers the (square) mark within an arbitrary WxH canvas. The
+    // previous width%/height% + margin-top approach only worked by
+    // coincidence for square outputs (16x16, etc) — on a non-square canvas
+    // like the 1200x630 social export, percentage margin resolves against
+    // the containing block's *width*, not its height, which pushed the mark
+    // far outside the visible frame instead of centering it.
+    await page.setContent(`<!doctype html><style>html,body{margin:0;width:100%;height:100%;background:transparent;overflow:hidden;display:flex;align-items:center;justify-content:center}img{width:${scale * 100}%;height:${scale * 100}%;object-fit:contain}</style><img src="data:image/svg+xml;base64,${encoded}" />`);
     await page.screenshot({ path: path.join(repo, file), omitBackground: true });
 }
 
