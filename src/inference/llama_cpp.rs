@@ -10,7 +10,7 @@ use crate::config::AppConfig;
 use crate::gpu::env::{GpuEnv, build_nvidia_env, build_rocm_env};
 use crate::inference::InferenceBackend;
 use crate::inference::capabilities::CapabilitySet;
-use crate::inference::llama_cpp_capabilities::{CapabilitySnapshot, FeatureState};
+use crate::inference::llama_cpp_capabilities::CapabilitySnapshot;
 use crate::inference::metrics::{HealthState, InferenceMetricsSnapshot};
 use crate::inference::supervisor::SupervisedLaunch;
 use crate::llama::metrics::{parse_prometheus_metrics, parse_slot_metrics};
@@ -1107,14 +1107,6 @@ impl LlamaCppAdapter {
                     "native reasoning preservation requires an explicit compatible reasoning mode"
                 );
             }
-            if preserve {
-                match caps.reasoning_preserve_template_compatibility() {
-                    FeatureState::Available => {}
-                    FeatureState::Unavailable(reason) => {
-                        anyhow::bail!("native reasoning preservation is blocked: {reason}")
-                    }
-                }
-            }
         }
 
         Ok(())
@@ -1462,7 +1454,7 @@ mod tests {
     }
 
     fn typed_capabilities(flags: &[&str]) -> CapabilitySnapshot {
-        let mut capabilities = CapabilitySnapshot {
+        CapabilitySnapshot {
             executable_identity: crate::inference::llama_cpp_capabilities::ExecutableIdentity {
                 path: "/tmp/llama-server".into(),
                 file_hash: "phase2-test".into(),
@@ -1485,11 +1477,7 @@ mod tests {
             evidence_timestamp: 0,
             source:
                 crate::inference::llama_cpp_capabilities::CapabilitySnapshotSource::ManualOverride,
-        };
-        capabilities.typed.reasoning_preserve_template = FeatureState::Unavailable(
-            "template compatibility for native reasoning preservation is not verified".into(),
-        );
-        capabilities
+        }
     }
 
     async fn launch_args_with_capabilities(
@@ -1747,9 +1735,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn phase2_reasoning_preserve_requires_qualified_template_support() {
+    async fn phase2_reasoning_preserve_launches_when_binary_advertises_the_flag() {
+        // Template compatibility for --reasoning-preserve cannot be verified up
+        // front (llama.cpp's own 'supports_preserve_reasoning' marker isn't
+        // reliably present in real GGUF chat templates), so an unsupported
+        // template is expected to honor-or-ignore the flag at runtime rather
+        // than be blocked here.
         let capabilities = typed_capabilities(&["--reasoning-preserve"]);
-        let error = launch_args_with_capabilities(
+        let args = launch_args_with_capabilities(
             ServerConfig {
                 model_path: "/models/test.gguf".into(),
                 port: 8080,
@@ -1760,9 +1753,11 @@ mod tests {
             capabilities,
         )
         .await
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("template compatibility"), "{error}");
+        .unwrap();
+        assert!(
+            args.iter().any(|arg| arg == "--reasoning-preserve"),
+            "{args:?}"
+        );
     }
 
     #[test]

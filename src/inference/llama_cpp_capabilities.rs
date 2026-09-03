@@ -411,9 +411,14 @@ fn derive_typed_capabilities(flags: &[String], help_text: &str) -> TypedLlamaCap
                 }
             }),
         },
-        reasoning_preserve_template: FeatureState::Unavailable(
-            "template compatibility for native reasoning preservation is not verified".into(),
-        ),
+        // Per llama-server --help: "compatible with certain templates having
+        // 'supports_preserve_reasoning'". That marker isn't reliably present in
+        // real GGUF chat templates (checked against a real 23GB model — no
+        // match), so it can't be verified up front. llama.cpp itself already
+        // handles an unsupported template gracefully — the flag is honored or
+        // silently ignored by the template, same as any other chat-template
+        // kwarg — so there is nothing to gate here.
+        reasoning_preserve_template: FeatureState::Available,
     }
 }
 
@@ -762,7 +767,7 @@ mod tests {
         );
         assert!(matches!(
             typed.reasoning_preserve_template,
-            FeatureState::Unavailable(_)
+            FeatureState::Available
         ));
     }
 

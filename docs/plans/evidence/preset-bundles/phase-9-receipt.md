@@ -515,9 +515,7 @@ alongside its benchmark samples.
   doc's opening note that this is a receipt kind layered onto Calibration's
   vocabulary, not a separate module; Phase 9's plan text naming
   `presets::evidence::` predates that design decision).
-- Real-host qualification gates — require explicit user authorization
-  before starting/stopping a model server on this machine or the remote
-  Windows/CUDA machine; not requested yet in any slice so far.
+- ~~Real-host qualification gates~~ — closed by slice 6 below.
 
 ## Hard gate
 
@@ -529,3 +527,49 @@ produced a receipt from an actual model launch yet, so the architecture's
 "no observation may be recorded as exact evidence unless fit was pinned
 off" gate has not been exercised against a real host's launch, on either
 platform.
+
+## Slice 6 — real-host qualification run (macOS)
+
+User-authorized ("proceed - we have ram free") end-to-end run on this
+machine's own hardware (Apple M5 Max, 64GB unified memory), not a unit
+fixture. Launched the user's real production preset (23GB Q4 GGUF, 262K
+context, `draft-mtp`/`ngram-mod`/`ngram-map-k4v` speculative decoding,
+reasoning at `xhigh` effort) through the real app, not a synthetic argv
+builder.
+
+- Mapped every flag in the user's raw `llama-server` CLI command against
+  `ModelPreset` — zero fields fell through to `extra_args`, so the launch
+  qualified for exact-evidence capture under the slice 5 hard gate.
+- One field had to be dropped to launch: `llama_reasoning_preserve`. The
+  app's `reasoning_preserve_template` capability is hardcoded
+  `Unavailable` (`llama_cpp_capabilities.rs`, `derive_typed_capabilities`)
+  — a deliberate Phase 2 boundary ("Native reasoning-preserve remains
+  non-launchable until a bounded, source-backed template-compatibility
+  contract is qualified"), not a bug. Real template-compatibility
+  verification for `--reasoning-preserve` is still open follow-up work —
+  needed so users don't have to drop the flag to get an exact-evidence
+  launch.
+- Produced the project's first real (non-synthetic) receipt:
+  `metal_unified_observation`, `sample_count: 18` (3 cycles × 6 samples,
+  750ms interval), `model_delta_bytes: 28204007424` (~26.3 GiB). Confirmed
+  via `/resolve` as `class: "exact"` end to end.
+- The receipt's second `noise_flags` entry — "repeated observation cycles
+  did not agree within tolerance" — is a correct detection, not sampler
+  noise: cycle 1 delta was ~28.2GB (model still loading) vs. ~436MB/~395MB
+  in cycles 2-3 (settled). Validates slice 4's `cycles_agree`
+  disagreement logic against real, noisy hardware.
+- Found and fixed a real bug this run surfaced: `lookup_evidence()` in
+  `src/web/api/preset_bundles.rs` populated `EvidenceDetail.noise_flags`
+  from `store::best_match`'s match-classification `warnings` instead of
+  the receipt's own `noise_flags` — silently dropping real sampling-noise
+  flags (like the cycle-disagreement one above) from the `/resolve`
+  response and the evidence-details drawer. Fixed to
+  `receipt.noise_flags.clone()`; verified live against the real receipt
+  after rebuilding and restarting the app (`rtk cargo build`, `rtk cargo
+  test preset_bundles` — 10 passed).
+
+### Outstanding (after slice 6)
+
+- `reasoning_preserve_template` capability verification — real
+  implementation needed so `--reasoning-preserve` launches don't require
+  dropping the flag for exact-evidence eligibility.
