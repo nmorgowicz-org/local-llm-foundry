@@ -1009,10 +1009,9 @@ pub fn convert_flat_preset(source: &ModelPreset, name: &str) -> ModelPreset {
             });
         }
     }
-    let performance_id = performance_options
-        .first()
-        .map(|option| option.id.clone())
-        .unwrap_or_else(|| "balanced".into());
+    // performance_options always has at least one entry: the `if` branch
+    // pushes exactly one, the `else` branch pushes four.
+    let performance_id = performance_options[0].id.clone();
     let selection = PresetBundleSelection {
         artifact_id: weights_id,
         context_size: source.context_size,
@@ -1164,6 +1163,144 @@ mod tests {
         );
         assert_eq!(bundle.cpu_moe_options, vec![0, 8]);
         assert_eq!(bundle.default_selection.context_size, 32_000);
+    }
+
+    #[test]
+    fn legacy_conversion_with_empty_model_path_falls_back_to_generic_display_name() {
+        let source = ModelPreset {
+            name: "No Path".into(),
+            model_path: String::new(),
+            context_size: 4096,
+            ctk: "f16".into(),
+            ctv: "f16".into(),
+            ..Default::default()
+        };
+        let converted = convert_flat_preset(&source, "No Path");
+        let bundle = converted.bundle.expect("conversion creates a bundle");
+        let weights = bundle
+            .artifacts
+            .iter()
+            .find(|a| matches!(a.role, PresetArtifactRole::Weights))
+            .expect("weights artifact");
+        assert_eq!(weights.display_name, "Weights");
+        assert!(weights.local_path.is_none());
+    }
+
+    #[test]
+    fn legacy_conversion_with_zero_context_size_leaves_context_options_unrestricted() {
+        let source = ModelPreset {
+            name: "Zero Context".into(),
+            model_path: "/models/zero-ctx.gguf".into(),
+            context_size: 0,
+            ctk: "f16".into(),
+            ctv: "f16".into(),
+            ..Default::default()
+        };
+        let converted = convert_flat_preset(&source, "Zero Context");
+        let bundle = converted.bundle.expect("conversion creates a bundle");
+        // context_size <= 0 is stripped from context_options, but the
+        // structural-validation escape hatch treats an empty options list as
+        // "unrestricted" rather than "nothing allowed" (same pattern as
+        // kv_policy_options below), so the resulting bundle stays valid.
+        assert!(bundle.context_options.is_empty());
+        assert_eq!(bundle.default_selection.context_size, 0);
+        assert!(bundle.structural_issues().is_empty());
+    }
+
+    #[test]
+    fn legacy_conversion_preserves_unknown_architecture_kind() {
+        let source = ModelPreset {
+            name: "Future Arch".into(),
+            model_path: "/models/future.gguf".into(),
+            architecture_kind: Some("some_future_arch".into()),
+            ctk: "f16".into(),
+            ctv: "f16".into(),
+            ..Default::default()
+        };
+        let converted = convert_flat_preset(&source, "Future Arch");
+        let bundle = converted.bundle.expect("conversion creates a bundle");
+        let weights = bundle
+            .artifacts
+            .iter()
+            .find(|a| matches!(a.role, PresetArtifactRole::Weights))
+            .expect("weights artifact");
+        assert!(matches!(
+            &weights.metadata.model_kind,
+            PresetModelKind::Unknown(value) if value == "some_future_arch"
+        ));
+    }
+
+    #[test]
+    fn legacy_conversion_with_mixed_kv_leaves_kv_policy_options_unrestricted() {
+        let source = ModelPreset {
+            name: "Mixed KV".into(),
+            model_path: "/models/mixed-kv.gguf".into(),
+            context_size: 4096,
+            ctk: "q8_0".into(),
+            ctv: "q4_0".into(),
+            ..Default::default()
+        };
+        let converted = convert_flat_preset(&source, "Mixed KV");
+        let bundle = converted.bundle.expect("conversion creates a bundle");
+        // convert_flat_preset's ctk/ctv match has no explicit q8_0/q4_0 arm,
+        // so a mixed pair lands in the catch-all Unknown("q8_0/q4_0") rather
+        // than MixedQ8Q4 — both variants share the same empty-options
+        // treatment below.
+        assert!(matches!(
+            &bundle.default_selection.kv_policy,
+            LlamaKvPolicyId::Unknown(value) if value == "q8_0/q4_0"
+        ));
+        // Same empty-list-is-unrestricted escape hatch as context_options:
+        // the default selection's mixed KV policy is not itself listed, but
+        // structural validation only rejects a default that's absent from a
+        // *non-empty* options list.
+        assert!(bundle.kv_policy_options.is_empty());
+        assert!(bundle.structural_issues().is_empty());
+    }
+
+    #[test]
+    fn copy_bundle_preset_returns_none_without_a_bundle() {
+        let source = ModelPreset {
+            name: "Flat".into(),
+            bundle: None,
+            ..Default::default()
+        };
+        assert!(copy_bundle_preset(&source, "Flat Copy").is_none());
+    }
+
+    #[test]
+    fn copy_bundle_preset_mints_a_new_id_but_preserves_bundle_identity() {
+        let source = convert_flat_preset(
+            &ModelPreset {
+                name: "Original".into(),
+                model_path: "/models/original.gguf".into(),
+                context_size: 4096,
+                ctk: "f16".into(),
+                ctv: "f16".into(),
+                ..Default::default()
+            },
+            "Original",
+        );
+        let copied = copy_bundle_preset(&source, "Copy").expect("source has a bundle");
+        // copied.id comes from the same next_id() the source used to mint
+        // its own id (a millisecond timestamp), so equality isn't asserted
+        // here to avoid a same-millisecond flake; id generation itself is
+        // covered elsewhere.
+        assert_eq!(copied.name, "Copy");
+        assert_eq!(copied.revision, 1);
+        let source_bundle = source.bundle.as_ref().unwrap();
+        let copied_bundle = copied.bundle.as_ref().unwrap();
+        assert_eq!(
+            copied_bundle.identity.bundle_id,
+            source_bundle.identity.bundle_id
+        );
+        assert_eq!(
+            copied_bundle.identity.tune_id,
+            source_bundle.identity.tune_id
+        );
+        // fit_enabled always comes from create_bundle_preset's Some(false),
+        // regardless of what the source preset had.
+        assert_eq!(copied.fit_enabled, Some(false));
     }
 
     #[test]
