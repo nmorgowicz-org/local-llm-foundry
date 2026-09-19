@@ -23,6 +23,6 @@
   "devDependencies": {
     "@axe-core/playwright": "4.12.1",
     "@playwright/test": "1.62.1",
-    "puppeteer": "25.5.0"
+    "puppeteer": "25.11.0"
   }
 }
