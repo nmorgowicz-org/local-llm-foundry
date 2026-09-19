@@ -1093,6 +1093,8 @@ Compute optimal settings for a model + hardware combination.
 
 #### POST /api/vram/quant-compare
 Pre-download quant comparison table for a model. Shown in the wizard as the **Quant Advisor** panel.
+When a Hugging Face GGUF file has been selected, the wizard supplements this request with architecture fields read from that file's GGUF header. If header metadata is unavailable, the advisor omits those structural fields and keeps the degraded estimate path; it does not infer architecture from the filename or repository name.
+
 
 ![Quant Advisor — pre-download VRAM comparison](../screenshots/spawn-wizard--llamacpp-local--model-quant-advisor.png)
 
