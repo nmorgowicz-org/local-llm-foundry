@@ -26,7 +26,6 @@ import {
   selectWizardEngine,
   updateSelectedModelDisplay,
   introspectHfFileMetadata,
-  buildHeuristicArch,
   effectiveAvailBytes,
   isUnifiedMemory,
   ensureGpuVramFetched,
@@ -172,14 +171,13 @@ function hfSearchForWizard({ query, author, sort, limit }) {
     discoverPillsContainerId: 'hf-discover-pills',
     onOpenCardPanel: (repoId) => openCardPanel(repoId),
     onSelectModel: (m) => {
+      resetHfModelSelectionState();
       // Clear stale data from previous model selection
-      wizardState.model.paramB = 0;
       wizardState.model.modelBytes = 0;
       wizardState.model.quantFiles = [];
       wizardState.model.originRepo = '';
       wizardState.model.originFile = '';
       wizardState.model.path = '';
-      wizardState.model.hfFile = '';
       wizardState.model.hfRepo = m.id;
       wizardState.model.rapidMlxSource = m.format === 'mlx'
         ? { kind: 'hugging_face_repo', repo_id: m.id, revision: 'main' }
@@ -214,10 +212,25 @@ function hfSearchForWizard({ query, author, sort, limit }) {
 
 
 let quantAdvisorDebounce = null;
+let quantAdvisorGeneration = 0;
+
+function invalidateQuantAdvisor() {
+  clearTimeout(quantAdvisorDebounce);
+  quantAdvisorDebounce = null;
+  quantAdvisorGeneration += 1;
+}
+
+function resetHfModelSelectionState() {
+  invalidateQuantAdvisor();
+  wizardState.model.paramB = 0;
+  wizardState.model.hfFile = '';
+  wizardState.arch.globalHeadDim = 0;
+}
 
 export function triggerQuantAdvisor() {
-  if (quantAdvisorDebounce) clearTimeout(quantAdvisorDebounce);
-  quantAdvisorDebounce = setTimeout(loadQuantAdvisor, 600);
+  invalidateQuantAdvisor();
+  const generation = quantAdvisorGeneration;
+  quantAdvisorDebounce = setTimeout(() => loadQuantAdvisor(generation), 600);
 }
 
 // Re-run once memory/VRAM data arrives (it's fetched async on step entry, which
@@ -228,7 +241,7 @@ export function triggerQuantAdvisor() {
 // before that module's body has run.
 queueMicrotask(() => setOnMemoryAvailabilityReady(triggerQuantAdvisor));
 
-async function loadQuantAdvisor() {
+async function loadQuantAdvisor(generation) {
   const paramB = wizardState.model.paramB;
   if (!paramB || paramB <= 0) return;
 
@@ -259,10 +272,7 @@ async function loadQuantAdvisor() {
       n_layers: wizardState.arch.nLayers || undefined,
       n_kv_heads: wizardState.arch.nKvHeads || undefined,
       head_dim: wizardState.arch.headDim || undefined,
-      global_head_dim: buildHeuristicArch(
-        wizardState.model.path || wizardState.model.hfRepo || '',
-        paramB,
-      ).globalHeadDim || undefined,
+      global_head_dim: wizardState.arch.globalHeadDim || undefined,
       n_experts: wizardState.arch.nExperts || undefined,
       mtp_depth: wizardState.arch.mtpDepth || undefined,
     };
@@ -280,11 +290,13 @@ async function loadQuantAdvisor() {
     }
 
     const resp = await fetch('/api/vram/quant-compare', { method: 'POST', headers, body: JSON.stringify(body) });
+    if (generation !== quantAdvisorGeneration) return;
     if (!resp.ok) {
       if (dom.quantAdvisorSubtitle) dom.quantAdvisorSubtitle.textContent = 'Failed to analyze model.';
       return;
     }
     const data = await resp.json();
+    if (generation !== quantAdvisorGeneration) return;
     if (!data.ok || !data.quants) {
       if (dom.quantAdvisorSubtitle) dom.quantAdvisorSubtitle.textContent = 'Failed to analyze model.';
       return;
@@ -292,7 +304,9 @@ async function loadQuantAdvisor() {
 
     renderQuantAdvisor(data.quants, availVram);
   } catch {
-    if (dom.quantAdvisorSubtitle) dom.quantAdvisorSubtitle.textContent = 'Failed to analyze model.';
+    if (generation === quantAdvisorGeneration && dom.quantAdvisorSubtitle) {
+      dom.quantAdvisorSubtitle.textContent = 'Failed to analyze model.';
+    }
   }
 }
 
@@ -860,6 +874,7 @@ function renderCommunityPicksList(cat) {
       dom.hfQuickpicks?.querySelectorAll('.hf-qp-btn').forEach(b => b.classList.remove('active'));
       // Pre-fill repo input and load files
       if (dom.hfRepoInput) dom.hfRepoInput.value = m.hf_repo;
+      resetHfModelSelectionState();
       wizardState.model.hfRepo = m.hf_repo;
       if (m.param_b > 0) wizardState.model.paramB = m.param_b;
       if (dom.hfSearchResults) dom.hfSearchResults.style.display = 'none';
@@ -1009,6 +1024,7 @@ export function triggerHfFileFetch() {
   const isRepoId = input.includes('/') && !input.includes(' ');
 
   if (isRepoId) {
+    resetHfModelSelectionState();
     wizardState.model.hfRepo = input;
     if (dom.hfSearchResults) dom.hfSearchResults.style.display = 'none';
     dom.hfQuickpicks?.querySelectorAll('.hf-qp-btn').forEach(b => b.classList.remove('active'));

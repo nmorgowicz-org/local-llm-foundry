@@ -3254,13 +3254,21 @@ export function onModelPathChanged() {
   refreshStepGuardrails();
 }
 
+let hfIntrospectionGeneration = 0;
+
 // Real GGUF-header introspection for a not-yet-downloaded HF file (Phase 10e:
 // introspection-only, never a filename/repo-name guess). Reuses /api/model-defaults'
 // HF-aware branch, which range-fetches the real GGUF header server-side. Merges arch
-// state the same way local doIntrospect() does; on failure (offline/gated/no range
-// support) leaves fields unset rather than falling back to a guess.
+// state the same way local doIntrospect() does; clear model-specific geometry
+// before each request so failure cannot retain metadata from the previous file.
 export async function introspectHfFileMetadata(repoId, fname, sizeBytes) {
   if (!repoId || !fname) return false;
+  if (wizardState.model.hfRepo !== repoId || wizardState.model.hfFile !== fname) return false;
+  const generation = ++hfIntrospectionGeneration;
+  const isCurrent = () => generation === hfIntrospectionGeneration
+    && wizardState.model.hfRepo === repoId
+    && wizardState.model.hfFile === fname;
+  wizardState.arch.globalHeadDim = 0;
   try {
     const headers = window.authHeaders
       ? { ...window.authHeaders(), 'Content-Type': 'application/json' }
@@ -3279,12 +3287,14 @@ export async function introspectHfFileMetadata(repoId, fname, sizeBytes) {
         hf_file_path: fname,
       }),
     });
+    if (!isCurrent()) return false;
     if (!resp.ok) {
       wizardState.arch.metadataStatus = 'degraded';
       wizardState.arch.metadataReason = `GGUF header request failed (${resp.status})`;
       return false;
     }
     const data = await resp.json();
+    if (!isCurrent()) return false;
     const m = data.introspected;
     if (!m) {
       wizardState.arch.metadataStatus = 'degraded';
@@ -3323,8 +3333,10 @@ export async function introspectHfFileMetadata(repoId, fname, sizeBytes) {
     if (m.gguf_arch) _fetchAndApplyModelSamplingDefaults();
     return true;
   } catch (error) {
-    wizardState.arch.metadataStatus = 'degraded';
-    wizardState.arch.metadataReason = error?.message || 'GGUF header request failed';
+    if (isCurrent()) {
+      wizardState.arch.metadataStatus = 'degraded';
+      wizardState.arch.metadataReason = error?.message || 'GGUF header request failed';
+    }
     return false;
   }
 }
@@ -3647,21 +3659,7 @@ export function suggestedMetalLimitMb(ramTotal) {
 // The Metal cap handles the macro OS headroom (25–33% of RAM).
 // This small reserve covers Metal driver startup allocations not yet reflected in
 // the pre-launch snapshot (argument tables, shader cache, command buffer pools).
-// Inference-time burst compute buffers are handled by computeHeadroom() separately.
 const APPLE_OS_RESERVE_BYTES = 512 * 1024 * 1024;
-
-// Discrete GPU headroom: 5% but capped at 1.5 GB — driver overhead is flat, not percentage-based
-const DISCRETE_MAX_HEADROOM_BYTES = 1.5 * 1024 ** 3;
-
-function computeHeadroom(availVram) {
-  if (isUnifiedMemory()) {
-    if (!availVram) return 0.10;
-    // 10% base capped at 2 GB absolute — Metal burst compute buffers are flat, not percentage-based
-    return Math.min(0.10, (2 * 1024 ** 3) / availVram);
-  }
-  if (!availVram) return 0.05;
-  return Math.min(0.05, DISCRETE_MAX_HEADROOM_BYTES / availVram);
-}
 
 export function effectiveAvailBytes() {
   // Prefer the live MemoryAvailabilitySnapshot when available (Phase 5b Part A).
@@ -3955,129 +3953,6 @@ export function getSizingArch() {
   return arch;
 }
 
-export function buildHeuristicArch(_name, _paramB) {
-  // Retained as a compatibility export for integrations that imported the old helper.
-  // Architecture properties must come from GGUF/MLX introspection; never infer them here.
-  return {
-    nLayers: 0, nKvHeads: 0, headDim: 0, nGlobalAttnLayers: 0,
-    localAttnWindow: 0, localKvHeads: 1, nAttnLayers: 0,
-    linearAttnStateBytes: 0, nExperts: 0, nExpertsUsed: 0,
-    expertFraction: 0, mtpDepth: 0, mmprojBytes: 0, paramB: 0,
-  };
-}
-/* Legacy filename/parameter heuristics removed from the active path. They remain below only
- * as historical context until the next generated-source cleanup pass. */
-/*
-  const lower = (name || '').toLowerCase();
-
-  // ── Qwen3-Coder-Next: hybrid DeltaNet + MoE ──────────────────────────────
-  if (lower.includes('coder-next') || lower.includes('qwen3-coder-next')) {
-    // 48 layers (12 attn + 36 DeltaNet), 512 experts / 11 active, head_dim 256
-    return {
-      nLayers: 48, nKvHeads: 2, headDim: 256,
-      nAttnLayers: 12, // only these 12 use KV cache
-      linearAttnStateBytes: 36 * 32 * 128 * 128 * 2, // ~38 MB (negligible)
-      nGlobalAttnLayers: 0, localAttnWindow: 0, localKvHeads: 1,
-      nExperts: 512, nExpertsUsed: 11, expertFraction: 0.92,
-      mtpDepth: wizardState.arch.mtpDepth || 0,
-      mmprojBytes: wizardState.arch.mmprojBytes || 0,
-    };
-  }
-
-// ── Qwen3.6 family: hybrid DeltaNet, 1/4 attn layers ─────────────────────
-   // Covers: Qwen3.6-27B (dense), Qwen3.6-35B-A3B (MoE), davidau 40B expansion,
-   // Qwopus3.6 derivatives, and all finetunes/distillations that mention Qwen3.6.
-   if (lower.includes('qwen3.6') || lower.includes('qwen3-6') || lower.includes('qwopus3.6') || lower.includes('qwopus3-6') || lower.includes('qwopus36')) {
-    const nLayers = paramB > 35 ? 96 : 64;
-    const nAttnLayers = Math.floor(nLayers / 4); // exactly 1:3 attn:deltanet ratio
-    const nDeltanet = nLayers - nAttnLayers;
-    const linearState = nDeltanet * 48 * 128 * 128 * 2; // ~76 MB for 27B
-    const isMoe = parseMoeSuffix(name) !== null || lower.includes('a3b');
-    return {
-      nLayers, nKvHeads: 4, headDim: 256,
-      nAttnLayers, linearAttnStateBytes: linearState,
-      nGlobalAttnLayers: 0, localAttnWindow: 0, localKvHeads: 1,
-      nExperts: isMoe ? 64 : 0,
-      nExpertsUsed: isMoe ? 3 : 0,
-      expertFraction: isMoe ? 0.80 : 0.65,
-      mtpDepth: wizardState.arch.mtpDepth || 0,
-      mmprojBytes: wizardState.arch.mmprojBytes || 0,
-      paramB,
-    };
-  }
-
-  const isGemma4 = lower.includes('gemma-4') || lower.includes('gemma4');
-  if (isGemma4) {
-    const namedE2B = lower.includes('e2b');
-    const namedE4B = lower.includes('e4b');
-    const named12B = lower.includes('12b');
-    const named26BA4B = lower.includes('26b-a4b') || lower.includes('26b_a4b') || lower.includes('a4b');
-    const named31B = lower.includes('31b');
-    const hasNamedSize = namedE2B || namedE4B || named12B || named26BA4B || named31B;
-    const isE2B = namedE2B || (!hasNamedSize && paramB < 6);
-    const isE4B = namedE4B || (!hasNamedSize && !isE2B && paramB < 10);
-    const is12B = named12B || (!hasNamedSize && !isE2B && !isE4B && paramB < 20);
-    let cfg;
-    if (isE2B) cfg = [35, 7, 1, 1, 512, 0, 0];
-    else if (isE4B) cfg = [42, 7, 2, 2, 512, 0, 0];
-    else if (is12B) cfg = [48, 8, 1, 8, 1024, 0, 0];
-    else if (named26BA4B || (!hasNamedSize && paramB < 30)) cfg = [30, 5, 2, 8, 1024, 128, 9];
-    else cfg = [60, 10, 4, 16, 1024, 0, 0];
-    return {
-      nLayers: wizardState.arch.nLayers || cfg[0],
-      nKvHeads: wizardState.arch.nKvHeads || cfg[2],
-      headDim: wizardState.arch.headDim || 256,
-      globalHeadDim: 512,
-      nGlobalAttnLayers: cfg[1],
-      localAttnWindow: cfg[4],
-      localKvHeads: cfg[3],
-      nExperts: wizardState.arch.nExperts || cfg[5],
-      nExpertsUsed: wizardState.arch.nExpertsUsed || cfg[6],
-      expertFraction: 0.65,
-      mtpDepth: wizardState.arch.mtpDepth || 0,
-      mmprojBytes: wizardState.arch.mmprojBytes || 0,
-      paramB,
-    };
-  }
-
-  const isGemma3 = lower.includes('gemma-3') || lower.includes('gemma3');
-  if (isGemma3) {
-    const n = paramB < 5 ? [34, 4, 256] : paramB < 14 ? [52, 8, 256] : [62, 16, 256];
-    const globalL = Math.round(n[0] / 6);
-    return {
-      nLayers: n[0], nKvHeads: n[1], headDim: n[2],
-      nGlobalAttnLayers: globalL, localAttnWindow: 512, localKvHeads: 1,
-      // Inherit MoE state if already detected (e.g. Gemma-4-26B-A4B)
-      nExperts: wizardState.arch.nExperts || 0,
-      nExpertsUsed: wizardState.arch.nExpertsUsed || 0,
-      expertFraction: 0.65,
-      mtpDepth: wizardState.arch.mtpDepth || 0,
-      mmprojBytes: wizardState.arch.mmprojBytes || 0,
-    };
-  }
-
-  // Standard heuristic
-  let nl, nkv, hd;
-  if (paramB < 2)       { nl=22;  nkv=4;  hd=64;  }
-  else if (paramB < 5)  { nl=28;  nkv=4;  hd=128; }
-  else if (paramB < 10) { nl=32;  nkv=8;  hd=128; }
-  else if (paramB < 18) { nl=40;  nkv=8;  hd=128; }
-  else if (paramB < 35) { nl=40;  nkv=8;  hd=128; }
-  else if (paramB < 55) { nl=60;  nkv=8;  hd=128; }
-  else                  { nl=80;  nkv=8;  hd=128; }
-
-  return {
-    nLayers: nl, nKvHeads: nkv, headDim: hd,
-    nGlobalAttnLayers: 0, localAttnWindow: 0, localKvHeads: 1,
-    nExperts: wizardState.arch.nExperts || 0,
-    nExpertsUsed: wizardState.arch.nExpertsUsed || 0,
-    expertFraction: wizardState.arch.expertFraction || 0.65,
-    mtpDepth: wizardState.arch.mtpDepth || 0,
-    mmprojBytes: wizardState.arch.mmprojBytes || 0,
-    paramB,
-  };
-}
-*/
 
 async function estimateVramFull() {
   // Called from JS math; no server round-trip needed for the breakdown
@@ -4362,7 +4237,7 @@ function _closeBrowseDropdowns() {
 function _buildBrowseDropdown(dropdownEl, targetInputId, allDirs) {
   dropdownEl.innerHTML = '';
 
-  allDirs.forEach((dir, i) => {
+  allDirs.forEach(dir => {
     const parts = dir.replace(/\\/g, '/').split('/').filter(Boolean);
     const label = parts[parts.length - 1] || dir;
     const pathHint = parts.slice(0, -1).join('/');
@@ -4414,7 +4289,7 @@ function _buildBrowseDropdown(dropdownEl, targetInputId, allDirs) {
   dropdownEl.appendChild(manageBtn);
 }
 
-function _toggleBrowseDropdown(arrowBtnId, dropdownId, targetInputId) {
+function _toggleBrowseDropdown(arrowBtnId, dropdownId) {
   const arrow = document.getElementById(arrowBtnId);
   const dd    = document.getElementById(dropdownId);
   if (!arrow || !dd) return;
@@ -4447,17 +4322,17 @@ async function _loadModelDirSwitcher() {
     if (importDd) _buildBrowseDropdown(importDd, 'spawn-import-path', allDirs);
 
     // Wire arrow buttons (idempotent — clone to remove old listeners)
-    const wireArrow = (arrowId, dropdownId, targetInputId) => {
+    const wireArrow = (arrowId, dropdownId) => {
       const old = document.getElementById(arrowId);
       if (!old) return;
       const fresh = old.cloneNode(true);
       old.replaceWith(fresh);
       fresh.addEventListener('click', e => {
         e.stopPropagation();
-        _toggleBrowseDropdown(arrowId, dropdownId, targetInputId);
+        _toggleBrowseDropdown(arrowId, dropdownId);
       });
     };
-    wireArrow('spawn-browse-arrow-btn',        'spawn-browse-dropdown',        'spawn-model-path');
-    wireArrow('spawn-import-browse-arrow-btn', 'spawn-import-browse-dropdown', 'spawn-import-path');
+    wireArrow('spawn-browse-arrow-btn', 'spawn-browse-dropdown');
+    wireArrow('spawn-import-browse-arrow-btn', 'spawn-import-browse-dropdown');
   } catch { /* ignore */ }
 }
