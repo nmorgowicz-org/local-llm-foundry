@@ -14,7 +14,7 @@ decision-record: bac4e93
 
 **Tech Stack:** Rust, Warp, browser ES modules, Playwright, ESLint.
 
-**Spec:** `docs/plans/20260918-buildheuristicarch_introspection_replacement.md` (this reconciled execution plan)
+**Spec:** `docs/archive/architecture/20260918-buildheuristicarch_introspection_replacement.md` (this completed execution plan)
 
 ## Global Constraints
 
@@ -160,7 +160,7 @@ git status --short
 git add static/js/features/spawn-wizard.js \
   static/js/features/spawn-wizard-hf-browse.js \
   tests/ui/core/spawn-wizard.spec.js \
-  docs/plans/20260918-buildheuristicarch_introspection_replacement.md
+  docs/archive/architecture/20260918-buildheuristicarch_introspection_replacement.md
 git commit -m "refactor(wizard): remove stale architecture heuristic"
 ```
 
