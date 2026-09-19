@@ -1258,6 +1258,21 @@ test('review step exposes structured output and full sampling defaults', async (
                 body: JSON.stringify({ ok: true, quants: [] }),
             });
         });
+        await page.route('**/api/model-defaults', async route => {
+            const body = route.request().postDataJSON();
+            if (body.hf_repo_id === 'owner/slow-model') {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            await route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    introspected: body.hf_repo_id === 'owner/slow-model'
+                        ? { global_head_dim: 512 }
+                        : {},
+                }),
+            });
+        });
         await page.goto('/');
         await page.waitForLoadState('networkidle');
 
@@ -1275,12 +1290,29 @@ test('review step exposes structured output and full sampling defaults', async (
         expect(requests[0].global_head_dim).toBe(512);
 
         await page.evaluate(async () => {
-            const { wizardState } = await import('/js/features/spawn-wizard.js');
+            const { introspectHfFileMetadata, wizardState } = await import('/js/features/spawn-wizard.js');
             const { triggerQuantAdvisor } = await import('/js/features/spawn-wizard-hf-browse.js');
-            wizardState.arch.globalHeadDim = 0;
+            wizardState.model.hfRepo = 'owner/plain-model';
+            wizardState.model.hfFile = 'plain-model.gguf';
+            await introspectHfFileMetadata('owner/plain-model', 'plain-model.gguf', 1024);
             triggerQuantAdvisor();
         });
         await expect.poll(() => requests.length).toBe(2);
         expect(requests[1]).not.toHaveProperty('global_head_dim');
+
+        await page.evaluate(async () => {
+            const { introspectHfFileMetadata, wizardState } = await import('/js/features/spawn-wizard.js');
+            const { triggerQuantAdvisor } = await import('/js/features/spawn-wizard-hf-browse.js');
+            wizardState.model.hfRepo = 'owner/slow-model';
+            wizardState.model.hfFile = 'slow-model.gguf';
+            const stale = introspectHfFileMetadata('owner/slow-model', 'slow-model.gguf', 1024);
+            wizardState.model.hfRepo = 'owner/current-model';
+            wizardState.model.hfFile = 'current-model.gguf';
+            const current = introspectHfFileMetadata('owner/current-model', 'current-model.gguf', 1024);
+            await Promise.all([stale, current]);
+            triggerQuantAdvisor();
+        });
+        await expect.poll(() => requests.length).toBe(3);
+        expect(requests[2]).not.toHaveProperty('global_head_dim');
     });
 });

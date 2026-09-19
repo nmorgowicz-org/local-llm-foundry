@@ -3254,13 +3254,21 @@ export function onModelPathChanged() {
   refreshStepGuardrails();
 }
 
+let hfIntrospectionGeneration = 0;
+
 // Real GGUF-header introspection for a not-yet-downloaded HF file (Phase 10e:
 // introspection-only, never a filename/repo-name guess). Reuses /api/model-defaults'
 // HF-aware branch, which range-fetches the real GGUF header server-side. Merges arch
-// state the same way local doIntrospect() does; on failure (offline/gated/no range
-// support) leaves fields unset rather than falling back to a guess.
+// state the same way local doIntrospect() does; clear model-specific geometry
+// before each request so failure cannot retain metadata from the previous file.
 export async function introspectHfFileMetadata(repoId, fname, sizeBytes) {
   if (!repoId || !fname) return false;
+  if (wizardState.model.hfRepo !== repoId || wizardState.model.hfFile !== fname) return false;
+  const generation = ++hfIntrospectionGeneration;
+  const isCurrent = () => generation === hfIntrospectionGeneration
+    && wizardState.model.hfRepo === repoId
+    && wizardState.model.hfFile === fname;
+  wizardState.arch.globalHeadDim = 0;
   try {
     const headers = window.authHeaders
       ? { ...window.authHeaders(), 'Content-Type': 'application/json' }
@@ -3279,12 +3287,14 @@ export async function introspectHfFileMetadata(repoId, fname, sizeBytes) {
         hf_file_path: fname,
       }),
     });
+    if (!isCurrent()) return false;
     if (!resp.ok) {
       wizardState.arch.metadataStatus = 'degraded';
       wizardState.arch.metadataReason = `GGUF header request failed (${resp.status})`;
       return false;
     }
     const data = await resp.json();
+    if (!isCurrent()) return false;
     const m = data.introspected;
     if (!m) {
       wizardState.arch.metadataStatus = 'degraded';
@@ -3323,8 +3333,10 @@ export async function introspectHfFileMetadata(repoId, fname, sizeBytes) {
     if (m.gguf_arch) _fetchAndApplyModelSamplingDefaults();
     return true;
   } catch (error) {
-    wizardState.arch.metadataStatus = 'degraded';
-    wizardState.arch.metadataReason = error?.message || 'GGUF header request failed';
+    if (isCurrent()) {
+      wizardState.arch.metadataStatus = 'degraded';
+      wizardState.arch.metadataReason = error?.message || 'GGUF header request failed';
+    }
     return false;
   }
 }
@@ -3647,21 +3659,7 @@ export function suggestedMetalLimitMb(ramTotal) {
 // The Metal cap handles the macro OS headroom (25–33% of RAM).
 // This small reserve covers Metal driver startup allocations not yet reflected in
 // the pre-launch snapshot (argument tables, shader cache, command buffer pools).
-// Inference-time burst compute buffers are handled by computeHeadroom() separately.
 const APPLE_OS_RESERVE_BYTES = 512 * 1024 * 1024;
-
-// Discrete GPU headroom: 5% but capped at 1.5 GB — driver overhead is flat, not percentage-based
-const DISCRETE_MAX_HEADROOM_BYTES = 1.5 * 1024 ** 3;
-
-function computeHeadroom(availVram) {
-  if (isUnifiedMemory()) {
-    if (!availVram) return 0.10;
-    // 10% base capped at 2 GB absolute — Metal burst compute buffers are flat, not percentage-based
-    return Math.min(0.10, (2 * 1024 ** 3) / availVram);
-  }
-  if (!availVram) return 0.05;
-  return Math.min(0.05, DISCRETE_MAX_HEADROOM_BYTES / availVram);
-}
 
 export function effectiveAvailBytes() {
   // Prefer the live MemoryAvailabilitySnapshot when available (Phase 5b Part A).
@@ -4239,7 +4237,7 @@ function _closeBrowseDropdowns() {
 function _buildBrowseDropdown(dropdownEl, targetInputId, allDirs) {
   dropdownEl.innerHTML = '';
 
-  allDirs.forEach((dir, i) => {
+  allDirs.forEach(dir => {
     const parts = dir.replace(/\\/g, '/').split('/').filter(Boolean);
     const label = parts[parts.length - 1] || dir;
     const pathHint = parts.slice(0, -1).join('/');
@@ -4291,7 +4289,7 @@ function _buildBrowseDropdown(dropdownEl, targetInputId, allDirs) {
   dropdownEl.appendChild(manageBtn);
 }
 
-function _toggleBrowseDropdown(arrowBtnId, dropdownId, targetInputId) {
+function _toggleBrowseDropdown(arrowBtnId, dropdownId) {
   const arrow = document.getElementById(arrowBtnId);
   const dd    = document.getElementById(dropdownId);
   if (!arrow || !dd) return;
@@ -4324,17 +4322,17 @@ async function _loadModelDirSwitcher() {
     if (importDd) _buildBrowseDropdown(importDd, 'spawn-import-path', allDirs);
 
     // Wire arrow buttons (idempotent — clone to remove old listeners)
-    const wireArrow = (arrowId, dropdownId, targetInputId) => {
+    const wireArrow = (arrowId, dropdownId) => {
       const old = document.getElementById(arrowId);
       if (!old) return;
       const fresh = old.cloneNode(true);
       old.replaceWith(fresh);
       fresh.addEventListener('click', e => {
         e.stopPropagation();
-        _toggleBrowseDropdown(arrowId, dropdownId, targetInputId);
+        _toggleBrowseDropdown(arrowId, dropdownId);
       });
     };
-    wireArrow('spawn-browse-arrow-btn',        'spawn-browse-dropdown',        'spawn-model-path');
-    wireArrow('spawn-import-browse-arrow-btn', 'spawn-import-browse-dropdown', 'spawn-import-path');
+    wireArrow('spawn-browse-arrow-btn', 'spawn-browse-dropdown');
+    wireArrow('spawn-import-browse-arrow-btn', 'spawn-import-browse-dropdown');
   } catch { /* ignore */ }
 }
