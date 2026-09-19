@@ -4,6 +4,33 @@
   "prCreation": "immediate",
   "packageRules": [
     {
+      "description": "Batch Rust dependency updates to avoid Cargo.lock conflicts",
+      "matchManagers": ["cargo"],
+      "groupName": "Rust dependencies",
+      "groupSlug": "rust-dependencies",
+      "separateMajorMinor": false,
+      "automerge": false,
+      "addLabels": ["cargo"]
+    },
+    {
+      "description": "Batch Node dependency updates across application and UI test packages",
+      "matchManagers": ["npm"],
+      "groupName": "Node dependencies",
+      "groupSlug": "node-dependencies",
+      "separateMajorMinor": false,
+      "automerge": false,
+      "addLabels": ["npm"]
+    },
+    {
+      "description": "Batch GitHub Actions dependency updates",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions",
+      "groupSlug": "github-actions",
+      "separateMajorMinor": false,
+      "automerge": false,
+      "addLabels": ["github-actions"]
+    },
+    {
       "description": "Playwright updates require manual review - version bumps can break tests",
       "matchPackageNames": ["@playwright/test", "playwright", "playwright-core"],
       "automerge": false,
