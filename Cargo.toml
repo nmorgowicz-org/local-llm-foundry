@@ -88,7 +88,7 @@ png = "0.18.1"
     ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-    gtk = "0.18"
+    gtk = "0.19"
 
 [dev-dependencies]
 mockito = "=1.7.2"
