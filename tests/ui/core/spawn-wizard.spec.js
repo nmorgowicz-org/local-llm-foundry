@@ -1247,4 +1247,40 @@ test('review step exposes structured output and full sampling defaults', async (
         expect(result.estimateScenario).toBe('roleplay_storytelling');
     });
 
+
+    test('@in-memory-test quant advisor forwards resolved global head dimension and omits degraded metadata', async ({ page }) => {
+        const requests = [];
+        await page.route('**/api/vram/quant-compare', async route => {
+            requests.push(route.request().postDataJSON());
+            await route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({ ok: true, quants: [] }),
+            });
+        });
+        await page.goto('/');
+        await page.waitForLoadState('networkidle');
+
+        await page.evaluate(async () => {
+            const { wizardState } = await import('/js/features/spawn-wizard.js');
+            const { triggerQuantAdvisor } = await import('/js/features/spawn-wizard-hf-browse.js');
+            wizardState.model.paramB = 31;
+            wizardState.model.path = 'renamed-model.gguf';
+            wizardState.vram.available = 32 * 1024 ** 3;
+            wizardState.hardware.parallelSlots = 1;
+            wizardState.arch.globalHeadDim = 512;
+            triggerQuantAdvisor();
+        });
+        await expect.poll(() => requests.length).toBe(1);
+        expect(requests[0].global_head_dim).toBe(512);
+
+        await page.evaluate(async () => {
+            const { wizardState } = await import('/js/features/spawn-wizard.js');
+            const { triggerQuantAdvisor } = await import('/js/features/spawn-wizard-hf-browse.js');
+            wizardState.arch.globalHeadDim = 0;
+            triggerQuantAdvisor();
+        });
+        await expect.poll(() => requests.length).toBe(2);
+        expect(requests[1]).not.toHaveProperty('global_head_dim');
+    });
 });

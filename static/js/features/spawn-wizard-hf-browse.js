@@ -26,7 +26,6 @@ import {
   selectWizardEngine,
   updateSelectedModelDisplay,
   introspectHfFileMetadata,
-  buildHeuristicArch,
   effectiveAvailBytes,
   isUnifiedMemory,
   ensureGpuVramFetched,
@@ -259,10 +258,7 @@ async function loadQuantAdvisor() {
       n_layers: wizardState.arch.nLayers || undefined,
       n_kv_heads: wizardState.arch.nKvHeads || undefined,
       head_dim: wizardState.arch.headDim || undefined,
-      global_head_dim: buildHeuristicArch(
-        wizardState.model.path || wizardState.model.hfRepo || '',
-        paramB,
-      ).globalHeadDim || undefined,
+      global_head_dim: wizardState.arch.globalHeadDim || undefined,
       n_experts: wizardState.arch.nExperts || undefined,
       mtp_depth: wizardState.arch.mtpDepth || undefined,
     };

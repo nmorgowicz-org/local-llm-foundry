@@ -1,3 +1,9 @@
+---
+type: implementation-plan
+context: Introspection-first cleanup of the HF quant advisor's stale architecture compatibility path.
+decision-record: bac4e93
+---
+
 # Introspection-First Architecture Cleanup Implementation Plan
 
 > **For agentic workers:** Execute inline, task-by-task. Do **not** delegate work to subagents. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -59,22 +65,24 @@
 - Produces: `POST /api/vram/quant-compare` with optional `global_head_dim: number`. A positive resolved value is forwarded unchanged; an unresolved value is absent from JSON.
 - Invariant: the frontend never restores a filename, family, or parameter-size heuristic after this cleanup.
 
-- [ ] **Step 1: Add the failing browser contract test**
+- [x] **Step 1: Add the failing browser contract test**
 
 Append an `@in-memory-test` to the existing spawn-wizard suite. Intercept `**/api/vram/quant-compare`, store each parsed POST body, and return the smallest successful quant-comparison payload that lets the advisor finish rendering.
 
 ```js
-test('@in-memory-test quant advisor forwards only introspected global head dimensions', async ({ page }) => {
+test('@in-memory-test quant advisor forwards resolved global head dimension and omits degraded metadata', async ({ page }) => {
   const requests = [];
   await page.route('**/api/vram/quant-compare', async route => {
     requests.push(route.request().postDataJSON());
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ ok: true, comparisons: [] }),
+      body: JSON.stringify({ ok: true, quants: [] }),
     });
   });
   await page.goto('/');
+  await page.waitForLoadState('networkidle');
+
   await page.evaluate(async () => {
     const { wizardState } = await import('/js/features/spawn-wizard.js');
     const { triggerQuantAdvisor } = await import('/js/features/spawn-wizard-hf-browse.js');
@@ -83,31 +91,35 @@ test('@in-memory-test quant advisor forwards only introspected global head dimen
     wizardState.hardware.parallelSlots = 1;
     wizardState.arch.globalHeadDim = 512;
     triggerQuantAdvisor();
-    await new Promise(resolve => setTimeout(resolve, 700));
+  });
+  await expect.poll(() => requests.length).toBe(1);
+  expect(requests[0].global_head_dim).toBe(512);
+
+  await page.evaluate(async () => {
+    const { wizardState } = await import('/js/features/spawn-wizard.js');
+    const { triggerQuantAdvisor } = await import('/js/features/spawn-wizard-hf-browse.js');
     wizardState.arch.globalHeadDim = 0;
     triggerQuantAdvisor();
-    await new Promise(resolve => setTimeout(resolve, 700));
   });
-  expect(requests).toHaveLength(2);
-  expect(requests[0].global_head_dim).toBe(512);
+  await expect.poll(() => requests.length).toBe(2);
   expect(requests[1]).not.toHaveProperty('global_head_dim');
 });
 ```
 
 Adjust only the state fields required by the existing `effectiveAvailBytes()` implementation; do not mock the module or add a test-only production export. Do not assert implementation details such as imports or source text.
 
-- [ ] **Step 2: Run the focused test and confirm it fails**
+- [x] **Step 2: Run the focused test and confirm it fails**
 
 Run from `tests/ui`:
 
 ```bash
 CI=1 LLAMA_MONITOR_USE_RELEASE=1 LLAMA_MONITOR_TEST_PORT=17778 \
-  npm test core/spawn-wizard.spec.js -- --grep "quant advisor forwards only introspected global head dimensions"
+  npm test core/spawn-wizard.spec.js -- --grep "quant advisor forwards resolved global head dimension"
 ```
 
 Expected: FAIL because the current request gets `global_head_dim` from the zero-valued compatibility helper, not `wizardState.arch.globalHeadDim`.
 
-- [ ] **Step 3: Make the minimal production change**
+- [x] **Step 3: Make the minimal production change**
 
 In `spawn-wizard-hf-browse.js`:
 
@@ -118,19 +130,15 @@ global_head_dim: wizardState.arch.globalHeadDim || undefined,
 
 In `spawn-wizard.js`, delete the entire `buildHeuristicArch` declaration and the immediately following commented historical heuristic block. Keep `getEffectiveArch()` and `getSizingArch()` unchanged; their shallow-copy behavior is the established interface.
 
-- [ ] **Step 4: Run the focused test and confirm it passes**
+- [x] **Step 4: Run the focused test and confirm it passes**
 
 Repeat Step 2. Expected: PASS. The intercepted resolved request contains `512`; the degraded request omits `global_head_dim`.
 
-- [ ] **Step 5: Confirm the obsolete path is fully removed**
+- [x] **Step 5: Confirm the obsolete path is fully removed**
 
-```bash
-node --input-type=module -e "import('./static/js/features/spawn-wizard.js')"
-```
+The focused browser test imports both affected ES modules in the application environment. Then search `static/js/` for `buildHeuristicArch`. Expected: no matches. The standalone Node import does not work for this browser module graph because it accesses `localStorage`; `npm run validate-js` supplies the syntax check without that false-negative runtime condition.
 
-Then search `static/js/` for `buildHeuristicArch`. Expected: no matches. This checks both ES-module syntax and the clean cutover without changing files.
-
-- [ ] **Step 6: Run required validation and UI proof**
+- [x] **Step 6: Run required validation and UI proof**
 
 ```bash
 npm run validate-js
@@ -144,7 +152,7 @@ cd tests/ui && CI=1 LLAMA_MONITOR_USE_RELEASE=1 LLAMA_MONITOR_TEST_PORT=17778 np
 
 Run commands serially. The capture must use the release binary just built. Treat screenshots under `docs/screenshots/artifacts/` as verification artifacts only; do not promote or commit one unless documentation references it.
 
-- [ ] **Step 7: Check the final diff and commit**
+- [x] **Step 7: Check the final diff and commit**
 
 ```bash
 git diff --check
