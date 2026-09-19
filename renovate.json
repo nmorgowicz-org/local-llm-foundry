@@ -13,6 +13,12 @@
       "addLabels": ["cargo"]
     },
     {
+      "description": "Defer GTK 0.19 until the Wry GTK stack supports it",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["gtk"],
+      "allowedVersions": "<0.19"
+    },
+    {
       "description": "Batch Node dependency updates across application and UI test packages",
       "matchManagers": ["npm"],
       "groupName": "Node dependencies",
