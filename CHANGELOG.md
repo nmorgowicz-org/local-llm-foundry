@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.2](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.1.1...v2.1.2) (2026-09-19)
+
+
+### Bug Fixes
+
+* **deps:** update rust crate dirs to v7 ([#420](https://github.com/nmorgowicz-org/local-llm-foundry/issues/420)) ([7ecfc21](https://github.com/nmorgowicz-org/local-llm-foundry/commit/7ecfc215ae3b7be6668104d34b191909e0a0be60))
+* **deps:** update rust crate tray-icon to 0.25 ([#415](https://github.com/nmorgowicz-org/local-llm-foundry/issues/415)) ([c2f755d](https://github.com/nmorgowicz-org/local-llm-foundry/commit/c2f755d35a058278285d5efc2f4ab16394afb6d7))
+* **deps:** update rust crate wry to 0.57 ([#416](https://github.com/nmorgowicz-org/local-llm-foundry/issues/416)) ([979051b](https://github.com/nmorgowicz-org/local-llm-foundry/commit/979051b7fe1faf92befb38cc53d5453573a43685))
+* **wizard:** isolate advisor metadata by model ([ac27757](https://github.com/nmorgowicz-org/local-llm-foundry/commit/ac27757430eb55c3399ccb2e181064e3db6d87c3))
+
 ## [2.1.1](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.1.0...v2.1.1) (2026-09-03)
 
 
