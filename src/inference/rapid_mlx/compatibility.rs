@@ -14,7 +14,7 @@ pub const MINIMUM_VERIFIED_VERSION: (u64, u64, u64) = (0, 10, 9);
 /// Latest published Rapid-MLX release selected as this repository's baseline.
 /// Every installed runtime still receives the bounded live capability probe; this
 /// is release metadata, not a version allowlist.
-pub const LATEST_QUALIFIED_VERSION_TEXT: &str = "0.10.17";
+pub const LATEST_QUALIFIED_VERSION_TEXT: &str = "0.15.4";
 pub const QUALIFIED_ROLLBACK_VERSION_TEXT: &str = "0.10.9";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PROBE_OUTPUT_BYTES: usize = 256 * 1024;

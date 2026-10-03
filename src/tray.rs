@@ -315,14 +315,18 @@ impl ApplicationHandler for TrayApp {
                 .with_tooltip(crate::identity::PRODUCT_NAME)
                 .with_menu(Box::new(menu))
                 // Keep left-click for the popover toggle; menu is right-click only.
-                .with_menu_on_left_click(false)
-                .with_icon(std::mem::replace(
-                    &mut self.icon,
-                    Icon::from_rgba(vec![0, 0, 0, 255], 1, 1).unwrap(),
-                ));
+                .with_menu_on_left_click(false);
+
+            let icon = std::mem::replace(
+                &mut self.icon,
+                Icon::from_rgba(vec![0, 0, 0, 255], 1, 1).unwrap(),
+            );
 
             #[cfg(target_os = "macos")]
-            let builder = builder.with_icon_as_template(true);
+            let builder = builder.with_icon_templated(icon);
+
+            #[cfg(not(target_os = "macos"))]
+            let builder = builder.with_icon(icon);
 
             match builder.build() {
                 Ok(tray) => {

@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 #[serde(rename_all = "snake_case")]
 pub enum ModelRootChoice {
     KeepLegacy,
-    MoveIntoFoundry,
+    CopyIntoFoundry,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,7 +123,7 @@ pub fn plan_model_root_relocation_with_persistence(
     let mut entries = Vec::new();
     collect(source, source, &mut entries)?;
     entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    let required_copy_bytes = if choice == ModelRootChoice::MoveIntoFoundry {
+    let required_copy_bytes = if choice == ModelRootChoice::CopyIntoFoundry {
         entries
             .iter()
             .filter(|entry| !entry.is_directory)
@@ -133,7 +133,7 @@ pub fn plan_model_root_relocation_with_persistence(
         0
     };
     let available_destination_bytes = available_space(destination);
-    let persistence_rewrites = if choice == ModelRootChoice::MoveIntoFoundry {
+    let persistence_rewrites = if choice == ModelRootChoice::CopyIntoFoundry {
         plan_persistence_rewrites(persistence_files, source, destination)?
     } else {
         Vec::new()
@@ -251,13 +251,16 @@ pub fn execute_model_root_relocation(plan: &ModelRelocationPlan) -> Result<Model
         }
         current
     };
-    if let Some(available) = current.available_destination_bytes
-        && available < current.required_copy_bytes
-    {
-        bail!(
-            "insufficient free space for model relocation ({} bytes required)",
-            current.required_copy_bytes
-        );
+    // Moving doesn't duplicate data — no disk space check needed.
+    if plan.choice == ModelRootChoice::CopyIntoFoundry {
+        if let Some(available) = current.available_destination_bytes
+            && available < current.required_copy_bytes
+        {
+            bail!(
+                "insufficient free space for model relocation ({} bytes required)",
+                current.required_copy_bytes
+            );
+        }
     }
     let mut journal = if journal_path.is_file() {
         let journal: ModelRelocationJournal =
@@ -291,44 +294,72 @@ pub fn execute_model_root_relocation(plan: &ModelRelocationPlan) -> Result<Model
             continue;
         }
         if destination.exists() {
-            let destination_hash = sha256_file(&destination)?;
-            if fs::metadata(&destination)?.len() != entry.bytes
-                || entry.sha256.as_deref() != Some(destination_hash.as_str())
-            {
-                bail!(
-                    "model relocation refuses to overwrite {}",
-                    destination.display()
-                );
+            if plan.choice == ModelRootChoice::CopyIntoFoundry {
+                // If destination already exists when moving, verify it's the
+                // same file.
+                let destination_hash = sha256_file(&destination)?;
+                if fs::metadata(&destination)?.len() != entry.bytes
+                    || entry.sha256.as_deref() != Some(destination_hash.as_str())
+                {
+                    bail!(
+                        "model relocation refuses to overwrite {}",
+                        destination.display()
+                    );
+                }
+            } else {
+                let destination_hash = sha256_file(&destination)?;
+                if fs::metadata(&destination)?.len() != entry.bytes
+                    || entry.sha256.as_deref() != Some(destination_hash.as_str())
+                {
+                    bail!(
+                        "model relocation refuses to overwrite {}",
+                        destination.display()
+                    );
+                }
             }
             journal.completed_entries.push(entry.relative_path.clone());
             copied_entries.push(entry.relative_path.clone());
             fs::write(&journal_path, serde_json::to_vec_pretty(&journal)?)?;
             continue;
         }
-        fs::create_dir_all(
-            destination
-                .parent()
-                .context("model destination has no parent")?,
-        )?;
-        let temporary = destination.with_extension("local-llm-foundry-part");
-        fs::copy(&source, &temporary)?;
-        if fs::metadata(&temporary)?.len() != entry.bytes {
-            let _ = fs::remove_file(&temporary);
-            bail!(
-                "model relocation verification failed for {}",
-                entry.relative_path.display()
-            );
+        if plan.choice == ModelRootChoice::CopyIntoFoundry {
+            // Move files (metadata-only rename on same filesystem).
+            fs::create_dir_all(
+                destination
+                    .parent()
+                    .context("model destination has no parent")?,
+            )?;
+            fs::rename(&source, &destination)?;
+            copied_entries.push(entry.relative_path.clone());
+            journal.completed_entries.push(entry.relative_path.clone());
+            fs::write(&journal_path, serde_json::to_vec_pretty(&journal)?)?;
+        } else {
+            // Copy files (default behavior).
+            fs::create_dir_all(
+                destination
+                    .parent()
+                    .context("model destination has no parent")?,
+            )?;
+            let temporary = destination.with_extension("local-llm-foundry-part");
+            fs::copy(&source, &temporary)?;
+            if fs::metadata(&temporary)?.len() != entry.bytes {
+                let _ = fs::remove_file(&temporary);
+                bail!(
+                    "model relocation verification failed for {}",
+                    entry.relative_path.display()
+                );
+            }
+            fs::rename(&temporary, &destination)?;
+            if entry.sha256.as_deref() != Some(sha256_file(&destination)?.as_str()) {
+                bail!(
+                    "model relocation hash verification failed for {}",
+                    entry.relative_path.display()
+                );
+            }
+            copied_entries.push(entry.relative_path.clone());
+            journal.completed_entries.push(entry.relative_path.clone());
+            fs::write(&journal_path, serde_json::to_vec_pretty(&journal)?)?;
         }
-        fs::rename(&temporary, &destination)?;
-        if entry.sha256.as_deref() != Some(sha256_file(&destination)?.as_str()) {
-            bail!(
-                "model relocation hash verification failed for {}",
-                entry.relative_path.display()
-            );
-        }
-        copied_entries.push(entry.relative_path.clone());
-        journal.completed_entries.push(entry.relative_path.clone());
-        fs::write(&journal_path, serde_json::to_vec_pretty(&journal)?)?;
     }
     let mut rewritten_files = Vec::new();
     for rewrite in &current.persistence_rewrites {
@@ -384,7 +415,12 @@ fn collect(root: &Path, current: &Path, entries: &mut Vec<ModelRelocationEntry>)
         let path = item.path();
         let metadata = fs::symlink_metadata(&path)?;
         if metadata.file_type().is_symlink() {
-            bail!("model relocation refuses symlink: {}", path.display());
+            // Allow symlinks inside the HuggingFace cache — snapshots are symlinks
+            // to blobs. Reject symlinks elsewhere as they could be crafted to
+            // escape the source root.
+            if !path.starts_with(root.join("cache/huggingface/hub")) {
+                bail!("model relocation refuses symlink: {}", path.display());
+            }
         }
         let relative_path = path
             .strip_prefix(root)
@@ -651,10 +687,10 @@ mod tests {
         fs::write(source.join("mlx/native/model.safetensors"), b"model").unwrap();
         fs::write(source.join(".staging/model.part"), b"part").unwrap();
         let first =
-            plan_model_root_relocation(&source, &destination, ModelRootChoice::MoveIntoFoundry)
+            plan_model_root_relocation(&source, &destination, ModelRootChoice::CopyIntoFoundry)
                 .unwrap();
         let second =
-            plan_model_root_relocation(&source, &destination, ModelRootChoice::MoveIntoFoundry)
+            plan_model_root_relocation(&source, &destination, ModelRootChoice::CopyIntoFoundry)
                 .unwrap();
         assert_eq!(first.plan_id, second.plan_id);
         assert!(first.required_copy_bytes > 0);
@@ -686,7 +722,7 @@ mod tests {
         fs::create_dir_all(source.join("gguf")).unwrap();
         fs::write(source.join("gguf/model.gguf"), b"model").unwrap();
         let plan =
-            plan_model_root_relocation(&source, &destination, ModelRootChoice::MoveIntoFoundry)
+            plan_model_root_relocation(&source, &destination, ModelRootChoice::CopyIntoFoundry)
                 .unwrap();
         let receipt = execute_model_root_relocation(&plan).unwrap();
         assert!(receipt.retained_source);
@@ -709,7 +745,7 @@ mod tests {
         let model = source.join("gguf/model.gguf");
         fs::write(&model, b"model").unwrap();
         let plan =
-            plan_model_root_relocation(&source, &destination, ModelRootChoice::MoveIntoFoundry)
+            plan_model_root_relocation(&source, &destination, ModelRootChoice::CopyIntoFoundry)
                 .unwrap();
         fs::write(model, b"changed").unwrap();
         assert!(execute_model_root_relocation(&plan).is_err());
@@ -736,7 +772,7 @@ mod tests {
         let plan = plan_model_root_relocation_with_persistence(
             &source,
             &destination,
-            ModelRootChoice::MoveIntoFoundry,
+            ModelRootChoice::CopyIntoFoundry,
             std::slice::from_ref(&settings),
         )
         .unwrap();

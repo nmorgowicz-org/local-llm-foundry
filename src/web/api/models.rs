@@ -262,7 +262,7 @@ fn api_model_root_relocation_execute(
                 };
                 let confirmation = match choice {
                     crate::models::root_relocation::ModelRootChoice::KeepLegacy => "KEEP_LEGACY_MODEL_ROOT",
-                    crate::models::root_relocation::ModelRootChoice::MoveIntoFoundry => "MOVE_MODELS_INTO_FOUNDRY",
+                    crate::models::root_relocation::ModelRootChoice::CopyIntoFoundry => "MOVE_MODELS_INTO_FOUNDRY",
                 };
                 if request.confirmation != confirmation || request.plan_id.len() != 64 {
                     return Ok(error_reply(warp::http::StatusCode::BAD_REQUEST, "model-root relocation requires the preview plan_id and exact confirmation"));
