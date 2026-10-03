@@ -830,11 +830,16 @@ fn collect_entries(
         }) {
             bail!("migration inventory produced an unsafe relative path");
         }
+        let class = classify_resource(&relative);
         let metadata = fs::symlink_metadata(&path)?;
         if metadata.file_type().is_symlink() {
-            bail!("migration refuses symlinked resource: {}", path.display());
+            // Symlinks in Retained resources (models) and Recreatable resources
+            // (rapid-mlx overlays, runtime venvs) are allowed. Only reject them
+            // in Critical/Unknown resources where they could indicate tampering.
+            if class == ResourceClass::Critical || class == ResourceClass::Unknown {
+                bail!("migration refuses symlinked resource: {}", path.display());
+            }
         }
-        let class = classify_resource(&relative);
         let kind = if metadata.is_dir() {
             EntryKind::Directory
         } else if metadata.is_file() {
@@ -873,9 +878,9 @@ fn collect_entries(
 }
 
 fn classify_resource(relative: &Path) -> ResourceClass {
-    let first = relative
-        .components()
-        .next()
+    let components: Vec<_> = relative.components().collect();
+    let first = components
+        .first()
         .and_then(|component| match component {
             std::path::Component::Normal(name) => name.to_str(),
             _ => None,
@@ -885,6 +890,9 @@ fn classify_resource(relative: &Path) -> ResourceClass {
         Some("logs" | "bin" | "binaries" | "runtimes" | "model-cache" | ".staging") => {
             ResourceClass::Recreatable
         }
+        // Rapid-MLX runtime resources are generated and recreatable.
+        // Template overlays contain symlinks to source templates.
+        Some("rapid-mlx") => ResourceClass::Recreatable,
         Some("encryption-key" | "api-token" | "db-admin-token" | "chat.db" | "certs") => {
             ResourceClass::Critical
         }

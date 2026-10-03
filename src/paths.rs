@@ -134,7 +134,7 @@ impl AppPaths {
         {
             return match selection.choice {
                 ModelRootChoice::KeepLegacy => selection.source,
-                ModelRootChoice::MoveIntoFoundry => selection.destination,
+                ModelRootChoice::CopyIntoFoundry => selection.destination,
             };
         }
         self.root.join("models")
@@ -239,7 +239,7 @@ impl AppPaths {
 #[serde(rename_all = "snake_case")]
 enum ModelRootChoice {
     KeepLegacy,
-    MoveIntoFoundry,
+    CopyIntoFoundry,
 }
 
 #[derive(serde::Deserialize)]

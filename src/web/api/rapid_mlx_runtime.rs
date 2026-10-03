@@ -182,6 +182,7 @@ struct PublishedRelease {
     tag: String,
     channel: ManagedReleaseChannel,
     published_at: String,
+    release_notes: Option<String>,
 }
 
 impl Default for PublishedRelease {
@@ -191,6 +192,7 @@ impl Default for PublishedRelease {
             tag: String::new(),
             channel: ManagedReleaseChannel::Stable,
             published_at: String::new(),
+            release_notes: None,
         }
     }
 }
@@ -261,6 +263,8 @@ struct GithubRelease {
     prerelease: bool,
     #[serde(default)]
     published_at: String,
+    #[serde(default)]
+    body: String,
 }
 
 pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
@@ -1917,11 +1921,17 @@ fn decode_github_releases(raw: Vec<GithubRelease>) -> Vec<PublishedRelease> {
                 ManagedReleaseChannel::Stable
             };
             RapidMlxRuntimeManager::validate_published_version(&version, channel).ok()?;
+            let body = if item.body.trim().is_empty() {
+                None
+            } else {
+                Some(item.body)
+            };
             Some(PublishedRelease {
                 version,
                 tag: item.tag_name,
                 channel,
                 published_at: item.published_at,
+                release_notes: body,
             })
         })
         .collect()
@@ -2823,6 +2833,7 @@ mod tests {
             tag: "v0.10.10".into(),
             channel: ManagedReleaseChannel::Stable,
             published_at: "2026-07-16T00:00:00Z".into(),
+            release_notes: None,
         }];
         assert!(
             select_release_from_metadata(
