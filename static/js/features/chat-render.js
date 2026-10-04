@@ -3,6 +3,7 @@
 // Calls rendering functions via window.* to avoid circular imports.
 
 import { chat, lastLlamaMetrics, contextCapacityTokens, settingsState } from '../core/app-state.js';
+import { setHtml } from '../core/set-html.js';
 import { escapeHtml } from '../core/format.js';
 import {
   activeChatTab,
@@ -282,8 +283,8 @@ function colorizeWithRebuild(block, _fullText, matches) {
     while (currentStack.length) html += `</${currentStack.pop()}>`;
     if (inDialogue) html += '</span>';
 
-    // eslint-disable-next-line no-unsanitized/property -- we control the HTML construction
-    block.innerHTML = html;
+
+    setHtml(block, html);
 }
 
 function escapeHtmlChar(c) {
@@ -340,7 +341,7 @@ function initChatScrollButton() {
     const checkScroll = () => {
         const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
         btn.classList.toggle('visible', distFromBottom > 100);
-        
+
         // Disable auto-scroll if user scrolls up more than 100px during generation
         if (distFromBottom > 100 && chat.busy) {
             chat.disableAutoScroll = true;
@@ -369,10 +370,6 @@ export function incrementUnreadCount() {
 
 let _draggedTabId = null;
 
-// Template cache for persona label lookup
-let _templateCache = null;
-let _templateCacheTimestamp = 0;
-
 export function renderChatTabs() {
     ensureChatElements();
     const bar = chatTabBarEl;
@@ -391,8 +388,8 @@ export function renderChatTabs() {
         el.className = 'chat-tab' + (tab.id === chat.activeTabId ? ' active' : '') + (tab.pinned ? ' chat-tab-pinned' : '') + extraClasses;
         el.dataset.tabId = tab.id;
         el.draggable = true;
-        // eslint-disable-next-line no-unsanitized/property -- tab.name wrapped in escapeHtml(); tab.id is an internal UUID; message count is numeric
-        el.innerHTML = `
+
+        setHtml(el, `
           <div class="chat-tab-name-wrapper">
             <span class="chat-tab-name" data-chat-tab-rename="${tab.id}">${escapeHtml(tab.name)}</span>
           </div>
@@ -407,7 +404,7 @@ export function renderChatTabs() {
           ${chat.tabs.length > 1
             ? `<button class="chat-tab-close" data-chat-tab-close="${tab.id}" title="Close tab">×</button>`
             : ''}
-        `;
+        `);
         el.addEventListener('click', e => {
             const closeBtn = e.target.closest('.chat-tab-close');
             if (closeBtn) return;
@@ -516,7 +513,7 @@ export function renderTrashDropdown() {
         trashBtn.appendChild(badge);
     }
 
-    dropdown.innerHTML = '';
+    setHtml(dropdown, '');
     if (chat.tabTrash.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'chat-tab-trash-dropdown-empty';
@@ -529,12 +526,12 @@ export function renderTrashDropdown() {
         const item = document.createElement('div');
         item.className = 'chat-tab-trash-item';
         const timeAgo = getTimeAgo(entry.trashedAt);
-        // eslint-disable-next-line no-unsanitized/property -- entry.tab.name wrapped in escapeHtml(); entry.tab.id is an internal UUID; timeAgo is numeric
-        item.innerHTML = `
+
+        setHtml(item, `
             <span class="chat-tab-trash-item-name">${escapeHtml(entry.tab.name)}</span>
             <span class="chat-tab-trash-item-time">${timeAgo}</span>
             <button class="chat-tab-trash-item-restore" data-trash-restore="${entry.tab.id}">Restore</button>
-        `;
+        `);
         dropdown.appendChild(item);
     }
 
@@ -565,7 +562,7 @@ export function renderChatMessages(optionsOrSkip = false) {
     const skipAutoScroll = !!options.skipAutoScroll;
 
     if (!tab) {
-        container.innerHTML = `
+        setHtml(container, `
           <div class="chat-empty">
             <div class="chat-empty-icon">
               <svg width="48" height="48" viewBox="0 0 24 24" fill="none"
@@ -576,7 +573,7 @@ export function renderChatMessages(optionsOrSkip = false) {
             <p class="chat-empty-title">No chats open</p>
             <p class="chat-empty-hint">Create a new chat or restore one from trash.</p>
             <button class="btn btn-primary" id="chat-empty-create-btn">New Chat</button>
-          </div>`;
+          </div>`);
         document.getElementById('chat-empty-create-btn')?.addEventListener('click', () => {
             addChatTab().catch(err => console.error('chat empty create failed:', err));
         });
@@ -606,8 +603,8 @@ export function renderChatMessages(optionsOrSkip = false) {
             ? ` (${lastLlamaMetrics.model_name.split('/').pop().replace(/\.gguf$/i, '')})`
             : '';
 
-        // eslint-disable-next-line no-unsanitized/property -- aiName and modelName wrapped in escapeHtml(); promptCards use escapeHtml(); SVG is hardcoded
-        container.innerHTML = `
+
+        setHtml(container, `
           <div class="chat-empty">
             <div class="chat-empty-icon">
               <svg width="48" height="48" viewBox="0 0 24 24" fill="none"
@@ -618,7 +615,7 @@ export function renderChatMessages(optionsOrSkip = false) {
             <p class="chat-empty-title">${escapeHtml(aiName)}${escapeHtml(modelName)} is ready</p>
             <p class="chat-empty-hint">Ask anything, or try a suggestion below</p>
             <div class="chat-empty-prompts">${promptCards}</div>
-          </div>`;
+          </div>`);
         return;
     }
 
@@ -627,20 +624,20 @@ export function renderChatMessages(optionsOrSkip = false) {
     const isPaginated = allMessages.length > limit;
     const visibleMessages = isPaginated ? allMessages.slice(-limit) : allMessages;
 
-    container.innerHTML = '';
+    setHtml(container, '');
 
     // Add "Load More" button if paginated
     if (isPaginated) {
         const loadMoreBtn = document.createElement('button');
         loadMoreBtn.className = 'chat-load-more';
         const olderCount = allMessages.length - limit;
-        // eslint-disable-next-line no-unsanitized/property -- hardcoded SVG with numeric message counts only
-        loadMoreBtn.innerHTML = `
+
+        setHtml(loadMoreBtn, `
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 5v14M5 12l7 7 7-7"/>
             </svg>
             Load ${Math.min(limit, olderCount)} older messages
-        `;
+        `);
         loadMoreBtn.onclick = () => loadMoreMessages(tab, limit);
         container.appendChild(loadMoreBtn);
     }
@@ -720,8 +717,8 @@ function buildMessageElement(msg, idx, allMessages) {
             bodyHtml = `<div class="compact-peek-list">${rows}</div>`;
         }
 
-        // eslint-disable-next-line no-unsanitized/property -- bodyHtml is LLM output rendered via marked.js in trusted local context; statsHtml uses numeric counts and hardcoded strings; labelText/iconPath are hardcoded
-        wrapper.innerHTML = `
+
+        setHtml(wrapper, `
           <div class="compact-marker-content">
             <div class="compact-marker-rule compact-marker-rule-left"></div>
             <div class="compact-marker-pill" data-compact-toggle="true">
@@ -732,7 +729,7 @@ function buildMessageElement(msg, idx, allMessages) {
             </div>
             <div class="compact-marker-rule compact-marker-rule-right"></div>
           </div>
-          <div class="compact-marker-body" style="display:none;">${bodyHtml}</div>`;
+          <div class="compact-marker-body" style="display:none;">${bodyHtml}</div>`);
 
         return wrapper;
     }
@@ -846,8 +843,8 @@ function buildMessageElement(msg, idx, allMessages) {
           </div>
         </div>
       </div>`;
-    // eslint-disable-next-line no-unsanitized/property -- DOMPurify sanitizes HTML
-    wrapper.innerHTML = window.DOMPurify.sanitize(html);
+
+    setHtml(wrapper, html);
     colorizeRpText(wrapper.querySelector('.chat-msg-body'));
 
     return wrapper;
@@ -868,8 +865,8 @@ export function appendAssistantPlaceholder() {
     const aiLabel = tab?.ai_name || 'AI';
     const wrapper = document.createElement('div');
     wrapper.className = 'chat-message chat-message-assistant chat-message-streaming';
-    // eslint-disable-next-line no-unsanitized/property -- aiLabel is a user-configured display name; rest is hardcoded SVG/HTML skeleton
-    wrapper.innerHTML = `
+
+    setHtml(wrapper, `
       <div class="chat-avatar">${aiLabel}</div>
       <div class="chat-bubble">
         <div class="chat-msg-body"><span class="chat-cursor">▋</span></div>
@@ -879,7 +876,7 @@ export function appendAssistantPlaceholder() {
           <span class="chat-msg-meta-model"></span>
           <div class="chat-msg-actions"></div>
         </div>
-      </div>`;
+      </div>`);
     container.appendChild(wrapper);
     chatScroll(false);
     return wrapper;
@@ -888,7 +885,7 @@ export function appendAssistantPlaceholder() {
 export function appendThinkingBlock(afterEl) {
     const details = document.createElement('details');
     details.className = 'chat-thinking';
-    details.innerHTML = `
+    setHtml(details, `
       <summary class="chat-thinking-summary">
         <svg class="chat-thinking-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg>
         <span class="chat-thinking-label">Thinking</span>
@@ -896,7 +893,7 @@ export function appendThinkingBlock(afterEl) {
         <span class="chat-thinking-token-count" style="margin:0 8px; color:var(--text-muted);"></span>
         <span class="chat-thinking-hint">(click to expand)</span>
       </summary>
-      <div class="chat-thinking-body"></div>`;
+      <div class="chat-thinking-body"></div>`);
     afterEl.parentElement.insertBefore(details, afterEl);
     return details;
 }
@@ -905,8 +902,8 @@ export function finalizeAssistantMessage(el, content, usage, tab) {
     el.classList.remove('chat-message-streaming');
     const body = el.querySelector('.chat-msg-body');
     if (content) {
-        // eslint-disable-next-line no-unsanitized/property -- LLM output rendered via marked.js in trusted local context
-        body.innerHTML = renderMd(content);
+
+        setHtml(body, renderMd(content));
         colorizeRpText(body);
         if (typeof hljs !== 'undefined') {
             body.querySelectorAll('pre code:not(.hljs)').forEach(codeEl => {
@@ -924,8 +921,8 @@ export function finalizeAssistantMessage(el, content, usage, tab) {
 
             const header = document.createElement('div');
             header.className = 'chat-code-header';
-            // eslint-disable-next-line no-unsanitized/property -- lang is extracted from a CSS class name by marked.js; lineCount is numeric
-            header.innerHTML = `
+
+            setHtml(header, `
                 <span class="chat-code-lang">${lang || 'code'}</span>
                 <span class="chat-code-lines">${lineCount} line${lineCount !== 1 ? 's' : ''}</span>
                 <button class="chat-code-copy-btn" title="Copy code">
@@ -933,15 +930,15 @@ export function finalizeAssistantMessage(el, content, usage, tab) {
                     <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
                   </svg>
                   Copy
-                </button>`;
+                </button>`);
 
             header.querySelector('.chat-code-copy-btn').addEventListener('click', function() {
                 navigator.clipboard.writeText(code?.innerText ?? pre.innerText).then(() => {
                     this.classList.add('copied');
-                    this.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Copied';
+                    setHtml(this, '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Copied');
                     setTimeout(() => {
                         this.classList.remove('copied');
-                        this.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg> Copy';
+                        setHtml(this, '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg> Copy');
                     }, 1500);
                 });
             });
@@ -985,8 +982,8 @@ export function finalizeAssistantMessage(el, content, usage, tab) {
         const canGoLeft = msgVariants.length > 1 && variantIdx > 0;
         const canGoRight = true;
 
-        // eslint-disable-next-line no-unsanitized/property -- hardcoded SVG action buttons; variant counts are numeric; disabled attribute is boolean
-        actions.innerHTML = `
+
+        setHtml(actions, `
           <button class="chat-action-btn" data-chat-action="copy" title="Copy">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
                   stroke="currentColor" stroke-width="2">
@@ -1017,10 +1014,10 @@ export function finalizeAssistantMessage(el, content, usage, tab) {
                  stroke="currentColor" stroke-width="2">
               <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
             </svg>
-          </button>`;
+          </button>`);
     } else if (actions && !content && tab?.messages.at(-1)?.role === 'user') {
         // Timeout or error on a fresh send — no content to show, offer retry and dismiss
-        actions.innerHTML = `
+        setHtml(actions, `
           <button class="chat-action-btn" data-chat-action="retry-send" title="Retry">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 .49-4.5"/>
@@ -1030,7 +1027,7 @@ export function finalizeAssistantMessage(el, content, usage, tab) {
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
             </svg>
-          </button>`;
+          </button>`);
         const isMsgTimeout = el.querySelector('.chat-stopped') !== null;
         if (isMsgTimeout) {
             const t = showToastWithActions('Generation timed out', 'warning', 'Increase the timeout if your model needs more time to respond.', [{
@@ -1183,13 +1180,13 @@ function editMessageContent(btn) {
     const resendBtn = msg.role === 'user'
         ? `<button class="chat-edit-btn chat-edit-btn-resend" data-chat-edit="resend">Save and Resend</button>`
         : '';
-    // eslint-disable-next-line no-unsanitized/property -- msg.content wrapped in escapeHtml() for textarea value; resendBtn is a hardcoded button element
-    body.innerHTML = `<textarea class="chat-msg-edit-area" rows="6">${escapeHtml(msg.content)}</textarea>
+
+    setHtml(body, `<textarea class="chat-msg-edit-area" rows="6">${escapeHtml(msg.content)}</textarea>
       <div class="chat-msg-edit-actions">
         ${resendBtn}
         <button class="chat-edit-btn chat-edit-btn-save" data-chat-edit="save">Save</button>
         <button class="chat-edit-btn chat-edit-btn-cancel" data-chat-edit="cancel">Cancel</button>
-      </div>`;
+      </div>`);
     const textarea = body.querySelector('.chat-msg-edit-area');
     textarea.style.height = 'auto';
     textarea.style.height = Math.min(textarea.scrollHeight, window.innerHeight * 0.6) + 'px';
@@ -1240,8 +1237,8 @@ function saveMessageEdit(btn) {
         scheduleChatPersist();
     }
     // Update message in-place (safe during streaming — doesn't wipe other messages)
-    // eslint-disable-next-line no-unsanitized/property -- msg.content is user-editable local data, rendered via trusted renderMd
-    body.innerHTML = typeof renderMd === 'function' ? renderMd(msg.content) : escapeHtml(msg.content);
+
+    setHtml(body, typeof renderMd === 'function' ? renderMd(msg.content) : escapeHtml(msg.content));
     if (msg.role === 'assistant') colorizeRpText(body);
     body.classList.add('chat-msg-body-rendered');
 }
@@ -1253,8 +1250,8 @@ function cancelMessageEdit(btn) {
     const msg = activeChatTab()?.messages[msgIdx];
     if (msg && body) {
         // Restore original content in-place (safe during streaming)
-        // eslint-disable-next-line no-unsanitized/property -- msg.content is user-editable local data, rendered via trusted renderMd
-        body.innerHTML = typeof renderMd === 'function' ? renderMd(msg.content) : escapeHtml(msg.content);
+
+        setHtml(body, typeof renderMd === 'function' ? renderMd(msg.content) : escapeHtml(msg.content));
         if (msg.role === 'assistant') colorizeRpText(body);
         body.classList.add('chat-msg-body-rendered');
     }
@@ -1296,14 +1293,14 @@ function retrySend(btn) {
     const msgEl = btn.closest('.chat-message');
     const tab = activeChatTab();
     if (!tab || !msgEl) return;
-    
+
     // Only remove error placeholder messages, not regular user messages
     if (msgEl.dataset.role === 'error') {
         msgEl.remove();
         getTransport()?.sendChatResend(tab);
         return;
     }
-    
+
     // For user messages, truncate to this message and resend
     const msgIdx = parseInt(msgEl.dataset.msgIdx);
     if (!isNaN(msgIdx)) {
@@ -1311,7 +1308,7 @@ function retrySend(btn) {
         tab.updated_at = Date.now();
         scheduleChatPersist();
     }
-    
+
     getTransport()?.sendChatResend(tab);
 }
 
@@ -1462,7 +1459,7 @@ export function initChatRender() {
         const action = actionBtn.dataset.chatAction;
         const msgEl = actionBtn.closest('.chat-message');
         const isUserMessage = msgEl?.dataset.role === 'user';
-        
+
         if (action === 'copy') copyMessageContent(actionBtn);
         else if (action === 'regenerate') regenerateFromMessage(actionBtn);
         else if (action === 'nav-variant') navigateVariant(actionBtn, +actionBtn.dataset.variantDir);

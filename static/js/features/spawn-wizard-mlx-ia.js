@@ -44,7 +44,7 @@ const GROUPS = [
   },
   {
     supersection: 'generation', id: 'sampling', title: 'Sampling defaults',
-    description: 'Server-level sampling defaults; explicit client parameters always win.',
+    description: 'Pre-launch server defaults for this preset (temperature, top-p, …). An API client can override them per request; chats started in this app use these values.',
     critical: true, view: 'both',
     controls: ['spawn-sampling-mode'],
   },

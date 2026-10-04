@@ -34,6 +34,7 @@
     <link rel="stylesheet" href="/css/tune-panel.css">
     <link rel="stylesheet" href="/css/calibration.css">
     <link rel="stylesheet" href="/css/evidence-drawer.css">
+    <link rel="stylesheet" href="/css/protocol-docs.css">
     <link rel="stylesheet" href="/css/preset-bundle-drawer.css">
     <link rel="stylesheet" href="/css/modal-sizing.css">
 <!-- Self-hosted vendor scripts (no CDN) -->
@@ -3559,6 +3560,10 @@
                                     </select>
                                     <div class="pe-field-hint">Explicit overrides are intended for misdetected finetunes.</div>
                                 </div>
+                                <div class="pe-field">
+                                    <button type="button" class="pe-action-btn" data-open-protocol-docs>Validate protocol…</button>
+                                    <div class="pe-field-hint">Compare the detected protocol against the RapidMLX model-families docs.</div>
+                                </div>
                             </div>
                             <div class="pe-row pe-row-rapid-advanced" id="pe-row-rapid-architecture-overrides" style="display:none;">
                                 <div class="pe-field">
@@ -4304,6 +4309,10 @@
                                      <div class="field-hint">Override only when a modified finetune is misdetected.</div>
                                  </div>
                                  <div class="hardware-field">
+                                     <button type="button" class="hw-action-btn" data-open-protocol-docs>Validate protocol…</button>
+                                     <div class="field-hint">Compare the detected tool/reasoning protocol against the RapidMLX model-families docs — useful when auto-detection can't see a modified finetune.</div>
+                                 </div>
+                                 <div class="hardware-field">
                                      <label for="spawn-rapid-prefill-step-size">Prefill step size</label>
                                      <select id="spawn-rapid-prefill-step-size">
                                          <option value="512" selected>512 — qualified text default</option>
@@ -4320,6 +4329,7 @@
                                          <span class="kv-unified-text">Experimental MTP speculation</span>
                                      </label>
                                      <div class="field-hint">Works with sampling (temperature, top-p). Constrained decoding and tool-call grammars still bypass speculation.</div>
+                                     <div class="field-hint" id="spawn-rapid-mtp-eligibility" style="display:none;"></div>
                                  </div>
                                  <div class="hardware-field" id="spawn-rapid-speculative-mode-wrap" style="display:none;">
                                      <label for="spawn-rapid-speculative-source">MTP source</label>

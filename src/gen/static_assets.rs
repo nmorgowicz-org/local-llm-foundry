@@ -40,6 +40,7 @@ pub const CSS_MODAL_PREMIUM: &str = include_str!("../../static/css/modal-premium
 pub const CSS_MODAL_SIZING: &str = include_str!("../../static/css/modal-sizing.css");
 pub const CSS_PRESET_BUNDLE_DRAWER: &str =
     include_str!("../../static/css/preset-bundle-drawer.css");
+pub const CSS_PROTOCOL_DOCS: &str = include_str!("../../static/css/protocol-docs.css");
 pub const CSS_SETTINGS_MODAL: &str = include_str!("../../static/css/settings-modal.css");
 pub const CSS_SETUP_VIEW: &str = include_str!("../../static/css/setup-view.css");
 pub const CSS_SPAWN_WIZARD_BASE: &str = include_str!("../../static/css/spawn-wizard-base.css");
@@ -77,6 +78,7 @@ pub const CORE_IDENTITY_JS: &str = include_str!("../../static/js/core/identity.j
 pub const CORE_PLATFORM_INFO_JS: &str = include_str!("../../static/js/core/platform-info.js");
 pub const CORE_RAPID_MLX_SIDECARS_JS: &str =
     include_str!("../../static/js/core/rapid-mlx-sidecars.js");
+pub const CORE_SET_HTML_JS: &str = include_str!("../../static/js/core/set-html.js");
 pub const CORE_TOOLTIP_JS: &str = include_str!("../../static/js/core/tooltip.js");
 pub const FEATURES_ANIMATE_JS: &str = include_str!("../../static/js/features/animate.js");
 pub const FEATURES_APP_HOME_MIGRATION_JS: &str =
@@ -144,6 +146,8 @@ pub const FEATURES_RAPID_MLX_CARDS_JS: &str =
     include_str!("../../static/js/features/rapid-mlx-cards.js");
 pub const FEATURES_RAPID_MLX_PREFILL_JS: &str =
     include_str!("../../static/js/features/rapid-mlx-prefill.js");
+pub const FEATURES_RAPID_MLX_PROTOCOL_DOCS_JS: &str =
+    include_str!("../../static/js/features/rapid-mlx-protocol-docs.js");
 pub const FEATURES_RAPID_MLX_UPDATER_JS: &str =
     include_str!("../../static/js/features/rapid-mlx-updater.js");
 pub const FEATURES_REMOTE_AGENT_JS: &str = include_str!("../../static/js/features/remote-agent.js");

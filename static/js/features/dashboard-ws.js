@@ -9,6 +9,7 @@
 // the tab becomes visible again. This saves ~100+ DOM writes per tick.
 
 import { formatMetricAge, formatMetricNumber, escapeHtml } from '../core/format.js';
+import { setHtml } from '../core/set-html.js';
 import { deriveTelemetryGrade, gradeLabel, gradeStatusClass, gradeActionCopy } from '../features/telemetry-grade.js';
 import {
   sessionState,
@@ -308,7 +309,12 @@ export function initWebSocket() {
     dashboardSocket = ws;
 
 ws.onmessage = e => {
-    const d = JSON.parse(e.data);
+    let d;
+    try {
+        d = JSON.parse(e.data);
+    } catch {
+        return; // malformed frame — ignore rather than kill the socket loop
+    }
     // Keep wsData current even when tab is hidden (needed for refresh on show)
     setWsData(d);
     if (!isTabVisible) return; // skip DOM writes while tab is hidden
@@ -492,8 +498,8 @@ function updateEndpointStrip(d) {
             endpointUrlEl.textContent = d.active_session_endpoint || d.active_session_id || 'No session';
         }
         if (endpointStatusEl) {
-            // eslint-disable-next-line no-unsanitized/property -- statusClass and statusText are hardcoded string enums set in this function
-            endpointStatusEl.innerHTML = '<span class="status-dot ' + statusClass + '"></span>' + statusText;
+
+            setHtml(endpointStatusEl, '<span class="status-dot ' + statusClass + '"></span>' + statusText);
         }
     }
 }
@@ -686,7 +692,7 @@ function updateAttachDetach(d) {
         if (ce.logTailBadge) ce.logTailBadge.classList.remove('is-active');
         if (ce.logTailEl) {
             ce.logTailEl.style.display = 'none';
-            ce.logTailEl.innerHTML = '';
+            setHtml(ce.logTailEl, '');
         }
     } else if (ce.logTailGroup) {
         // Server running: show group (benchmark pill visible in all modes)
@@ -1173,8 +1179,8 @@ function _colorizeLogLine(line) {
 function _renderLogLine(line) {
     const div = document.createElement('div');
     div.className = 'log-line ' + _levelClass(_parseLogLevel(line));
-    // eslint-disable-next-line no-unsanitized/property -- _colorizeLogLine uses escapeHtml and only safe inline spans
-    div.innerHTML = _colorizeLogLine(line);
+
+    setHtml(div, _colorizeLogLine(line));
     return div;
 }
 
@@ -1275,7 +1281,7 @@ function _initLogTailFeature() {
         if (logTailActive) {
             _updateLogTail(wsData || null);
         } else {
-            tail.innerHTML = '';
+            setHtml(tail, '');
         }
     });
 
@@ -1321,7 +1327,7 @@ function _updateLogTail(d) {
 
     const logs = d.logs;
     if (!Array.isArray(logs) || logs.length === 0) {
-        tail.innerHTML = '';
+        setHtml(tail, '');
         return;
     }
 
@@ -1343,8 +1349,8 @@ function _updateLogTail(d) {
         }
 
         el.className = 'log-line ' + _levelClass(_parseLogLevel(line));
-        // eslint-disable-next-line no-unsanitized/property -- _colorizeLogLine uses escapeHtml and only safe inline spans
-        el.innerHTML = _colorizeLogLine(line);
+
+        setHtml(el, _colorizeLogLine(line));
     }
 }
 
@@ -1448,7 +1454,7 @@ export function updateLogs(d) {
 
     if (previousLogs.length > 0 && overlap === 0) {
         // The buffer was cleared or replaced with unrelated output.
-        el.innerHTML = '';
+        setHtml(el, '');
     } else {
         for (let i = 0; i < expiredCount; i++) {
             el.firstElementChild?.remove();
@@ -1589,8 +1595,8 @@ No additional context captured. Check the full Logs tab for more details.
     </a>
 </div>`;
 
-    // eslint-disable-next-line no-unsanitized/property -- values sanitized via escapeHtml
-    body.innerHTML = html;
+
+    setHtml(body, html);
 
     const link = body.querySelector('#error-open-logs-link');
     if (link) {
@@ -1722,8 +1728,8 @@ No additional context captured. Open the Logs tab or run llama-monitor from a te
     </a>
 </div>`;
 
-    // eslint-disable-next-line no-unsanitized/property -- values sanitized via escapeHtml
-    body.innerHTML = html;
+
+    setHtml(body, html);
 
     const link = body.querySelector('#local-error-open-logs-link');
     if (link) {
@@ -1793,9 +1799,9 @@ async function loadDoctorFindings(containerId) {
     }
 
     if (allFindings.length === 0) {
-        container.innerHTML = `<div style="font-size:9px;color:var(--color-text-muted);">
+        setHtml(container, `<div style="font-size:9px;color:var(--color-text-muted);">
 Diagnostics endpoints unavailable on this system.
-</div>`;
+</div>`);
         return;
     }
 
@@ -1824,8 +1830,8 @@ Diagnostics endpoints unavailable on this system.
         html += `</div>`;
     }
 
-    // eslint-disable-next-line no-unsanitized/property -- values sanitized via escapeHtml
-    container.innerHTML = html;
+
+    setHtml(container, html);
 
     // Wire up fix buttons
     container.querySelectorAll('.doctor-fix-btn').forEach(btn => {

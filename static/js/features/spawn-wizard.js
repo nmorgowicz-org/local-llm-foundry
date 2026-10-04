@@ -727,6 +727,9 @@ export const wizardState = {
     speculativeTrustSidecar: null,
     speculativeTrustDepth: null,
     autoToolChoice: false,
+    // Set the first time the user explicitly toggles auto tool choice; until then
+    // the model profile may auto-enable it.
+    autoToolChoiceTouched: false,
     // Phase 7: Web UI (D26/A44)
     // Phase 7: Sampling mode (D27)
     samplingMode: 'auto',
@@ -1161,6 +1164,7 @@ function resetWizardState() {
   wizardState.hardware.speculativeTokens = RAPID_MLX_DEFAULT_SPECULATIVE_TOKENS;
   wizardState.hardware.speculativeDisableAutoK = false;
   wizardState.hardware.autoToolChoice = false;
+  wizardState.hardware.autoToolChoiceTouched = false;
   wizardState.hardware.workloadScenario = 'interactive_coding_agent';
   wizardState.hardware.samplingMode = 'auto';
   if (dom.kvUnifiedSelect) dom.kvUnifiedSelect.value = '';

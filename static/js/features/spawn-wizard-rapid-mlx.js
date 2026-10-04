@@ -14,6 +14,7 @@
 // shared wizard shell and delegates to this module at its Rapid-MLX call sites.
 
 import { wizardState, dom } from './spawn-wizard.js';
+import { setHtml } from '../core/set-html.js';
 import {
     RAPID_MLX_DEFAULT_SPECULATIVE_TOKENS,
     rapidMlxPrefillStepSizeDefault,
@@ -53,7 +54,7 @@ export function renderRapidExclusionWarnings() {
     box.style.gridColumn = '1 / -1';
     host.appendChild(box);
   }
-  box.innerHTML = '';
+  setHtml(box, '');
   const title = document.createElement('div');
   title.className = 'spawn-command-preview-error-title';
   title.textContent = conflicts.length === 1 ? 'Conflicting setting' : 'Conflicting settings';
@@ -151,8 +152,8 @@ function _renderSpawnPinStatus() {
     parts.push('<button type="button" class="hw-action-btn" id="spawn-rapid-speculative-pin-recheck" style="font-size:11px; padding:2px 8px; margin-left:4px;">Re-check</button>');
   }
 
-  // eslint-disable-next-line no-unsanitized/property -- DOMPurify sanitizes HTML
-  el.innerHTML = DOMPurify.sanitize(parts.join(' '));
+
+  setHtml(el, parts.join(' '));
   wrap.style.display = '';
 
   const btn = document.getElementById('spawn-rapid-speculative-pin-recheck');
@@ -168,8 +169,8 @@ function _renderSpawnPinStatus() {
         );
         const data = await resp.json();
         if (!data || data.ok !== true) {
-          // eslint-disable-next-line no-unsanitized/property -- DOMPurify sanitizes HTML
-          el.innerHTML = DOMPurify.sanitize('<span style="color:var(--err,#e65c5c);">Re-check failed: ' + (data?.error || 'unknown') + '</span>');
+
+          setHtml(el, '<span style="color:var(--err,#e65c5c);">Re-check failed: ' + (data?.error || 'unknown') + '</span>');
           setTimeout(_renderSpawnPinStatus, 3000);
           return;
         }
@@ -181,8 +182,8 @@ function _renderSpawnPinStatus() {
         h.speculativeTrustStale = false;
         _renderSpawnPinStatus();
       } catch (e) {
-        // eslint-disable-next-line no-unsanitized/property -- DOMPurify sanitizes HTML
-        el.innerHTML = DOMPurify.sanitize('<span style="color:var(--err,#e65c5c);">Re-check failed: ' + e.message + '</span>');
+
+        setHtml(el, '<span style="color:var(--err,#e65c5c);">Re-check failed: ' + e.message + '</span>');
         setTimeout(_renderSpawnPinStatus, 3000);
       } finally {
         btn.disabled = false;
@@ -317,14 +318,14 @@ async function _fetchSpawnSidecars() {
   const listEl = document.getElementById('spawn-rapid-speculative-sidecars-list');
   if (!listEl) return;
 
-  listEl.innerHTML = '<span style="color:var(--text-muted,#888);">Loading…</span>';
+  setHtml(listEl, '<span style="color:var(--text-muted,#888);">Loading…</span>');
 
   try {
     const resp = await fetch('/api/hf/mtp-sidecars', { headers: window.authHeaders ? window.authHeaders() : {} });
     const data = await resp.json();
 
     if (!data.ok || !data.sidecars || data.sidecars.length === 0) {
-      listEl.innerHTML = '<span style="color:var(--text-muted,#888);">No local sidecars found. Build one with scripts/build-mtp-head.py</span>';
+      setHtml(listEl, '<span style="color:var(--text-muted,#888);">No local sidecars found. Build one with scripts/build-mtp-head.py</span>');
       return;
     }
 
@@ -385,8 +386,8 @@ async function _fetchSpawnSidecars() {
       html += '</button>';
     });
 
-    // eslint-disable-next-line no-unsanitized/property -- sidecar list built from our own API, all server strings are safe
-    listEl.innerHTML = html;
+
+    setHtml(listEl, html);
 
     // Wire click handlers
     listEl.querySelectorAll('[data-sidecar-index]').forEach(btn => {
@@ -415,8 +416,8 @@ async function _fetchSpawnSidecars() {
       });
     });
   } catch (err) {
-    // eslint-disable-next-line no-unsanitized/property -- error message sanitized via DOMPurify
-    listEl.innerHTML = '<span style="color:var(--err,#e65c5c);">Failed to load sidecars: ' + DOMPurify.sanitize(err.message) + '</span>';
+
+    setHtml(listEl, '<span style="color:var(--err,#e65c5c);">Failed to load sidecars: ' + DOMPurify.sanitize(err.message) + '</span>');
   }
 }
 
@@ -586,7 +587,9 @@ if (dom.speculativeModelInput && !dom.speculativeModelInput.dataset.sidecarOverr
    };
    bindCheck(dom.speculativeEnabledCheck, 'speculativeEnabled', syncRapidSpeculativeFields);
    bindCheck(dom.speculativeDisableAutoKCheck, 'speculativeDisableAutoK');
-   bindCheck(dom.autoToolChoiceCheck, 'autoToolChoice');
+   bindCheck(dom.autoToolChoiceCheck, 'autoToolChoice', () => {
+     wizardState.hardware.autoToolChoiceTouched = true;
+   });
    dom.speculativeSourceSelect?.addEventListener('change', syncRapidSpeculativeFields);
 
     if (dom.reasoningModeCheck && !dom.reasoningModeCheck.dataset.bound) {
@@ -690,7 +693,7 @@ function _renderRapidMlxProfileHints() {
     return;
   }
   hintsEl.style.display = '';
-  hintsEl.innerHTML = '';
+  setHtml(hintsEl, '');
 
     const hasVision = rapidMlxProfileHasVision(profile);
   const hasEmbeddings = profile.extras && profile.extras.embeddings;
@@ -699,6 +702,14 @@ function _renderRapidMlxProfileHints() {
     if (dom.reasoningModeCheck) dom.reasoningModeCheck.checked = true;
     applyReasoningModeLock();
     (window.scheduleVramUpdate || (() => {}))();
+  }
+
+  // A model that reports a tool-call parser is by definition compatible, so the
+  // safe-by-default toggle can flip on automatically. Only when the user hasn't
+  // expressed a choice yet (null sentinel from bindCheck's change tracking).
+  if (profile.tool_format && !wizardState.hardware.autoToolChoice && !wizardState.hardware.autoToolChoiceTouched) {
+    wizardState.hardware.autoToolChoice = true;
+    if (dom.autoToolChoiceCheck) dom.autoToolChoiceCheck.checked = true;
   }
 
   // Tool format + reasoning parser row
@@ -726,7 +737,23 @@ function _renderRapidMlxProfileHints() {
       row.textContent = 'Speculative decoding: unknown';
     }
     hintsEl.appendChild(row);
+  }
 
+  // Answer "does this model have MTP, and embedded or sidecar?" straight from the
+  // runtime profile, next to the toggle, instead of leaving the user to guess.
+  const mtpEligibility = document.getElementById('spawn-rapid-mtp-eligibility');
+  if (mtpEligibility) {
+    const hasEmbeddedHeads = !!(profile.extras && (profile.extras.mtp || profile.extras.mtp_dflash))
+      || profile.spec_decode === 'supported';
+    if (profile.spec_decode === 'supported' || hasEmbeddedHeads) {
+      mtpEligibility.textContent = 'This model reports embedded MTP prediction heads — “Embedded prediction heads” below needs no sidecar.';
+      mtpEligibility.style.display = '';
+    } else if (profile.spec_decode === 'unsupported') {
+      mtpEligibility.textContent = 'No embedded MTP heads detected for this model. Speculation needs a matching local sidecar (build one from the model’s base checkpoint) or should stay off.';
+      mtpEligibility.style.display = '';
+    } else {
+      mtpEligibility.style.display = 'none';
+    }
   }
 
   // DFlash / DDTree eligibility

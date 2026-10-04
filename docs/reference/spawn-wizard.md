@@ -419,6 +419,8 @@ When Rapid-MLX is selected, the wizard adapts the Model and Hardware step UI:
   - Label changes to "Select local MLX model".
   - Description: "Browse to a validated MLX model directory."
   - Browse button switches to directory mode instead of GGUF-only.
+  - HF cache repository folders (`models--owner--repo`) and their snapshot paths retain
+    their encoded HF source locally, without requiring an online filename search.
 - HF source card:
   - Description: "Enter a Rapid-MLX-compatible Hugging Face repository ID."
   - For Rapid-MLX, entering a repo ID is sufficient (no GGUF file picker).
@@ -434,6 +436,17 @@ When Rapid-MLX is selected, the wizard adapts the Model and Hardware step UI:
     remains for both engines.
   - A Rapid-MLX-specific panel (rapid-hardware-panel) is shown for backend-specific
     configuration, keeping its settings isolated from llama.cpp flags.
+  - Model protocol: a "Validate protocol…" action (wizard All settings drawer and the
+    preset editor's Model protocol row) opens an in-app reference modal mirroring the
+    RapidMLX model-families documentation (for example Qwen 3.8: tool parser
+    `qwen3_coder_xml`, reasoning parser `qwen3`, hybrid flag) with a deep link to the
+    live docs page, for cases where auto-detection cannot see a modified finetune.
+  - Tool integration: "Automatic tool choice" turns itself on when the model's live
+    profile reports a tool-call parser, and stays off otherwise.
+  - Experimental MTP speculation: the toggle carries a live eligibility hint derived
+    from the runtime profile — embedded prediction heads (no sidecar needed) versus
+    "no embedded MTP heads detected" (a matching local sidecar is required, or keep
+    speculation off).
 
 ![Rapid-MLX hardware panel](../screenshots/rapidmlx-local--spawn-wizard-rapid-mlx-fit.png)
 

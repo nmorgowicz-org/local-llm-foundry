@@ -2,6 +2,7 @@
 // Tab switching and sidebar collapse.
 
 import { chat, contextCapacityTokens, lastLlamaMetrics, lastSystemMetrics, metricSeries, setWsData, wsData } from '../core/app-state.js';
+import { setHtml } from '../core/set-html.js';
 import { chatScroll } from './chat-render.js';
 import { showSessionPanel, hideSessionPanel } from './chat-sessions-sidebar.js';
 import { isFocusModeActive, exitFocusMode } from './chat-focus-mode.js';
@@ -440,8 +441,8 @@ export function refreshTopCockpit() {
         if (displayPoints.length < 2) {
             displayPoints = buildIdleCockpitPoints();
         }
-        // eslint-disable-next-line no-unsanitized/property -- SVG markup is generated internally from numeric series values only
-        sparkEl.innerHTML = displayPoints.length >= 2 ? buildCockpitSparkline(displayPoints) : '';
+
+        setHtml(sparkEl, displayPoints.length >= 2 ? buildCockpitSparkline(displayPoints) : '');
     }
 }
 

@@ -50,6 +50,7 @@ import { initLlamaUpdater } from './features/llama-updater.js';
 import { initRapidMlxUpdater } from './features/rapid-mlx-updater.js';
 import { initTemplateAutoupdater } from './features/template-autoupdater.js';
 import './features/hf-browse.js';
+import './features/rapid-mlx-protocol-docs.js';
 import { initGlobalTooltip } from './core/tooltip.js';
 import { initEvidenceDrawer } from './features/evidence-drawer.js';
 import Router from './features/router.js';

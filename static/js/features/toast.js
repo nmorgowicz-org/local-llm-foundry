@@ -2,6 +2,7 @@
 // Toast notifications, progress toasts, and action toasts.
 
 import { escapeHtml } from '../core/format.js';
+import { setHtml } from '../core/set-html.js';
 
 const TOAST_AUTO_DISMISS = 6000;
 const NOTIFICATIONS_STORAGE_KEY = 'llama-monitor-notifications';
@@ -315,8 +316,8 @@ export function showToast(title, type = 'error', message = '', options = {}) {
         `;
     }
 
-    // eslint-disable-next-line no-unsanitized/property -- content is built from hardcoded template; type is a caller-controlled enum used only in CSS class; title/message wrapped in escapeHtml()
-    toast.innerHTML = content;
+
+    setHtml(toast, content);
 
     // Set explicit-level icon and class
     if (type === 'explicit' && options.level !== undefined) {
@@ -369,8 +370,8 @@ export function showToastWithActions(title, type, message, actions = [], options
             }).join('') + '</div>';
     }
 
-    // eslint-disable-next-line no-unsanitized/property -- type is a hardcoded enum used only in CSS class; title/message wrapped in escapeHtml(); actionsHtml uses escapeHtml(); getToastIcon returns hardcoded strings
-    toast.innerHTML = `
+
+    setHtml(toast, `
         <div class="toast-icon ${type}">${getToastIcon(iconType)}</div>
         <div class="toast-content">
             ${title ? '<div class="toast-title">' + escapeHtml(title) + '</div>' : ''}
@@ -378,7 +379,7 @@ export function showToastWithActions(title, type, message, actions = [], options
         </div>
         ${actionsHtml}
         <button class="toast-close" data-toast-close="">&times;</button>
-    `;
+    `);
 
     let actionTaken = false;
 

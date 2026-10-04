@@ -13,6 +13,7 @@ import {
   updateAdvisor, fetchGpuVram, fetchMetalGpuLimit, scheduleVramUpdate,
 } from './spawn-wizard.js';
 import { _platformInfo } from './spawn-wizard-binary-prereq.js';
+import { setHtml } from '../core/set-html.js';
 import {
   CTX_TARGETS, updateCtxModelMaxHint, updateCtxQuickPickActive, updateCtxTrainWarning,
 } from './spawn-wizard-context-fit.js';
@@ -75,6 +76,20 @@ export function updateVramDisplay() {
   const availVram = effectiveAvailBytes();
   if (!dom.vramPanel) return;
 
+  // Explain must respond even before an estimate arrives (or when one fails) —
+  // a dead button reads as a broken pane. Without data, say so instead of
+  // opening an empty drawer.
+  const explain = document.getElementById('wizard-vram-explain');
+  if (explain) {
+    explain.onclick = () => {
+      if (lastEstimateForExplain) {
+        openEstimateEvidenceDrawer(lastEstimateForExplain, 'Setup memory estimate', explain);
+      } else {
+        showToast('No memory estimate yet — pick a model first, then try again.', 'warning');
+      }
+    };
+  }
+
   const hw = wizardState.hardware;
   const arch = getSizingArch();
   const modelBytes = getModelBytes();
@@ -106,6 +121,7 @@ export function updateVramDisplay() {
       updateCtxTrainWarning();
     }
 
+    lastEstimateForExplain = est;
     const total = est.total_bytes;
     const headroom = est.headroom_bytes || 0;
     const free = headroom; // backend headroom_bytes = available - total
@@ -134,9 +150,6 @@ export function updateVramDisplay() {
         ? ' (Architecture metadata incomplete — this estimate is a rough heuristic.)'
         : '';
     const note = (est.note || '') + evidenceSuffix;
-
-    const explain = document.getElementById('wizard-vram-explain');
-    if (explain) explain.onclick = () => openEstimateEvidenceDrawer(est, 'Setup memory estimate', explain);
 
     updateMlockWarning(availVram, free);
 
@@ -434,6 +447,9 @@ function updateContextRailSummary() {
 // already-empty container and both calls go on to append their own set of
 // cards — doubling the grid. This token makes a stale call's append a no-op.
 let scenarioCardsRenderToken = 0;
+// Most recent successful /api/vram-estimate response, for the Explain button —
+// it must work even when a later estimate attempt fails or is still in flight.
+let lastEstimateForExplain = null;
 
 async function renderScenarioCards(modelBytes, arch, availVram) {
   if (!dom.vramScenarios || !availVram || !modelBytes) return;
@@ -483,7 +499,7 @@ async function renderLlamaCppScenarioCards(_modelBytes, _arch, availVram, token)
     },
   ];
 
-  dom.vramScenarios.innerHTML = '';
+  setHtml(dom.vramScenarios, '');
   const activeQuant = hw.cacheTypeK === '' ? 'f16' : (hw.cacheTypeK || 'q8_0');
 
   // For each scenario, ask the backend if current context fits with that KV quant.
@@ -523,7 +539,7 @@ async function renderLlamaCppScenarioCards(_modelBytes, _arch, availVram, token)
   );
 
   if (token !== scenarioCardsRenderToken) return;
-  dom.vramScenarios.innerHTML = '';
+  setHtml(dom.vramScenarios, '');
 
   for (let i = 0; i < scenarios.length; i++) {
     const s = scenarios[i];
@@ -560,8 +576,8 @@ async function renderLlamaCppScenarioCards(_modelBytes, _arch, availVram, token)
     const limitNote = cappedByModel && selectable ? '<span class="vsc-limit-note">model max</span>' : '';
 
     // All values are internal constants — no user input reaches this template.
-    // eslint-disable-next-line no-unsanitized/property
-    card.innerHTML = `
+
+    setHtml(card, `
       <div class="vsc-mode-name">${s.mode}</div>
       <div class="vsc-mode-detail">${s.detail}</div>
       <div class="vsc-ctx-row">
@@ -575,7 +591,7 @@ async function renderLlamaCppScenarioCards(_modelBytes, _arch, availVram, token)
       ${s.warnAgentic ? '<span class="vsc-warn">⚠ Not ideal for tool-heavy agents</span>' : ''}
       ${over ? '<span class="vsc-warn">⚠ may not fit current context</span>' : ''}
       <span class="vsc-footnote">KV cache: ${s.kk}/${s.kv}</span>
-    `;
+    `);
 
     if (selectable) {
       const applyScenario = () => {
@@ -687,7 +703,7 @@ async function renderMlxScenarioCards(modelBytes, _arch, availVram, token) {
   );
 
   if (token !== scenarioCardsRenderToken) return;
-  dom.vramScenarios.innerHTML = '';
+  setHtml(dom.vramScenarios, '');
 
   // Fixed facts, rendered once — not per-card, since none of them vary across these cards.
   const facts = document.createElement('div');
@@ -722,15 +738,15 @@ async function renderMlxScenarioCards(modelBytes, _arch, availVram, token) {
     if (over) desc = 'At your current context, this may not fit VRAM. Lower context or reduce concurrency.';
     else if (isTight) desc = `${s.detail} Fits, but leaves little headroom.`;
 
-    // eslint-disable-next-line no-unsanitized/property
-    card.innerHTML = `
+
+    setHtml(card, `
       <div class="vsc-mode-name">${s.mode}</div>
       <div class="vsc-mode-detail">max_num_seqs: ${s.maxNumSeqs} · retained: ${s.retainedCacheMib > 0 ? formatGB(s.retainedCacheMib * 1024 * 1024) : '0'}</div>
       <div class="vsc-desc">${desc}</div>
       ${s.rec ? '<span class="vsc-rec-badge">★ Recommended</span>' : ''}
       ${isActive ? '<span class="vsc-active-badge">✓ Active</span>' : ''}
       ${over ? '<span class="vsc-warn">⚠ may not fit current context</span>' : ''}
-    `;
+    `);
 
     if (selectable) {
       const applyScenario = () => {

@@ -514,6 +514,25 @@ pub struct ConversionCommandPlan {
     pub env: BTreeMap<OsString, OsString>,
 }
 
+/// Extract the HuggingFace repo id encoded in a hub cache path component.
+///
+/// The hub layout is `…/hub/models--owner--repo[/snapshots/<commit>/…]`. Both the
+/// container and anything below it carry the repo identity, so a model picked from
+/// the cache can be resolved without an online filename search. Returns `None`
+/// when no `models--` component (or a malformed one) is present.
+pub fn hf_cache_repo_id(path: &Path) -> Option<String> {
+    let component = path
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .find(|c| c.starts_with("models--"))?;
+    let encoded = component.strip_prefix("models--")?;
+    let (owner, repo) = encoded.split_once("--")?;
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
+}
+
 pub fn source_from_legacy_model_path(value: &str) -> Result<RapidMlxModelSource> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -1867,6 +1886,32 @@ fn create_file_symlink(src: &Path, dest: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hf_cache_repo_id_extracts_owner_and_repo() {
+        let hub = Path::new("/models/cache/huggingface/hub");
+        assert_eq!(
+            hf_cache_repo_id(&hub.join("models--nightmedia--Qwen3.8-27B-MindMeld-AREX-mxfp4-mlx")),
+            Some("nightmedia/Qwen3.8-27B-MindMeld-AREX-mxfp4-mlx".to_string())
+        );
+        assert_eq!(
+            hf_cache_repo_id(
+                &hub.join("models--owner--repo")
+                    .join("snapshots")
+                    .join("abc123")
+            ),
+            Some("owner/repo".to_string())
+        );
+        assert_eq!(
+            hf_cache_repo_id(Path::new("/models/mlx/native/some-model")),
+            None
+        );
+        assert_eq!(
+            hf_cache_repo_id(&hub.join("models--broken")),
+            None,
+            "container without a -- separator is not a repo"
+        );
+    }
 
     fn test_overlay_root(path: &Path) {
         init_template_overlay_root(path);

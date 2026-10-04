@@ -87,7 +87,7 @@ fn api_vram_estimate_breakdown(
                 // HuggingFace coordinates for pre-download introspection: when there is no
                 // local file yet, the GGUF KV header (or MLX config.json) is fetched so the
                 // estimate uses the model's real architecture instead of name-based guesses.
-                let hf_repo_id = body["hf_repo_id"].as_str().unwrap_or("").to_string();
+                let mut hf_repo_id = body["hf_repo_id"].as_str().unwrap_or("").to_string();
                 let hf_file_path = body["hf_file_path"].as_str().unwrap_or("").to_string();
                 let hf_repo_revision = body["hf_repo_revision"].as_str().unwrap_or("main").to_string();
                 let model_size_override = body["model_size_bytes"].as_u64();
@@ -167,6 +167,23 @@ fn api_vram_estimate_breakdown(
                     if is_rapid_mlx {
                     // Rapid-MLX is Apple-Silicon/unified-memory only.
                     is_unified_memory = true;
+
+                    // A path picked from the HF cache (the picker's fallback location) is a
+                    // repository container, not a model directory: `…/hub/models--owner--repo`
+                    // (optionally `/snapshots/<commit>`). Its folder name encodes the repo id,
+                    // so resolve through HuggingFace instead of failing the local-dir read.
+                    let model_path =
+                        match crate::inference::rapid_mlx::model_resolver::hf_cache_repo_id(
+                            std::path::Path::new(&model_path),
+                        ) {
+                            Some(repo) => {
+                                if hf_repo_id.is_empty() {
+                                    hf_repo_id = repo;
+                                }
+                                String::new()
+                            }
+                            None => model_path,
+                        };
 
                     // If model_path is non-empty, try to read it as a local MLX directory.
                     let local_meta = if !model_path.is_empty() {

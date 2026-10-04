@@ -2,6 +2,7 @@
 // Models modal: open, close, load, refresh, delete, and HF download tab.
 
 import { sessionState } from '../core/app-state.js';
+import { setHtml } from '../core/set-html.js';
 import { escapeHtml } from '../core/format.js';
 import { getPlatformInfo } from '../core/platform-info.js';
 import { resolveNotification, showToast, showToastWithActions } from './toast.js';
@@ -204,7 +205,7 @@ async function loadModels({ refresh = false } = {}) {
     const needsFetch = refresh || !inventoryCache;
     if (needsFetch) {
         if (summary) summary.textContent = 'Loading...';
-        grid.innerHTML = '<div class="mm-loading">Scanning...</div>';
+        setHtml(grid, '<div class="mm-loading">Scanning...</div>');
     }
 
     try {
@@ -263,13 +264,13 @@ async function loadModels({ refresh = false } = {}) {
         }
 
         if (!count) {
-            grid.innerHTML = '<div class="mm-empty">No models found in this directory. You can download one from the Download tab.</div>';
+            setHtml(grid, '<div class="mm-empty">No models found in this directory. You can download one from the Download tab.</div>');
             grid.className = 'mm-model-grid';
             return;
         }
 
         if (!result.length) {
-            grid.innerHTML = '<div class="mm-empty">No models match the current filters or search.</div>';
+            setHtml(grid, '<div class="mm-empty">No models match the current filters or search.</div>');
             grid.className = 'mm-model-grid';
             return;
         }
@@ -285,7 +286,7 @@ async function loadModels({ refresh = false } = {}) {
         // grid by one request rather than blocking it.
         await ensureCommunitySourceCatalog();
 
-        grid.innerHTML = '';
+        setHtml(grid, '');
         result.forEach(m => {
             grid.appendChild(buildModelCard(m));
         });
@@ -294,7 +295,7 @@ async function loadModels({ refresh = false } = {}) {
         const errDiv = document.createElement('div');
         errDiv.className = 'mm-empty';
         errDiv.textContent = 'Error: ' + err.message;
-        grid.innerHTML = '';
+        setHtml(grid, '');
         grid.appendChild(errDiv);
     }
 }
@@ -786,7 +787,7 @@ function buildModelCard(m) {
                 switchBtn.type = 'button';
                 switchBtn.className = 'mm-action-btn mm-action-btn--switch';
                 switchBtn.title = `Switch to preset: ${relatedPresets[0].name}`;
-                switchBtn.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4l4 4"/><path d="M17 8v12m0 0l4-4m-4 4l-4-4"/></svg> Switch';
+                setHtml(switchBtn, '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4l4 4"/><path d="M17 8v12m0 0l4-4m-4 4l-4-4"/></svg> Switch');
                 switchBtn.addEventListener('click', () => doSwitchToPreset(relatedPresets[0].id));
                 actions.appendChild(switchBtn);
 
@@ -810,7 +811,7 @@ function buildModelCard(m) {
                 switchBtn.type = 'button';
                 switchBtn.className = 'mm-action-btn mm-action-btn--switch';
                 switchBtn.title = 'Switch to selected preset';
-                switchBtn.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4l4 4"/><path d="M17 8v12m0 0l4-4m-4 4l-4-4"/></svg> Switch';
+                setHtml(switchBtn, '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4l4 4"/><path d="M17 8v12m0 0l4-4m-4 4l-4-4"/></svg> Switch');
                 switchBtn.addEventListener('click', () => doSwitchToPreset(switchSelect.value));
 
                 switchWrap.appendChild(switchSelect);
@@ -823,7 +824,7 @@ function buildModelCard(m) {
                 loadBtn.type = 'button';
                 loadBtn.className = 'mm-action-btn mm-action-btn--switch';
                 loadBtn.title = 'Load this model using current server settings (port, GPU layers, etc.)';
-                loadBtn.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4l4 4"/><path d="M17 8v12m0 0l4-4m-4 4l-4-4"/></svg> Quick Load';
+                setHtml(loadBtn, '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4l4 4"/><path d="M17 8v12m0 0l4-4m-4 4l-4-4"/></svg> Quick Load');
                 loadBtn.addEventListener('click', () => doQuickLoad(m));
                 actions.appendChild(loadBtn);
             } else {
@@ -891,7 +892,7 @@ function buildModelCard(m) {
     copyBtn.type = 'button';
     copyBtn.className = 'mm-action-btn mm-action-copy';
     copyBtn.title = 'Copy path';
-    copyBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy Path';
+    setHtml(copyBtn, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy Path');
     // Typed HF sources retain a stable repo id while `path` points at a resolved
     // cache snapshot. Copy the source users can reuse in configuration.
     const pathToCopy = inventoryModelSourceValue(m) || m.path || '';
@@ -975,7 +976,7 @@ function buildModelCard(m) {
                 ? 'Delete this model from library'
                 : 'Delete this model directory from library';
         deleteBtn.setAttribute('aria-label', deleteBtn.title);
-        deleteBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>';
+        setHtml(deleteBtn, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>');
         deleteBtn.addEventListener('click', () => (isPartialFile
             ? deletePartialModel(m.path, m.filename || name)
             : isManagedCache
@@ -1891,7 +1892,7 @@ function ensureLibraryToolbar() {
     _toolbarInitialized = true;
     const container = document.getElementById('mm-library-toolbar');
     if (!container) return;
-    container.innerHTML = '';
+    setHtml(container, '');
 
     // Search input
     const wrap = document.createElement('div');
@@ -1899,7 +1900,7 @@ function ensureLibraryToolbar() {
 
     const searchIcon = document.createElement('span');
     searchIcon.className = 'mm-lib-search-icon';
-    searchIcon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
+    setHtml(searchIcon, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>');
 
     const input = document.createElement('input');
     input.type = 'text';
@@ -1946,9 +1947,8 @@ function ensureLibraryToolbar() {
     filtersBtn.className = 'mm-lib-btn mm-lib-btn--labeled';
     filtersBtn.id = 'mm-lib-filters-toggle';
     filtersBtn.title = 'Filter models by type, quantization, or tag';
-    filtersBtn.innerHTML =
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>'
-        + '<span>Filter</span>';
+    setHtml(filtersBtn, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>'
+        + '<span>Filter</span>');
 
     const filtersPanel = document.createElement('div');
     filtersPanel.className = 'mm-lib-filters-panel';
@@ -2007,18 +2007,18 @@ function ensureLibraryToolbar() {
     viewBtn.className = 'mm-lib-btn mm-lib-btn--labeled';
     viewBtn.id = 'mm-lib-view-toggle';
     viewBtn.title = prefs.viewMode === 'cards' ? 'Switch to list view' : 'Switch to cards view';
-    // eslint-disable-next-line no-unsanitized/property -- static SVG, no user data
-    viewBtn.innerHTML = prefs.viewMode === 'cards'
+
+    setHtml(viewBtn, prefs.viewMode === 'cards'
         ? ICON_LIST_VIEW + '<span>List</span>'
-        : ICON_CARDS_VIEW + '<span>Cards</span>';
+        : ICON_CARDS_VIEW + '<span>Cards</span>');
 
     viewBtn.addEventListener('click', () => {
         prefs.viewMode = prefs.viewMode === 'cards' ? 'list' : 'cards';
         viewBtn.title = prefs.viewMode === 'cards' ? 'Switch to list view' : 'Switch to cards view';
-        // eslint-disable-next-line no-unsanitized/property -- static SVG, no user data
-        viewBtn.innerHTML = prefs.viewMode === 'cards'
+
+        setHtml(viewBtn, prefs.viewMode === 'cards'
             ? ICON_LIST_VIEW + '<span>List</span>'
-            : ICON_CARDS_VIEW + '<span>Cards</span>';
+            : ICON_CARDS_VIEW + '<span>Cards</span>');
         savePrefs();
         loadModels();
     });
@@ -2033,9 +2033,8 @@ function ensureLibraryToolbar() {
     addBtn.className = 'mm-lib-btn mm-lib-btn--labeled';
     addBtn.id = 'mm-lib-add-local';
     addBtn.title = 'Import an MLX or Transformers model directory from elsewhere on this machine';
-    addBtn.innerHTML =
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>'
-        + '<span>Add local</span>';
+    setHtml(addBtn, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>'
+        + '<span>Add local</span>');
     addBtn.addEventListener('click', () => { importLocalModelDirectory(); });
     right.appendChild(addBtn);
 
@@ -2062,7 +2061,7 @@ function rebuildLibraryFilters(models) {
     if (spanEl) spanEl.textContent = 'Filter' + (hasActiveFilters ? ' •' : '');
 
     // Clear previous filter rows
-    filtersPanel.innerHTML = '';
+    setHtml(filtersPanel, '');
 
     // Type filters
     const typeRow = document.createElement('div');
@@ -3212,7 +3211,7 @@ async function onHfModelSelected(model, filelistContainer, downloadPanel) {
     hideHardwareInfoCard();
 
     // Hide file list container (GGUF only)
-    filelistContainer.innerHTML = '';
+    setHtml(filelistContainer, '');
     filelistContainer.classList.remove('visible');
 
     // Show selected model info
@@ -3784,7 +3783,7 @@ function renderQuantAdvisor(quants, availVram) {
         qualTd.appendChild(qualBadge);
     }
 
-    tableEl.innerHTML = '';
+    setHtml(tableEl, '');
     tableEl.appendChild(table);
     panel.style.display = '';
 }
@@ -4120,7 +4119,7 @@ async function detectMmprojCompanion(repoId) {
         const recommendedMmproj = getRecommendedMmproj(mmprojFiles);
 
         // Render mmproj options
-        content.innerHTML = '';
+        setHtml(content, '');
 
         // Checkbox to enable mmproj
         const checkLabel = document.createElement('label');
@@ -4248,7 +4247,7 @@ function initDiskTab() {
 async function scanDiskCache() {
     const rows = document.getElementById('mm-disk-rows');
     const scanBtn = document.getElementById('mm-disk-scan');
-    if (rows) rows.innerHTML = '<div class="mm-loading">Walking the shared cache…</div>';
+    if (rows) setHtml(rows, '<div class="mm-loading">Walking the shared cache…</div>');
     if (scanBtn) scanBtn.disabled = true;
     try {
         const resp = await fetch('/api/models/external-cache', {
@@ -4259,7 +4258,7 @@ async function scanDiskCache() {
         if (!data.present) {
             diskAudit = null;
             if (rows) {
-                rows.innerHTML = '<div class="mm-import-empty-state">No shared Hugging Face cache on this machine. Everything the app can see is already in the library.</div>';
+                setHtml(rows, '<div class="mm-import-empty-state">No shared Hugging Face cache on this machine. Everything the app can see is already in the library.</div>');
             }
             setDiskTotals('Nothing outside the library.');
             return;
@@ -4269,7 +4268,7 @@ async function scanDiskCache() {
         renderDiskTotals();
         renderDiskRows();
     } catch (error) {
-        if (rows) rows.innerHTML = `<div class="mm-import-empty-state">${escapeHtml(error.message || String(error))}</div>`;
+        if (rows) setHtml(rows, `<div class="mm-import-empty-state">${escapeHtml(error.message || String(error))}</div>`);
     } finally {
         if (scanBtn) scanBtn.disabled = false;
     }
@@ -4295,14 +4294,14 @@ function renderDiskTotals() {
     if (totals) {
         // The duplicate line is the actionable one: those bytes exist twice on this
         // machine, so reclaiming them costs nothing.
-        // eslint-disable-next-line no-unsanitized/property -- only formatBytes numerics and escapeHtml'd text
-        totals.innerHTML = [
+
+        setHtml(totals, [
             `<strong>${formatBytes(diskAudit.total_bytes)}</strong> in ${diskAudit.repos.length} repos`,
             parts.length ? `<span class="mm-disk-breakdown">${escapeHtml(parts.join(' · '))}</span>` : '',
             duplicateBytes ? `<span class="mm-disk-dupe">${formatBytes(duplicateBytes)} already in your library</span>` : '',
             diskAudit.unaccounted_bytes ? `<span class="mm-disk-note">${formatBytes(diskAudit.unaccounted_bytes)} not in a model repo, not listed below</span>` : '',
             diskAudit.truncated ? '<span class="mm-disk-note">Listing was truncated; some repos are not shown.</span>' : '',
-        ].filter(Boolean).join('<br>');
+        ].filter(Boolean).join('<br>'));
     }
     const count = document.getElementById('mm-disk-tab-count');
     if (count) count.textContent = String(diskAudit.repos.length);
@@ -4322,12 +4321,12 @@ function renderDiskRows() {
     const allowed = diskKindFilter();
     const visible = diskAudit.repos.filter(repo => allowed.has(repo.kind));
     if (!visible.length) {
-        rows.innerHTML = '<div class="mm-import-empty-state">No repos match the selected kinds.</div>';
+        setHtml(rows, '<div class="mm-import-empty-state">No repos match the selected kinds.</div>');
         renderDiskSelection();
         return;
     }
-    // eslint-disable-next-line no-unsanitized/property -- every interpolated repo field goes through escapeHtml
-    rows.innerHTML = visible.map(repo => {
+
+    setHtml(rows, visible.map(repo => {
         const badges = [];
         badges.push(`<span class="mm-disk-badge mm-disk-badge--${escapeHtml(repo.kind)}">${escapeHtml(DISK_KIND_LABELS[repo.kind] || repo.kind)}</span>`);
         // Where the verdict came from, always shown: "the config says so" and "the
@@ -4353,7 +4352,7 @@ function renderDiskRows() {
             <span class="mm-disk-meta">${escapeHtml(meta.join(' · '))}</span>
             ${warn}
         </label>`;
-    }).join('');
+    }).join(''));
     renderDiskSelection();
 }
 

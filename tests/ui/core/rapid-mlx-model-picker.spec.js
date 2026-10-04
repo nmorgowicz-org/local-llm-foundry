@@ -48,4 +48,31 @@ test.describe('Rapid-MLX model picker', () => {
     await expect(page.locator('#fb-entries')).toContainText('Empty directory');
     await expect(page.locator('#fb-path-input')).toHaveValue(NATIVE);
   });
+  for (const suffix of ['', '/snapshots/abc123']) {
+    test(`@in-memory-test cached MLX provenance resolves without HF search ${suffix || 'container'}`, async ({ page }) => {
+      await page.goto('/');
+      await page.waitForLoadState('networkidle');
+      let searches = 0;
+      await page.route('**/api/**', route => {
+        const url = new URL(route.request().url());
+        if (url.pathname === '/api/hf/resolve-origin') searches++;
+        if (url.pathname === '/api/models/tags') return json(route, { ok: true, tags: {} });
+        return route.abort();
+      });
+      const result = await page.evaluate(async suffix => {
+        const { wizardState } = await import('/js/features/spawn-wizard.js');
+        const origin = await import('/js/features/spawn-wizard-hf-origin.js');
+        wizardState.model.source = 'local';
+        wizardState.model.path = '/fake/hub/models--nightmedia--Qwen3.8-27B-MindMeld-AREX-mxfp4-mlx' + suffix;
+        wizardState.model.originRepo = '';
+        origin.resetOriginState();
+        await origin._autoResolveHfOrigin();
+        return { repo: wizardState.model.originRepo, card: wizardState.model.cardUrl };
+      }, suffix);
+      expect(result.repo).toBe('nightmedia/Qwen3.8-27B-MindMeld-AREX-mxfp4-mlx');
+      expect(result.card).toBe('https://huggingface.co/nightmedia/Qwen3.8-27B-MindMeld-AREX-mxfp4-mlx');
+      expect(searches).toBe(0);
+      await expect(page.locator('#hf-origin-section')).not.toContainText('Not found automatically');
+    });
+  }
 });
