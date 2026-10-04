@@ -140,6 +140,28 @@ test.describe('Rapid-MLX page-2 layout and protocol reference', () => {
     expect(hint).toContain('Preflight');
   });
 
+  test('@in-memory-test fingerprint suggests a draft when the trunk name hides its family', async ({ page }) => {
+    await openHardwarePage(page);
+    // Scarlett-Opus-oQ4e-MLX: a Qwen3.8-27B finetune whose name carries no family hint.
+    await page.route('**/api/hf/mtp-sidecars', route => json(route, { ok: true, sidecars: [] }));
+    await page.route('**/api/rapid-mlx/mtp/draft-suggestion?*', route => json(route, {
+      ok: true,
+      suggestion: { repo: 'rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX', note: 'a bf16 variant (…-MTP-fp16-MLX) also exists', basis: 'architecture fingerprint' },
+    }));
+    await page.evaluate(async () => {
+      const wiz = await import('/js/features/spawn-wizard.js');
+      const rapid = await import('/js/features/spawn-wizard-rapid-mlx.js');
+      wiz.wizardState.model.path = '/fake/models/mlx/native/Scarlett-Opus-oQ4e-MLX';
+      wiz.wizardState.hardware.speculativeEnabled = true;
+      wiz.wizardState.hardware.speculativeSource = 'external';
+      document.getElementById('spawn-rapid-speculative-enabled').checked = true;
+      rapid.refreshRapidMlxSidecars();
+    });
+    await page.waitForTimeout(1200);
+    const hint = await page.evaluate(() => document.getElementById('spawn-rapid-speculative-sidecars-list')?.textContent || '');
+    expect(hint).toContain('rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX');
+  });
+
   test('@in-memory-test Validate protocol opens the in-app reference modal', async ({ page }) => {
     await openHardwarePage(page);
     await expandAllSettings(page);

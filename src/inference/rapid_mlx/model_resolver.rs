@@ -1913,8 +1913,16 @@ mod tests {
         );
     }
 
-    fn test_overlay_root(path: &Path) {
+    /// `init_template_overlay_root` writes a process-global, so tests that set it
+    /// must hold this lock for their whole body: another test's root (a tempdir
+    /// that has already been deleted) otherwise wins the race and the overlay
+    /// lands in the void. Returns the guard; keep it in scope for the test.
+    static OVERLAY_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn test_overlay_root(path: &Path) -> std::sync::MutexGuard<'static, ()> {
+        let guard = OVERLAY_ROOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init_template_overlay_root(path);
+        guard
     }
 
     #[test]
@@ -2475,7 +2483,7 @@ mod tests {
     fn template_overlay_creates_symlinks_and_template() {
         // Create a fake model directory with some files
         let model_dir = tempfile::tempdir().unwrap();
-        test_overlay_root(model_dir.path());
+        let _overlay_guard = test_overlay_root(model_dir.path());
         fs::write(model_dir.path().join("config.json"), b"{}").unwrap();
         fs::write(model_dir.path().join("tokenizer.json"), b"{}").unwrap();
         fs::write(model_dir.path().join("model.safetensors"), b"weights").unwrap();
@@ -2518,7 +2526,11 @@ mod tests {
     #[test]
     fn template_overlay_does_not_mutate_original_model_dir() {
         let model_dir = tempfile::tempdir().unwrap();
-        test_overlay_root(model_dir.path());
+        // Production points the overlay root at the app config dir, never at a
+        // model directory — the overlay base itself (`rapid-mlx/template-overlays`)
+        // is created on demand and must not count as model-dir mutation.
+        let config_dir = tempfile::tempdir().unwrap();
+        let _overlay_guard = test_overlay_root(config_dir.path());
         fs::write(model_dir.path().join("config.json"), b"{}").unwrap();
 
         let template_dir = tempfile::tempdir().unwrap();
@@ -2538,8 +2550,22 @@ mod tests {
         // Count files in original dir after
         let files_after: Vec<_> = fs::read_dir(model_dir.path()).unwrap().collect();
 
-        // Original dir should have exactly the same files (no chat_template.jinja added)
-        assert_eq!(files_before.len(), files_after.len());
+        // Original dir should have exactly the same files (no chat_template.jinja
+        // added, no overlay base created inside it).
+        let names_before: Vec<_> = files_before
+            .iter()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        let names_after: Vec<_> = files_after
+            .iter()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(
+            names_before, names_after,
+            "create_template_overlay mutated the original model directory"
+        );
         assert!(!model_dir.path().join("chat_template.jinja").exists());
     }
 
@@ -2547,7 +2573,7 @@ mod tests {
     fn template_overlay_path_is_deterministic() {
         // Same model dir should always produce the same overlay path
         let model_dir = tempfile::tempdir().unwrap();
-        test_overlay_root(model_dir.path());
+        let _overlay_guard = test_overlay_root(model_dir.path());
         let model_path = model_dir.path().to_string_lossy().into_owned();
         let template_dir = tempfile::tempdir().unwrap();
         fs::write(template_dir.path().join("template.jinja"), b"template").unwrap();

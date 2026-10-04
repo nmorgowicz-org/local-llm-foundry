@@ -336,6 +336,8 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         .unify()
         .or(flag_advisor_route(ctx.clone()))
         .unify()
+        .or(mtp_draft_suggestion_route(ctx.clone()))
+        .unify()
         .or(mutation_route(
             ctx.clone(),
             state.clone(),
@@ -3960,4 +3962,107 @@ mod command_preview_parity_tests {
         assert!(!argv.iter().any(|arg| arg == "--timeout"), "{argv:?}");
         assert!(!argv.iter().any(|arg| arg == "--api-key"), "{argv:?}");
     }
+}
+
+/// Fingerprint known Qwen3.5/3.8 tiers to their official upstream MTP draft repos.
+///
+/// Finetune names rarely carry the base family ("Scarlett-Opus-oQ4e-MLX" is a Qwen3.8-27B
+/// finetune), so detection reads the trunk's own config.json — architecture, not marketing.
+/// Fingerprints are from the upstream registries' checkpoints:
+/// Qwen3.8/3.6-27B (hidden 5120, 64 layers, vocab 248320), Qwen3.5-9B (4096/32),
+/// Qwen3.5-4B (2560/32).
+fn official_mtp_draft_for_config(
+    model_type: &str,
+    hidden_size: u64,
+    num_hidden_layers: u64,
+) -> Option<(&'static str, &'static str)> {
+    if model_type != "qwen3_5" {
+        return None;
+    }
+    if hidden_size == 5120 && num_hidden_layers == 64 {
+        Some((
+            "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+            "a bf16 variant (…-MTP-fp16-MLX) also exists",
+        ))
+    } else if hidden_size == 4096 && num_hidden_layers == 32 {
+        Some(("mlx-community/Qwen3.5-9B-MTP-4bit", ""))
+    } else if hidden_size == 2560 && num_hidden_layers == 32 {
+        Some(("mlx-community/Qwen3.5-4B-MTP-4bit", ""))
+    } else {
+        None
+    }
+}
+
+fn mtp_draft_suggestion_route(ctx: ApiCtx) -> ApiRoute {
+    let config = ctx.config;
+    warp::path!("api" / "rapid-mlx" / "mtp" / "draft-suggestion")
+        .and(warp::get())
+        .and(warp::query::<std::collections::HashMap<String, String>>())
+        .and(warp::header::optional::<String>("authorization"))
+        .and_then(move |query: std::collections::HashMap<String, String>, auth: Option<String>| {
+            let config = config.clone();
+            async move {
+                if !check_api_token(&auth, &config) {
+                    return Ok(unauthorized_api_token());
+                }
+                let trunk = query
+                    .get("path")
+                    .map(String::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if trunk.is_empty() || trunk.contains("..") {
+                    return Ok(json_error(
+                        StatusCode::BAD_REQUEST,
+                        "path is required and must not contain '..'",
+                    ));
+                }
+                let trunk_path = std::path::Path::new(&trunk);
+                let config_path = trunk_path.join("config.json");
+                let Ok(config_text) = std::fs::read_to_string(&config_path) else {
+                    return Ok::<ApiReply, warp::Rejection>(Box::new(warp::reply::json(
+                        &serde_json::json!({
+                            "ok": true,
+                            "suggestion": serde_json::Value::Null,
+                            "reason": "no readable config.json at the trunk path"
+                        }),
+                    )));
+                };
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&config_text).unwrap_or(serde_json::Value::Null);
+                let text = if parsed.get("text_config").is_some() {
+                    parsed["text_config"].clone()
+                } else {
+                    parsed.clone()
+                };
+                let model_type = parsed
+                    .get("model_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let hidden_size = text
+                    .get("hidden_size")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let layers = text
+                    .get("num_hidden_layers")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let suggestion =
+                    official_mtp_draft_for_config(&model_type, hidden_size, layers)
+                        .map(|(repo, note)| {
+                            serde_json::json!({
+                                "repo": repo,
+                                "note": note,
+                                "basis": "architecture fingerprint",
+                                "tier": { "model_type": model_type, "hidden_size": hidden_size, "num_hidden_layers": layers }
+                            })
+                        });
+                Ok::<ApiReply, warp::Rejection>(Box::new(warp::reply::json(&serde_json::json!({
+                    "ok": true,
+                    "suggestion": suggestion,
+                }))))
+            }
+        })
+        .boxed()
 }

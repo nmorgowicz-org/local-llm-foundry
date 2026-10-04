@@ -1,7 +1,7 @@
 # Rapid-MLX MTP Speculative Decoding — Evidence Record
 
 | Field | Value |
-|---|---|
+| --- | --- |
 | Status | Durable evidence record. Measurements only; no product decisions. |
 | Runtime | rapid-mlx 0.11.1, pinned upstream commit [`206ed0e`](https://github.com/raullenchai/Rapid-MLX/tree/206ed0e03b7b6fc7b3b2e6f68a7b60467f6e5abe) |
 | Stack | mlx 0.32.0, mlx_lm 0.31.3, Python 3.11 |
@@ -114,7 +114,7 @@ Same trunk shards, symlinked two ways, plain `mlx_lm.generate`, prompt
 `"The capital of France is"`:
 
 | Model dir contents | Output |
-|---|---|
+| --- | --- |
 | trunk + `model-mtp.safetensors` | `'class.\n\n '` |
 | trunk only | `'Paris.\n\n<think>\nThinking Process:\n\n1. **Analyze the input:**…'` |
 
@@ -131,7 +131,7 @@ plumbing. Probe: `mtp_probe2.py`, taking `<trunk_dir> <sidecar_path>`. Prompt: a
 code-generation request, giving 54 comparable positions.
 
 | Trunk | Sidecar | Agreement |
-|---|---|---|
+| --- | --- | --- |
 | `unsloth/Qwen3.6-27B-MLX-8bit` | `mlx-community/Qwen3.6-27B-MTP-4bit` (official) | **59.26%** (32/54) |
 | `unsloth/Qwen3.6-27B-MLX-8bit` | nightmedia bf16-extracted, current upstream script | **61.11%** (33/54) |
 | nightmedia mxfp8 27B, sidecar **outside** model dir | nightmedia bf16-extracted | **61.11%** (33/54) |
@@ -157,7 +157,7 @@ auto-K controller enabled, `num_speculative_tokens=4` requested.
 Raw counter deltas from the receipts in `tmp/`:
 
 | Cell | attempts | accepts | ratio | rounds | parks | K histogram |
-|---|---:|---:|---:|---:|---:|---|
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
 | control: unsloth 8-bit + official 4-bit head | 255 | 248 | **0.9725** | 265 | 10 | K0=10, K1=255 |
 | subject: nightmedia `qx64-hi` + extracted affine 8-bit head | 256 | 247 | **0.9648** | 266 | 10 | K0=10, K1=256 |
 | subject: nightmedia MXFP8 trunk-only + same head | 258 | 245 | **0.9496** | 268 | 10 | K0=10, K1=258 |
@@ -178,7 +178,7 @@ On this workload set it does not discriminate. Unexplained; see Phase 6.5.
 ### 4.2 Throughput and latency
 
 | Cell | accept | TG off | TG mtp | TG gain | TTFT off | TTFT mtp | End-to-end |
-|---|---:|---:|---:|---:|---:|---:|---:|
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | control, unsloth 8-bit | 97.3% | 14.47 | 17.63 | **+21.8%** | 10039 ms | 10217 ms | +15.7% |
 | subject, `qx64-hi` | 96.5% | 21.87 | 32.82 | **+50.1%** | 10021 ms | 9891 ms | +31.2% |
 | subject, MXFP8 | 95.0% | 17.04 | 27.17 | **+59.4%** | 10243 ms | 10254 ms | +38.4% |
@@ -196,7 +196,7 @@ generation gains 31%, but TTFT regresses 11.7%, leaving **+1.6% end-to-end** for
 ### 4.3 Unexplained anomaly — speedup inverts against acceptance
 
 | Trunk | accept | TG gain | implied per-round cost |
-|---|---:|---:|---:|
+| --- | ---: | ---: | ---: |
 | unsloth 8-bit + 4-bit head (control) | 97.3% | +21.8% | **1.59×** |
 | `qx64-hi` + 8-bit head | 96.5% | +50.1% | 1.29× |
 | MXFP8 + 8-bit head | 95.0% | +59.4% | 1.20× |
@@ -213,7 +213,7 @@ unresolved.
 ### 4.4 Receipt locations
 
 | Path | Contents |
-|---|---|
+| --- | --- |
 | `tmp/spec-decode-served-positive-control-v2/` | official-sidecar control |
 | `tmp/spec-decode-served-off-v2/` | unsloth 8-bit off baseline |
 | `tmp/spec-decode-qx64-subject-v2/`, `tmp/spec-decode-qx64-off-v2/` | `qx64-hi` pair |
@@ -237,7 +237,7 @@ thermal settling, requested max K=2, the official 4-bit control, and the validat
 not a naturally-eligible qualification result.
 
 | Arm | Trials | Acceptance | TG gain, mean (range) | TTFT change, mean | End-to-end gain, mean (range) |
-|---|---:|---:|---:|---:|---:|
+| --- | ---: | ---: | ---: | ---: | ---: |
 | official 4-bit control | 4 | 97.25% | **+21.17%** (+20.66% to +21.72%) | −1.17% | **+16.10%** (+13.83% to +17.25%) |
 | extracted 8-bit subject | 4 | 95.72% | **+20.01%** (+19.56% to +20.40%) | −1.98% | **+15.49%** (+14.52% to +16.26%) |
 
@@ -473,7 +473,7 @@ user-owned trunk or an HF cache snapshot.
 ## 9. Artifact state
 
 | Path | State |
-|---|---|
+| --- | --- |
 | `~/.config/llama-monitor/models/mlx/native/nightmedia-27b-mxfp8-mlx` | The MXFP8 trunk, 27 GB of real files. Moved here from `/Users/nick/mlx-models/` on 2026-07-30. Its two in-dir heads (`model-mtp.safetensors` and `model-mtp.safetensors.shifted.bak`) were pulled out and quarantined; both failed the norm preflight (`pre_fc_norm_embedding` mean ≈ −0.44) and either one triggers the §2 trunk glob defect while present. Trunk weights themselves were never modified. |
 | `/Users/nick/mlx-models/` | **Deleted 2026-07-30.** Held no model bytes of its own by then — two symlink farms over the trunk and the HF cache (`nightmedia-27b-mxfp8-mtp-fixed`, `control-unsloth8bit-official-mtp`, neither holding a head), plus the quarantine directory below. The `-mtp-fixed` farm carried a correctly extracted head **in-dir**, so it had the §2 defect; the `control-unsloth8bit-official-mtp` head was built from the stale extractor and was **invalid — never reuse it**. Both are superseded by the standalone official control. |
 | `~/.config/llama-monitor/models/rapid-mlx/mtp-sidecars/.quarantine-in-trunk-sidecars/` | The four quarantined heads (1.9 GB) plus the README explaining each. Moved out of `~/mlx-models/` on 2026-07-30 when that directory was deleted. Kept as negative-control fixtures: a stale-extractor head and a wrong-parent head are exactly what a sidecar preflight has to refuse. |
@@ -526,7 +526,7 @@ So the label is a function of **the served path string**, and a directory rename
 every receipt on disk:
 
 | `family` | Served path | Receipts |
-|---|---|---|
+| --- | --- | --- |
 | `qwen3.6` | `…/models--unsloth--Qwen3.6-27B-MLX-8bit/snapshots/…` | served-off, positive-control, fixed-k4 |
 | `qwen3.6` | `…/models--nightmedia--Qwen3.6-…-qx64-hi-mlx/snapshots/…` | qx64 off, subject, prose-pair, code-32k-pair |
 | `unknown` | `…/scratchpad/nm-trunk-only` | mxfp8 off, mxfp8 subject |
@@ -609,21 +609,14 @@ quantized MLX trunk, which supplies the quantization config and **is not modifie
 defaults to `~/.config/llama-monitor/models/rapid-mlx/mtp-sidecars/<trunk-slug>/mtp.safetensors`
 with a `provenance.json` beside it.
 
-Tensor extraction is upstream's, vendored verbatim at
-`scripts/vendor/rapid-mlx/extract_mtp_weights.py` and never edited, so a future upstream
-version can be dropped in by re-pulling that one file. What is pinned, and what is *not*
-recorded about it, is in `scripts/vendor/rapid-mlx/PROVENANCE.md`: the sha256 is recorded, the
-upstream commit was **not captured at vendor time** and is written down as unknown rather than
-guessed. It is established to postdate `5fc6556` — a checkout at that revision contains no
-`pre_fc_norm` handling at all, while the vendored copy does.
-
-⚠️ Older rapid-mlx checkouts carrying the **defective** extractor still exist on this machine
-(e.g. `/private/tmp/rapid-mlx-build` at `5fc6556`), and `build-mtp-head.py --extractor <path>`
-accepts any of them, which would silently rebuild a dead head. `verify_extractor()` now refuses
-an extractor that does not mention `pre_fc_norm` — naming the defect up front instead of
-letting the post-build norm check report a number after a full extraction run — and *reports*
-rather than refuses a sha256 that differs from the pin, since a newer upstream copy is a
-legitimate override.
+Tensor extraction is upstream's **MTPSplitter framework**, run inside the managed
+rapid-mlx venv the server already uses (`rapid_mlx.models.mlx_vlm_vendored.speculative.
+drafters.qwen3_5_mtp.split`). Per-family tensor selection, the RMSNorm shift convention,
+quantization metadata, and tokenizer copying are upstream's live code, so upstream fixes
+land the moment the managed install updates — there is no vendored snapshot to re-pull
+and no extractor sha pin to maintain. The wrapper picks the dense vs MoE splitter by the
+source checkpoint's `num_experts` and installs the standalone drafter under the managed
+sidecar root as `mtp.safetensors`, with `config.json` and tokenizer files beside it.
 
 The wrapper owns only what upstream gets wrong for us, which is placement, not math:
 
@@ -670,7 +663,7 @@ because the post-upgrade probe message names the outstanding gates. Keep the two
 ### 12.3 Artifacts this needs, and where they are
 
 | Artifact | Location | Note |
-|---|---|---|
+| --- | --- | --- |
 | Trunk | `~/.config/llama-monitor/models/mlx/native/nightmedia-27b-mxfp8-mlx` | 27 GB, real files |
 | Positive control | `mlx-community/Qwen3.6-27B-MTP-4bit` | HF cache; a standalone 228 MB / 31-tensor head (`model_type: qwen3_5_mtp`), not a full model — nothing to extract |
 | Validated subject head | `~/.config/llama-monitor/models/rapid-mlx/mtp-sidecars/qwen3.6-27b-nightmedia-f451-tess-8bit/` | 478 MB + `provenance.json` |
@@ -682,7 +675,6 @@ inventory root, no import step needed), the subject head at `models/rapid-mlx/mt
 and the positive control in the app's own HF cache at `models/cache/huggingface/hub/`. The
 lane exports `HF_HUB_CACHE` to that cache, matching what the resolver does when the app
 launches rapid-mlx, so a repo-id control resolves to a model the app can actually serve.
-
 
 `~/mlx-models/` no longer exists — it was deleted on 2026-07-30, once the trunk had moved and
 6.5a closed. What it held by then was two symlink farms over the trunk and the user-wide HF

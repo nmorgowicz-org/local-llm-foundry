@@ -314,6 +314,31 @@ async function _spawnRecheckTrustPin() {
   }
 }
 
+function renderOfficialDraftHint(draft) {
+    return '<div class="field-hint" style="color:var(--accent,#8cc8ff); margin:5px 0;">'
+      + 'Official upstream MTP draft exists for this tier: <code>' + draft.repo + '</code>'
+      + (draft.note ? ' (' + draft.note + ')' : '')
+      + ' <button type="button" class="hw-action-btn" id="spawn-rapid-speculative-official-preflight" style="font-size:11px; padding:2px 8px; margin-left:4px;">Preflight</button>'
+      + '</div>';
+}
+
+function wireOfficialDraftPreflight() {
+    const btn = document.getElementById('spawn-rapid-speculative-official-preflight');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      const code = btn.closest('.field-hint')?.querySelector('code');
+      if (!code) return;
+      btn.disabled = true;
+      btn.textContent = 'Preflighting…';
+      try {
+        await _spawnCheckTrust(code.textContent);
+        btn.textContent = 'Preflighted';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+}
+
 async function _fetchSpawnSidecars() {
   const listEl = document.getElementById('spawn-rapid-speculative-sidecars-list');
   if (!listEl) return;
@@ -327,27 +352,11 @@ async function _fetchSpawnSidecars() {
     if (!data.ok || !data.sidecars || data.sidecars.length === 0) {
       // Even with no managed sidecar, a known tier may have an official upstream
       // draft worth preflighting before the user builds one from scratch.
-      const emptyDraft = officialMtpDraftForTrunk((wizardState.model.path || '').trim());
+      const emptyDraft = await resolveOfficialDraft((wizardState.model.path || '').trim());
       if (emptyDraft && !wizardState.hardware.speculativeModel) {
         setHtml(listEl, '<span style="color:var(--text-muted,#888);">No local sidecars found.</span> '
-          + '<div class="field-hint" style="color:var(--accent,#8cc8ff); margin-top:5px;">'
-          + 'Official upstream MTP draft exists for this tier: <code>' + emptyDraft.repo + '</code>'
-          + (emptyDraft.note ? ' (' + emptyDraft.note + ')' : '')
-          + ' <button type="button" class="hw-action-btn" id="spawn-rapid-speculative-official-preflight" style="font-size:11px; padding:2px 8px; margin-left:4px;">Preflight</button>'
-          + '</div>');
-        const emptyBtn = document.getElementById('spawn-rapid-speculative-official-preflight');
-        if (emptyBtn) {
-          emptyBtn.addEventListener('click', async () => {
-            emptyBtn.disabled = true;
-            emptyBtn.textContent = 'Preflighting…';
-            try {
-              await _spawnCheckTrust(emptyDraft.repo);
-              emptyBtn.textContent = 'Preflighted';
-            } finally {
-              emptyBtn.disabled = false;
-            }
-          });
-        }
+          + renderOfficialDraftHint(emptyDraft));
+        wireOfficialDraftPreflight();
         return;
       }
       setHtml(listEl, '<span style="color:var(--text-muted,#888);">No local sidecars found. Build one with scripts/build-mtp-head.py</span>');
@@ -393,13 +402,11 @@ async function _fetchSpawnSidecars() {
     // No managed sidecar for this trunk? Offer the official upstream draft for the
     // trunk's tier — preflighting pins it and records provenance; launch still needs
     // an immutable local copy (build one from the preflighted source when ready).
-    const officialDraft = officialMtpDraftForTrunk(selectedTrunk);
-    if (!matchingSidecar && officialDraft && !h.speculativeModel) {
-      html += '<div class="field-hint" style="color:var(--accent,#8cc8ff); margin-bottom:5px;">'
-        + 'Official upstream MTP draft exists for this tier: <code>' + officialDraft.repo + '</code>'
-        + (officialDraft.note ? ' (' + officialDraft.note + ')' : '')
-        + ' <button type="button" class="hw-action-btn" id="spawn-rapid-speculative-official-preflight" style="font-size:11px; padding:2px 8px; margin-left:4px;">Preflight</button>'
-        + '</div>';
+    if (!matchingSidecar && !h.speculativeModel) {
+      const officialDraft = await resolveOfficialDraft(selectedTrunk);
+      if (officialDraft) {
+        html += renderOfficialDraftHint(officialDraft);
+      }
     }
 
     data.sidecars.forEach((s, i) => {
@@ -426,19 +433,7 @@ async function _fetchSpawnSidecars() {
 
     setHtml(listEl, html);
 
-    const officialBtn = document.getElementById('spawn-rapid-speculative-official-preflight');
-    if (officialBtn) {
-      officialBtn.addEventListener('click', async () => {
-        officialBtn.disabled = true;
-        officialBtn.textContent = 'Preflighting…';
-        try {
-          await _spawnCheckTrust(officialDraft.repo);
-          officialBtn.textContent = 'Preflighted';
-        } finally {
-          officialBtn.disabled = false;
-        }
-      });
-    }
+    wireOfficialDraftPreflight();
 
     // Wire click handlers
     listEl.querySelectorAll('[data-sidecar-index]').forEach(btn => {
@@ -979,9 +974,27 @@ const OFFICIAL_MTP_DRAFTS = [
 function officialMtpDraftForTrunk(trunkPath) {
     const name = String(trunkPath || '').toLowerCase();
     for (const entry of OFFICIAL_MTP_DRAFTS) {
-        if (entry.match.test(name)) return entry;
+        if (entry.match.test(name)) return { repo: entry.repo, note: entry.note };
     }
     return null;
+}
+
+// Finetune names rarely carry the base family ("Scarlett-Opus-oQ4e-MLX" is a
+// Qwen3.8-27B finetune), so fall back to the backend's architecture fingerprint:
+// the trunk's own config.json decides the tier, not the directory name.
+async function resolveOfficialDraft(trunkPath) {
+    const named = officialMtpDraftForTrunk(trunkPath);
+    if (named) return named;
+    if (!trunkPath) return null;
+    try {
+        const headers = window.authHeaders ? window.authHeaders() : {};
+        const res = await fetch('/api/rapid-mlx/mtp/draft-suggestion?path=' + encodeURIComponent(trunkPath), { headers });
+        if (!res.ok) return null;
+        const d = await res.json().catch(() => ({}));
+        return d?.suggestion || null;
+    } catch {
+        return null;
+    }
 }
 
 // Debounced wrapper: schedule a profile fetch after model selection stabilizes.

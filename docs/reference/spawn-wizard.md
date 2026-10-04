@@ -452,6 +452,10 @@ When Rapid-MLX is selected, the wizard adapts the Model and Hardware step UI:
     one-click "Preflight" of that draft — pinning its revision and provenance without a
     local build. Launch still requires an immutable local copy, which the managed
     sidecar builder can produce from the preflighted source.
+    Detection is name-independent: when the trunk name carries no family hint, the
+    backend fingerprints the trunk's own config.json (architecture and tier — e.g.
+    `qwen3_5`, hidden 5120, 64 layers → Qwen3.8-27B) and suggests the matching
+    upstream draft, so a finetune like `Scarlett-Opus-oQ4e-MLX` resolves correctly.
 
 ![Rapid-MLX hardware panel](../screenshots/rapidmlx-local--spawn-wizard-rapid-mlx-fit.png)
 
