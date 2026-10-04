@@ -69,7 +69,7 @@ for a piece of wizard behavior, use this table first; only fall back to grepping
 `spawn-wizard.js` itself for shared state, step-navigation, or orchestration glue.
 
 | Module | Owns |
-|--------|------|
+| -------- | ------ |
 | `spawn-wizard.js` | Shell: `wizardState`, `dom`, step navigation/orchestration, shared sizing helpers (`effectiveAvailBytes`, `getModelBytes`, `getSizingArch`, `isUnifiedMemory`), re-exports the Playwright test contract from the modules that now own it |
 | `spawn-wizard-format.js` | Shared formatting helpers (`formatCtx`, `formatGB`, `kvBpe`) used across other wizard modules |
 | `spawn-wizard-model-card.js` | HF markdown README viewer panel (also used by `models.js`'s HF search panel) |
@@ -172,7 +172,7 @@ implemented and verified 2026-08-06) collapsed the wizard from six steps down to
 Each new step folds in the old steps it absorbed:
 
 | Step | Purpose | Absorbs (old numbering) |
-|------|---------|--------------------------|
+| ------ | --------- | -------------------------- |
 | 0. Model | Profile + use-case selection, engine selection, model source input, model-specific options | old Step 0 (Profile), old Step 1 (Model) |
 | 1. Hardware | Context, offload, batching, speculative decoding, VRAM, Rapid-MLX controls, plus the full pre-launch review summary | old Step 2 (Hardware & Memory), old Step 4 (Review) |
 | 2. Launch | Network, security, and advanced launch flags; spawn submission and start-up monitoring; preset save/load | old Step 3 (Settings), old Step 5 (Start Server) |
@@ -220,6 +220,7 @@ registry — not the DOM's own layout — is the source of truth for two indepen
 The legacy `applyProfileVisibility()` Quick-tier disable loop and profile persistence path are
 retired. Guided keeps applicable controls reachable through the canonical drawer; `profile` remains
 `balanced` only as a backward-compatible payload field and never overwrites explicit edits.
+
 - **`spawn-wizard-ia.js`**'s `createWizardIA()` factory relocates non-quick controls into
   collapsible, tier-labelled `<details>` groups (grouped under supersections, e.g. "Advanced
   tuning"), open by default at-or-above their own tier and collapsed below it. Each loader gets
@@ -402,6 +403,7 @@ When Rapid-MLX is selected, the wizard adapts the Model and Hardware step UI:
     configuration, keeping its settings isolated from llama.cpp flags.
 
 ![Rapid-MLX hardware panel](../screenshots/rapidmlx-local--spawn-wizard-rapid-mlx-fit.png)
+
 - Launch guard:
   - Model-step validation:
     - Blocks if Rapid-MLX is selected but not Apple Silicon.
@@ -528,6 +530,15 @@ experience:
   catalog which provides HF qualification and identity information for models. This
   allows the wizard to show author roles, quantizer verification status, and
   community-qualified model information.
+
+### MLX variant grouping
+
+Same-author MLX conversions of one model fold into a single group even when one repo carries an
+extra edition tag (`…-AREX-mxfp4-mlx`, `…-qx64-hi-mlx`, and the bf16 base `…-MindMeld`). Each
+row leads with a pill for the quantization the author wrote in the repo name (`mxfp4`, `qx64-hi`;
+a repo with no marker is `bf16` or `base`, judged from its size per parameter), followed by the
+edition tag. The full repo id is the tooltip and accessible name. Selecting a row moves the
+highlight in the Models-tab quant advisor.
 
 ## CommunitySourceCatalog integration
 

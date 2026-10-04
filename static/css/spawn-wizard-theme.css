@@ -1760,6 +1760,19 @@
   text-transform: uppercase;
 }
 
+/* The quantization of an MLX variant (mxfp4, qx64-hi, bf16 ...), as written by the author. */
+.hf-sg-quant-pill {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--color-text-primary, #e7ecf5);
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 42%, transparent);
+}
+
 .hf-sg-format-badge--gguf {
   background: rgba(59,130,246,0.2);
   color: rgba(96,165,250,0.95);
@@ -2302,6 +2315,16 @@
 
 .qa-table tr.qa-row-nofit td {
   opacity: 0.55;
+}
+
+/* The variant this advisor view is currently centred on (MLX: the row the user picked). */
+.qa-table tr.qa-row-selected td {
+  box-shadow: inset 0 1px 0 var(--acc-12), inset 0 -1px 0 var(--acc-12);
+  font-weight: 600;
+}
+
+.qa-table tr.qa-row-selected td:first-child {
+  box-shadow: inset 2px 0 0 var(--color-accent), inset 0 1px 0 var(--acc-12), inset 0 -1px 0 var(--acc-12);
 }
 
 .qa-badge-rec {

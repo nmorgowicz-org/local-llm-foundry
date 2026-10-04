@@ -188,7 +188,7 @@ These are initial defaults for `from_name_and_params()`; GGUF introspection over
 #### Dense / Qwen3 standard (`standard_heuristic`)
 
 | param_b | n_layers | n_kv_heads | head_dim |
-|---------|----------|------------|----------|
+| --------- | ---------- | ------------ | ---------- |
 | < 2 | 22 | 4 | 64 |
 | 2–5 | 28 | 4 | 128 — Qwen2.5-3B / Phi-3 style |
 | 5–10 | 32 | 8 | 128 — Llama-3.1-8B, Mistral-7B, Qwen2.5-7B |
@@ -204,7 +204,7 @@ These are initial defaults for `from_name_and_params()`; GGUF introspection over
 KV cache only grows for `n_attn_layers` — the DeltaNet layers contribute nothing to context scaling.
 
 | param_b | n_layers | n_attn_layers | n_kv_heads | head_dim | n_embd | DeltaNet state |
-|---------|----------|--------------|------------|----------|--------|----------------|
+| --------- | ---------- | -------------- | ------------ | ---------- | -------- | ---------------- |
 | ≤ 35 (27B) | 64 | 16 | 4 | 256 | 5120 | 48 layers × 48 V-heads × 128² × 2 B ≈ 75 MB |
 | > 35 (davidau 40B) | 96 | 24 | 4 | 256 | 5120 | 72 layers × 48 V-heads × 128² × 2 B ≈ 113 MB |
 
@@ -222,7 +222,7 @@ KV cache only grows for `n_attn_layers` — the DeltaNet layers contribute nothi
 This ensures "A3B"-style labels reflect the model's actual on-the-fly footprint, not a misleading name-based guess.
 
 | Field | Value |
-|-------|-------|
+| ------- | ------- |
 | n_layers | 40 |
 | n_attn_layers | 10 |
 | n_kv_heads | 2 |
@@ -238,7 +238,7 @@ This ensures "A3B"-style labels reflect the model's actual on-the-fly footprint,
 Same 3:1 ratio. Only confirmed for 122B-A10B; heuristics applied to smaller sizes.
 
 | param_b | n_layers | n_attn_layers | n_kv_heads | n_experts | n_experts_used | n_embd |
-|---------|----------|--------------|------------|-----------|----------------|--------|
+| --------- | ---------- | -------------- | ------------ | ----------- | ---------------- | -------- |
 | ≤ 80 | 40 | 10 | 2 | 256 | 9 | 4096 |
 | > 80 (122B) | 48 | 12 | 2 | 256 | 9 | 7168 |
 
@@ -249,7 +249,7 @@ DeltaNet V-heads: 64 for 122B (confirmed), 32 assumed for smaller.
 48 layers: 12 standard attention + 36 DeltaNet.
 
 | Field | Value |
-|-------|-------|
+| ------- | ------- |
 | n_layers | 48 |
 | n_attn_layers | 12 |
 | n_kv_heads | 2 |
@@ -267,7 +267,7 @@ DeltaNet V-heads: 64 for 122B (confirmed), 32 assumed for smaller.
 The `sliding_window_pattern` bool array in the GGUF determines each layer's role: `false` = global (full context), `true` = local (sliding window). `n_global_attn_layers` is the count of global layers.
 
 | param_b | n_layers | global_layers | n_kv_heads (global) | head_dim | local_kv_heads | window |
-|---------|----------|---------------|---------------------|----------|----------------|--------|
+| --------- | ---------- | --------------- | --------------------- | ---------- | ---------------- | -------- |
 | < 5 (4B) | 34 | 6 | 4 | 256 | 1 | 512 |
 | 5–14 (12B) | 52 | 9 | 8 | 256 | 1 | 512 |
 | > 14 (27B) | 62 | 10 | 16 | 256 | 1 | 512 |
@@ -281,7 +281,7 @@ The `sliding_window_pattern` bool array in the GGUF determines each layer's role
 Global layers use `global_head_dim = 512`, local layers use `head_dim = 256`. Gemma4-26B-A4B has `n_experts_used = 9` (8 routed + 1 always-loaded shared expert).
 
 | Tier | n_layers | global_layers | n_kv_heads (global) | local_kv_heads | n_experts | window | n_embd |
-|------|----------|---------------|---------------------|----------------|-----------|--------|--------|
+| ------ | ---------- | --------------- | --------------------- | ---------------- | ----------- | -------- | -------- |
 | E2B | 35 | 7 | 1 | 1 | 0 | 512 | 1152 |
 | E4B | 42 | 7 | 2 | 2 | 0 | 512 | 2048 |
 | 12B dense | 48 | 8 | 1 | 8 | 0 | 1024 | 3072 |
@@ -516,7 +516,7 @@ When `available_vram_bytes == 0`, recommendation is always `Risk` with note "Mem
 Recommendation thresholds (VRAM-based):
 
 | Result | Discrete GPU | Unified Memory |
-|--------|-------------|----------------|
+| -------- | ------------- | ---------------- |
 | `Fit` | total ≤ 82% of available VRAM | same |
 | `Tight` | total ≤ 100% | same |
 | `Risk` | 100–120% (CPU spill possible) | **never** — unified memory skips Risk and jumps to WontFit |
@@ -631,6 +631,13 @@ For each candidate quantization, it:
 - Checks "fits" only if the model plus a minimal KV cache (8 K tokens at q8_0) is under available VRAM.
 - Scores each quant as `min(max_ctx_q8, 128K) × quality_weight` if it fits.
 
+For Rapid-MLX repos the advisor compares the sibling conversions of one model (for example
+`mxfp4`, `mxfp8`, `qx64-hi`) instead of GGUF quants. The caller passes each sibling's real repo
+size in `available_files`, and each row reports max context at bf16 KV (`max_ctx_f16`) and int8
+KV (`max_ctx_q8`). There is no q4 column because thinking mode pins the cache to int8. A
+variant whose weights do not fit reports no context, and the UI says "won't fit". The advisor
+is hidden when fewer than two variants exist.
+
 Gemma 4 QAT:
 
 - If the model name contains both `"gemma-4"` (or `"gemma4"`) and `"qat"`, then Q4_0 is treated as Excellent quality.
@@ -692,13 +699,13 @@ Architecture-aware, backend-aware VRAM breakdown endpoint.
     option. Disk checkpoints are excluded because they are snapshot writes,
     not automatic RAM-cache restoration.
   - Rapid-native policy fields are `kv_cache_dtype` (`bf16`, `int8`, or `int4`), `reasoning_mode`, and `turboquant_mode` (`v4`, `k8v4`, or `none`). The estimator never accepts llama.cpp's `ctk`/`ctv` vocabulary for a Rapid result. Reasoning resolves the active KV dtype to `int8`.
-   - Optional `workload_scenario` maps page-1 use-case selection to backend memory policy. Valid keys and their memory policies:
-     - `interactive_coding_agent` — coding agent workload (default, 80% priority), 128K planning context, 32K retained cache, TurboQuant eligible.
-     - `general_chat` — standard chat, 32K planning context, 8K retained cache.
-     - `roleplay_storytelling` — long-context narrative, 64K planning context, 32K retained cache.
-     - `tool_research_agent` — multi-session tool/research, 128K planning context, 48K retained cache, 2 parallel slots.
-     - `batch_eval` — batch/evaluation, 8K planning context, 0 retained cache, 4 parallel slots.
-   - The workload scenario affects: recommended KV dtype, TurboQuant eligibility, MTP eligibility, parallel slot recommendations, and retained-cache sizing.
+  - Optional `workload_scenario` maps page-1 use-case selection to backend memory policy. Valid keys and their memory policies:
+    - `interactive_coding_agent` — coding agent workload (default, 80% priority), 128K planning context, 32K retained cache, TurboQuant eligible.
+    - `general_chat` — standard chat, 32K planning context, 8K retained cache.
+    - `roleplay_storytelling` — long-context narrative, 64K planning context, 32K retained cache.
+    - `tool_research_agent` — multi-session tool/research, 128K planning context, 48K retained cache, 2 parallel slots.
+    - `batch_eval` — batch/evaluation, 8K planning context, 0 retained cache, 4 parallel slots.
+  - The workload scenario affects: recommended KV dtype, TurboQuant eligibility, MTP eligibility, parallel slot recommendations, and retained-cache sizing.
   - TurboQuant is retained-prefix storage only. It never reduces model weights, recurrent state, MTP, prefill, or the transient decompression peak. A local Rapid 0.10.17 receipt showed that `--kv-cache-turboquant k8v4` owns the active cache path: the runtime reports its active compute KV as `bf16` and does not apply a simultaneously requested `--kv-cache-dtype int4`. `k8v4` is an Advanced trial: it becomes effective only after exact model/revision qualification; an unknown community finetune is estimated as Standard retained storage and receives an explicit fallback reason. The Rapid argv is `--kv-cache-turboquant {v4,k8v4,none}`.
 - Output fields: `weights_bytes`, `kv_cache_bytes`, `linear_attn_state_bytes`, `mmproj_bytes`, `mtp_bytes`, `overhead_bytes`, `total_bytes`, `available_bytes`, `headroom_bytes`, `ram_bytes`, `available_ram_bytes`, `ram_headroom_bytes`, `recommendation`, `note`
 - Additional output fields (both backends; zero/"measured" for GGUF llama.cpp):
@@ -747,7 +754,7 @@ The VRAM bars consume `/api/vram-estimate` directly (single source of truth) —
 ## Backend-Specific Accuracy
 
 | Backend | Model size | KV cache | Overhead | Total accuracy |
-|---------|-----------|----------|-----------------|----------------|
+| --------- | ----------- | ---------- | ----------------- | ---------------- |
 | llama.cpp Metal (Apple Silicon) | ✓ exact from GGUF | ✓ formula | ✓ M5 Max-calibrated (`metal_overhead_bytes`) | ±0.05 GiB |
 | llama.cpp CUDA (Windows/Linux) | ✓ exact from GGUF | ✓ formula | ✓ calibrated when n_embd known | ±0.5 GiB |
 | llama.cpp CUDA, n_embd unknown | ✓ exact from GGUF | ✓ formula | 256 MB fallback | ~2–3 GiB low |
@@ -775,7 +782,7 @@ Rapid-MLX overhead is formula-based (see "Rapid-MLX overhead" above) and deliber
 All quantizations recognized by the estimator, with bits-per-weight and KV bytes-per-element:
 
 | Quant | BPW | KV BPE | Quality | imatrix | Large MoE only |
-|-------|-----|--------|---------|---------|----------------|
+| ------- | ----- | -------- | --------- | --------- | ---------------- |
 | F32 | 32.0 | 4.0 | Reference | — | — |
 | F16 / BF16 | 16.0 | 2.0 | Reference | — | — |
 | Q8_0 | 8.5 | 1.0 | Excellent | — | — |
@@ -819,13 +826,14 @@ When a GGUF file is present, `gguf_meta.rs` reads the model's real KV header and
 **Structural fields come from the file, not from name guesses** — the name heuristic is always run first as a scaffold, but is then overridden field-by-field with GGUF data. For "weak" heuristic results (no MoE, no hybrid, no sliding-window) with a known GGUF architecture, it may re-run the heuristic using the GGUF-derived family name. The breakdown endpoint (`/api/vram-estimate`) and `auto_size` (`/api/vram/auto-size`) both build their arch through this real-data path when `model_path` points at an on-disk GGUF.
 
 The tensor directory (shapes and element counts) is always parsed, even for range-fetched prefixes:
+
 - **Parameter counts** (`tensor_param_count`, `expert_param_count`) are derived from tensor shapes in the GGUF header, so they are exact for both local files and range-fetched prefixes. These feed the active-parameter formula at the top of this doc.
 - **Byte sizes** (`tensor_bytes_total`, `layer_bytes_total`, `expert_bytes_total`) require the full file; they are only available for complete local files. `bytes_per_layer()` (used by `dense_weight_split`) is one such derived value.
 
 ### Key mapping
 
 | GGUF key | ModelArch field | Notes |
-|----------|----------------|-------|
+| ---------- | ---------------- | ------- |
 | `{arch}.block_count` | `n_layers` | |
 | `{arch}.attention.head_count` | (used as n_head) | Used to derive head_dim = n_embd / n_head when key_length missing |
 | `{arch}.attention.head_count_kv` | `n_kv_heads` | Scalar, or per-layer array on Gemma 3/4 (see below) |
@@ -913,7 +921,7 @@ budget at the user's chosen context, each requesting `/api/vram-estimate` with t
 `buildEstimateBody()` plus a different MLX policy spread:
 
 | Card | `max_num_seqs` | Retained cache | Framing |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **Single interactive user** *(default/recommended)* | 1 | measured coding-agent recommendation (8 GiB / 16 entries) | One conversation at a time, warm prompts reused. |
 | **Long single context** | 1 | 0 | Maximum room for one very long conversation; nothing retained between prompts. |
 | **Shared / multi-client** | 4 | 8 GiB | Several clients at once; each admitted request reserves its own active KV. |
@@ -927,7 +935,7 @@ not vary by card: `KV: int8 (pinned by reasoning profile)`,
 ## Known Limitations and Calibration Notes
 
 | Issue | Scope | Status |
-|-------|-------|--------|
+| ------- | ------- | -------- |
 | `mtp_overhead_bytes` uses a 1.5% heuristic | All MTP models | Estimate; actual varies by architecture |
 | Gemma 4 n_embd values for E2B/E4B/12B/26B-A4B are estimated | Gemma 4 | Overridden by GGUF embedding_length when file is local |
 | Qwen3.6-35B-A3B n_embd=4096 is estimated | Qwen3.6-35B-A3B | Overridden by GGUF when file is local |
@@ -946,6 +954,7 @@ not vary by card: `KV: int8 (pinned by reasoning profile)`,
 The `discrete_overhead_*` constants in `estimate.rs` were fit to **direct VRAM measurements on an RTX 5090 32 GB** (Windows). If you ever need to re-measure (new llama.cpp build, new arch, or a discrepancy report), this is the exact procedure — it is not obvious and has several traps.
 
 **How to measure total VRAM for a config:**
+
 1. Kill any running `llama-server`, then read a clean baseline: `nvidia-smi --query-gpu=memory.used --format=csv,noheader` (desktop apps only).
 2. Launch the model fully on GPU with the config under test:
    `llama-server -m MODEL -c CTX -ub UB -b 4096 -fa on -ctk q8_0 -ctv q8_0 -ngl 99 -fit off --parallel 1 --kv-unified --no-warmup --no-mmap`
@@ -953,6 +962,7 @@ The `discrete_overhead_*` constants in `estimate.rs` were fit to **direct VRAM m
 4. `server_total = used − baseline`. Then `overhead = server_total − model_file_bytes − KV(ctx)`, where `KV(ctx)` is `kv_cache_bytes()` for the introspected arch.
 
 **Traps (all cost real debugging time):**
+
 - **Windows/WDDM reports per-process VRAM as `[N/A]`** in `nvidia-smi --query-compute-apps`. You MUST use the *total* `memory.used` delta against a clean baseline; there is no per-process number.
 - **`--parallel` defaults to 4** ("n_parallel auto"). That inflates buffers ~2×. Always pass `--parallel 1` to match the estimator's 1-slot assumption.
 - **`-fit off`** — newer builds auto-fit (`-fit on`) and may silently reduce `-ngl` or suppress the per-buffer allocation log lines. Use `-fit off` and `-ngl 99` for a deterministic full-GPU load.
@@ -962,7 +972,7 @@ The `discrete_overhead_*` constants in `estimate.rs` were fit to **direct VRAM m
 **Calibration dataset (parallel=1, fa on, q8_0 KV, ngl 99, no mmproj), measured overhead in MiB:**
 
 | Model | n_layers | head_dim(max) | n_embd | MoE | SWA | ctx | ub | overhead |
-|-------|----------|---------------|--------|-----|-----|-----|-----|----------|
+| ------- | ---------- | --------------- | -------- | ----- | ----- | ----- | ----- | ---------- |
 | Qwen3.6-27B | 64 | 256 | 5120 | no | no | 4k | 1024 | 215 |
 | Qwen3.6-27B | 64 | 256 | 5120 | no | no | 131k | 1024 | 1139 |
 | Qwen3.6-27B | 64 | 256 | 5120 | no | no | 213k | 1024 | 1779 |
@@ -1124,7 +1134,7 @@ When a new architecture is released:
 ## Related Files
 
 | File | Purpose |
-|------|---------|
+| ------ | --------- |
 | `src/llama/vram_estimator/estimate.rs` | Estimation logic (`full_estimate`, `max_context`, `kv_cache_bytes`, overhead functions; both backends) |
 | `src/llama/vram_estimator/arch_heuristics.rs` | `ModelArch` struct + per-family heuristics + `gguf_arch_to_heuristic_name()` |
 | `src/llama/vram_estimator/quant_table.rs` | BPW and KV BPE table |
@@ -1134,6 +1144,7 @@ When a new architecture is released:
 | `src/inference/rapid_mlx/mlx_meta.rs` | MLX metadata reader (Rapid-MLX); `MlxMetadata::to_arch()`; safetensors index; evidence |
 | `src/web/api/vram.rs` | `/api/vram/*` route handlers; dual-backend routing; `build_arch_from_body()` |
 | `docs/reference/setup-wizard.md` | Wizard UI and API reference; links here for estimation details |
+
 ## Preset fit intents and the optional fit probe
 
 Preset bundles can produce three deterministic, estimate-only fit intents:

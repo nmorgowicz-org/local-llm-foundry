@@ -1446,6 +1446,8 @@ pub struct QuantOption {
     pub fits_vram: bool,
     /// Max context at q8_0 KV (agentic quality).
     pub max_ctx_q8: u64,
+    /// Max context at unquantized f16/bf16 KV (full precision).
+    pub max_ctx_f16: u64,
     /// Max context at q4_0 KV (maximum context).
     pub max_ctx_q4: u64,
     pub quality: QuantQuality,
@@ -1763,6 +1765,22 @@ impl<'a> QuantTableCtx<'a> {
             self.is_unified_memory,
             self.backend,
         );
+        // Unquantized (f16/bf16) KV: the baseline the quantized columns are measured against.
+        let max_f16 = max_context(
+            model_bytes,
+            self.arch,
+            "f16",
+            "f16",
+            self.effective_parallel_slots,
+            512,
+            0,
+            self.available_vram_bytes,
+            1024,
+            self.headroom,
+            None, // pre-download advisor: VRAM-limited maxes only
+            self.is_unified_memory,
+            self.backend,
+        );
 
         let mut notes = Vec::new();
         if is_imatrix {
@@ -1813,6 +1831,7 @@ impl<'a> QuantTableCtx<'a> {
                 model_size_gb: model_gb,
                 fits_vram: fits,
                 max_ctx_q8: max_q8,
+                max_ctx_f16: max_f16,
                 max_ctx_q4: max_q4,
                 quality,
                 is_imatrix,

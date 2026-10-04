@@ -3027,9 +3027,17 @@ Route handlers: `src/web/api/hf.rs`.
 All endpoints require `api-token` unless noted.
 
 ### `POST /api/hf/search`
-Search the HuggingFace Hub for GGUF models.
+Search the HuggingFace Hub for MLX and GGUF models.
 
-- Rate limit: 10 requests per 60 seconds.
+- Rate limit: 60 requests per 60 seconds (local self-protection; Hugging Face itself allows
+  1000 requests per 5 minutes with a token). Over the limit returns `429` with
+  `{ "ok": false, "error": "...", "retry_after_secs": N }`, and the browse UI shows a Retry
+  button that counts down.
+- Success responses include `hf_authenticated`: `true` when the search used a Hugging Face
+  token (the `HUGGING_FACE_HUB_TOKEN` environment variable, else the `hf-token` file).
+- MLX searches use the `mlx` library filter, so repos tagged `transformers` or `any-to-any`
+  alongside `mlx` are included. Model sizes come from the repo's actual weight files; packed
+  `U32` safetensors counts are not multiplied out.
 - Sort options: `downloads` (default), `likes`, `trending`, `recent`.
 
 ### `POST /api/hf/author-models`

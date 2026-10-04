@@ -3204,7 +3204,10 @@ async function onHfModelSelected(model, filelistContainer, downloadPanel) {
     hfState.mmprojPath = '';
     hfState.mmprojRepoId = '';
     hfState.mmprojBytes = 0;
-    hfState.availableFiles = [];
+    hfState.availableFiles = modelFormat === 'mlx' && Array.isArray(model.siblings)
+        ? model.siblings.filter(s => s.size > 0).map(s => ({ label: s.label, size: s.size }))
+        : [];
+    hfState.mlxSiblings = modelFormat === 'mlx' && Array.isArray(model.siblings) ? model.siblings : [];
     hfHideDownloadPanel(downloadPanel);
     hideQuantAdvisor();
     hideMmprojSection();
@@ -3466,6 +3469,20 @@ async function loadQuantAdvisor() {
     const paramB = hfState.paramB;
     if (!paramB || paramB <= 0) return;
 
+    // GGUF repos get the advisor from the parameter count (or the repo's file list). An MLX
+    // repo ships one fixed quantization, so the comparison is only meaningful across the
+    // sibling conversions of the same model; with fewer than two there is nothing to rank.
+    const isMlx = hfState.modelFormat === 'mlx';
+    const mlxFiles = isMlx
+        ? (hfState.mlxSiblings || [])
+            .filter(s => s.size > 0)
+            .map(s => ({ name: s.label, size_bytes: s.size }))
+        : [];
+    if (isMlx && mlxFiles.length < 2) {
+        hideQuantAdvisor();
+        return;
+    }
+
     // Unified memory handling: use current_safe_availability_bytes instead of total
     let availVram = cachedVram || 0;
     if (cachedUnified) {
@@ -3483,7 +3500,6 @@ async function loadQuantAdvisor() {
 
         // Item 9/14: pass backend/unified-memory/concurrency so the comparison
         // reflects what will actually launch, not a generic llama.cpp/8k guess.
-        const isMlx = hfState.modelFormat === 'mlx';
         const body = {
             param_b: paramB,
             model_name: hfState.selectedRepoId || '',
@@ -3493,6 +3509,8 @@ async function loadQuantAdvisor() {
             use_case: 'general',
             parallel_slots: 1,
         };
+        // MLX: rank the sibling conversions by their real repo sizes.
+        if (isMlx) body.available_files = mlxFiles;
 
         const resp = await fetch('/api/vram/quant-compare', { method: 'POST', headers, body: JSON.stringify(body) });
         if (!resp.ok) return;
@@ -3506,6 +3524,7 @@ async function loadQuantAdvisor() {
 }
 
 function renderQuantAdvisor(quants, availVram) {
+    const isMlxTable = hfState.modelFormat === 'mlx';
     const panel = document.getElementById('mm-quant-advisor');
     const tableEl = document.getElementById('mm-quant-advisor-table');
     const subtitleEl = document.getElementById('mm-quant-advisor-subtitle');
@@ -3541,12 +3560,31 @@ function renderQuantAdvisor(quants, availVram) {
     if (annotateCtx) subtitle += ` \u00b7 Context target: ${formatCtx(desiredCtx)}`;
     if (subtitleEl) subtitleEl.textContent = subtitle;
 
+    // MLX: the row for the variant the user picked, so picking another visibly moves the focus.
+    const selectedMlxLabel = isMlxTable
+        ? ((hfState.mlxSiblings || []).find(s => s.repoId === hfState.selectedRepoId)?.label || '')
+        : '';
+    // A variant whose weights alone exceed free memory has no context to report; say so rather
+    // than leaving a bare dash that reads like missing data.
+    const setNoCtx = (td, q) => {
+        td.classList.add('qa-ctx-na');
+        if (isMlxTable && !q.fits_vram) {
+            td.textContent = 'won\u2019t fit';
+            td.title = `${q.model_size_gb.toFixed(1)} GB of weights plus overhead exceeds the ${availGb} GB currently free`;
+        } else {
+            td.textContent = '\u2014';
+        }
+    };
+
     const table = document.createElement('table');
     table.className = 'qa-table';
 
     const thead = table.createTHead();
     const hrow = thead.insertRow();
-    ['', 'Quant', 'Size', 'Max ctx (q8_0 KV)', 'Max ctx (q4_0 KV)', 'Quality'].forEach(h => {
+    const headers = isMlxTable
+        ? ['', 'Quant', 'Size', 'Max ctx (bf16 KV)', 'Max ctx (int8 KV)', 'Quality']
+        : ['', 'Quant', 'Size', 'Max ctx (q8_0 KV)', 'Max ctx (q4_0 KV)', 'Quality'];
+    headers.forEach(h => {
         const th = document.createElement('th');
         th.textContent = h;
         hrow.appendChild(th);
@@ -3591,10 +3629,26 @@ function renderQuantAdvisor(quants, availVram) {
             nameTd.appendChild(im);
         }
 
+        if (selectedMlxLabel && q.label === selectedMlxLabel) tr.classList.add('qa-row-selected');
+
         // Size
         const sizeTd = tr.insertCell();
         sizeTd.textContent = q.model_size_gb.toFixed(1) + ' GB';
         sizeTd.style.color = 'var(--color-text-muted)';
+
+        // Max ctx at unquantized bf16 KV (MLX only): the baseline int8 is compared against.
+        if (isMlxTable) {
+            const ctxF16Td = tr.insertCell();
+            ctxF16Td.className = 'qa-ctx';
+            if (q.max_ctx_f16 > 0) {
+                ctxF16Td.textContent = formatCtx(q.max_ctx_f16);
+                const underF16 = annotateCtx && q.max_ctx_f16 < desiredCtx;
+                ctxF16Td.classList.add(underF16 ? 'qa-ctx-under' : 'qa-ctx-q8');
+                if (underF16) ctxF16Td.title = `Max ${formatCtx(q.max_ctx_f16)} \u2014 below your ${formatCtx(desiredCtx)} target`;
+            } else {
+                setNoCtx(ctxF16Td, q);
+            }
+        }
 
         // Max ctx q8_0 \u2014 warn if below context target
         const ctxQ8Td = tr.insertCell();
@@ -3605,17 +3659,19 @@ function renderQuantAdvisor(quants, availVram) {
             ctxQ8Td.classList.add(underTarget ? 'qa-ctx-under' : 'qa-ctx-q8');
             if (underTarget) ctxQ8Td.title = `Max ${formatCtx(q.max_ctx_q8)} \u2014 below your ${formatCtx(desiredCtx)} target`;
         } else {
-            ctxQ8Td.textContent = '\u2014'; ctxQ8Td.classList.add('qa-ctx-na');
+            setNoCtx(ctxQ8Td, q);
         }
 
-        // Max ctx q4_0
-        const ctxQ4Td = tr.insertCell();
-        ctxQ4Td.className = 'qa-ctx';
-        if (q.max_ctx_q4 > 0) {
-            ctxQ4Td.textContent = formatCtx(q.max_ctx_q4);
-            ctxQ4Td.classList.add('qa-ctx-q4');
-        } else {
-            ctxQ4Td.textContent = '\u2014'; ctxQ4Td.classList.add('qa-ctx-na');
+        // Max ctx q4_0 (llama.cpp only: Rapid-MLX thinking mode pins the KV cache to int8)
+        if (!isMlxTable) {
+            const ctxQ4Td = tr.insertCell();
+            ctxQ4Td.className = 'qa-ctx';
+            if (q.max_ctx_q4 > 0) {
+                ctxQ4Td.textContent = formatCtx(q.max_ctx_q4);
+                ctxQ4Td.classList.add('qa-ctx-q4');
+            } else {
+                ctxQ4Td.textContent = '\u2014'; ctxQ4Td.classList.add('qa-ctx-na');
+            }
         }
 
         // Quality badge

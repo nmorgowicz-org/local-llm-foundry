@@ -71,7 +71,7 @@ test.describe('HF role badges come from the community source catalog', () => {
       document.body.appendChild(container);
       await mod.hfSearch({ query: 'qwen3', container, allActive: true });
       return [...container.querySelectorAll('.hf-sg-variant')].map(v => ({
-        id: v.querySelector('.hf-sg-variant-name')?.textContent,
+        id: v.querySelector('.hf-sg-variant-name')?.getAttribute('title'),
         role: v.querySelector('.hf-sg-role-badge')?.className || '',
         label: v.querySelector('.hf-sg-role-badge')?.textContent || '',
         title: v.querySelector('.hf-sg-role-badge')?.getAttribute('title') || '',
@@ -161,5 +161,197 @@ test.describe('HF role badges come from the community source catalog', () => {
     await expect(page.locator('.evidence-drawer-technical')).toContainText('MLX config is compatible.');
     expect(requests).toHaveLength(2);
     expect(requests.every(request => !('configDir' in request))).toBe(true);
+  });
+
+  // A failed search used to leave a bare "Search failed." with no way forward.
+  test('@in-memory-test a rate-limited search counts down, then Retry re-runs it', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+    let calls = 0;
+    await page.route('**/api/hf/community-sources', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(CATALOG),
+    }));
+    await page.route('**/api/hf/search', route => {
+      calls += 1;
+      if (calls === 1) {
+        return route.fulfill({
+          status: 429,
+          contentType: 'application/json',
+          body: JSON.stringify({ ok: false, error: 'Search rate limit reached. Try again in 2s.', retry_after_secs: 2 }),
+        });
+      }
+      return route.fulfill({
+        status: 200, contentType: 'application/json', body: JSON.stringify({ models: MODELS, next_cursor: null }),
+      });
+    });
+    await page.evaluate(() => {
+      const container = document.createElement('div');
+      container.id = 'retry-probe';
+      document.body.appendChild(container);
+      import('/js/features/hf-browse.js').then(mod => mod.hfSearch({ query: 'qwen3', container, allActive: true }));
+    });
+    const failure = page.locator('#retry-probe .hf-search-failure');
+    await expect(failure).toContainText('Search rate limit reached');
+    const retry = failure.locator('.hf-search-retry-btn');
+    await expect(retry).toBeDisabled();
+    await expect(retry).toContainText('Retry in');
+    await expect(retry).toBeEnabled({ timeout: 6000 });
+    await expect(retry).toHaveText('Retry');
+    await retry.click();
+    await expect(page.locator('#retry-probe .hf-sg-variant')).toHaveCount(4);
+    await expect(page.locator('#retry-probe .hf-search-failure')).toHaveCount(0);
+    expect(calls).toBe(2);
+  });
+
+  test('@in-memory-test a network error offers an immediate Retry', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+    let calls = 0;
+    await page.route('**/api/hf/community-sources', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(CATALOG),
+    }));
+    await page.route('**/api/hf/search', route => {
+      calls += 1;
+      if (calls === 1) return route.abort('failed');
+      return route.fulfill({
+        status: 200, contentType: 'application/json', body: JSON.stringify({ models: MODELS, next_cursor: null }),
+      });
+    });
+    await page.evaluate(() => {
+      const container = document.createElement('div');
+      container.id = 'retry-probe';
+      document.body.appendChild(container);
+      import('/js/features/hf-browse.js').then(mod => mod.hfSearch({ query: 'qwen3', container, allActive: true }));
+    });
+    const retry = page.locator('#retry-probe .hf-search-retry-btn');
+    await expect(retry).toBeEnabled();
+    await retry.click();
+    await expect(page.locator('#retry-probe .hf-sg-variant')).toHaveCount(4);
+    expect(calls).toBe(2);
+  });
+
+  test('@in-memory-test MLX quant siblings group as variants of one model', async ({ page }) => {
+    const models = [
+      { id: 'nightmedia/Qwen3.8-27B-MindMeld-AREX-mxfp4-mlx', tags: ['mlx'], param_b: 27, downloads: 5 },
+      { id: 'nightmedia/Qwen3.8-27B-MindMeld-AREX-mxfp8-mlx', tags: ['mlx'], param_b: 27, downloads: 4 },
+      { id: 'nightmedia/Qwen3.8-27B-MindMeld-AREX-qx86-hi-mlx', tags: ['mlx'], param_b: 27, downloads: 3 },
+      { id: 'mlx-community/Qwen3-8B-4bit', tags: ['mlx'], param_b: 8, downloads: 2 },
+      { id: 'mlx-community/Qwen3-8B-8bit', tags: ['mlx'], param_b: 8, downloads: 1 },
+    ];
+    await search(page, { models });
+    const groups = await page.evaluate(() => [...document.querySelectorAll('#role-badge-probe .hf-sg-base-name')]
+      .map(n => n.textContent));
+    expect(groups.filter(g => g.startsWith('Qwen3.8-27b-Mindmeld-Arex'))).toHaveLength(1);
+    expect(groups.filter(g => g.startsWith('Qwen3-8b'))).toHaveLength(1);
+  });
+
+  test('@in-memory-test selecting an MLX variant hands its sibling quants to the advisor', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+    const models = [
+      { id: 'nightmedia/Qwen3.8-27B-MindMeld-AREX-mxfp4-mlx', tags: ['mlx'], param_b: 27, downloads: 5, model_size_bytes: 15_200_000_000 },
+      { id: 'nightmedia/Qwen3.8-27B-MindMeld-AREX-mxfp8-mlx', tags: ['mlx'], param_b: 27, downloads: 4, model_size_bytes: 28_700_000_000 },
+    ];
+    await page.route('**/api/hf/community-sources', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(CATALOG),
+    }));
+    await page.route('**/api/hf/search', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ models, next_cursor: null }),
+    }));
+    const selection = await page.evaluate(async () => {
+      const mod = await import('/js/features/hf-browse.js');
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      let picked = null;
+      await mod.hfSearch({ query: 'mindmeld', container, allActive: true, onSelectModel: s => { picked = s; } });
+      container.querySelector('.hf-sg-variant').click();
+      return picked;
+    });
+    expect(selection.siblings.map(s => s.label).sort()).toEqual(['mxfp4', 'mxfp8']);
+    expect(selection.siblings.map(s => s.size).sort((a, b) => a - b)).toEqual([15_200_000_000, 28_700_000_000]);
+  });
+
+  test('@in-memory-test every MindMeld repo lands in one group with quant pills and edition tags', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+    const models = [
+      { id: 'nightmedia/Qwen3.8-27B-MindMeld-AREX-mxfp4-mlx', tags: ['mlx'], param_b: 27, downloads: 5, model_size_bytes: 15_200_000_000 },
+      { id: 'nightmedia/Qwen3.8-27B-MindMeld-AREX-mxfp8-mlx', tags: ['mlx'], param_b: 27, downloads: 4, model_size_bytes: 28_700_000_000 },
+      { id: 'nightmedia/Qwen3.8-27B-MindMeld', tags: ['mlx'], param_b: 28, downloads: 3, model_size_bytes: 55_500_000_000 },
+      { id: 'nightmedia/Qwen3.8-27B-MindMeld-qx64-hi-mlx', tags: ['mlx'], param_b: 27, downloads: 2, model_size_bytes: 20_900_000_000 },
+      { id: 'nightmedia/gemma-4-E4B-Chronos-q8-hi-mlx', tags: ['mlx'], param_b: 4, downloads: 1, model_size_bytes: 9_350_000_000 },
+    ];
+    await page.route('**/api/hf/community-sources', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(CATALOG),
+    }));
+    await page.route('**/api/hf/search', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ models, next_cursor: null }),
+    }));
+    const result = await page.evaluate(async () => {
+      const mod = await import('/js/features/hf-browse.js');
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      let picked = null;
+      await mod.hfSearch({ query: 'mindmeld', container, allActive: true, onSelectModel: s => { picked = s; } });
+      const groups = [...container.querySelectorAll('.hf-search-group')].map(g => ({
+        name: g.querySelector('.hf-sg-base-name')?.textContent,
+        rows: [...g.querySelectorAll('.hf-sg-variant')].map(v => ({
+          id: v.querySelector('.hf-sg-variant-name')?.getAttribute('title'),
+          pill: v.querySelector('.hf-sg-quant-pill')?.textContent,
+          edition: v.querySelector('.hf-sg-variant-name')?.textContent,
+        })),
+      }));
+      [...container.querySelectorAll('.hf-sg-variant')]
+        .find(v => v.querySelector('.hf-sg-variant-name')?.getAttribute('title').endsWith('qx64-hi-mlx')).click();
+      return { groups, picked };
+    });
+    const mind = result.groups.filter(g => g.name === 'Qwen3.8-27b-Mindmeld');
+    expect(mind).toHaveLength(1);
+    expect(mind[0].rows.map(r => r.pill).sort()).toEqual(['bf16', 'mxfp4', 'mxfp8', 'qx64-hi']);
+    expect(mind[0].rows.filter(r => r.edition === 'AREX')).toHaveLength(2);
+    expect(result.groups).toHaveLength(2);
+    expect(result.picked.siblings.map(s => s.label).sort())
+      .toEqual(['AREX mxfp4', 'AREX mxfp8', 'bf16', 'qx64-hi']);
+  });
+
+  test('@in-memory-test a failed follow-up page keeps earlier results and retries the same page', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+    const cursors = [];
+    await page.route('**/api/hf/community-sources', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(CATALOG),
+    }));
+    await page.route('**/api/hf/search', route => {
+      const body = route.request().postDataJSON();
+      cursors.push(body.cursor || null);
+      if (!body.cursor) {
+        return route.fulfill({
+          status: 200, contentType: 'application/json',
+          body: JSON.stringify({ models: MODELS.slice(0, 2), next_cursor: 'page-2' }),
+        });
+      }
+      if (cursors.filter(c => c === 'page-2').length === 1) {
+        return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+      }
+      return route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ models: MODELS.slice(2), next_cursor: null }),
+      });
+    });
+    await page.evaluate(() => {
+      const container = document.createElement('div');
+      container.id = 'retry-probe';
+      document.body.appendChild(container);
+      import('/js/features/hf-browse.js').then(mod => mod.hfSearch({ query: 'qwen3', container, allActive: true }));
+    });
+    // Two results is under the visible-row threshold, so page 2 loads automatically; its
+    // failure must leave page 1 on screen and offer a Retry for that same cursor.
+    const retry = page.locator('#retry-probe .hf-search-retry-btn');
+    await expect(retry).toBeEnabled();
+    await expect(page.locator('#retry-probe .hf-sg-variant')).toHaveCount(2);
+    await retry.click();
+    await expect(page.locator('#retry-probe .hf-sg-variant')).toHaveCount(4);
+    await expect(page.locator('#retry-probe .hf-search-failure')).toHaveCount(0);
+    expect(cursors).toEqual([null, 'page-2', 'page-2']);
   });
 });

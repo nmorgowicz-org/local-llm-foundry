@@ -81,6 +81,10 @@ fn api_hf_search(
     // (window_start_secs, request_count) — protected by Mutex to avoid TOCTOU races.
     static HF_SEARCH_RATE: std::sync::LazyLock<std::sync::Mutex<(u64, u64)>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new((0, 0)));
+    // Local self-protection only: Hugging Face allows 1000 requests per 5 minutes
+    // with a token (500 without), and one UI interaction can issue several searches.
+    const HF_SEARCH_WINDOW_SECS: u64 = 60;
+    const HF_SEARCH_MAX_PER_WINDOW: u64 = 60;
 
     warp::path!("api" / "hf" / "search")
         .and(warp::post())
@@ -98,28 +102,30 @@ fn api_hf_search(
                     .unwrap_or_default()
                     .as_secs();
 
-                // Check and update rate limit atomically under the Mutex.
-                let rate_limited = {
-                    let mut guard = HF_SEARCH_RATE.lock().unwrap();
-                    let (ref mut window_start, ref mut count) = *guard;
-                    if now.saturating_sub(*window_start) >= 60 {
+                // Check and update rate limit atomically under the Mutex. A poisoned
+                // lock only means another request panicked; the counters stay valid.
+                let retry_after = {
+                    let mut guard = HF_SEARCH_RATE.lock().unwrap_or_else(|e| e.into_inner());
+                    let (window_start, count) = &mut *guard;
+                    if now.saturating_sub(*window_start) >= HF_SEARCH_WINDOW_SECS {
                         *window_start = now;
                         *count = 1;
-                        false
-                    } else if *count >= 10 {
-                        true
+                        None
+                    } else if *count >= HF_SEARCH_MAX_PER_WINDOW {
+                        Some(HF_SEARCH_WINDOW_SECS.saturating_sub(now.saturating_sub(*window_start)).max(1))
                     } else {
                         *count += 1;
-                        false
+                        None
                     }
                 };
 
-                if rate_limited {
+                if let Some(wait) = retry_after {
                     return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(
                         Box::new(warp::reply::with_status(
                             warp::reply::json(&serde_json::json!({
                                 "ok": false,
-                                "error": "Rate limited: too many HF search requests. Try again in 60 seconds."
+                                "error": format!("Search rate limit reached. Try again in {wait}s."),
+                                "retry_after_secs": wait
                             })),
                             StatusCode::TOO_MANY_REQUESTS,
                         )),
@@ -167,7 +173,11 @@ fn api_hf_search(
                         Box::new(warp::reply::json(&serde_json::json!({
                             "ok": true,
                             "models": models,
-                            "next_cursor": next_cursor
+                            "next_cursor": next_cursor,
+                            // Whether this request carried a Hugging Face token (the same
+                            // lookup the upstream call uses). Authenticated searches get
+                            // twice HF's anonymous quota.
+                            "hf_authenticated": crate::hf::hf_load_token().is_some()
                         }))))
                     },
                     Err(e) => Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(

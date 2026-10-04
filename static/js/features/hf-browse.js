@@ -225,6 +225,66 @@ function getAuthHeaders() {
   return window.authHeaders ? window.authHeaders() : {};
 }
 
+// Trailing quant marker on an MLX repo name (after any "-mlx" suffix is removed).
+const MLX_QUANT_SUFFIX_RE =
+  /-(?:\d+(?:\.\d+)?-?bit|\d+bpw|mxfp\d+|nvfp\d+|fp\d+|bf16|qx\d+|q\d(?:_[a-z0-9_]+)?|dwq\d*|awq|gptq)(?:-hi)?$/i;
+
+function isMlxModel(m) {
+  return m.format === 'mlx' || (m.tags || []).includes('mlx') || /-mlx$/i.test(m.id || '');
+}
+
+// "nightmedia/Qwen3.8-27B-MindMeld-AREX-mxfp4-mlx" -> stem "Qwen3.8-27B-MindMeld-AREX", quant "mxfp4".
+// A repo with no recognised quant marker (the bf16 base) has quant ''.
+function splitMlxRepoName(repoId) {
+  const name = (repoId || '').split('/')[1] || repoId || '';
+  const noMlx = name.replace(/-mlx$/i, '');
+  const match = noMlx.match(MLX_QUANT_SUFFIX_RE);
+  if (!match) return { stem: noMlx, quant: '' };
+  return { stem: noMlx.slice(0, match.index), quant: match[0].slice(1).toLowerCase() };
+}
+
+// What distinguishes one MLX repo from its siblings in a group: the quant tag the author
+// wrote (mxfp4, qx64-hi ...), an edition tag for anything else in the name (AREX), and the
+// measured bits per weight. `label` is unique within a group and feeds the quant advisor.
+function mlxVariantInfo(m, siblings = []) {
+  const { stem, quant } = splitMlxRepoName(m.id);
+  const lowerStem = stem.toLowerCase();
+  const base = siblings.reduce((shortest, s) => {
+    const other = splitMlxRepoName(s.id).stem.toLowerCase();
+    return other.length < shortest.length && lowerStem.startsWith(other) ? other : shortest;
+  }, lowerStem);
+  const edition = stem.slice(base.length).replace(/^-+/, '');
+  const bpw = m.model_size_bytes > 0 && m.param_b > 0 ? (m.model_size_bytes * 8) / (m.param_b * 1e9) : 0;
+  const tag = quant || (bpw >= 14 ? 'bf16' : 'base');
+  return { edition, tag, bpw, label: edition ? `${edition} ${tag}` : tag };
+}
+
+// Same-author MLX conversions of one model belong together even when one repo carries an
+// extra edition tag (…-AREX-mxfp4-mlx beside …-qx64-hi-mlx beside the bf16 base). Fold a repo
+// into the shortest same-author stem that is a hyphen-bounded prefix of its own.
+function mlxFamilyRoots(models) {
+  const authorOf = m => ((m.id || '').split('/')[0] || '').toLowerCase();
+  const stemsByAuthor = new Map();
+  for (const m of models) {
+    if (!isMlxModel(m)) continue;
+    const author = authorOf(m);
+    if (!stemsByAuthor.has(author)) stemsByAuthor.set(author, new Set());
+    stemsByAuthor.get(author).add(splitMlxRepoName(m.id).stem.toLowerCase());
+  }
+  const roots = new Map();
+  for (const m of models) {
+    if (!isMlxModel(m)) continue;
+    const author = authorOf(m);
+    const stem = splitMlxRepoName(m.id).stem.toLowerCase();
+    let root = stem;
+    for (const other of stemsByAuthor.get(author)) {
+      if (other.length < root.length && stem.startsWith(`${other}-`)) root = other;
+    }
+    roots.set(m, extractBaseModelName(`${author}/${root}`));
+  }
+  return roots;
+}
+
 // ── Phase 8B2: Base model name extraction ────────────────────────────────────
 // Extract canonical base model name from repo_id for grouping.
 // E.g., "bartowski/Qwen3-32B-GGUF" -> "Qwen3-32B"
@@ -239,8 +299,11 @@ function extractBaseModelName(repoId) {
   // Remove GGUF suffix
   let base = name.replace(/-gguf$/, '');
 
-  // Remove known quant suffixes from MLX repos (e.g., "-4bit", "-8bit")
-  base = base.replace(/-(?:4bit|8bit|fp16|q4|q8)$/, '');
+  // Remove the trailing "-mlx" marker, then any quant suffix, so that the sibling
+  // conversions of one model (…-mxfp4-mlx, …-mxfp8-mlx, …-4bit, …-q8-hi-mlx) share a
+  // base name and group together as variants.
+  base = base.replace(/-mlx$/, '');
+  base = base.replace(MLX_QUANT_SUFFIX_RE, '');
 
   // Remove known converter prefixes from repo name
   base = base.replace(/^(?:mlx-|gguf-)/, '');
@@ -465,20 +528,35 @@ function groupComparator(hfSort) {
 }
 
 // ── Phase 8B2: Create a variant row within a group ───────────────────────────
-function createGroupVariant(m, container, bodyEl, onOpenCardPanel, onSelectModel, vramGb = 0) {
+function createGroupVariant(m, container, bodyEl, onOpenCardPanel, onSelectModel, vramGb = 0, siblings = []) {
   const repoIdLower = (m.id || '').toLowerCase();
-  const isMlx = m.format === 'mlx' || repoIdLower.includes('.mlx') || repoIdLower.includes('/mlx/') || repoIdLower.includes('-mlx-') || repoIdLower.endsWith('-mlx') || repoIdLower.includes('.safetensors');
+  const isMlx = m.format === 'mlx' || (m.tags || []).includes('mlx') || repoIdLower.includes('.mlx') || repoIdLower.includes('/mlx/') || repoIdLower.includes('-mlx-') || repoIdLower.endsWith('-mlx') || repoIdLower.includes('.safetensors');
   const isGguf = m.format === 'gguf' || repoIdLower.includes('.gguf') || repoIdLower.includes('-gguf') || repoIdLower.includes('/gguf/');
   const format = m.format || (isGguf ? 'gguf' : isMlx ? 'mlx' : 'unknown');
 
   const variant = document.createElement('div');
   variant.className = 'hf-sg-variant';
 
+  // MLX rows lead with the quantization as a pill and keep only the edition tag as text: the
+  // full repo id is long, identical up to its last segment, and was being truncated exactly
+  // where the variants differ. The id stays available as the tooltip and accessible name.
+  const mlxInfo = format === 'mlx' ? mlxVariantInfo(m, siblings) : null;
+  if (mlxInfo) {
+    const quantPill = document.createElement('span');
+    quantPill.className = 'hf-sg-quant-pill';
+    quantPill.textContent = mlxInfo.tag;
+    quantPill.title = mlxInfo.bpw > 0
+      ? `${mlxInfo.tag} \u00b7 about ${mlxInfo.bpw.toFixed(1)} bits per weight (from the repo size)`
+      : mlxInfo.tag;
+    variant.appendChild(quantPill);
+  }
+
   // Repo name
   const nameSpan = document.createElement('span');
   nameSpan.className = 'hf-sg-variant-name';
-  nameSpan.textContent = m.id;
+  nameSpan.textContent = mlxInfo ? mlxInfo.edition : m.id;
   nameSpan.title = m.id;
+  nameSpan.setAttribute('aria-label', m.id);
   variant.appendChild(nameSpan);
 
   // Format badge
@@ -553,6 +631,10 @@ function createGroupVariant(m, container, bodyEl, onOpenCardPanel, onSelectModel
           param_b: m.param_b || 0,
           quant_label: m.quant_label || '',
           model_size_bytes: m.model_size_bytes || 0,
+          // Sibling conversions of the same model, so the Models tab can rank them.
+          siblings: siblings
+            .filter(s => s.model_size_bytes > 0)
+            .map(s => ({ repoId: s.id, label: mlxVariantInfo(s, siblings).label, size: s.model_size_bytes })),
         });
       }
     };
@@ -723,6 +805,13 @@ export async function hfSearch({
 }) {
   if (!container) return;
 
+  // Re-run exactly this search (same cursor/append) from a failure's Retry button.
+  const retrySearch = () => hfSearch({
+    query, author, sort, limit, mlxActive, ggufActive, allActive, hfSort, minParamB, cursor, append,
+    _cascadeDepth, container, filelistContainer, quickpicksContainer,
+    discoverPillsContainerId, onOpenCardPanel, onSelectModel, quantsOnly, vramGb,
+  });
+
   // Kick the catalog load off alongside the search rather than before it; it is awaited below,
   // just before the results are rendered, so the badges never render against a half-loaded
   // catalog and the first search is not serialised behind an extra round trip.
@@ -784,11 +873,15 @@ export async function hfSearch({
     const resp = await fetch('/api/hf/search', { method: 'POST', headers, body: JSON.stringify(body) });
     if (!resp.ok) {
       clearPillLoading();
-      if (append) {
-        container.querySelector('.hf-load-more-loading')?.remove();
-      } else {
-        container.innerHTML = '<div class="hf-search-empty">Search failed.</div>';
-      }
+      container.querySelector('.hf-load-more-loading')?.remove();
+      // The server explains rate limits (429) with a wait time; surface it as text.
+      const failure = await resp.json().catch(() => ({}));
+      _renderSearchFailure(container, {
+        message: failure.error || `Search failed (HTTP ${resp.status}).`,
+        retryAfterSecs: failure.retry_after_secs || 0,
+        append,
+        onRetry: retrySearch,
+      });
       return;
     }
     const data = await resp.json();
@@ -833,9 +926,10 @@ export async function hfSearch({
     const sortedModels = variantCmp ? [...models].sort(variantCmp) : models;
 
     // Phase 8B2: Group models by base model name for hierarchical display
+    const mlxFamilies = mlxFamilyRoots(sortedModels);
     const groups = new Map();
     for (const m of sortedModels) {
-      const baseName = extractBaseModelName(m.id);
+      const baseName = mlxFamilies.get(m) || extractBaseModelName(m.id);
       if (!groups.has(baseName)) {
         groups.set(baseName, []);
       }
@@ -908,7 +1002,7 @@ export async function hfSearch({
       groupModels.sort((a, b) => (b.downloads || 0) - (a.downloads || 0));
 
       for (const m of groupModels) {
-        const variant = createGroupVariant(m, container, bodyEl, onOpenCardPanel, onSelectModel, vramGb);
+        const variant = createGroupVariant(m, container, bodyEl, onOpenCardPanel, onSelectModel, vramGb, groupModels);
         bodyEl.appendChild(variant);
       }
 
@@ -969,15 +1063,52 @@ export async function hfSearch({
     }
   } catch (err) {
     clearPillLoading();
-    if (append) {
-      container.querySelector('.hf-load-more-loading')?.remove();
-    } else {
-      const errEl = document.createElement('div');
-      errEl.className = 'hf-search-empty';
-      errEl.textContent = 'Error: ' + (err.message || String(err));
-      container.appendChild(errEl);
-    }
+    container.querySelector('.hf-load-more-loading')?.remove();
+    _renderSearchFailure(container, {
+      message: 'Search failed: ' + (err.message || String(err)),
+      append,
+      onRetry: retrySearch,
+    });
   }
+}
+
+/**
+ * Render a search failure with a Retry button. When the server reports a wait time
+ * (HTTP 429), the button is disabled and counts down so the user is never left at a
+ * dead end. `append` keeps already-rendered results (the "Load more" case).
+ */
+function _renderSearchFailure(container, { message, retryAfterSecs = 0, append = false, onRetry }) {
+  const box = document.createElement('div');
+  box.className = 'hf-search-empty hf-search-failure';
+  box.setAttribute('role', 'alert');
+  const text = document.createElement('span');
+  text.className = 'hf-search-failure-text';
+  text.textContent = message;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'hf-load-more-btn hf-search-retry-btn';
+  box.append(text, btn);
+  if (append) container.appendChild(box);
+  else container.replaceChildren(box);
+
+  let remaining = Number.isFinite(retryAfterSecs) ? Math.max(0, Math.ceil(retryAfterSecs)) : 0;
+  const syncLabel = () => {
+    btn.disabled = remaining > 0;
+    btn.textContent = remaining > 0 ? `Retry in ${remaining}s` : 'Retry';
+  };
+  syncLabel();
+  if (remaining > 0) {
+    const timer = setInterval(() => {
+      if (!btn.isConnected) { clearInterval(timer); return; }
+      remaining -= 1;
+      syncLabel();
+      if (remaining <= 0) clearInterval(timer);
+    }, 1000);
+  }
+  btn.addEventListener('click', () => {
+    box.remove();
+    onRetry();
+  });
 }
 
 function _makeLoadMoreBtn(onClick) {
