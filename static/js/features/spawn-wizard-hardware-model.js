@@ -432,7 +432,7 @@ function _showQuantSwapCandidateList(candidates) {
   };
 
   // Render candidate options (no auto-select).
-  candidates.forEach((candidate, index) => {
+  candidates.forEach((candidate, _index) => {
     const item = document.createElement('div');
     item.style.cssText =
       'display:flex;justify-content:space-between;align-items:center;padding:4px 6px;' +

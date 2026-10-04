@@ -360,7 +360,6 @@ export function refreshTopCockpit() {
 
     const wsMode = wsData?.mode ?? (wsData?.sleep_mode ? 'sleep' : 'off');
     const isSleeping = wsMode === 'sleep';
-    const isManualSleep = isSleeping && wsData?.sleep_mode_manual === true;
     const isLogsOnly = wsMode === 'logs-only';
     let label = 'idle';
     let stateClass = 'idle';

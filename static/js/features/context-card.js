@@ -5,7 +5,7 @@ import { chat } from '../core/app-state.js';
 import { escapeHtml, formatMetricNumber } from '../core/format.js';
 import { setCardState, setChipState, setEmptyState } from './dashboard-render.js';
 import Router from './router.js';
-import { showToast, showToastWithActions } from './toast.js';
+import { showToastWithActions } from './toast.js';
 import { compactChatTab } from './chat-params.js';
 
 const STALE_CHAT_MS = 7 * 24 * 60 * 60 * 1000;

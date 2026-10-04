@@ -69,7 +69,7 @@ function _bindSensorBridgeSetup() {
                     }
                 } catch (_) {}
             }, 2000);
-        } catch (e) {
+        } catch (_e) {
             btn.textContent = 'Setup';
             btn.disabled = false;
         }

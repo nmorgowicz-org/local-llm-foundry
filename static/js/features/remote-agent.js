@@ -1003,9 +1003,6 @@ async function removeManagedRemoteAgent() {
 async function finishRemoteAgentSetup() {
     const agentUrlInput = document.getElementById('agent-setup-agent-url');
     const agentTokenInput = document.getElementById('agent-setup-agent-token');
-    const sshHostInput = document.getElementById('agent-setup-ssh-host');
-    const sshPortInput = document.getElementById('agent-setup-ssh-port');
-    const sshAuthSelect = document.getElementById('agent-setup-ssh-auth');
 
     // Fetch current settings (full) to merge — avoids wiping unrelated settings
     // and preserves the real remote_agent_token (GET /api/settings masks it).
@@ -1342,48 +1339,6 @@ function setRemoteAgentButtonsDisabled(disabled) {
     remoteAgent.inProgress = disabled;
 }
 
-// ── Status Indicator ──────────────────────────────────────────────────────────
-
-function updateAgentStatusIndicator(connected, firewallBlocked) {
-    const el = document.getElementById('agent-status');
-    if (el) updateAgentStatusPill(el, connected, firewallBlocked);
-}
-
-function updateAgentStatusPill(el, connected, firewallBlocked) {
-   if (!connected) {
-       el.style.display = 'none';
-       return;
-   }
-   el.style.display = 'flex';
-   const fixBtn = el.querySelector('.btn-agent-fix');
-   const tooltip = el.querySelector('.agent-status-tooltip');
-   const statusEl = tooltip ? tooltip.querySelector('.agent-tooltip-status') : null;
-   
-   if (firewallBlocked) {
-       el.className = 'agent-status firewall-blocked';
-       const indicator = el.querySelector('.agent-indicator');
-       const textEl = el.querySelector('.agent-text');
-       if (indicator) indicator.textContent = '\u26a0\ufe0f';
-       if (textEl) textEl.textContent = 'Firewall blocked';
-       if (statusEl) {
-           statusEl.textContent = 'Firewall blocked';
-           statusEl.className = 'agent-tooltip-status warning';
-       }
-       if (fixBtn) fixBtn.style.display = '';
-   } else {
-       el.className = 'agent-status connected';
-       const indicator = el.querySelector('.agent-indicator');
-       const textEl = el.querySelector('.agent-text');
-       if (indicator) indicator.textContent = '\u25cf';
-       if (textEl) textEl.textContent = 'Remote Agent';
-       if (statusEl) {
-           statusEl.textContent = 'Connected';
-           statusEl.className = 'agent-tooltip-status connected';
-       }
-       if (fixBtn) fixBtn.style.display = 'none';
-   }
-}
-
 // ── Agent Status Badge Click ────────────────────────────────────────────────
 
 function toggleAgentMenuFromBadge(event) {
@@ -1403,36 +1358,6 @@ function openRemoteAgentSetupFromBadge(event) {
 function closeAgentMenu() {
    // No longer needed - agent-menu-panel removed
    // Kept for backward compatibility with action functions
-}
-
-async function agentMenuCheck() {
-    closeAgentMenu();
-    openRemoteAgentSetup();
-    await checkManagedRemoteAgent();
-}
-
-async function agentMenuInstallRepair() {
-    closeAgentMenu();
-    openRemoteAgentSetup();
-    await installRemoteAgent();
-}
-
-async function agentMenuStart() {
-    closeAgentMenu();
-    openRemoteAgentSetup();
-    await startRemoteAgent();
-}
-
-async function agentMenuStop() {
-    closeAgentMenu();
-    openRemoteAgentSetup();
-    await stopManagedRemoteAgent();
-}
-
-async function agentMenuRemove() {
-    closeAgentMenu();
-    openRemoteAgentSetup();
-    await removeManagedRemoteAgent();
 }
 
 // ── Settings Panel Operations ─────────────────────────────────────────────────
@@ -2068,17 +1993,6 @@ function addTimelineItem(message, status) {
     itemsEl.scrollTop = itemsEl.scrollHeight;
 }
 
-function clearTimeline() {
-    const itemsEl = document.getElementById('remote-agent-timeline-items');
-    if (itemsEl) {
-        itemsEl.innerHTML = '';
-    }
-    const timelineEl = document.getElementById('remote-agent-timeline');
-    if (timelineEl) {
-        timelineEl.style.display = 'none';
-    }
-}
-
 // ── Init ───────────────────────────────────────────────────────────────────────
 
 export function initRemoteAgent() {
@@ -2225,7 +2139,7 @@ export function initRemoteAgent() {
                         }
                     } catch (_) {}
                 }, 2000);
-            } catch (e) {
+            } catch (_e) {
                 sensorBtn.textContent = 'Setup';
                 sensorBtn.disabled = false;
             }

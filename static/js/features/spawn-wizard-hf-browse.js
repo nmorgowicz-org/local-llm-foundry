@@ -72,7 +72,7 @@ export function initHfBrowseWidgets() {
     hfRenderDiscoverPills({
       container: discoverPillsEl,
       quickpicksContainer: quickpicksEl,
-      onPillClick: (cat, pillEl) => {
+      onPillClick: (cat, _pillEl) => {
         wizardState.hfBrowseAuthor = null;
         if (dom.hfRepoInput) dom.hfRepoInput.value = '';
         const sort = cat.params.query ? hfBrowseState.sort : (cat.params.sort || hfBrowseState.sort);
@@ -1153,5 +1153,3 @@ async function fetchHfFiles(repo) {
     },
   });
 }
-
-

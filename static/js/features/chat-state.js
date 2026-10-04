@@ -7,7 +7,6 @@ import { showToast, showToastWithActions } from './toast.js';
 import Router from './router.js';
 
 const CHAT_TABS_PERSIST_DEBOUNCE_MS = 500;
-const CHAT_TABS_PERIODIC_SAVE_MS = 30_000; // 30 seconds
 const TRASH_AUTO_PURGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const TRASH_PURGE_CHECK_INTERVAL_MS = 60 * 60 * 1000; // check every hour
 const chatViewBindings = {

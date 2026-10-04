@@ -403,7 +403,7 @@ async function installRelease(btn, release) {
             (restartData.error || 'Could not restart server automatically.'),
           );
         }
-      } catch (restartErr) {
+      } catch (_restartErr) {
         // Network error while restarting: warn but don't block install success.
         showToast(
           'Restart pending',

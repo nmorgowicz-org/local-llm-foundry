@@ -17,48 +17,6 @@ export function closeConfigModal() {
     document.getElementById('config-modal').classList.remove('open');
 }
 
-// ── GPU Environment ───────────────────────────────────────────────────────────
-
-async function loadGpuEnv() {
-    try {
-        const resp = await fetch('/api/gpu-env', {
-            headers: window.authHeaders ? window.authHeaders() : {},
-        });
-        const data = await resp.json();
-        const env = data.env;
-        const archs = data.architectures;
-        const detected = data.detected;
-
-        const sel = document.getElementById('gpu-env-arch');
-        sel.innerHTML = '';
-        archs.forEach(a => {
-            const opt = document.createElement('option');
-            opt.value = a.id;
-            let label = a.name;
-            if (detected && detected.arch === a.id) label += ' (detected)';
-            opt.textContent = label;
-            sel.appendChild(opt);
-        });
-        sel.value = env.arch;
-
-        document.getElementById('gpu-env-devices').value = env.devices;
-        document.getElementById('gpu-env-rocm-path').value = env.rocm_path || '/opt/rocm';
-
-        const infoEl = document.getElementById('gpu-detected-info');
-        const summaryInfo = document.getElementById('gpu-env-info');
-        if (detected) {
-            const source = detected.arch === 'apple' ? 'local system profile' : detected.arch === 'nvidia' ? 'local nvidia-smi' : 'local rocminfo';
-            infoEl.textContent = 'Local detection: ' + detected.count + 'x ' + detected.arch + ' (' + detected.names.join(', ') + ') via ' + source;
-            summaryInfo.textContent = '\u2014 ' + detected.count + 'x ' + detected.arch;
-        } else {
-            infoEl.textContent = 'No local GPU detected via Metal, rocminfo, or nvidia-smi. Remote hosts need a remote agent.';
-            summaryInfo.textContent = '';
-        }
-    } catch (err) {
-        console.error('Failed to load GPU env:', err);
-    }
-}
-
 // ── Save Config ───────────────────────────────────────────────────────────────
 
 function saveConfig() {

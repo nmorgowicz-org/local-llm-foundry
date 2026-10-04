@@ -5,7 +5,7 @@
 // canonical builder with matching parameters so all surfaces display identical
 // MemoryBreakdown values for the same model/context/backend.
 
-import { showToast } from './toast.js';
+import './toast.js';
 import {
   RAPID_MLX_DEFAULT_SPECULATIVE_TOKENS,
   RAPID_MLX_TEXT_PREFILL_STEP_SIZE,

@@ -922,9 +922,6 @@ function renderHwClockRing(container, clock) {
     var display = formatClockReadout(clock);
     var color = getClockTone('core').line;
     var pulse = (3.6 - Math.min(band.pct, 100) * 0.016).toFixed(2) + 's';
-    var footerSpark = sysHistory.cpuClock.length > 1
-        ? '<div class="hw-clock-footer sparkline-only"><div class="hw-clock-footer-spark">' + buildSparklineSVG(sysHistory.cpuClock, 'hw-clock-footer-spark', color) + '</div></div>'
-        : '';
     setVizContent(container,
         '<div class="hw-clock-system-layout">' +
           '<div class="hw-clock-cluster hw-clock-system">' +
@@ -1016,20 +1013,11 @@ var vizPrefs = {
 };
 
 
-function loadVizPrefs() {
-    try {
-        var gpuStr = localStorage.getItem('llama-monitor-gpu-viz');
-        if (gpuStr) vizPrefs.gpu = JSON.parse(gpuStr);
-        var sysStr = localStorage.getItem('llama-monitor-system-viz');
-        if (sysStr) vizPrefs.system = JSON.parse(sysStr);
-    } catch(e) {}
-}
-
 function saveVizPrefs(card) {
     try {
         var key = card === 'gpu' ? 'llama-monitor-gpu-viz' : 'llama-monitor-system-viz';
         localStorage.setItem(key, JSON.stringify(vizPrefs[card]));
-    } catch(e) {}
+    } catch(_e) {}
 }
 
 function toggleVizSwitcher(card) {
@@ -1045,7 +1033,6 @@ function toggleVizSwitcher(card) {
         var cardEl = document.getElementById(card === 'gpu' ? 'gpu-card' : 'system-card');
         if (cardEl) {
             var rect = cardEl.getBoundingClientRect();
-            var parentRect = cardEl.parentElement.getBoundingClientRect();
             sw.style.top = (rect.height + 8) + 'px';
             sw.style.right = '0';
         }
@@ -1361,7 +1348,6 @@ function renderSystemCard(sys, visible, grade) {
 
     // Memory pressure (macOS vm_stat; hidden on platforms without pressure fields)
     var pressureBlock = document.getElementById('sys-pressure-block');
-    var pressureViz = document.getElementById('sys-pressure-viz');
     var pressureVal = document.getElementById('sys-pressure-value');
     var pressureLevel = sys.memory_pressure_level || '';
     var hasPressure = pressureLevel || sys.memory_compressor_gb > 0 || sys.memory_free_gb > 0;
@@ -1591,47 +1577,6 @@ async function _fetchDbAdminTokenForSystemAction() {
     });
     const tokenData = tokenResp.ok ? await tokenResp.json().catch(() => ({})) : {};
     return tokenData.token || null;
-}
-
-// Fetch top memory processes and render them into a container element.
-async function _renderTopProcesses(containerId) {
-    const el = document.getElementById(containerId);
-    if (!el) return;
-    el.style.display = '';
-    el.textContent = 'Loading…';
-    el.className = 'mem-pressure-proc-loading';
-    try {
-        const res = await fetch('/system/top-processes', { headers: window.authHeaders ? window.authHeaders() : {} });
-        const procs = await res.json();
-        el.textContent = '';
-        el.className = '';
-        if (!Array.isArray(procs) || procs.length === 0) {
-            el.textContent = 'No process data available.';
-            el.className = 'mem-pressure-proc-empty';
-            return;
-        }
-        const title = document.createElement('div');
-        title.className = 'mem-pressure-proc-title';
-        title.textContent = 'Top processes by RAM';
-        el.appendChild(title);
-        procs.slice(0, 10).forEach(p => {
-            const row = document.createElement('div');
-            row.className = 'mem-pressure-proc-row';
-            const name = document.createElement('span');
-            name.className = 'mem-pressure-proc-name';
-            name.title = p.command;
-            name.textContent = p.name;
-            const mb = document.createElement('span');
-            mb.className = 'mem-pressure-proc-mb';
-            mb.textContent = Math.round(p.rss_mb) + ' MB';
-            row.appendChild(name);
-            row.appendChild(mb);
-            el.appendChild(row);
-        });
-    } catch {
-        el.textContent = 'Could not load processes.';
-        el.className = 'mem-pressure-proc-empty';
-    }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

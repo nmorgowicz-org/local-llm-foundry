@@ -7,7 +7,7 @@ import Router from './router.js';
 import {
   dom, wizardState, closeSpawnWizard, getEffectiveArch, isUnifiedMemory,
 } from './spawn-wizard.js';
-import { buildPresetPayload } from './spawn-wizard-review-step.js';
+import './spawn-wizard-review-step.js';
 import { _binaryReady } from './spawn-wizard-binary-prereq.js';
 import { buildRapidMlxConfig } from './spawn-wizard-rapid-mlx.js';
 import { openEvidenceDrawer, evidenceFromCommandPreview } from './evidence-drawer.js';

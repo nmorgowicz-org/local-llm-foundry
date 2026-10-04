@@ -199,7 +199,7 @@ async function triggerSelfUpdate() {
     }
 }
 
-function _pollForReconnect(newVersion) {
+function _pollForReconnect(_newVersion) {
     const btn = document.getElementById('release-notes-update-btn');
     const panel = document.getElementById('release-notes-panel');
     let attempts = 0;

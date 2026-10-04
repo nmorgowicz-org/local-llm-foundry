@@ -27,7 +27,6 @@ const PREDEFINED_SECTIONS = [
     { id: 'tone', name: 'Tone', icon: '🎭', placeholder: 'e.g. "Noir atmosphere. Wry humor. Short punchy sentences. No melodrama."' },
 ];
 
-let sidebarResizing = false;
 let sidebarState = {
     expanded: settingsState.context_notes_sidebar_expanded === true
         || localStorage.getItem('llama_monitor_sidebar_expanded') === 'true',
@@ -209,7 +208,7 @@ function renderNotesList() {
                     </div>
                 </div>
                 <div class="sidebar-section-notes">
-                    ${hasNotes ? sectionNotes.map((note, i) => {
+                    ${hasNotes ? sectionNotes.map((note, _i) => {
                         const originalIndex = notes.indexOf(note);
                         const isEditing = sidebarState.editingNoteIndex === originalIndex;
                         return `
@@ -273,7 +272,7 @@ function renderNotesList() {
                 </div>
             </div>
             <div class="sidebar-section-notes">
-                ${sectionNotes.length ? sectionNotes.map((note, i) => {
+                ${sectionNotes.length ? sectionNotes.map((note, _i) => {
                     const originalIndex = notes.indexOf(note);
                     const isEditing = sidebarState.editingNoteIndex === originalIndex;
                     return `
@@ -408,25 +407,6 @@ function setupNoteHandlers() {
     });
 }
 
-function formatNoteTime(timestamp) {
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diffMs = now - date;
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-
-    // Use local-time day boundaries so "Xd ago" matches calendar days.
-    const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
-    const dateStart = new Date(date); dateStart.setHours(0, 0, 0, 0);
-    const dayDiff = Math.floor((todayStart - dateStart) / 86400000);
-
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (dayDiff < 7) return `${dayDiff}d ago`;
-    return date.toLocaleDateString();
-}
-
 // ── Note CRUD Operations ─────────────────────────────────────────────────────
 
 function addNoteForSection(section) {
@@ -548,7 +528,7 @@ function saveEditingNote(index) {
     });
 }
 
-function cancelEditingNote(index) {
+function cancelEditingNote(_index) {
     sidebarState.editingNoteIndex = null;
     renderNotesList();
 }
@@ -592,7 +572,6 @@ function setupResizeHandle() {
     if (!messages || !handle) return;
 
     handle.addEventListener('mousedown', (e) => {
-        sidebarResizing = true;
         handle.classList.add('active');
         e.preventDefault();
         document.body.style.cursor = 'col-resize';
@@ -609,7 +588,6 @@ function setupResizeHandle() {
         };
 
         const onMouseUp = () => {
-            sidebarResizing = false;
             handle.classList.remove('active');
             document.body.style.cursor = '';
             document.body.style.userSelect = '';

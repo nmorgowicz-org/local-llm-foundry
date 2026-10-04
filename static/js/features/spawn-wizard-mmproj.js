@@ -18,7 +18,7 @@ function _mmprojQuantLabel(file) {
   return '';
 }
 
-function _preferredMmprojQuant(modelFilename = '') {
+function _preferredMmprojQuant(_modelFilename = '') {
   // Family is authoritative only when supplied by model metadata/profile. Do
   // not infer a runtime capability or preferred projector from a filename.
   const family = wizardState.model.family || '';

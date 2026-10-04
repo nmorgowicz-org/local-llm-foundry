@@ -1,5 +1,4 @@
 console.log('[WIZARD] MODULE LOADED');
-/* global DOMPurify */
 // Set by spawn-wizard-hf-browse.js so this module can re-trigger the quant
 // advisor once memory/VRAM data arrives, without a circular import. Declared
 // before any imports since spawn-wizard-hf-browse.js calls
@@ -10,27 +9,19 @@ export function setOnMemoryAvailabilityReady(fn) {
   onMemoryAvailabilityReady = fn;
 }
 
-import { buildArchitectureLabel, isMoEEligible } from './setup-view.js';
+import { buildArchitectureLabel } from './setup-view.js';
 import { getPlatformInfo } from '../core/platform-info.js';
-import { readLastStatus } from './template-autoupdater.js';
+import './template-autoupdater.js';
 import { RAPID_MLX_DEFAULT_SPECULATIVE_TOKENS } from './rapid-mlx-prefill.js';
 import {
   bindRapidMlxAdvancedControls,
-  syncRapidSpeculativeFields,
-  applyReasoningModeLock,
   applyRapidMlxDefaults,
-  renderRapidExclusionWarnings,
   scheduleRapidMlxProfileFetch,
   refreshRapidMlxSidecars,
 } from './spawn-wizard-rapid-mlx.js';
 import {
-  kvBpe,
-  formatCtx,
   formatParams,
-  formatGB,
-  formatVramTotal,
   formatBytes,
-  formatSpeed,
 } from './spawn-wizard-format.js';
 import { openCardPanel, _closeCardPanel } from './spawn-wizard-model-card.js';
 export { openCardPanel };
@@ -57,7 +48,6 @@ import {
   resetOriginState,
   startOriginResolve,
   setOriginResolverPromise,
-  awaitOriginResolve,
   _autoResolveHfOrigin,
   _refreshHfOriginSection,
   _attachOriginTags,
@@ -488,16 +478,15 @@ function _initViewMode() {
 import { openDeferredFileBrowser, openModelFileBrowser } from './file-browser-launcher.js';
 import { showToast, showToastWithActions, resolveNotification } from './toast.js';
 import Router, { routeForCurrentView } from './router.js';
-import { scheduleEstimate, cancelEstimate, buildEstimateBody, rapidEstimatePolicyFromWizardHardware } from './vram-estimate.js';
-import { openEvidenceDrawer, openEstimateEvidenceDrawer, evidenceFromCommandPreview } from './evidence-drawer.js';
-import { setTuneConfig, showTunePanel } from './tune-panel.js';
+import './vram-estimate.js';
+import './evidence-drawer.js';
+import './tune-panel.js';
 import { renderSuggestionCards } from './tuning-cards.js';
-import { setHeaderMode } from './attach-detach.js';
+import './attach-detach.js';
 import { lastCapabilities, lastSystemMetrics } from '../core/app-state.js';
 let llamaBinaryCapabilitiesPromise = null;
 let llamaBinaryCapabilities = null;
 import {
-  hfStartDownload,
   hfShowDownloadPanel,
   hfHideDownloadPanel,
 } from './hf-browse.js';
@@ -715,7 +704,6 @@ export const wizardState = {
     prefillBatchSize: '',
     completionBatchSize: '',
       retainedCacheMib: 8192,
-    cacheMode: 'custom',
     workloadScenario: 'interactive_coding_agent',
     reasoningMode: null,         // llama.cpp thinking/reasoning select
     rapidReasoningMode: 'on',    // Rapid-MLX checkbox (defaults to on)
@@ -775,7 +763,7 @@ const PENDING_RESTORE_TIMEOUT_MS = 5 * 60 * 1000;
 // user their whole configuration.
 export function snapshotPendingRestore() {
   wizardState._pendingRestore = {
-    hardware: JSON.parse(JSON.stringify(wizardState.hardware)),
+    hardware: structuredClone(wizardState.hardware),
     savedAt: Date.now(),
   };
 }
@@ -1973,7 +1961,6 @@ function bindEvents() {
   });
   dom.specTypeSelect?.addEventListener('change', () => {
     const v = dom.specTypeSelect.value;
-    const isNgram = v && (v.includes('ngram') || v === 'ngram');
     const isDraftMtp = v && v.includes('draft-mtp');
     const isDraftModel = v === 'draft-model';
 

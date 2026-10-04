@@ -31,12 +31,6 @@ function normalizePath(path) {
     return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 
-function joinModelPath(root, relative) {
-    if (!root) return '';
-    const separator = root.includes('\\') ? '\\' : '/';
-    return root.replace(/[\\/]+$/, '') + separator + relative.replace(/\//g, separator);
-}
-
 function modelForPath(path) {
     const wanted = normalizePath(path);
     return fbModelInventory?.find(model => normalizePath(model.path) === wanted) || null;

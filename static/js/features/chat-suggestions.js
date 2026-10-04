@@ -4,8 +4,8 @@
 import { activeChatTab, autoResizeChatInput, normalizeGeneratedMessageContent, persistChatTabs } from './chat-state.js';
 import { chat, settingsState } from '../core/app-state.js';
 import { escapeHtml } from '../core/format.js';
-import { showToast, showToastWithActions } from './toast.js';
-import { toggleExplicitMode } from './chat-templates.js';
+import { showToast } from './toast.js';
+import './chat-templates.js';
 import { sendChatWithContent } from './chat-transport.js';
 import { saveSettings } from './settings.js';
 
@@ -180,11 +180,11 @@ function renderCustomCategoryButtons() {
     if (customs.length === 0) return;
 
     // Separate explicit and non-explicit custom categories
-    const explicitCustoms = customs.filter(([key, catData]) => {
+    const explicitCustoms = customs.filter(([_key, catData]) => {
         const isExplicit = typeof catData === 'string' ? false : (catData.explicit || false);
         return isExplicit;
     });
-    const nonExplicitCustoms = customs.filter(([key, catData]) => {
+    const nonExplicitCustoms = customs.filter(([_key, catData]) => {
         const isExplicit = typeof catData === 'string' ? false : (catData.explicit || false);
         return !isExplicit;
     });
@@ -223,7 +223,7 @@ function renderCustomCategoryButtons() {
         chips.appendChild(chipsInner);
         customGroup.appendChild(chips);
 
-        nonExplicitCustoms.forEach(([key, catData]) => {
+        nonExplicitCustoms.forEach(([key, _catData]) => {
             const label = key.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
             const btn = document.createElement('button');
             btn.className = 'suggestion-category-btn';
@@ -253,7 +253,7 @@ function renderCustomCategoryButtons() {
         chips.appendChild(chipsInner);
         explicitGroupEl.appendChild(chips);
 
-        explicitCustoms.forEach(([key, catData]) => {
+        explicitCustoms.forEach(([key, _catData]) => {
             const label = key.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
             const btn = document.createElement('button');
             btn.className = 'suggestion-category-btn';
@@ -1098,12 +1098,6 @@ function renderCustomCategories() {
     });
 }
 
-// Keep for backward compat — now delegates to both lists
-function renderCategoriesList() {
-    renderBuiltinCategories();
-    renderCustomCategories();
-}
-
 function addCategory(name, focusKeywords, isExplicit = false) {
     if (!name || !focusKeywords) {
         showToast('Please provide both a name and focus keywords', 'error');
@@ -1127,18 +1121,6 @@ function removeCategory(key) {
         renderCustomCategories();
         renderCustomCategoryButtons();
         showToast('Category removed', 'success');
-    }
-}
-
-function toggleCategoryExplicit(key) {
-    const cat = suggestionsState.customCategories.get(key);
-    if (cat) {
-        cat.explicit = !cat.explicit;
-        suggestionsState.customCategories.set(key, cat);
-        saveCustomCategories();
-        renderCustomCategories();
-        renderCustomCategoryButtons();
-        showToast(`Category "${key}" ${cat.explicit ? 'marked as explicit' : 'unmarked as explicit'}`, 'success');
     }
 }
 

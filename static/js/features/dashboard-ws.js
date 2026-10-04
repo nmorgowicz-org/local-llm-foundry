@@ -11,62 +11,54 @@
 import { formatMetricAge, formatMetricNumber, escapeHtml } from '../core/format.js';
 import { deriveTelemetryGrade, gradeLabel, gradeStatusClass, gradeActionCopy } from '../features/telemetry-grade.js';
 import {
-    sessionState,
-    prevValues,
-    metricSeries,
-    liveOutputTracker,
-    metricCapabilities,
-    requestActivity,
-    recentTasks,
-    slotSnapshots,
-    setWsData,
-    setLastServerState,
-    setLastLlamaMetrics,
-    setLastRapidMlxMetrics,
-    getLastRapidMlxMetrics,
-    setContextCapacityTokens,
-    setLastSystemMetrics,
-    setLastGpuMetrics,
-    setLastCapabilities,
-    setLastGpuData,
-    lastLlamaMetrics,
-    lastSystemMetrics,
-    contextCapacityTokens,
-    wsData,
-    currentPollInterval,
-    monitorState,
-    setupViewState,
+  sessionState,
+  prevValues,
+  metricSeries,
+  setWsData,
+  setLastServerState,
+  setLastLlamaMetrics,
+  setLastRapidMlxMetrics,
+  getLastRapidMlxMetrics,
+  setContextCapacityTokens,
+  setLastSystemMetrics,
+  setLastGpuMetrics,
+  setLastCapabilities,
+  setLastGpuData,
+  lastLlamaMetrics,
+  lastSystemMetrics,
+  wsData,
+  monitorState,
+  setupViewState,
 } from '../core/app-state.js';
 import {
-    setChipState,
-    setCardState,
-    setEmptyState,
-    pushSparklinePoint,
-    renderSparkline,
-    renderLiveSparkline,
-    updateLiveOutputEstimate,
-    updateRequestActivity,
-    renderRecentTask,
-    renderActivityRail,
-    renderSlotGrid,
-    getPrimarySlot,
-    renderSlotUtilization,
-    renderBatchEfficiency,
-    renderRequestStats,
-    renderGenerationDetailItems,
-    renderDecodingConfig,
-    formatParamCount,
-    renderCapabilityPopover,
-    updateMetricDelta,
-    setMetricSectionVisibility,
-    renderGpuCard,
-    renderSystemCard,
+  setChipState,
+  setCardState,
+  setEmptyState,
+  pushSparklinePoint,
+  renderSparkline,
+  renderLiveSparkline,
+  updateLiveOutputEstimate,
+  updateRequestActivity,
+  renderRecentTask,
+  renderActivityRail,
+  renderSlotGrid,
+  getPrimarySlot,
+  renderSlotUtilization,
+  renderBatchEfficiency,
+  renderRequestStats,
+  renderGenerationDetailItems,
+  renderDecodingConfig,
+  renderCapabilityPopover,
+  updateMetricDelta,
+  setMetricSectionVisibility,
+  renderGpuCard,
+  renderSystemCard,
 } from './dashboard-render.js';
 import { animateNumber } from './animate.js';
 import { refreshChatTelemetry } from './chat-params.js';
 import { updateContextCard, updateContextCardFromChatTabs } from './context-card.js';
 import { refreshTopCockpit } from './nav.js';
-import { activeChatTab } from './chat-state.js';
+import './chat-state.js';
 import { setRemoteAgentStatus } from './remote-agent.js';
 import { hideConnectingState, switchView } from './setup-view.js';
 import Router from './router.js';
@@ -117,10 +109,6 @@ function hasBlockingOverlayOpen() {
     ].filter(isElementActuallyVisible);
 
     return candidates.length > 0;
-}
-
-function isBackgroundUiSuspended() {
-    return !isTabVisible || hasBlockingOverlayOpen();
 }
 
 function syncBackgroundPowerState() {
@@ -446,7 +434,6 @@ function updateDashboard(d) {
     // mode: "off" | "logs-only" | "sleep"
     const mode = d.mode ?? (d.sleep_mode ? 'sleep' : 'off');
     const isSleeping = mode === 'sleep';
-    const isLogsOnly = mode === 'logs-only';
 
     // Inference metrics (lightweight; always update for basic status)
     updateInferenceMetrics(d);
@@ -844,7 +831,6 @@ function updateInferenceMetrics(d) {
     const throughputAge = ce.mThroughputAge;
     const throughputCard = ce.throughputCard;
     const generationCard = ce.generationCard;
-    const contextCard = ce.contextCard;
     const promptDeltaEl = ce.mPromptDelta;
     const genDeltaEl = ce.mGenDelta;
 
@@ -852,8 +838,6 @@ function updateInferenceMetrics(d) {
     const genRate = l?.generation_tokens_per_sec || 0;
     const promptDisplayRate = promptRate > 0 ? promptRate : l?.last_prompt_tokens_per_sec || 0;
     const genDisplayRate = genRate > 0 ? genRate : l?.last_generation_tokens_per_sec || 0;
-    const promptAgeMs = l?.last_prompt_throughput_unix_ms || 0;
-    const genAgeMs = l?.last_generation_throughput_unix_ms || 0;
     const latestThroughputMs = Math.max(l?.last_prompt_throughput_unix_ms || 0, l?.last_generation_throughput_unix_ms || 0);
     const throughputActive = promptRate > 0 || genRate > 0;
 

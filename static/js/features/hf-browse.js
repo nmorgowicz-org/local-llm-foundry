@@ -186,24 +186,6 @@ function escHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function hfRelativeAge(iso) {
-  if (!iso) return '';
-  const ms = Date.now() - new Date(iso).getTime();
-  if (isNaN(ms) || ms < 0) return '';
-  const mins  = Math.floor(ms / 60_000);
-  const hours = Math.floor(ms / 3_600_000);
-  const days  = Math.floor(ms / 86_400_000);
-  const weeks = Math.floor(days / 7);
-  const months = Math.floor(days / 30);
-  const years  = Math.floor(days / 365);
-  if (mins  <  60)  return `${mins}m ago`;
-  if (hours < 24)   return `${hours}h ago`;
-  if (days  <  7)   return `${days}d ago`;
-  if (weeks <  5)   return `${weeks}w ago`;
-  if (months < 12)  return `${months}mo ago`;
-  return `${years}y ago`;
-}
-
 function formatBytes(bytes) {
   if (!bytes) return '';
   const b = Number(bytes);
@@ -330,22 +312,6 @@ function extractBaseModelName(repoId) {
 }
 
 // ── Phase 8B2: MLX lineage discovery ──────────────────────────────────────────
-// Fetch MLX derivatives and conversion recipes for a source repo.
-
-async function fetchMlxLineage(repoId) {
-  try {
-    const headers = { ...getAuthHeaders(), 'Content-Type': 'application/json' };
-    const resp = await fetch('/api/hf/mlx-derivatives', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ repoId }),
-    });
-    if (!resp.ok) return null;
-    return await resp.json();
-  } catch {
-    return null;
-  }
-}
 
 // ── Phase 8B2: Selection payload builder ──────────────────────────────────────
 // Build structured selection payload with repoId/revision/variant/lineage.
@@ -431,26 +397,6 @@ async function resolveScope({ mlxActive, ggufActive, allActive }) {
   return { format: 'gguf', includeUnsupported: false };
 }
 
-let _cachedPlatformBackend = null;
-
-async function detectPlatformBackend() {
-  if (_cachedPlatformBackend !== null) return _cachedPlatformBackend;
-
-  try {
-    const headers = getAuthHeaders();
-    const resp = await fetch('/api/llama-binary/platform-info', { headers });
-    if (resp.ok) {
-      const data = await resp.json();
-      _cachedPlatformBackend = data.rapid_mlx_local_available ? 'rapid_mlx' : 'llama_cpp';
-      return _cachedPlatformBackend;
-    }
-  } catch {
-    // non-fatal; default to llama_cpp
-  }
-
-  _cachedPlatformBackend = 'llama_cpp';
-  return 'llama_cpp';
-}
 
 // ── Sort resolution (Phase 8B1) ──────────────────────────────────────────────
 // Two different jobs, and conflating them is what made this dropdown inert.
@@ -1138,7 +1084,7 @@ export async function hfListFiles({
   repoId,
   container,
   vramGb,
-  onOpenCardPanel,
+  onOpenCardPanel: _onOpenCardPanel,
   onSelectFile,
   onFilesLoaded,
 }) {

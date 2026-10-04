@@ -75,7 +75,7 @@ export function collectSettings() {
         try {
             const url = new URL(endpoint);
             port = parseInt(url.port) || 8001;
-        } catch(e) {
+        } catch(_e) {
             // invalid URL, use default
         }
     }
@@ -576,7 +576,7 @@ function _bindSettingsEvents() {
     });
 
     // Appearance tab live controls
-    document.getElementById('settings-appearance-theme')?.addEventListener('change', (e) => {
+    document.getElementById('settings-appearance-theme')?.addEventListener('change', (_e) => {
         _applyAndSaveAppearance();
     });
     document.getElementById('settings-appearance-chat-style')?.addEventListener('change', () => {
@@ -723,7 +723,6 @@ async function _loadSettingsGpuInfo() {
         const d = await res.json();
 
         const wrap = document.createElement('div');
-        const mut = document.createTreeWalker(wrap, NodeFilter.SHOW_ELEMENT);
 
         const makeRow = (label, value) => {
             const div = document.createElement('div');

@@ -120,11 +120,8 @@ export function updateVramDisplay() {
     const kv = hasKVSplit ? 0 : (est.kv_cache_bytes || 0); // unified KV when no split
     const mmproj = est.mmproj_bytes || 0;
     const mtp = est.mtp_bytes || 0;
-    const linearState = est.linear_attn_state_bytes || 0;
     const tqTransient = est.turboquant_transient_peak_bytes || 0;
     const oh = est.overhead_bytes || 0;
-    const ramBytes = est.ram_bytes || 0;
-    const recommendation = est.recommendation || 'risk';
     // Phase 6 Part B: prefix cache budget display (informational, not consumed until active).
     // Show when budget exists (backend returns > 0 when configured_ceiling_bytes > 0).
     const prefixCacheBudget = est.mlx_prefix_cache_bytes || 0;
@@ -447,7 +444,7 @@ async function renderScenarioCards(modelBytes, arch, availVram) {
   return renderLlamaCppScenarioCards(modelBytes, arch, availVram, token);
 }
 
-async function renderLlamaCppScenarioCards(modelBytes, arch, availVram, token) {
+async function renderLlamaCppScenarioCards(_modelBytes, _arch, availVram, token) {
   const hw = wizardState.hardware;
   const uc = wizardState.useCase;
   const nCtxTrain = wizardState.model.nCtxTrain || 0;
@@ -645,7 +642,7 @@ const MLX_SCENARIOS = [
   },
 ];
 
-async function renderMlxScenarioCards(modelBytes, arch, availVram, token) {
+async function renderMlxScenarioCards(modelBytes, _arch, availVram, token) {
   const hw = wizardState.hardware;
   const currentCtx = hw.contextSize || 8192;
   const activeMaxNumSeqs = hw.parallelSlots || 1;

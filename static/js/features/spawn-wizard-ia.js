@@ -211,7 +211,7 @@ export function createWizardIA(config) {
   // hold a separate createWizardIA() instance, and their groups share the
   // 'mlx-wiz-group' class, so a document-wide query here would cross-toggle
   // the other loader's groups.
-  function applyTierVisibility(root, profile) {
+  function applyTierVisibility(_root, profile) {
     if (!iaContainer) return;
     iaContainer.querySelectorAll('.mlx-wiz-group[data-mlx-wiz-critical]').forEach(el => {
       const critical = el.dataset.mlxWizCritical === 'true';

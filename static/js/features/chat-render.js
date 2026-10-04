@@ -5,21 +5,19 @@
 import { chat, lastLlamaMetrics, contextCapacityTokens, settingsState } from '../core/app-state.js';
 import { escapeHtml } from '../core/format.js';
 import {
-    activeChatTab,
-    addChatTab,
-    getChatViewBindings,
-    hideChatTab,
-    registerChatViewBindings,
-    scheduleChatPersist,
-    switchChatTab,
-    closeChatTab,
-    renameChatTab,
-    normalizeTabForSave,
-    togglePinTab,
-    restoreTabFromTrash,
+  activeChatTab,
+  addChatTab,
+  getChatViewBindings,
+  hideChatTab,
+  registerChatViewBindings,
+  scheduleChatPersist,
+  closeChatTab,
+  renameChatTab,
+  normalizeTabForSave,
+  togglePinTab,
 } from './chat-state.js';
 import { showToast, showToastWithActions, showConfirmDialog } from './toast.js';
-import { openTemplateManager } from './chat-templates.js';
+import './chat-templates.js';
 import { renderChatSessionsSidebar } from './chat-sessions-sidebar.js';
 import Router from './router.js';
 
@@ -181,7 +179,7 @@ function colorizeTextNodes(block, dialogueRe) {
     }
 }
 
-function colorizeWithRebuild(block, fullText, matches) {
+function colorizeWithRebuild(block, _fullText, matches) {
     // Build a character stream that tracks dialogue state and formatting tags.
     // Then rebuild the block's HTML with <span class="rp-dialogue"> at quote boundaries,
     // preserving ALL inline formatting throughout.
@@ -375,24 +373,6 @@ let _draggedTabId = null;
 let _templateCache = null;
 let _templateCacheTimestamp = 0;
 
-async function getTemplateCache() {
-    const now = Date.now();
-    if (_templateCache && (now - _templateCacheTimestamp) < 30000) {
-        return _templateCache;
-    }
-    const templates = await window.loadTemplates?.();
-    _templateCache = templates || [];
-    _templateCacheTimestamp = now;
-    return _templateCache;
-}
-
-async function getTemplateNameById(id) {
-    if (!id) return null;
-    const templates = await getTemplateCache();
-    const template = templates.find(t => t.id === id);
-    return template ? template.name : null;
-}
-
 export function renderChatTabs() {
     ensureChatElements();
     const bar = chatTabBarEl;
@@ -583,9 +563,6 @@ export function renderChatMessages(optionsOrSkip = false) {
         ? optionsOrSkip
         : { skipAutoScroll: !!optionsOrSkip };
     const skipAutoScroll = !!options.skipAutoScroll;
-    const forceScrollToBottom = options.forceScrollToBottom !== undefined
-        ? !!options.forceScrollToBottom
-        : !skipAutoScroll;
 
     if (!tab) {
         container.innerHTML = `

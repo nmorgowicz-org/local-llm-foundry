@@ -262,7 +262,7 @@ function _setBarSegment(el, pct) {
     el.style.width = pct + '%';
 }
 
-function _renderUnifiedBar(segs, labels, purgeBtn, metalCapBytes, freeNow, reclaimable, availLabel, totalLabel) {
+function _renderUnifiedBar(segs, labels, purgeBtn, _metalCapBytes, _freeNow, reclaimable, availLabel, _totalLabel) {
     // Segments now: GPU limit | In use | Available | Freeable
     // GPU limit is the non-GPU-usable portion (total - Metal cap).
     const gpuLimitEl = document.getElementById('setup-mem-bar-seg-gpulimit');
@@ -304,7 +304,7 @@ function _renderUnifiedBar(segs, labels, purgeBtn, metalCapBytes, freeNow, recla
     }
 }
 
-function _renderDiscreteBar(segs, labels, purgeBtn, availLabel, totalLabel) {
+function _renderDiscreteBar(segs, labels, purgeBtn, availLabel, _totalLabel) {
     // Discrete GPU bar: in_use + available (VRAM only)
     _setBarSegment(document.getElementById('setup-mem-bar-seg-inuse'), segs.inuse);
     _setBarSegment(document.getElementById('setup-mem-bar-seg-avail'), segs.avail);
@@ -1021,7 +1021,7 @@ function _renderFlatLaunchGrid(grid, presets, activePresetId, hasUserPresets, sh
     }
 }
 
-function _renderGroupedLaunchGrid(grid, presets, activePresetId, hasUserPresets, showNewConfigCard) {
+function _renderGroupedLaunchGrid(grid, presets, activePresetId, _hasUserPresets, showNewConfigCard) {
     const byFamily = {};
     presets.forEach(p => {
         const key = p.family || 'other';

@@ -10,24 +10,22 @@ import { _showConfirm, openPresetMtpRepairForModel } from './presets.js';
 import { openCardPanel, openSpawnWizard } from './spawn-wizard.js';
 import { buildEstimateBody } from './vram-estimate.js';
 import {
-    hfSearch,
-    hfListFiles,
-    hfStartCompanionDownload,
-    hfStartDownload,
-    hfPollDownload,
-    hfCancelDownload,
-    hfShowDownloadPanel,
-    hfHideDownloadPanel,
-    hfRenderDiscoverPills,
-    hfLoadQuickPicks,
-    getRecommendedMmproj,
-    hfCreateScopeSelector,
-    hfCreateSortSelector,
-    ensureCommunitySourceCatalog,
-    _resetCommunitySourceCatalog,
-    resolveAuthorRole,
-    HF_SCOPE,
-    HF_SORT,
+  hfSearch,
+  hfListFiles,
+  hfStartCompanionDownload,
+  hfStartDownload,
+  hfCancelDownload,
+  hfShowDownloadPanel,
+  hfHideDownloadPanel,
+  hfRenderDiscoverPills,
+  hfLoadQuickPicks,
+  getRecommendedMmproj,
+  hfCreateScopeSelector,
+  hfCreateSortSelector,
+  ensureCommunitySourceCatalog,
+  _resetCommunitySourceCatalog,
+  resolveAuthorRole,
+  HF_SORT,
 } from './hf-browse.js';
 
 const PREFS_KEY = 'llama-monitor-models-prefs';
@@ -136,7 +134,6 @@ let cachedVram = 0;
 // True when the GPU pool is unified memory (Apple Silicon / Metal) — selects the Metal
 // overhead model in the backend estimator instead of the discrete-GPU one.
 let cachedUnified = false;
-let cachedRamTotal = 0;
 
 // Library preferences
 let prefs = loadPrefs();
@@ -2987,7 +2984,6 @@ async function initHfDownloadTab() {
 
     // Fetch hardware info
     await fetchGpuVram();
-    await fetchSystemRam();
 
     // Helpers to build search params while preserving active filters
     const buildSearchParams = () => {
@@ -3475,7 +3471,7 @@ async function onHfFileSelected(file, repoId, downloadPanel) {
                 repoId,
                 filePath: modelFilePath,
                 panelEl: downloadPanel,
-                onComplete: (downloadId, localPath) => {
+                onComplete: (downloadId, _localPath) => {
                     hfState.currentDownloadIds.add(downloadId);
                     // Refresh library tab
                     invalidateModelInventory();
@@ -3843,18 +3839,6 @@ async function fetchGpuVram(retriesLeft = 30, background = false) {
         }
     } catch {
         /* ignore */
-    }
-}
-
-async function fetchSystemRam() {
-    try {
-        const headers = window.authHeaders ? window.authHeaders() : {};
-        const resp = await fetch('/metrics/system', { headers });
-        if (!resp.ok) return;
-        const d = await resp.json();
-        cachedRamTotal = (d.ram_total_gb || 0) * 1024 * 1024 * 1024;
-    } catch {
-        // ignore
     }
 }
 
@@ -4538,12 +4522,6 @@ function formatParams(paramB) {
 function formatCtx(n) {
     if (n >= 1024) return Math.round(n / 1024) + 'k';
     return String(n);
-}
-
-function formatVramTotal(bytes) {
-    const gb = bytes / (1024 ** 3);
-    if (gb >= 100) return Math.round(gb) + ' GB';
-    return gb.toFixed(1) + ' GB';
 }
 
 function formatGB(bytes) {

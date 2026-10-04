@@ -3132,7 +3132,6 @@ function _buildFormPreset(existing) {
                 port: rapidPort,
                 ...(function() {
                     const et = nullableBoolOpt('modal-rapid-enable-thinking');
-                    const re = strVal('modal-rapid-reasoning-effort');
                     const out = {};
                     out.enable_thinking = et;
                     // reasoning_effort removed: config field exists but argv builder does not emit --reasoning-effort.
@@ -4433,7 +4432,7 @@ export async function _showConfirm(title, message) {
     });
 }
 
-function _renderContextPills(mode, section) {
+function _renderContextPills(_mode, _section) {
     const pillsContainer = document.getElementById('preset-context-pills');
     if (!pillsContainer) return;
     const pills = [

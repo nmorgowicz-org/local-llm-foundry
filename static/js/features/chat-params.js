@@ -139,7 +139,7 @@ function duplicateTabSettings(sourceId) {
     const target = activeChatTab();
     if (!source || !target || source.id === target.id) return;
     target.system_prompt = source.system_prompt;
-    target.model_params = JSON.parse(JSON.stringify(source.model_params));
+    target.model_params = structuredClone(source.model_params);
     target.updated_at = Date.now();
     scheduleChatPersist();
     syncParamPanelToTab();
@@ -220,13 +220,6 @@ function calcKeepTailForCapacity(conversational, capacity) {
     const minRecentTurns = Math.min(conversational.length - 1, 6);
     // Must keep enough recent turns for continuity and still drop at least 1.
     return Math.max(1, Math.min(Math.max(keep, minRecentTurns), conversational.length - 1));
-}
-
-function buildTranscript(messages) {
-    return messages
-        .filter(m => !m.compaction_marker && m.role !== 'system')
-        .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
-        .join('\n\n');
 }
 
 function extractRollingMemory(msg) {
@@ -1015,7 +1008,6 @@ function applyChatStyle(style) {
 
 export { applyChatStyle };
 
-const CHAT_STYLES = ['rounded', 'compact', 'minimal', 'bubbly', 'paper', 'terminal', 'slate'];
 const CHAT_STYLE_LABELS = { rounded: 'Rounded', compact: 'Compact', minimal: 'Minimal', bubbly: 'Bubbly', paper: 'Paper', terminal: 'Terminal', slate: 'Slate' };
 
 function toggleStylePanel() {
@@ -1221,7 +1213,7 @@ export function initChatParams() {
     });
 
     // Bind chat header buttons
-    document.getElementById('btn-behavior')?.addEventListener('click', (e) => {
+    document.getElementById('btn-behavior')?.addEventListener('click', (_e) => {
     const btn = document.getElementById('btn-behavior');
     const panel = document.getElementById('chat-behavior-panel');
     const wasOpen = panel.classList.contains('open');
@@ -1239,7 +1231,7 @@ export function initChatParams() {
         }
     }, 0);
 });
-    document.getElementById('btn-model-params')?.addEventListener('click', (e) => {
+    document.getElementById('btn-model-params')?.addEventListener('click', (_e) => {
     const btn = document.getElementById('btn-model-params');
     const panel = document.getElementById('chat-params-panel');
     const wasOpen = panel.classList.contains('open');
@@ -1257,7 +1249,7 @@ export function initChatParams() {
         }
     }, 0);
 });
-    document.getElementById('btn-chat-style')?.addEventListener('click', (e) => {
+    document.getElementById('btn-chat-style')?.addEventListener('click', (_e) => {
     const btn = document.getElementById('btn-chat-style');
     toggleStylePanel();
     setTimeout(() => {
@@ -1429,7 +1421,6 @@ function stopResize() {
 
 function updateResizeHandleUI() {
     const handle = document.getElementById('chat-resize-handle');
-    const hint = handle?.querySelector('.resize-hint');
     if (handle && textareaEl) {
         const height = textareaEl.getBoundingClientRect().height;
         const max = 200;
@@ -1449,7 +1440,6 @@ export function resetChatInputHeight() {
 
 // ── Persona Menu Bindings ───────────────────────────────────────────────────
 
-let personaMenuEl = null;
 let personaMenuListEl = null;
 
 export function registerPersonaMenuBindings() {
@@ -1459,7 +1449,6 @@ export function registerPersonaMenuBindings() {
     const name = document.getElementById('chat-persona-menu-name');
     const editBtn = document.getElementById('chat-persona-edit-prompt');
     
-    personaMenuEl = menu;
     personaMenuListEl = list;
     
     if (!btn || !menu || !list || !name) return;

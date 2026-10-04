@@ -4,9 +4,19 @@
 
 import { showPromptDialog } from './toast.js';
 import { chat } from '../core/app-state.js';
-import { closeChatTab, addChatTab, renameChatTab,
-          togglePinTab, activeChatTab, archiveChatTab, hideChatTab, restoreChatTab, setChatTabVisibility,
-          duplicateChatTab, deleteManyChatTabs, archiveManyChatTabs } from './chat-state.js';
+import {
+  closeChatTab,
+  addChatTab,
+  renameChatTab,
+  togglePinTab,
+  archiveChatTab,
+  hideChatTab,
+  restoreChatTab,
+  setChatTabVisibility,
+  duplicateChatTab,
+  deleteManyChatTabs,
+  archiveManyChatTabs,
+} from './chat-state.js';
 import Router from './router.js';
 
 const CSP_COLLAPSED_KEY = 'csp-collapsed';
@@ -376,14 +386,6 @@ function _buildSessionItem(tab, isActive, isSelected) {
 
     // Selection helpers
     const selectedIds = chat.visibilityUi?.selectedIds || new Set();
-
-    const toggleSelection = (id, addToExisting) => {
-        if (!selectedIds.has(id)) {
-            selectedIds.add(id);
-        } else if (!addToExisting) {
-            selectedIds.delete(id);
-        }
-    };
 
     const selectTab = (id, e) => {
         if (e && (e.ctrlKey || e.metaKey)) {
@@ -875,14 +877,4 @@ async function _resolvePersonaLabel(itemEl, templateId) {
     const templates = await window.loadTemplates?.();
     const tmpl = templates?.find(t => t.id === templateId);
     span.textContent = tmpl?.name || '';
-}
-
-function escapeHtml(s) {
-    const div = document.createElement('div');
-    div.textContent = s;
-    return div.innerHTML;
-}
-
-function escapeAttr(s) {
-    return String(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }

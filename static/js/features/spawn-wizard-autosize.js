@@ -13,7 +13,7 @@ import { formatCtx } from './spawn-wizard-format.js';
 import { buildEstimateBody, rapidEstimatePolicyFromWizardHardware } from './vram-estimate.js';
 import { showToast } from './toast.js';
 
-async function clampAutoSizeResultToSizingMath(result, arch, modelBytes, availVram) {
+async function clampAutoSizeResultToSizingMath(result, _arch, modelBytes, availVram) {
   if (!result || !modelBytes || !availVram) return { result, adjusted: false };
 
   const modelCap = wizardState.model.nCtxTrain || 0;

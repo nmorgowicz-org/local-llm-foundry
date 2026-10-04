@@ -176,7 +176,6 @@ export async function autoInstallChatTemplate(force = false) {
 
   // Fast path: family already known (resolved from real metadata earlier in the flow)
   let family = wizardState.model.family || null;
-  const tpl = getDefaultTemplateForFamily(family);
 
   // If no family from fast path, we need to detect it.
   // For local/import models, await the origin resolver first (it fires from

@@ -310,7 +310,7 @@ function moeLayerCount(bundle, selection) {
 }
 
 function cloneSelection(sel) {
-    return sel ? JSON.parse(JSON.stringify(sel)) : {};
+    return sel ? structuredClone(sel) : {};
 }
 
 function selectionsEqual(a, b) {
@@ -325,7 +325,7 @@ function apiHeaders(json = false) {
 // A reason lookup against the backend's capability_reasons. Entries are
 // { field, value, reason }; a match means the option is unavailable and must be
 // rendered disabled (never hidden) with the reason wired via aria-describedby.
-function reasonFor(bundleId, capabilityReasons, field, value) {
+function reasonFor(_bundleId, capabilityReasons, field, value) {
     const match = (capabilityReasons || []).find(r => r && r.field === field && (value == null || r.value === value));
     return match ? match.reason || 'Unavailable' : null;
 }
@@ -394,7 +394,7 @@ function applyResolve(data) {
         // The resolver's normalized selection is the draft going forward — not
         // just a transient preview payload. This is what lets an applied intent
         // or a "Fit automatically" proposal actually stick as the editable draft.
-        const { intent_source, ...rest } = data.selection;
+        const { intent_source: _intentSource, ...rest } = data.selection;
         state.draftSelection = { ...state.draftSelection, ...rest };
     }
     state.normalizedPreview = {
@@ -613,7 +613,7 @@ function renderPerf(d, bundle) {
     current.textContent = `Current: batch ${state.draftSelection?.batch_size ?? '—'} · ubatch ${state.draftSelection?.ubatch_size ?? '—'}`;
 }
 
-function renderMoe(d, bundle, reasons, preview) {
+function renderMoe(d, bundle, reasons, _preview) {
     const row = d.body.querySelector('.bundle-row-moe');
     const sel = state.draftSelection || {};
     const artifact = selectedArtifact(bundle, sel);
@@ -837,7 +837,7 @@ function diffFromSaved() {
     return rows;
 }
 
-function renderDiff(d, bundle) {
+function renderDiff(d, _bundle) {
     const list = d.body.querySelector('.bundle-diff-list');
     const cause = d.body.querySelector('.bundle-diff-cause');
     list.textContent = '';

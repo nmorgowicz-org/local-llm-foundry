@@ -9,9 +9,9 @@ import { applyProductIdentity } from './core/identity.js';
 import { initDashboardRender } from './features/dashboard-render.js';
 import { initWebSocket } from './features/dashboard-ws.js';
 import { initPresets } from './features/presets.js';
-import { activeChatTab, addChatTab, autoResizeChatInput, initChatState, initChatTabs, restoreTabFromTrash, switchChatTab } from './features/chat-state.js';
+import { activeChatTab, autoResizeChatInput, initChatState, initChatTabs, switchChatTab } from './features/chat-state.js';
 import { chatScroll, initChatRender } from './features/chat-render.js';
-import { initChatSessionsSidebar, renderChatSessionsSidebar } from './features/chat-sessions-sidebar.js';
+import { initChatSessionsSidebar } from './features/chat-sessions-sidebar.js';
 import { initChatSearch } from './features/chat-search.js';
 import { initAttachDetach, initAttachDetachButtons } from './features/attach-detach.js';
 import { initRemoteAgent } from './features/remote-agent.js';
@@ -39,7 +39,7 @@ import { initSuggestionsDropdown, closeSuggestionsDropdown } from './features/ch
 import { initQuickGuide, closeQuickGuide } from './features/chat-quick-guide.js';
 import { initDbAdmin } from './features/db-admin.js';
 import { initAuthGate, logoutCurrentUser } from './features/auth.js';
-import { deriveTelemetryGrade, gradeLabel, gradeStatusClass, gradeActionCopy } from './features/telemetry-grade.js';
+import './features/telemetry-grade.js';
 import { initReplyPlanUpdates } from './features/chat-reply-plan.js';
 import { initCommandPalette } from './features/workspace-command-palette.js';
 import { initSpawnWizard, showSpawnRoute, closeSpawnWizard } from './features/spawn-wizard.js';
@@ -49,7 +49,7 @@ import { initTunePanel } from './features/tune-panel.js';
 import { initLlamaUpdater } from './features/llama-updater.js';
 import { initRapidMlxUpdater } from './features/rapid-mlx-updater.js';
 import { initTemplateAutoupdater } from './features/template-autoupdater.js';
-import { HF_DISCOVER_CATEGORIES } from './features/hf-browse.js';
+import './features/hf-browse.js';
 import { initGlobalTooltip } from './core/tooltip.js';
 import { initEvidenceDrawer } from './features/evidence-drawer.js';
 import Router from './features/router.js';
@@ -240,7 +240,7 @@ async function initializeApp() {
       }
     });
 
-    Router.register('/chat/:id', (path, params) => {
+    Router.register('/chat/:id', (_path, params) => {
       const id = params?.id || '';
       ensureMonitorView();
       switchTab('chat');
