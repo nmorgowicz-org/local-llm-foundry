@@ -5835,6 +5835,14 @@
    must be excluded from this rule instead of the whole column being hidden. */
 .engine-rapid-mlx #wizard-step-1 > .wizard-main > :not(.rapid-hardware-panel):not(.all-settings-drawer):not(.pro-layout) { display:none; }
 .engine-rapid-mlx .rapid-hardware-panel { width:auto; margin:0; }
+/* Step 2: Rapid-MLX owns Metal placement and KV precision, so the llama.cpp-only
+   controls (GPU-layer offload, KV unified pool, the q8_0/f16/q4_0 KV quant pair)
+   would be dead inputs — the launch config ignores them. Context size stays: it
+   steers retained-cache sizing and the VRAM fit estimate for both engines. */
+.engine-rapid-mlx .hardware-field:has(> #spawn-gpu-layers),
+.engine-rapid-mlx #spawn-gpu-layers-manual-wrap,
+.engine-rapid-mlx .hardware-field:has(> #spawn-kv-unified),
+.engine-rapid-mlx .mlx-native-group:has(#spawn-cache-type-k) { display:none !important; }
 
 [data-theme="light"] .wizard-engine-section { background:linear-gradient(145deg,#f5f8ff,#fff); }
 [data-theme="light"] .wizard-engine-card { background:rgba(255,255,255,.9); }

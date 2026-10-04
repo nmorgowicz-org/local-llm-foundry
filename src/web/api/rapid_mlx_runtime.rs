@@ -46,8 +46,30 @@ struct RuntimeApiState {
     manager: Result<Arc<RapidMlxRuntimeManager>, String>,
     releases: Arc<tokio::sync::Mutex<ReleaseCache>>,
     jobs: Arc<Mutex<RuntimeJobs>>,
+    model_downloads: Arc<Mutex<BTreeMap<String, ModelDownloadJob>>>,
     changelog_cache: Arc<changelog::ChangelogCacheManager>,
     client: reqwest::Client,
+}
+
+/// Tracks a pre-download of a Hugging Face MLX repository into the app-scoped
+/// model cache, so the Spawn Wizard (and spawn itself) find the weights already
+/// local instead of silently downloading at launch time.
+#[derive(Debug, Clone, Serialize)]
+struct ModelDownloadJob {
+    repo_id: String,
+    revision: String,
+    state: RuntimeJobState,
+    message: String,
+    error: Option<String>,
+    local_path: Option<String>,
+}
+
+fn validate_model_download_repo(repo_id: &str) -> bool {
+    let parts: Vec<&str> = repo_id.splitn(3, '/').collect();
+    parts.len() == 2
+        && !parts
+            .iter()
+            .any(|p| p.is_empty() || p.contains("..") || p.contains('/'))
 }
 
 #[derive(Default)]
@@ -280,6 +302,7 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         manager,
         releases: Arc::new(tokio::sync::Mutex::new(None)),
         jobs: Arc::new(Mutex::new(RuntimeJobs::default())),
+        model_downloads: Arc::new(Mutex::new(BTreeMap::new())),
         changelog_cache: Arc::new(changelog::ChangelogCacheManager::new()),
         client,
     };
@@ -323,6 +346,10 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         .unify()
         .or(job_route(ctx.clone(), state.clone()))
         .unify()
+        .or(model_download_route(ctx.clone(), state.clone()))
+        .unify()
+        .or(model_download_status_route(ctx.clone(), state.clone()))
+        .unify()
         .or(profile_route(ctx.clone(), state.clone()))
         .unify()
         .or(unified_profile_route(ctx.clone()))
@@ -340,6 +367,179 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         .unify()
         .or(runtime_metadata_route(ctx, state))
         .unify()
+        .boxed()
+}
+
+/// POST /api/rapid-mlx/models/download — start a background snapshot download of a
+/// Hugging Face MLX repository into the app-scoped model cache. The same resolver
+/// that runs at launch performs the download, so an already-downloaded repo is a
+/// fast no-op and the spawn path reuses exactly what lands on disk.
+fn model_download_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
+    warp::path!("api" / "rapid-mlx" / "models" / "download")
+        .and(warp::post())
+        .and(warp::header::optional::<String>("authorization"))
+        .and(super::super::safe_json_body::<serde_json::Value>())
+        .and_then(move |auth: Option<String>, body: serde_json::Value| {
+            let ctx = ctx.clone();
+            let state = state.clone();
+            async move {
+                if !check_api_token(&auth, &ctx.config) {
+                    return Ok::<ApiReply, warp::Rejection>(unauthorized_api_token());
+                }
+                let repo_id = body["repo_id"].as_str().unwrap_or("").trim().to_string();
+                let revision = body["revision"]
+                    .as_str()
+                    .map(|r| r.trim().to_string())
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or_else(|| "main".to_string());
+                if !validate_model_download_repo(&repo_id) {
+                    return Ok(Box::new(warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({
+                            "ok": false,
+                            "error": "Invalid repo_id format. Expected: owner/repo"
+                        })),
+                        StatusCode::BAD_REQUEST,
+                    )) as ApiReply);
+                }
+
+                // One download at a time per repo; report an in-flight job instead of
+                // stacking duplicate snapshot downloads.
+                if let Ok(downloads) = state.model_downloads.lock()
+                    && let Some(existing) = downloads
+                        .values()
+                        .find(|job| job.repo_id == repo_id && job.revision == revision)
+                    && matches!(
+                        existing.state,
+                        RuntimeJobState::Queued | RuntimeJobState::Running
+                    )
+                {
+                    return Ok(Box::new(warp::reply::json(&serde_json::json!({
+                        "ok": true,
+                        "already_running": true,
+                        "repo_id": repo_id,
+                    }))) as ApiReply);
+                }
+
+                let models_dir = super::models::get_effective_models_dir(&ctx.state)
+                    .unwrap_or_else(|| ctx.config.default_models_dir.clone());
+                let job_id = {
+                    let fallback = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos() as u64)
+                        .unwrap_or(0);
+                    let mut bytes = [0u8; 8];
+                    if SysRng.try_fill_bytes(&mut bytes).is_err() {
+                        bytes = fallback.to_le_bytes();
+                    }
+                    format!("mdl-{}", u64::from_le_bytes(bytes))
+                };
+                let job = ModelDownloadJob {
+                    repo_id: repo_id.clone(),
+                    revision: revision.clone(),
+                    state: RuntimeJobState::Running,
+                    message: "Downloading from Hugging Face".into(),
+                    error: None,
+                    local_path: None,
+                };
+                if let Ok(mut downloads) = state.model_downloads.lock() {
+                    downloads.insert(job_id.clone(), job);
+                    while downloads.len() > MAX_RETAINED_JOBS {
+                        if let Some(oldest) = downloads.keys().next().cloned() {
+                            downloads.remove(&oldest);
+                        }
+                    }
+                }
+
+                let spawn_state = state.clone();
+                let spawn_job_id = job_id.clone();
+                let spawn_repo_id = repo_id.clone();
+                let spawn_revision = revision.clone();
+                tokio::spawn(async move {
+                    let repo_id = spawn_repo_id;
+                    let source = RapidMlxModelSource::HuggingFaceRepo {
+                        repo_id,
+                        revision: spawn_revision,
+                    };
+                    let context =
+                        crate::inference::rapid_mlx::model_resolver::RapidMlxResolveContext {
+                            models_dir,
+                            python_executable: std::path::PathBuf::from(if cfg!(windows) {
+                                "python.exe"
+                            } else {
+                                "python3"
+                            }),
+                            // Only quoted in error text; naming a fixed release there would be
+                            // wrong the day the installed runtime changes.
+                            runtime_version: "runtime".into(),
+                            hf_token: None,
+                            verified_aliases: Vec::new(),
+                            execute_conversion: false,
+                        };
+                    let result =
+                        crate::inference::rapid_mlx::model_resolver::resolve(source, &context)
+                            .await;
+                    if let Ok(mut downloads) = spawn_state.model_downloads.lock()
+                        && let Some(job) = downloads.get_mut(&spawn_job_id)
+                    {
+                        match result {
+                            Ok(model) => {
+                                job.state = RuntimeJobState::Complete;
+                                job.message = "Downloaded".into();
+                                job.local_path = Some(model.launch_argument.clone());
+                            }
+                            Err(error) => {
+                                job.state = RuntimeJobState::Failed;
+                                job.message = "Download failed".into();
+                                job.error = Some(error.to_string());
+                            }
+                        }
+                    }
+                });
+
+                Ok(Box::new(warp::reply::json(&serde_json::json!({
+                    "ok": true,
+                    "job_id": job_id,
+                    "repo_id": repo_id,
+                    "revision": revision,
+                }))) as ApiReply)
+            }
+        })
+        .boxed()
+}
+
+/// GET /api/rapid-mlx/models/download/{id} — poll a model snapshot download job.
+fn model_download_status_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
+    warp::path!("api" / "rapid-mlx" / "models" / "download" / String)
+        .and(warp::get())
+        .and(warp::header::optional::<String>("authorization"))
+        .and_then(move |id: String, auth: Option<String>| {
+            let state = state.clone();
+            let ctx = ctx.clone();
+            async move {
+                if !check_api_token(&auth, &ctx.config) {
+                    return Ok::<ApiReply, warp::Rejection>(unauthorized_api_token());
+                }
+                let job = state
+                    .model_downloads
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&id)
+                    .cloned();
+                Ok(match job {
+                    Some(job) => Box::new(warp::reply::json(&serde_json::json!({
+                        "ok": true,
+                        "job": job,
+                    }))) as ApiReply,
+                    None => Box::new(warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({
+                            "ok": false,
+                            "error": "Unknown download job"
+                        })),
+                        StatusCode::NOT_FOUND,
+                    )) as ApiReply,
+                })
+            }
+        })
         .boxed()
 }
 
@@ -2759,6 +2959,7 @@ mod tests {
             manager: Err("unused".into()),
             releases: Arc::new(tokio::sync::Mutex::new(None)),
             jobs: Arc::new(Mutex::new(RuntimeJobs::default())),
+            model_downloads: Arc::new(Mutex::new(BTreeMap::new())),
             changelog_cache: Arc::new(changelog::ChangelogCacheManager::new()),
             client: reqwest::Client::new(),
         }

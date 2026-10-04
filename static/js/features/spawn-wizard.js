@@ -1009,6 +1009,44 @@ export function openSpawnWizard(opts = {}) {
   renderEngineSelection();
   refreshEngineRecommendation();
 
+  // A Rapid-MLX HF handoff arrives with only a repo id, so the sidebar VRAM
+  // budget would stay at dashes until the user re-typed the repo. Fetch the
+  // file listing the same way the in-wizard search path does and hydrate the
+  // model size plus a name-derived parameter count.
+  if (opts.templatePreset?.backend === 'rapid_mlx' && wizardState.model.hfRepo
+      && !(wizardState.model.modelBytes > 0)) {
+    const repoId = wizardState.model.hfRepo;
+    (async () => {
+      try {
+        const headers = window.authHeaders ? window.authHeaders() : {};
+        const resp = await fetch('/api/hf/files', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({ repo_id: repoId, format: 'mlx' }),
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (Array.isArray(data.files) && data.files.length > 0) {
+          const total = data.files.reduce((sum, f) => sum + (f.size || f.bytes || 0), 0);
+          if (total > 0 && !(wizardState.model.modelBytes > 0)) {
+            wizardState.model.modelBytes = total;
+            scheduleVramUpdate();
+          }
+        }
+      } catch { /* non-fatal: safe defaults retained */ }
+    })();
+    // Sidebar body (sibling variants) is gated on a parameter count; derive a
+    // coarse one from the repo name (e.g. "...-27B-...") when none is known.
+    if (!(wizardState.model.paramB > 0)) {
+      const m = repoId.match(/(\d+(?:\.\d+)?)\s*[bB](?![a-zA-Z0-9])/);
+      if (m) {
+        wizardState.model.paramB = parseFloat(m[1]);
+        scheduleVramUpdate();
+      }
+    }
+    scheduleRapidMlxProfileFetch(repoId);
+  }
+
   _initViewMode();
   setupWizardEscape();
 }

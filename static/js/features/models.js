@@ -3284,7 +3284,8 @@ async function onHfModelSelected(model, filelistContainer, downloadPanel) {
             const fileEl = document.getElementById('mm-hf-dlp-file-name');
             if (fileEl) fileEl.textContent = repoId;
 
-            // Enable download button (opens spawn wizard for MLX models)
+            // Enable download button (downloads the MLX repo snapshot into the
+            // models cache via the Rapid-MLX resolver, then offers the wizard)
             const btn = document.getElementById('mm-hf-dlp-download-btn');
             if (btn) {
                 btn.disabled = false;
@@ -3293,17 +3294,76 @@ async function onHfModelSelected(model, filelistContainer, downloadPanel) {
                     // Replace button to remove existing listeners
                     const newBtn = btn.cloneNode(true);
                     btn.parentNode.replaceChild(newBtn, btn);
-                    newBtn.addEventListener('click', () => {
-                        // Open spawn wizard pre-loaded with this MLX repo + Rapid-MLX backend
-                        if (typeof openSpawnWizard === 'function') {
-                            openSpawnWizard({
-                                templatePreset: {
-                                    backend: 'rapid_mlx',
-                                    rapid_mlx: { model_source: { kind: 'hugging_face_repo', repo_id: repoId } }
-                                }
+                    newBtn.addEventListener('click', async () => {
+                        if (newBtn.dataset.dlBusy === '1') return;
+                        if (newBtn.dataset.dlDone === '1') {
+                            // Weights are local now; the wizard configures and launches.
+                            if (typeof openSpawnWizard === 'function') {
+                                openSpawnWizard({
+                                    templatePreset: {
+                                        backend: 'rapid_mlx',
+                                        rapid_mlx: { model_source: { kind: 'hugging_face_repo', repo_id: repoId } }
+                                    }
+                                });
+                            }
+                            return;
+                        }
+                        newBtn.dataset.dlBusy = '1';
+                        newBtn.disabled = true;
+                        newBtn.textContent = 'Starting download\u2026';
+                        try {
+                            const headers = window.authHeaders
+                                ? { ...window.authHeaders(), 'Content-Type': 'application/json' }
+                                : { 'Content-Type': 'application/json' };
+                            const resp = await fetch('/api/rapid-mlx/models/download', {
+                                method: 'POST',
+                                headers,
+                                body: JSON.stringify({ repo_id: repoId }),
                             });
-                        } else {
-                            showToast('MLX models require Rapid-MLX — open Spawn Wizard to configure.', 'info');
+                            const data = await resp.json().catch(() => ({}));
+                            if (!resp.ok || !data.ok) {
+                                showToast(data.error || 'Download failed to start.', 'error');
+                                newBtn.dataset.dlBusy = '';
+                                newBtn.disabled = false;
+                                newBtn.textContent = 'Download to models folder';
+                                return;
+                            }
+                            showToast('Download started: ' + repoId, 'info');
+                            newBtn.textContent = 'Downloading\u2026';
+                            const jobId = data.job_id;
+                            const poll = async () => {
+                                try {
+                                    const r = await fetch(`/api/rapid-mlx/models/download/${encodeURIComponent(jobId)}`, { headers: window.authHeaders ? window.authHeaders() : {} });
+                                    const d = await r.json().catch(() => ({}));
+                                    const job = d.job || {};
+                                    if (job.state === 'complete') {
+                                        showToast('Downloaded: ' + repoId, 'success');
+                                        invalidateModelInventory();
+                                        loadModels({ refresh: true });
+                                        newBtn.dataset.dlBusy = '';
+                                        newBtn.disabled = false;
+                                        newBtn.textContent = 'Open in Spawn Wizard';
+                                        newBtn.dataset.dlDone = '1';
+                                        return;
+                                    }
+                                    if (job.state === 'failed') {
+                                        showToast('Download failed: ' + (job.error || 'unknown error'), 'error');
+                                        newBtn.dataset.dlBusy = '';
+                                        newBtn.disabled = false;
+                                        newBtn.textContent = 'Download to models folder';
+                                        return;
+                                    }
+                                    setTimeout(poll, 2000);
+                                } catch {
+                                    setTimeout(poll, 4000);
+                                }
+                            };
+                            poll();
+                        } catch (err) {
+                            showToast('Download request failed: ' + (err.message || err), 'error');
+                            newBtn.dataset.dlBusy = '';
+                            newBtn.disabled = false;
+                            newBtn.textContent = 'Download to models folder';
                         }
                     });
                 }

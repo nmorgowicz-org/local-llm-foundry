@@ -888,6 +888,27 @@ it. The response state is `ready`, `conversion_required`, `unsupported_source`, 
 `invalid`, with warnings and remediation. GGUF returns `unsupported_source` and retains
 the llama.cpp recommendation.
 
+### `POST /api/rapid-mlx/models/download`
+Auth: api-token.
+
+Starts a background snapshot download of a Hugging Face MLX repository into the
+app-scoped model cache (`<models_dir>/cache/huggingface/hub`). The body is
+`{"repo_id": "owner/repo", "revision": "main"}`; the revision defaults to `main`
+and is never pinned by the caller. The download runs through the same Rapid-MLX
+model resolver the launch path uses, so re-downloading an already-present repo is
+a fast no-op and spawn reuses exactly what landed on disk. Re-posting a repo with
+a job already in flight returns `{"ok": true, "already_running": true}` instead of
+stacking downloads.
+
+### `GET /api/rapid-mlx/models/download/:jobId`
+Auth: api-token.
+
+Polls a model download job. The `job` object carries `repo_id`, `revision`,
+`state` (`queued`/`running`/`complete`/`failed`), `message`, `error`, and, on
+success, `local_path` (the resolved snapshot directory). Unknown job ids return
+404.
+
+
 ### `POST /api/models/gguf/import/compatibility/preview`
 Auth: api-token.
 

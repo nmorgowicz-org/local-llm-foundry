@@ -426,11 +426,23 @@ When Rapid-MLX is selected, the wizard adapts the Model and Hardware step UI:
   - Hidden when Rapid-MLX is selected (Rapid-MLX does not support the import path).
 - Hardware step:
   - llama.cpp-specific controls (GPU layers, KV cache types, MoE offload, mlock,
-    threads, speculative decoding, MTP, mmproj) are hidden.
+    threads, speculative decoding, MTP, mmproj) are hidden. This includes the
+    Guided view's always-open fields — GPU layers, KV unified, and the
+    q8_0/f16/q4_0 KV cache precision pair — which are dead inputs under
+    Rapid-MLX; the engine's own `spawn-kv-cache-dtype` control (int8, pinned by
+    the reasoning profile) stays in the Cache & Performance group. Context size
+    remains for both engines.
   - A Rapid-MLX-specific panel (rapid-hardware-panel) is shown for backend-specific
     configuration, keeping its settings isolated from llama.cpp flags.
 
 ![Rapid-MLX hardware panel](../screenshots/rapidmlx-local--spawn-wizard-rapid-mlx-fit.png)
+
+- Models-modal downloads:
+  - The Download tab's "Download to models folder" button downloads an MLX repo
+    snapshot through `POST /api/rapid-mlx/models/download` with toasts for start,
+    completion, and failure, then offers "Open in Spawn Wizard". The wizard
+    handoff hydrates the repo's file size and parameter count immediately, so the
+    sidebar VRAM budget is populated on arrival rather than showing dashes.
 
 - Launch guard:
   - Model-step validation:
