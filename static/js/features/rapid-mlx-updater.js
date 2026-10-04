@@ -254,10 +254,10 @@ export async function fetchRuntimeStatus() {
     updateSettingsSummary();
 
     // If there's an active job, start polling
-    if (mutating && _runtimeStatus?.jobs?.length > 0) {
-      const jobId = _runtimeStatus.jobs[_runtimeStatus.jobs.length - 1]?.id;
-      if (jobId) pollJob(jobId);
-    }
+    // `jobs` sits beside `runtime` (newest first), not inside it. Resume polling the job that
+    // is still going, e.g. after the page was reloaded mid-install.
+    const runningJob = (data.jobs || []).find(job => job.state === 'queued' || job.state === 'running');
+    if (mutating && runningJob?.id) pollJob(runningJob.id);
   } catch {
     // silent
   }
@@ -443,6 +443,10 @@ async function openRapidMlxModal() {
   // Attach Escape key and tab-scope handlers.
   attachModalFocusTrap(modal, closeRapidMlxModal);
 
+  renderRapidMlxModal();
+}
+
+function renderRapidMlxModal() {
   const supported = _runtimeStatus?.supported ?? false;
   const active = _runtimeStatus?.active ?? null;
   const mutating = _runtimeStatus?.mutation_in_progress ?? false;
@@ -674,6 +678,22 @@ const POLL_JOB_INTERVAL_MS = 2000;
 const POLL_JOB_MAX_CONSECUTIVE_ERRORS = 5;
 const POLL_JOB_MAX_DURATION_MS = 10 * 60 * 1000; // 10 minutes
 
+// Re-read status and releases, and redraw the manager if it is open, so a finished (or failed)
+// operation is reflected immediately: the version pill, the header, and the release buttons.
+async function refreshRuntimeUi() {
+  await Promise.all([fetchRuntimeStatus(), fetchReleases()]);
+  if (document.getElementById('rapid-mlx-modal')?.classList.contains('open')) {
+    renderRapidMlxModal();
+  }
+}
+
+function showRuntimeProgress(job, startedAt) {
+  const el = document.getElementById('rapid-mlx-status-text');
+  if (!el) return;
+  const seconds = Math.round((Date.now() - startedAt) / 1000);
+  el.textContent = `${job.message || 'Working'} (${seconds}s)`;
+}
+
 async function pollJob(jobId) {
   if (!jobId) return;
   const startedAt = Date.now();
@@ -683,7 +703,7 @@ async function pollJob(jobId) {
     clearInterval(interval);
     _mutationInflight = false;
     showToast('Rapid-MLX operation status unknown', 'error', message);
-    fetchRuntimeStatus();
+    refreshRuntimeUi();
   };
 
   const interval = setInterval(async () => {
@@ -704,23 +724,29 @@ async function pollJob(jobId) {
       }
       consecutiveErrors = 0;
       const data = await resp.json();
-      const job = data.job || null;
-      if (!job) {
+      // The route returns the job snapshot itself ({id, state, message, ...}); older code
+      // looked for a wrapping `job` key that the server has never sent.
+      const job = data.job || data;
+      if (!job || !job.state) {
         clearInterval(interval);
         _mutationInflight = false;
+        refreshRuntimeUi();
         return;
       }
 
-      if (job.state === 'completed') {
+      // The server's success state is `complete`.
+      if (job.state === 'complete' || job.state === 'completed') {
         clearInterval(interval);
         _mutationInflight = false;
         showToast('Rapid-MLX runtime operation completed.', 'success');
-        fetchRuntimeStatus();
+        refreshRuntimeUi();
       } else if (job.state === 'failed' || job.state === 'cancelled') {
         clearInterval(interval);
         _mutationInflight = false;
         showToast(`Rapid-MLX operation ${job.state}: ${job.message || 'See logs'}`, 'error');
-        fetchRuntimeStatus();
+        refreshRuntimeUi();
+      } else {
+        showRuntimeProgress(job, startedAt);
       }
     } catch (err) {
       consecutiveErrors += 1;

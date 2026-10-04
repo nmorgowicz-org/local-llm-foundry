@@ -194,6 +194,9 @@
             <button id="llama-pill" class="top-nav-pill llama-pill-idle" style="display:none;" type="button" title="Manage the installed local llama.cpp binary and releases">
               <span id="llama-pill-version">b—</span>
             </button>
+            <button id="rapid-mlx-pill" class="top-nav-pill" style="display:none;" type="button" title="Manage the Rapid-MLX runtime">
+              <span id="rapid-mlx-pill-version">Rapid-MLX</span>
+            </button>
             <button id="update-pill" class="top-nav-pill" style="display:none;">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4"/>
@@ -664,7 +667,7 @@
                       <div class="tune-running-header">
                         <span class="tune-running-pulse" aria-hidden="true"></span>
                         <span class="tune-running-label">Benchmarking</span>
-                        <span class="tune-running-hint" class="tune-running-hint">Sending a test prompt and measuring throughput…</span>
+                        <span class="tune-running-hint">Sending a test prompt and measuring throughput…</span>
                       </div>
                       <div class="tune-progress-track" role="progressbar" aria-label="Benchmark in progress">
                         <div class="tune-progress-fill" id="tune-progress-fill"></div>
@@ -2023,6 +2026,8 @@
                 </div>
             </div>
         </div>
+            </div><!-- /#view-monitor -->
+        </div><!-- /.view-container -->
     </main>
 
 <!-- Connection Lost Modal -->
@@ -3483,7 +3488,7 @@
                                        </select>
                                    </div>
                                    <div class="pe-field">
-                                        <label class="pe-label" for="modal-rapid-turboquant-mode" title="Reusable prompt storage policy. Compresses retained prefix snapshots only — does not reduce active-generation KV or model weights. K8V4 showed 40–100% slower TTFT in Phase 6 benchmarks; requires re-validation post rapid-mlx v0.11.0.">Reusable Prompt Storage</label>
+                                        <label class="pe-label" for="modal-rapid-turboquant-mode" title="Reusable prompt storage policy. Compresses retained prefix snapshots only — does not reduce active-generation KV or model weights. K8V4 showed 40–100% slower TTFT in Phase 6 benchmarks and is not enabled at launch until it has been re-validated against the installed runtime.">Reusable Prompt Storage</label>
                                         <select class="pe-select" id="modal-rapid-turboquant-mode">
                                             <option value="auto">Auto — runtime default</option>
                                             <option value="">(unset)</option>
@@ -6231,15 +6236,47 @@
                   </div>
                   <div class="settings-pane" id="settings-migration">
                       <h3>Local LLM Foundry upgrade</h3>
-                      <p class="settings-help">Your existing data and model folders remain in place until you explicitly approve this migration. The upgrade copies critical application state into the Foundry home and keeps the legacy root as a rollback point.</p>
-                      <div class="settings-card" id="app-home-migration-card">
-                          <div class="settings-help" id="app-home-migration-state">Checking application-home status…</div>
-                          <div class="settings-help" id="app-home-migration-summary"></div>
-                          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;">
-                              <button type="button" class="btn secondary" id="app-home-migration-preview">Preview migration</button>
-                              <button type="button" class="btn primary" id="app-home-migration-queue" disabled>Queue migration for restart</button>
+                      <p class="settings-help">Queue this upgrade to copy critical application state into the Foundry home on the next launch. Models and generated runtimes are not copied. The legacy home is retained for rollback.</p>
+                      <div class="settings-card app-home-migration-card" id="app-home-migration-card">
+                          <div class="app-home-migration-state" id="app-home-migration-state" role="status" aria-live="polite" aria-atomic="true">Checking application-home status…</div>
+                          <p class="settings-help" id="app-home-migration-summary"></p>
+                          <section class="app-home-migration-plan" id="app-home-migration-plan" aria-labelledby="app-home-migration-plan-title" hidden>
+                              <h4 id="app-home-migration-plan-title">Migration preview ready</h4>
+                              <dl class="app-home-migration-facts">
+                                  <dt>Size to copy</dt>
+                                  <dd id="app-home-migration-copy-size"></dd>
+                                  <dt>Total inventoried items</dt>
+                                  <dd id="app-home-migration-inventoried-count"></dd>
+                                  <dt>Retained items</dt>
+                                  <dd id="app-home-migration-retained-count"></dd>
+                              </dl>
+                              <p class="settings-help">The inventory includes items that will not be copied.</p>
+                              <ul class="app-home-migration-notes">
+                                  <li>Critical application state will be copied on the next launch, not now.</li>
+                                  <li>Models and generated runtimes are not copied.</li>
+                                  <li>The legacy home is retained for rollback.</li>
+                              </ul>
+                              <details class="app-home-migration-details" id="app-home-migration-technical">
+                                  <summary>Technical details</summary>
+                                  <p class="settings-help">Plan ID</p>
+                                  <code id="app-home-migration-plan-id"></code>
+                                  <p class="settings-help">Raw plan summary</p>
+                                  <pre id="app-home-migration-technical-summary"></pre>
+                              </details>
+                          </section>
+                          <details class="app-home-migration-details" id="app-home-migration-locations" hidden>
+                              <summary>Location details</summary>
+                              <dl class="app-home-migration-locations">
+                                  <dt>Source (legacy home)</dt>
+                                  <dd><code id="app-home-migration-source"></code></dd>
+                                  <dt>Destination (Foundry home)</dt>
+                                  <dd><code id="app-home-migration-destination"></code></dd>
+                              </dl>
+                          </details>
+                          <div class="app-home-migration-actions">
+                              <button type="button" class="btn secondary" id="app-home-migration-preview" aria-controls="app-home-migration-plan" disabled>Preview migration</button>
+                              <button type="button" class="btn primary" id="app-home-migration-queue" disabled>Queue migration for next launch</button>
                           </div>
-                          <pre id="app-home-migration-plan" style="display:none;max-height:220px;overflow:auto;margin-top:14px;white-space:pre-wrap;"></pre>
                       </div>
                       <div class="settings-card" id="model-root-relocation-card" style="margin-top:14px;">
                           <h4>Model library location</h4>
@@ -6247,14 +6284,32 @@
                           <div class="settings-help" id="model-root-relocation-summary"></div>
                           <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:12px;">
                               <label class="toggle-label"><input type="radio" name="model-root-choice" value="keep_legacy" checked> Keep legacy location</label>
-                              <label class="toggle-label"><input type="radio" name="model-root-choice" value="move_into_foundry"> Copy into Foundry</label>
+                              <label class="toggle-label"><input type="radio" name="model-root-choice" value="move_into_foundry"> Move into Foundry</label>
                           </div>
-                          <p class="settings-help">Keep leaves models, caches, sidecars, and incomplete downloads where they are. Copying is resumable and retains the legacy source as a rollback point.</p>
+                          <p class="settings-help">Keep leaves models, caches, sidecars, and incomplete downloads where they are. Move relocates the whole model folder into the Foundry home. Nothing is copied, so no extra disk space is needed and the legacy model folder is gone afterward. Both locations must be on the same drive.</p>
                           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
                               <button type="button" class="btn secondary" id="model-root-relocation-preview">Preview model-root choice</button>
                               <button type="button" class="btn primary" id="model-root-relocation-execute" disabled>Save choice</button>
                           </div>
-                          <pre id="model-root-relocation-plan" hidden style="max-height:260px;overflow:auto;margin-top:14px;white-space:pre-wrap;"></pre>
+                        <section class="app-home-migration-plan" id="model-root-relocation-plan" aria-labelledby="model-root-plan-title" hidden>
+                            <h4 id="model-root-plan-title">Model preview ready</h4>
+                            <dl class="app-home-migration-facts">
+                                <dt id="model-root-plan-size-label">Size to move</dt>
+                                <dd id="model-root-plan-size"></dd>
+                                <dt>Total inventoried items</dt>
+                                <dd id="model-root-plan-items"></dd>
+                                <dt>Extra disk space needed</dt>
+                                <dd id="model-root-plan-extra">None</dd>
+                                <dt>External folders kept</dt>
+                                <dd id="model-root-plan-external"></dd>
+                            </dl>
+                            <ul class="app-home-migration-notes" id="model-root-plan-notes"></ul>
+                            <details class="app-home-migration-details">
+                                <summary>Technical details</summary>
+                                <p class="settings-help">Plan ID</p>
+                                <code id="model-root-plan-id"></code>
+                            </details>
+                        </section>
                       </div>
                   </div>
                   <div class="settings-pane" id="settings-chat">
@@ -6742,36 +6797,36 @@
                                     <span>Chat Database</span>
                                 </div>
                                 <div class="db-admin-status" id="db-admin-status">
-                                    <span class="status-dot"></span>
-                                    <span class="status-text">Checking...</span>
+                                    <span class="db-status-dot" id="settings-db-status-dot"></span>
+                                    <span class="db-status-text" id="settings-db-status-text">Checking...</span>
                                 </div>
                             </div>
 
                             <div class="db-admin-stats" id="db-admin-stats">
                                 <div class="db-stat">
                                     <span class="db-stat-label">Conversations</span>
-                                    <span class="db-stat-value" id="db-stat-tabs">-</span>
+                                    <span class="db-stat-value" id="settings-db-stat-tabs">-</span>
                                 </div>
                                 <div class="db-stat">
                                     <span class="db-stat-label">Messages</span>
-                                    <span class="db-stat-value" id="db-stat-messages">-</span>
+                                    <span class="db-stat-value" id="settings-db-stat-messages">-</span>
                                 </div>
                                 <div class="db-stat">
                                     <span class="db-stat-label">Database Size</span>
-                                    <span class="db-stat-value" id="db-stat-size">-</span>
+                                    <span class="db-stat-value" id="settings-db-stat-size">-</span>
                                 </div>
                                 <div class="db-stat">
                                     <span class="db-stat-label">FTS Index</span>
-                                    <span class="db-stat-value" id="db-stat-fts">-</span>
+                                    <span class="db-stat-value" id="settings-db-stat-fts">-</span>
                                 </div>
                             </div>
 
                             <div class="db-admin-actions">
-                                <button type="button" class="btn btn-secondary db-admin-btn" id="db-btn-backup" title="Create database backup">
+                                <button type="button" class="btn btn-secondary db-admin-btn" id="settings-db-btn-backup" title="Create database backup">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
                                     Backup Now
                                 </button>
-                                <button type="button" class="btn btn-secondary db-admin-btn" id="db-btn-check" title="Run integrity check">
+                                <button type="button" class="btn btn-secondary db-admin-btn" id="settings-db-btn-check" title="Run integrity check">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
                                     Verify
                                 </button>
@@ -6785,9 +6840,9 @@
                                 </button>
                             </div>
 
-                            <div class="db-admin-log" id="db-admin-log">
+                            <div class="db-admin-log" id="settings-db-admin-log">
                                 <div class="db-log-header">Activity Log</div>
-                                <div class="db-log-content" id="db-log-content"></div>
+                                <div class="db-log-content" id="settings-db-log-content"></div>
                             </div>
                         </div>
                     </div>

@@ -776,7 +776,7 @@ impl RapidMlxAdapter {
             RuntimeMetadata {
                 executable_path,
                 source: runtime::RuntimeSource::Managed,
-                version: compatibility::LATEST_QUALIFIED_VERSION_TEXT.into(),
+                version: compatibility::minimum_version_text(),
                 capability_snapshot: None,
                 resolved_receipt: None,
                 last_probe_result: None,
@@ -2128,7 +2128,7 @@ mod chat_tests {
             RuntimeMetadata {
                 executable_path: "rapid-mlx".into(),
                 source: runtime::RuntimeSource::Managed,
-                version: compatibility::LATEST_QUALIFIED_VERSION_TEXT.into(),
+                version: compatibility::minimum_version_text(),
                 capability_snapshot: None,
                 resolved_receipt: None,
                 last_probe_result: None,

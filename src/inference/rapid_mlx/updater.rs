@@ -887,10 +887,28 @@ impl RapidMlxRuntimeManager {
             }
         }
         configure_process_group(&mut command);
+        eprintln!(
+            "[rapid-mlx] running `uv tool install {requirement}` (uv: {}, timeout {}s)",
+            self.uv_program.display(),
+            self.command_timeout.as_secs()
+        );
+        let started = std::time::Instant::now();
         let output = run_bounded_command(command, self.command_timeout)
             .await
-            .map_err(|error| anyhow!("Managed Rapid-MLX installation failed: {error}"))?;
+            .map_err(|error| {
+                anyhow!(
+                    "Managed Rapid-MLX installation failed after {:.0}s: {error}",
+                    started.elapsed().as_secs_f64()
+                )
+            })?;
+        eprintln!(
+            "[rapid-mlx] uv finished in {:.1}s with {}",
+            started.elapsed().as_secs_f64(),
+            output.status
+        );
         if !output.status.success() {
+            // Terminal only: the API reply stays a fixed, path-free message.
+            eprintln!("[rapid-mlx] uv stderr (tail):\n{}", output.stderr_tail);
             bail!(
                 "Managed Rapid-MLX installation failed with status {}",
                 output.status
@@ -1199,7 +1217,10 @@ fn parse_managed_version(version: &str) -> Result<ParsedManagedVersion> {
     let patch = parse_version_number(bytes, &mut cursor)?;
     let numbers = (major, minor, patch);
     if numbers < MINIMUM_VERIFIED_VERSION {
-        bail!("Rapid-MLX version 0.10.9 or newer is required");
+        bail!(
+            "Rapid-MLX version {} or newer is required",
+            crate::inference::rapid_mlx::compatibility::minimum_version_text()
+        );
     }
     let suffix = &version[cursor..];
     let suffix = suffix.strip_prefix('-').unwrap_or(suffix);
@@ -1433,6 +1454,7 @@ fn atomic_json_write<T: Serialize>(path: &Path, value: &T, harden: bool) -> Resu
 #[derive(Debug)]
 struct BoundedCommandOutput {
     status: ExitStatus,
+    stderr_tail: String,
 }
 
 #[cfg(unix)]
@@ -1486,11 +1508,11 @@ async fn run_bounded_command_inner(
     let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(2);
     let stdout_tx = output_tx.clone();
     tokio::spawn(async move {
-        let _ = stdout_tx.send(read_bounded(stdout).await).await;
+        let _ = stdout_tx.send((false, read_bounded(stdout).await)).await;
     });
     let stderr_tx = output_tx.clone();
     tokio::spawn(async move {
-        let _ = stderr_tx.send(read_bounded(stderr).await).await;
+        let _ = stderr_tx.send((true, read_bounded(stderr).await)).await;
     });
     drop(output_tx);
 
@@ -1507,6 +1529,7 @@ async fn run_bounded_command_inner(
     tokio::pin!(deadline);
     let mut status = None;
     let mut completed_readers = 0;
+    let mut stderr_bytes: Vec<u8> = Vec::new();
     loop {
         tokio::select! {
             _ = &mut deadline => {
@@ -1515,8 +1538,13 @@ async fn run_bounded_command_inner(
             }
             result = output_rx.recv(), if completed_readers < 2 => {
                 match result {
-                    Some(Ok(())) => completed_readers += 1,
-                    Some(Err(error)) => {
+                    Some((is_stderr, Ok(bytes))) => {
+                        completed_readers += 1;
+                        if is_stderr {
+                            stderr_bytes = bytes;
+                        }
+                    }
+                    Some((_, Err(error))) => {
                         terminate_and_reap(&mut child, pid).await;
                         return Err(error);
                     }
@@ -1533,12 +1561,15 @@ async fn run_bounded_command_inner(
         if completed_readers == 2
             && let Some(status) = status
         {
-            return Ok(BoundedCommandOutput { status });
+            return Ok(BoundedCommandOutput {
+                status,
+                stderr_tail: output_tail(&stderr_bytes),
+            });
         }
     }
 }
 
-async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(reader: R) -> Result<()> {
+async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(reader: R) -> Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(8192);
     reader
         .take((MAX_COMMAND_OUTPUT_BYTES + 1) as u64)
@@ -1547,7 +1578,15 @@ async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(reader: R) -> Result<()> 
     if bytes.len() > MAX_COMMAND_OUTPUT_BYTES {
         bail!("uv output exceeded its safety limit");
     }
-    Ok(())
+    Ok(bytes)
+}
+
+/// The last couple of kilobytes of a process's output, for logs. uv writes its failure reason
+/// to stderr, and without this a failed install said only "failed with status 1".
+fn output_tail(bytes: &[u8]) -> String {
+    const TAIL_BYTES: usize = 2048;
+    let start = bytes.len().saturating_sub(TAIL_BYTES);
+    String::from_utf8_lossy(&bytes[start..]).trim().to_string()
 }
 
 /// Capture the resolved dependency receipt from a newly installed managed environment.

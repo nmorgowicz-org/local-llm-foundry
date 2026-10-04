@@ -451,7 +451,10 @@ Rapid-MLX uses a capability-driven, versioned release model.
 
 Policy:
 
-- Minimum allowed stable version: `0.10.9` (hard-coded floor).
+- Minimum allowed stable version: `0.10.9`. This is a floor for the serve flags the app
+  depends on, not a target. Upstream releases almost daily, so no "latest qualified" or
+  rollback version is recorded anywhere; every runtime at or above the floor is judged by the
+  live capability probe.
 - Stable releases:
   - Default channel.
   - Any exact published stable release ≥ floor can activate,
@@ -503,7 +506,14 @@ Timeouts:
 All long-running mutations are executed as background jobs via the API. Clients:
 
 - Receive a `job_id` on submission.
-- Poll `/api/rapid-mlx/runtime/jobs/:id` for state and messages.
+- Poll `/api/rapid-mlx/runtime/jobs/:id` for state and messages. The route returns the job
+  snapshot itself, and `complete` is the success state (`queued`, `running`, `complete`, `failed`).
+
+The Settings manager shows the job's message and elapsed time while it runs, then refreshes the
+header, the nav version pill, and the release list when the job ends. The server logs each
+job's start, the `uv tool install` command and its timeout, the elapsed time and exit status, and
+the tail of uv's stderr on failure. API replies stay fixed, path-free messages; the detail is
+terminal-only.
 
 ## Diagnostics and redaction
 

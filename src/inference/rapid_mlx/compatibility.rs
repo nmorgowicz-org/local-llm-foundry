@@ -10,12 +10,18 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
+/// Oldest Rapid-MLX release known to carry the serve flags this app depends on. This is a
+/// floor, not a target: upstream releases almost daily, so no "latest" version is recorded
+/// anywhere. Every installed runtime still gets the bounded live capability probe.
 pub const MINIMUM_VERIFIED_VERSION: (u64, u64, u64) = (0, 10, 9);
-/// Latest published Rapid-MLX release selected as this repository's baseline.
-/// Every installed runtime still receives the bounded live capability probe; this
-/// is release metadata, not a version allowlist.
-pub const LATEST_QUALIFIED_VERSION_TEXT: &str = "0.15.4";
-pub const QUALIFIED_ROLLBACK_VERSION_TEXT: &str = "0.10.9";
+
+/// The floor as text for messages, derived from `MINIMUM_VERIFIED_VERSION` so the two cannot
+/// drift apart.
+pub fn minimum_version_text() -> String {
+    let (major, minor, patch) = MINIMUM_VERIFIED_VERSION;
+    format!("{major}.{minor}.{patch}")
+}
+
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PROBE_OUTPUT_BYTES: usize = 256 * 1024;
 const EXECUTABLE_BUSY_RETRY_WINDOW: Duration = Duration::from_millis(250);
@@ -95,7 +101,7 @@ impl CompatibilityProfile {
     pub fn verified_baseline() -> Self {
         Self {
             state: CompatibilityState::Verified,
-            version: LATEST_QUALIFIED_VERSION_TEXT.to_string(),
+            version: minimum_version_text(),
             capabilities: ServeCapabilities::verified_baseline(),
         }
     }
@@ -172,10 +178,9 @@ async fn probe_with_policy(
         && !(allow_published_prerelease && parsed_version.prerelease)
     {
         anyhow::bail!(
-            "Managed Rapid-MLX runtime is {}; the managed channel requires a stable release at version {} or newer (latest directly qualified: {}). Configure this build explicitly as a user-owned custom runtime to probe it provisionally",
+            "Managed Rapid-MLX runtime is {}; the managed channel requires a stable release at version {} or newer. Configure this build explicitly as a user-owned custom runtime to probe it provisionally",
             version_text.trim(),
-            QUALIFIED_ROLLBACK_VERSION_TEXT,
-            LATEST_QUALIFIED_VERSION_TEXT,
+            minimum_version_text(),
         );
     }
 
@@ -613,11 +618,22 @@ mod tests {
     }
 
     #[test]
-    fn qualified_versions_are_metadata_not_a_future_release_allowlist() {
-        let current = CompatibilityProfile::verified_baseline();
-        assert_eq!(current.version, "0.10.17");
-        assert_eq!(LATEST_QUALIFIED_VERSION_TEXT, "0.10.17");
-        assert_eq!(QUALIFIED_ROLLBACK_VERSION_TEXT, "0.10.9");
+    fn only_a_minimum_version_is_pinned_never_a_latest_release() {
+        // Upstream ships almost daily, so nothing here may name a "latest" release: the
+        // baseline profile is described by the floor, and every runtime above it is judged
+        // by the live capability probe instead.
+        assert_eq!(minimum_version_text(), "0.10.9");
+        let baseline = CompatibilityProfile::verified_baseline();
+        assert_eq!(baseline.version, minimum_version_text());
+        assert!(
+            parse_stable_version_for_floor(&baseline.version) >= Some(MINIMUM_VERIFIED_VERSION)
+        );
+    }
+
+    /// Parses `major.minor.patch` for the floor comparison above.
+    fn parse_stable_version_for_floor(text: &str) -> Option<(u64, u64, u64)> {
+        let mut parts = text.split('.').map(|part| part.parse::<u64>().ok());
+        Some((parts.next()??, parts.next()??, parts.next()??))
     }
 
     #[cfg(unix)]

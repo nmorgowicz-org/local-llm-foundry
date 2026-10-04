@@ -1,10 +1,11 @@
 .evidence-drawer {
   position: fixed;
   inset: 0;
-  /* Must layer above other drawers (e.g. the bundle Configure drawer,
-     z-index: 920) since it can be opened from within one via a details
-     action. */
-  z-index: 930;
+  /* Must layer above everything it can be opened from: the bundle Configure drawer (920), the
+     spawn wizard (1250), Settings (1300) and the Rapid-MLX manager (1400). It was 930, so
+     "Runtime support" opened it behind the Settings modal and it only appeared once that
+     closed. Toasts (10000) still sit above it. */
+  z-index: 1700;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(340px, 520px);
   visibility: hidden;

@@ -664,8 +664,8 @@ async fn build_command_preview(
             } else {
                 "python3"
             }),
-            runtime_version:
-                crate::inference::rapid_mlx::compatibility::LATEST_QUALIFIED_VERSION_TEXT.into(),
+            // Only quoted in error text; see the same field in models.rs.
+            runtime_version: "runtime".into(),
             hf_token: None,
             verified_aliases: Vec::new(),
             execute_conversion: false,
@@ -1804,6 +1804,12 @@ async fn start_job(
     let job_state = state.clone();
     let job_id = id.clone();
     tokio::spawn(async move {
+        let started = Instant::now();
+        eprintln!(
+            "[rapid-mlx] managed runtime {:?} {} started (job {job_id})",
+            operation,
+            version_for_log.as_deref().unwrap_or("unknown version"),
+        );
         update_job(
             &job_state,
             &job_id,
@@ -1831,13 +1837,21 @@ async fn start_job(
             _ => Err(anyhow::anyhow!("Invalid runtime operation state")),
         };
         match result {
-            Ok(result) => update_job(
-                &job_state,
-                &job_id,
-                RuntimeJobState::Complete,
-                "Runtime validated and activated",
-                Some(result),
-            ),
+            Ok(result) => {
+                eprintln!(
+                    "[rapid-mlx] managed runtime {:?} {} completed in {:.1}s",
+                    operation,
+                    version_for_log.as_deref().unwrap_or("unknown version"),
+                    started.elapsed().as_secs_f64(),
+                );
+                update_job(
+                    &job_state,
+                    &job_id,
+                    RuntimeJobState::Complete,
+                    "Runtime validated and activated",
+                    Some(result),
+                );
+            }
             Err(error) => {
                 eprintln!(
                     "[rapid-mlx] managed runtime {:?} {} failed during validation: {error:#}",
