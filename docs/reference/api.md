@@ -2953,12 +2953,11 @@ All require `api-token`.
 - `GET /api/chat-template/dir` — list installed chat templates.
 - `POST /api/chat-template/install-hf` — install a chat template from HF.
 - `POST /api/chat-template/install-url` — install from a raw GitHub URL (1 MiB limit, no redirects).
-- `GET /api/chat-template/active` — return the currently active template for a model family.
+- `GET /api/chat-template/active` — list installed community templates (those with an install record) as `{ name, path, fetch_url, source_url, installed_sha256, installed_at, legacy_variant }`. `legacy_variant` is true for `-no_json` files left over from the retired no-JSON transform, which have no update path of their own.
 - `GET /api/chat-template/releases` — list known upstream releases/versions for a template.
 - `POST /api/chat-template/activate` — switch the active template for a model family.
-- `POST /api/chat-template/check-update` — check whether an installed template has an upstream update.
+- `POST /api/chat-template/check-update` — check whether an installed template has an upstream update. Compares the installed content against the repository's current `main` and returns `{ ok, changed, name, installed_version, upstream_version, installed_revision, upstream_revision, installed_sha256, current_sha256 }`. The versions are the author's own `template_version` string embedded in the template (for example `qwen3.8-froggeric-v22.5`); the revisions are commit ids.
 - `POST /api/chat-template/smoke-test` — run a tool-call smoke test against a candidate template.
-- `POST /api/chat-template/transform` — apply a transform/patch to a template (e.g. Jinja fixups).
 - `GET /api/chat-template/upstream-history` — list upstream commit/version history for a template source.
 - `GET /api/chat-template/read` — read the raw content of an installed template.
 - `GET /api/chat-template/discussions` — list HF discussion threads relevant to a model's chat template.

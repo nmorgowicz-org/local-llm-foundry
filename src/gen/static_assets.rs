@@ -106,6 +106,8 @@ pub const FEATURES_CHAT_TEMPLATE_PANEL_JS: &str =
     include_str!("../../static/js/features/chat-template-panel.js");
 pub const FEATURES_CHAT_TEMPLATE_REGISTRY_JS: &str =
     include_str!("../../static/js/features/chat-template-registry.js");
+pub const FEATURES_CHAT_TEMPLATE_UPDATE_JS: &str =
+    include_str!("../../static/js/features/chat-template-update.js");
 pub const FEATURES_CHAT_TEMPLATES_JS: &str =
     include_str!("../../static/js/features/chat-templates.js");
 pub const FEATURES_CHAT_TRANSPORT_JS: &str =

@@ -214,7 +214,7 @@ function renderNotificationCenter() {
     });
 }
 
-function registerPersistentNotification(id, title, type, message, actions) {
+export function registerPersistentNotification(id, title, type, message, actions) {
     ensureNotificationState();
     const existing = activeNotifications.get(id);
     const now = Date.now();

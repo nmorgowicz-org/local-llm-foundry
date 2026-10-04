@@ -133,13 +133,24 @@ When selected, the wizard immediately scans known tool directories and renders d
 The model step detects families that benefit from maintained community templates.
 The recommended template is downloaded into the local chat-template library and
 passed to llama-server with `--chat-template-file`. **Use Embedded** leaves the
-override unset. The preset editor exposes the same lookup through its
-**Recommended** button next to the chat-template path.
+template unset. The preset editor exposes the same lookup through its
+**Use recommended template** button next to the chat-template path.
 
-| Model family | Recommended template | Source |
+| Model family | Templates (first is recommended) | Source |
 |---|---|---|
-| Qwen models | froggeric's Fixed Template v22 (`qwen3.8-froggeric-v22`) | HuggingFace, pinned to `9f14778c92c3b5ed3e0738085694c0d3452802dd` |
-| Gemma 4 | Google's official template | HuggingFace (`google/gemma-4-31B-it`) |
+| Qwen models | froggeric's Fixed Template; Sharp Template (peculiar-ragdoll) | HuggingFace: `froggeric/Qwen-Fixed-Chat-Templates`, `peculiar-ragdoll/Qwen-Sharp-Chat-Templates` |
+| Gemma 4 | Google's official template; jscott3201's agentic fork | HuggingFace `google/gemma-4-31B-it`; GitHub |
+
+When a family has more than one template, the wizard's **Force family** menu and the picker
+beside **Use recommended template** in the preset editor choose between them. Sharp is
+froggeric's template, rebased onto each froggeric release, with an appended system prompt aimed
+at knowledge work and coding, so it is a drop-in alternative for Qwen 3.5, 3.6 and 3.8 models.
+
+No template is pinned to a version or commit: each tracks its repository's current `main`.
+When upstream publishes a new version, a toast and a notification-bell entry offer **Update**
+and **Review**; nothing installs until you choose Update, and the previous version stays in
+Version history so it can be rolled back. See
+[Template updates](spawn-wizard.md#template-updates).
 
 Google's official template is the priority default for Gemma 4 — it improves thinking
 defaults, tool argument formatting, null handling, and multi-turn agentic histories.

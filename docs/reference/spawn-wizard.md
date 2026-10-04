@@ -147,6 +147,34 @@ action or status state only needs to change one file; each call site's own code 
 limited to rendering its status line and wiring the resolved path into its own payload
 field, so there's no lifecycle-logic duplication left to drift.
 
+### Template updates
+
+Upstream authors ship new template versions often, so no community template is pinned to a
+version or commit. Each entry in `chat-template-registry.js` tracks its repository's moving
+`main`, and every install records the exact commit it fetched (Version history can roll back).
+
+Two modules own what happens when upstream moves, so every surface behaves the same:
+
+- `template-autoupdater.js` checks every installed template against upstream at most once per
+  12 hours (not on every tab focus). For a template that changed it shows one toast with
+  **Update** (or **Update all**) and **Review** buttons, and registers one persistent
+  notification-bell entry per template with the same actions. An update the user has already
+  been told about is not announced again; archiving a bell entry sticks until a newer upstream
+  version appears.
+- `chat-template-update.js` is the one place that applies an update. It reinstalls the template
+  in place under the same file name, so presets that point at it pick up the new content, and
+  the previous content stays in Version history. It then emits `chatTemplateUpdated`, which the
+  autoupdater (resolves the bell entry, forgets the pending status) and the wizard (redraws its
+  status line) both listen for.
+
+The Manage template modal shows **Update** beside **Check for updates** when its check finds a
+newer version, and the wizard's status line shows "Update available (v21.3 → v22.5)" with an
+**Update** button when the background check has found one. **Review** opens Manage template,
+where the version history and upstream commits can be read first.
+
+`-no_json` files from the retired no-JSON transform are not checked or updated; the templates
+they were derived from no longer need it.
+
 ### Runtime coverage — both llama.cpp and Rapid-MLX
 
 The chat-template file (`chatTemplatePath` / `chat_template_file`) is consumed by both

@@ -881,19 +881,25 @@ test.describe('Spawn Wizard - Phases 3, 4, and Rapid-MLX Phase 6', () => {
         await page.waitForLoadState('networkidle');
 
         const templates = await page.evaluate(async () => {
- const { COMMUNITY_TEMPLATES, buildCommunityTemplateInstallRequest } = await import('/js/features/chat-template-registry.js?community-template-test=1');
- return {
-   templates: COMMUNITY_TEMPLATES,
-   qwenInstall: buildCommunityTemplateInstallRequest(COMMUNITY_TEMPLATES.qwen),
- };
+            const { COMMUNITY_TEMPLATES, buildCommunityTemplateInstallRequest } = await import('/js/features/chat-template-registry.js?community-template-test=1');
+            return {
+                templates: COMMUNITY_TEMPLATES,
+                qwenInstall: buildCommunityTemplateInstallRequest(COMMUNITY_TEMPLATES.qwen[0]),
+            };
         });
 
- expect(templates.templates.qwen.installEndpoint).toBe('/api/chat-template/install-hf');
- expect(templates.templates.qwen.repo).toBe('froggeric/Qwen-Fixed-Chat-Templates');
- expect(templates.templates.qwen.version).toBe('qwen3.8-froggeric-v22');
- expect(templates.templates.qwen.revision).toBe('9f14778c92c3b5ed3e0738085694c0d3452802dd');
- expect(templates.qwenInstall.body.revision).toBe(templates.templates.qwen.revision);
- expect(templates.qwenInstall.body.force).toBe(true);
+        // Qwen offers froggeric's template (recommended, first) and the Sharp fork. Neither is
+        // pinned to a version or commit: both track their repository's current `main`, and the
+        // update checker offers new versions as upstream publishes them.
+        const [froggeric, sharp] = templates.templates.qwen;
+        expect(froggeric.installEndpoint).toBe('/api/chat-template/install-hf');
+        expect(froggeric.repo).toBe('froggeric/Qwen-Fixed-Chat-Templates');
+        expect(froggeric.revision).toBeUndefined();
+        expect(froggeric.version).toBeUndefined();
+        expect(templates.qwenInstall.body.revision).toBeUndefined();
+        expect(sharp.installEndpoint).toBe('/api/chat-template/install-hf');
+        expect(sharp.repo).toBe('peculiar-ragdoll/Qwen-Sharp-Chat-Templates');
+        expect(sharp.revision).toBeUndefined();
         // Google's official template is the priority default (first entry);
         // jscott3201's agentic fork is kept as a fallback entry.
  expect(templates.templates.gemma4[0].installEndpoint).toBe('/api/chat-template/install-hf');

@@ -2726,6 +2726,7 @@
                                 <div class="pe-field-hint" style="margin-bottom:4px;">Chat templates control how your messages are formatted before the model sees them. The built-in one usually works; a fixed template can repair broken tool-calling or thinking tags.</div>
                                 <input type="text" class="pe-input" id="modal-chat-template-file" placeholder="/path/to/chat_template.jinja" style="margin-bottom:6px;">
                                    <div class="pe-input-row">
+                                       <select class="pe-select" id="preset-chat-template-choice" style="display:none; width:auto; max-width:240px;" aria-label="Community template to use" title="This model family has more than one community template"></select>
                                        <button type="button" class="btn-sm btn-preset" id="preset-recommended-chat-template-btn" title="Install the best-known community template for this model family">Use recommended template</button>
                                        <button type="button" class="btn-sm btn-preset" id="preset-chat-template-manage-btn" title="Current, updates, version history, and community fixes for this template">Manage template…</button>
                                        <button type="button" class="btn-sm btn-preset" id="preset-clear-chat-template-btn" title="Clear override">Clear</button>

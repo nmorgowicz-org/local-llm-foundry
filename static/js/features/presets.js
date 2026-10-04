@@ -16,6 +16,8 @@ import {
     communityFamilyFromGgufArchitecture,
     communityTemplateFamilyFor,
     getDefaultTemplateForFamily,
+    getTemplatesForFamily,
+    provenanceSuffix,
 } from './chat-template-registry.js';
 import { buildEstimateBody, rapidEstimatePolicyFromConfig } from './vram-estimate.js';
 import {
@@ -632,14 +634,19 @@ function _presetChatTemplateName(path) {
 async function updatePresetChatTemplateStatusLine() {
     const statusEl = document.getElementById('preset-chat-template-status');
     const primaryBtn = document.getElementById('preset-recommended-chat-template-btn');
+    const choiceEl = document.getElementById('preset-chat-template-choice');
     const path = strVal('modal-chat-template-file');
     if (!statusEl) return;
 
     if (!path) {
         statusEl.textContent = chatTemplateStatusText({ mode: 'builtin' });
         if (primaryBtn) primaryBtn.textContent = 'Use recommended template';
+        void refreshPresetChatTemplateChoices();
         return;
     }
+
+    // A template is already chosen, so the primary button reverts instead of installing.
+    if (choiceEl) choiceEl.style.display = 'none';
 
     const name = _presetChatTemplateName(path);
     let installedAt = null;
@@ -653,6 +660,30 @@ async function updatePresetChatTemplateStatusLine() {
 
     statusEl.textContent = chatTemplateStatusText({ mode: 'custom', tplDisplay: name, installedAt });
     if (primaryBtn) primaryBtn.textContent = 'Revert to built-in';
+}
+
+// Fills the template picker when this model's family has more than one community template, and
+// hides it otherwise.
+async function refreshPresetChatTemplateChoices() {
+    const select = document.getElementById('preset-chat-template-choice');
+    if (!select) return;
+    const family = await communityTemplateFamilyForPreset(_currentModalPreset());
+    const candidates = getTemplatesForFamily(family);
+    if (candidates.length < 2) {
+        select.style.display = 'none';
+        select.replaceChildren();
+        return;
+    }
+    const previous = select.value;
+    select.replaceChildren(...candidates.map(tpl => {
+        const option = document.createElement('option');
+        option.value = tpl.name;
+        option.textContent = tpl.display + provenanceSuffix(tpl, family);
+        option.title = tpl.description || '';
+        return option;
+    }));
+    if (candidates.some(tpl => tpl.name === previous)) select.value = previous;
+    select.style.display = '';
 }
 
 // Resolves the community-template family for a preset using real model
@@ -697,9 +728,13 @@ async function installRecommendedChatTemplateForPreset() {
     }
 
     const family = await communityTemplateFamilyForPreset(_currentModalPreset());
-    const template = getDefaultTemplateForFamily(family);
+    // A family can have several community templates (Qwen: froggeric's, or Sharp). Use the one
+    // chosen in the picker, else the family's recommended (first) one.
+    const chosenName = document.getElementById('preset-chat-template-choice')?.value;
+    const template = getTemplatesForFamily(family).find(tpl => tpl.name === chosenName)
+        || getDefaultTemplateForFamily(family);
     if (!template) {
-        showToast('No community template recommendation for this model', 'warn');
+        showToast('No community template recommendation for this model', 'warning');
         return;
     }
 
@@ -719,7 +754,7 @@ async function installRecommendedChatTemplateForPreset() {
         if (!resp.ok || !data.ok || !data.path) {
             throw new Error(data.error || `HTTP ${resp.status}`);
         }
-        const templatePath = (template.transformed && data.transformed_path) ? data.transformed_path : data.path;
+        const templatePath = data.path;
         setVal('modal-chat-template-file', templatePath);
         await updatePresetChatTemplateStatusLine();
         showToast(
@@ -1742,6 +1777,9 @@ export function openPresetModal(mode, section, seedPreset = null) {
     if (formatPill) formatPill.hidden = true;
     clearFieldErrors();
     newPresetSeed = mode === 'new' && seedPreset ? structuredClone(seedPreset) : null;
+    // The earlier status refresh ran before the seed was stored, so it could not see the model
+    // family. Refresh the template chooser now that it can.
+    void refreshPresetChatTemplateChoices();
     _presetRapidMlxProfile = null;
     _presetRapidMlxPrefillExplicit = false;
 

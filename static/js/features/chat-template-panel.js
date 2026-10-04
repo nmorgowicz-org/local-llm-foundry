@@ -9,13 +9,15 @@
 //   GET  /api/chat-template/releases?name=<name>
 //     -> { ok, releases: [{ sha256, revision, source_url, fetch_url, installed_at, file }], active_sha256 }
 //   POST /api/chat-template/activate { name, sha256 } -> { ok }
-//   POST /api/chat-template/check-update { path, fetch_url?, source_url? } -> { ok, changed }
+//   POST /api/chat-template/check-update { path, fetch_url?, source_url? }
+//     -> { ok, changed, name, installed_version, upstream_version, installed_revision, upstream_revision }
 //   GET  /api/chat-template/discussions?name=<name> -> { ok, discussions: [...], source_repo }
 //   POST /api/chat-template/install-discussion {...} -> { ok, release_name, file_path }
 //   POST /api/chat-template/smoke-test { name, model } -> { ok, summary }
 //   GET  /api/chat-template/read?path=<path> -> raw text
 
 import { showToast } from './toast.js';
+import { applyTemplateUpdate, describeUpdate, isRetiredVariant } from './chat-template-update.js';
 
 export const CT_LABELS = {
   useRecommended: 'Use recommended template',
@@ -150,26 +152,29 @@ export async function openChatTemplateManageModal({ tplName, tplRepo, currentPat
       fetchDiscussions(tplName),
     ]);
 
+    const activeRelease = (releasesResult?.releases || []).find(r => r.sha256 === releasesResult?.active_sha256) || releasesResult?.releases?.[0];
+
     const refreshCurrent = async (newActivePath) => {
       if (onActivated) await onActivated();
       const refreshed = await fetchReleases(tplName);
-      _renderCurrentSection(versionEl, refreshed, newActivePath || activePath || currentPath, {
-        basePath: currentPath,
-        onTransformed: () => refreshCurrent(`${currentPath.replace(/\.jinja$/, '')}-no_json.jinja`),
-      });
+      _renderCurrentSection(versionEl, refreshed, newActivePath || activePath || currentPath);
       return refreshed;
     };
 
-    _renderCurrentSection(versionEl, releasesResult, activePath || currentPath, {
-      basePath: currentPath,
-      onTransformed: () => refreshCurrent(`${currentPath.replace(/\.jinja$/, '')}-no_json.jinja`),
+    _renderCurrentSection(versionEl, releasesResult, activePath || currentPath);
+    _renderUpdatesSection(updatesEl, {
+      path: currentPath,
+      name: tplName,
+      sourceUrl: activeRelease?.source_url,
+      onUpdated: async () => {
+        const refreshed = await refreshCurrent(currentPath);
+        _renderVersionHistorySection(historyEl, refreshed, tplName, () => {});
+      },
     });
-    _renderUpdatesSection(updatesEl, { path: currentPath, onChecked: () => {} });
     _renderVersionHistorySection(historyEl, releasesResult, tplName, async () => {
       const refreshed = await refreshCurrent(currentPath);
       _renderVersionHistorySection(historyEl, refreshed, tplName, () => {});
     });
-    const activeRelease = (releasesResult?.releases || []).find(r => r.sha256 === releasesResult?.active_sha256) || releasesResult?.releases?.[0];
 
     if (upstreamEl) {
       const upstreamRepo = tplRepo || repoFromSourceUrl(activeRelease?.source_url);
@@ -219,7 +224,7 @@ export function bindChatTemplateManageModalChrome() {
   });
 }
 
-function _renderCurrentSection(versionEl, releasesResult, currentPath, { basePath, onTransformed } = {}) {
+function _renderCurrentSection(versionEl, releasesResult, currentPath) {
   const releases = releasesResult?.releases || [];
   versionEl.innerHTML = '';
 
@@ -263,73 +268,25 @@ function _renderCurrentSection(versionEl, releasesResult, currentPath, { basePat
     });
   }
 
-  // Surface whether the froggeric no-JSON transform is the file actually in
-  // effect. The transform is opt-in — nothing runs it automatically — so this
-  // is either a status ("already applied") or an action (a button to apply it).
-  if (currentPath) {
-    const transformRow = document.createElement('div');
-    transformRow.className = 'chat-template-lifecycle-version-row';
-    const label = document.createElement('span');
-    label.className = 'chat-template-lifecycle-version-label';
-    label.textContent = 'Transform:';
-    const value = document.createElement('span');
-    value.className = 'chat-template-lifecycle-version-value';
-    if (currentPath.includes('-no_json.jinja')) {
-      value.textContent = '✓ no-JSON transform active (strips broken tool-call JSON branches)';
-      transformRow.appendChild(label);
-      transformRow.appendChild(value);
-    } else if (currentPath.includes('froggeric') && basePath && onTransformed) {
-      const versionTag = (active?.template_version || '').match(/v[\d.]+$/)?.[0];
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'btn-sm btn-preset';
-      btn.textContent = versionTag ? `Fix ${versionTag}` : 'Apply no-JSON fix';
-      btn.title = 'Strips non-native JSON tool-call branches from this template (llama.cpp grammar-loop workaround). Your choice — nothing runs this automatically.';
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        const orig = btn.textContent;
-        btn.textContent = 'Applying…';
-        try {
-          const resp = await fetch('/api/chat-template/transform', {
-            method: 'POST',
-            headers: _jsonHeaders(),
-            body: JSON.stringify({ path: basePath }),
-          });
-          const result = resp.ok ? await resp.json() : { ok: false };
-          if (result.ok) {
-            showToast('No-JSON transform applied', 'success', null, 2400);
-            await onTransformed();
-          } else {
-            showToast(result.error || 'Transform failed', 'error');
-            btn.disabled = false;
-            btn.textContent = orig;
-          }
-        } catch (err) {
-          showToast('Transform failed: ' + (err.message || String(err)), 'error');
-          btn.disabled = false;
-          btn.textContent = orig;
-        }
-      });
-      transformRow.appendChild(label);
-      transformRow.appendChild(value);
-      transformRow.appendChild(btn);
-      value.textContent = '⚠ stock (untransformed) template active — ';
-    } else if (currentPath.includes('froggeric')) {
-      value.textContent = '⚠ stock template active — no-JSON transform not found for this install';
-      transformRow.appendChild(label);
-      transformRow.appendChild(value);
-    } else {
-      value.textContent = 'n/a';
-      transformRow.appendChild(label);
-      transformRow.appendChild(value);
-    }
-    versionEl.appendChild(transformRow);
+  // A variant left over from the retired no-JSON transform: say so, since it no longer updates.
+  if (currentPath && currentPath.includes('-no_json.jinja')) {
+    const note = document.createElement('div');
+    note.className = 'chat-template-lifecycle-version-row';
+    note.textContent = 'This is a retired no-JSON variant. It is no longer updated, and the plain template no longer needs it.';
+    versionEl.appendChild(note);
   }
 }
 
-function _renderUpdatesSection(updatesEl, { path }) {
+function _renderUpdatesSection(updatesEl, { path, name, sourceUrl, onUpdated }) {
   if (!updatesEl) return;
   updatesEl.innerHTML = '';
+
+  // Leftovers of the retired no-JSON transform have no upstream to update from.
+  if (isRetiredVariant(name)) {
+    updatesEl.textContent = 'This no-JSON variant is retired and no longer updated. Switch to the plain template.';
+    return;
+  }
+
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'btn-sm btn-preset';
@@ -338,9 +295,35 @@ function _renderUpdatesSection(updatesEl, { path }) {
   resultSpan.style.marginLeft = '8px';
   resultSpan.style.fontSize = '10px';
   resultSpan.style.color = 'var(--color-text-muted)';
+
+  // Shown only when the check finds a newer upstream version. Applying it reinstalls the
+  // template in place; the previous version stays in Version history.
+  const updateBtn = document.createElement('button');
+  updateBtn.type = 'button';
+  updateBtn.className = 'btn-sm btn-primary';
+  updateBtn.style.marginLeft = '8px';
+  updateBtn.textContent = 'Update';
+  updateBtn.hidden = true;
+  let pending = null;
+
+  updateBtn.addEventListener('click', async () => {
+    updateBtn.disabled = true;
+    updateBtn.textContent = 'Updating…';
+    const applied = await applyTemplateUpdate({ name, sourceUrl, info: pending });
+    if (applied.ok) {
+      resultSpan.textContent = 'Updated.';
+      updateBtn.hidden = true;
+      pending = null;
+      if (onUpdated) await onUpdated();
+    } else {
+      updateBtn.disabled = false;
+      updateBtn.textContent = 'Update';
+    }
+  });
+
   btn.addEventListener('click', async () => {
     if (!path) {
-      showToast('No template selected', 'warn');
+      showToast('No template selected', 'warning');
       return;
     }
     const orig = btn.textContent;
@@ -349,11 +332,14 @@ function _renderUpdatesSection(updatesEl, { path }) {
     try {
       const result = await checkForUpdate({ path });
       if (result.ok && result.changed) {
-        resultSpan.textContent = 'Upstream has changed since install.';
-        showToast('Upstream template has changed', 'warn', 'Use "Use recommended template" to re-download', 6000);
+        pending = result;
+        resultSpan.textContent = `Update available (${describeUpdate(result)}).`;
+        updateBtn.hidden = false;
       } else if (result.ok) {
+        pending = null;
+        updateBtn.hidden = true;
         resultSpan.textContent = 'Up to date.';
-        showToast('Template is up to date', 'success', null, 2400);
+        showToast('Template is up to date', 'success');
       } else {
         resultSpan.textContent = '';
         showToast(result.error || 'Check failed', 'error');
@@ -367,6 +353,7 @@ function _renderUpdatesSection(updatesEl, { path }) {
   });
   updatesEl.appendChild(btn);
   updatesEl.appendChild(resultSpan);
+  updatesEl.appendChild(updateBtn);
 }
 
 function _renderVersionHistorySection(historyEl, releasesResult, tplName, onActivated) {

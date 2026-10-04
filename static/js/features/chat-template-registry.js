@@ -1,19 +1,34 @@
+// Community chat templates, by model family. The first entry in a family is its default.
+//
+// None of these pin a version or a commit. Upstream authors ship new template versions often,
+// so each entry tracks the repo's moving `main`. The update checker compares what is installed
+// against `main` and offers the update; nothing is ever installed silently. Every install
+// records the exact commit it fetched, so Version history can roll back.
 export const COMMUNITY_TEMPLATES = {
-  qwen: {
-    name: 'qwen-froggeric-fixed',
-    display: "froggeric's Fixed Template v22",
-    installEndpoint: '/api/chat-template/install-hf',
-    repo: 'froggeric/Qwen-Fixed-Chat-Templates',
-    file: 'chat_template.jinja',
-    revision: '9f14778c92c3b5ed3e0738085694c0d3452802dd',
-    version: 'qwen3.8-froggeric-v22',
-    description: 'froggeric Fixed Chat Template v22 for Qwen models; fixes tool calling, KV cache invalidation & agentic loop bugs',
-    sourceUrl: 'https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates/blob/9f14778c92c3b5ed3e0738085694c0d3452802dd/chat_template.jinja',
-    provenance: 'community',
-    // v22 is consumed as published. The historical v21.3 -no_json transform
-    // must not be reused for this pinned release.
-    transformed: false,
-  },
+  qwen: [
+    {
+      name: 'qwen-froggeric-fixed',
+      display: "froggeric's Fixed Template",
+      installEndpoint: '/api/chat-template/install-hf',
+      repo: 'froggeric/Qwen-Fixed-Chat-Templates',
+      file: 'chat_template.jinja',
+      description: 'Fixes Qwen tool calling, KV-cache invalidation and agentic-loop bugs',
+      sourceUrl: 'https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates/blob/main/chat_template.jinja',
+      provenance: 'community',
+    },
+    {
+      // A fork of froggeric's template that force-appends a system prompt tuned for knowledge
+      // work and coding. It is rebased onto each froggeric release, so it is a drop-in swap.
+      name: 'qwen-sharp',
+      display: 'Sharp Template (peculiar-ragdoll)',
+      installEndpoint: '/api/chat-template/install-hf',
+      repo: 'peculiar-ragdoll/Qwen-Sharp-Chat-Templates',
+      file: 'chat_template.jinja',
+      description: "froggeric's template plus an appended system prompt for knowledge work and coding; answers in fewer tokens",
+      sourceUrl: 'https://huggingface.co/peculiar-ragdoll/Qwen-Sharp-Chat-Templates/blob/main/chat_template.jinja',
+      provenance: 'community',
+    },
+  ],
   // Google's official template is listed first (and is what getDefaultTemplateForFamily()
   // picks) because it's the priority recommendation. jscott3201's agentic fork is kept as
   // a fallback entry in case Google's template regresses tool-calling again in the future.
@@ -56,6 +71,30 @@ export function getDefaultTemplateForFamily(family) {
 /** Returns all family keys that have templates. */
 export function getTemplateFamilies() {
   return Object.keys(COMMUNITY_TEMPLATES);
+}
+
+/** Looks a template up by its install name across every family. */
+export function findTemplateByName(name) {
+  if (!name) return null;
+  for (const family of getTemplateFamilies()) {
+    const hit = getTemplatesForFamily(family).find(tpl => tpl.name === name);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * " (Official)" / " (Community)" suffix for a template's label, or "" when it adds nothing.
+ * It only helps when a family mixes provenance (Gemma: Google's own beside a community fork).
+ * A family of community templates is told apart by name, and labelling each one "Community"
+ * is noise.
+ */
+export function provenanceSuffix(tpl, family) {
+  if (!tpl?.provenance) return '';
+  const candidates = getTemplatesForFamily(family);
+  const mixed = new Set(candidates.map(c => c.provenance)).size > 1;
+  if (!mixed) return '';
+  return tpl.provenance === 'official' ? ' (Official)' : ' (Community)';
 }
 
 // Maps a backend-derived architecture family slug (e.g. preset.family /
