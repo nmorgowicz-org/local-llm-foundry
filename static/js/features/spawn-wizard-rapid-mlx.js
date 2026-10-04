@@ -325,6 +325,31 @@ async function _fetchSpawnSidecars() {
     const data = await resp.json();
 
     if (!data.ok || !data.sidecars || data.sidecars.length === 0) {
+      // Even with no managed sidecar, a known tier may have an official upstream
+      // draft worth preflighting before the user builds one from scratch.
+      const emptyDraft = officialMtpDraftForTrunk((wizardState.model.path || '').trim());
+      if (emptyDraft && !wizardState.hardware.speculativeModel) {
+        setHtml(listEl, '<span style="color:var(--text-muted,#888);">No local sidecars found.</span> '
+          + '<div class="field-hint" style="color:var(--accent,#8cc8ff); margin-top:5px;">'
+          + 'Official upstream MTP draft exists for this tier: <code>' + emptyDraft.repo + '</code>'
+          + (emptyDraft.note ? ' (' + emptyDraft.note + ')' : '')
+          + ' <button type="button" class="hw-action-btn" id="spawn-rapid-speculative-official-preflight" style="font-size:11px; padding:2px 8px; margin-left:4px;">Preflight</button>'
+          + '</div>');
+        const emptyBtn = document.getElementById('spawn-rapid-speculative-official-preflight');
+        if (emptyBtn) {
+          emptyBtn.addEventListener('click', async () => {
+            emptyBtn.disabled = true;
+            emptyBtn.textContent = 'Preflighting…';
+            try {
+              await _spawnCheckTrust(emptyDraft.repo);
+              emptyBtn.textContent = 'Preflighted';
+            } finally {
+              emptyBtn.disabled = false;
+            }
+          });
+        }
+        return;
+      }
       setHtml(listEl, '<span style="color:var(--text-muted,#888);">No local sidecars found. Build one with scripts/build-mtp-head.py</span>');
       return;
     }
@@ -365,6 +390,18 @@ async function _fetchSpawnSidecars() {
           : 'Select a local trunk or enter an explicit local sidecar; managed auto-selection is unavailable for this model reference.');
       html += '<div class="field-hint" style="color:var(--warn,#e6a41c); margin-bottom:5px;">' + reason + '</div>';
     }
+    // No managed sidecar for this trunk? Offer the official upstream draft for the
+    // trunk's tier — preflighting pins it and records provenance; launch still needs
+    // an immutable local copy (build one from the preflighted source when ready).
+    const officialDraft = officialMtpDraftForTrunk(selectedTrunk);
+    if (!matchingSidecar && officialDraft && !h.speculativeModel) {
+      html += '<div class="field-hint" style="color:var(--accent,#8cc8ff); margin-bottom:5px;">'
+        + 'Official upstream MTP draft exists for this tier: <code>' + officialDraft.repo + '</code>'
+        + (officialDraft.note ? ' (' + officialDraft.note + ')' : '')
+        + ' <button type="button" class="hw-action-btn" id="spawn-rapid-speculative-official-preflight" style="font-size:11px; padding:2px 8px; margin-left:4px;">Preflight</button>'
+        + '</div>';
+    }
+
     data.sidecars.forEach((s, i) => {
       const p = rapidMlxSidecarProvenance(s);
       const vram = p.estimatedMemoryBytes != null
@@ -388,6 +425,20 @@ async function _fetchSpawnSidecars() {
 
 
     setHtml(listEl, html);
+
+    const officialBtn = document.getElementById('spawn-rapid-speculative-official-preflight');
+    if (officialBtn) {
+      officialBtn.addEventListener('click', async () => {
+        officialBtn.disabled = true;
+        officialBtn.textContent = 'Preflighting…';
+        try {
+          await _spawnCheckTrust(officialDraft.repo);
+          officialBtn.textContent = 'Preflighted';
+        } finally {
+          officialBtn.disabled = false;
+        }
+      });
+    }
 
     // Wire click handlers
     listEl.querySelectorAll('[data-sidecar-index]').forEach(btn => {
@@ -911,6 +962,26 @@ async function _fetchRapidMlxModelProfile(modelId) {
     wizardState.arch.metadataReason = 'Rapid-MLX profile request failed; safe defaults retained';
     _renderRapidMlxProfileHints();
   }
+}
+
+// Official upstream MTP draft repos, keyed by trunk tier. Upstream publishes a
+// standalone MTP drafter per Qwen tier (rapid_mlx/aliases.json), so a finetune of
+// that tier can preflight the official draft instead of building one from scratch.
+// Extract: tier regex, upstream draft repo id.
+const OFFICIAL_MTP_DRAFTS = [
+    { match: /qwen3\.8.*27b/i, repo: 'rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX', note: 'a bf16 variant (…-MTP-fp16-MLX) also exists' },
+    { match: /qwen3\.6.*35b/i, repo: 'mlx-community/Qwen3.6-35B-A3B-MTP-4bit', note: '' },
+    { match: /qwen3\.6.*27b/i, repo: 'mlx-community/Qwen3.6-27B-MTP-4bit', note: '' },
+    { match: /qwen3\.5.*9b/i, repo: 'mlx-community/Qwen3.5-9B-MTP-4bit', note: '' },
+    { match: /qwen3\.5.*4b/i, repo: 'mlx-community/Qwen3.5-4B-MTP-4bit', note: '' },
+];
+
+function officialMtpDraftForTrunk(trunkPath) {
+    const name = String(trunkPath || '').toLowerCase();
+    for (const entry of OFFICIAL_MTP_DRAFTS) {
+        if (entry.match.test(name)) return entry;
+    }
+    return null;
 }
 
 // Debounced wrapper: schedule a profile fetch after model selection stabilizes.

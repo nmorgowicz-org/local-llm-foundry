@@ -447,6 +447,11 @@ When Rapid-MLX is selected, the wizard adapts the Model and Hardware step UI:
     from the runtime profile — embedded prediction heads (no sidecar needed) versus
     "no embedded MTP heads detected" (a matching local sidecar is required, or keep
     speculation off).
+  - Official upstream MTP drafts: for trunk tiers where upstream publishes a standalone
+    MTP drafter (Qwen 3.8-27B, 3.6-27B/35B-A3B, 3.5-4B/9B), the sidecar list offers a
+    one-click "Preflight" of that draft — pinning its revision and provenance without a
+    local build. Launch still requires an immutable local copy, which the managed
+    sidecar builder can produce from the preflighted source.
 
 ![Rapid-MLX hardware panel](../screenshots/rapidmlx-local--spawn-wizard-rapid-mlx-fit.png)
 

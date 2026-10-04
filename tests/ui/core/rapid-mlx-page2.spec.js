@@ -109,6 +109,37 @@ test.describe('Rapid-MLX page-2 layout and protocol reference', () => {
     expect(state.hint).toContain('embedded MTP prediction heads');
   });
 
+  test('@in-memory-test protocol modal resolves Gemma, not just Qwen', async ({ page }) => {
+    await openHardwarePage(page);
+    await expandAllSettings(page);
+    await page.evaluate(() => {
+      const path = document.getElementById('spawn-model-path');
+      if (path) path.value = '/models/gemma-4-27b-it-qat-4bit';
+    });
+    await page.click('#spawn-rapid-advanced-fields [data-open-protocol-docs]');
+    await expect(page.locator('#protocol-docs-overlay')).toBeVisible();
+    await expect(page.locator('.protocol-docs-table')).toContainText('gemma4');
+    await expect(page.locator('.protocol-docs-link')).toHaveAttribute('href', /families\/gemma/);
+  });
+
+  test('@in-memory-test official upstream MTP draft is suggested for a known tier', async ({ page }) => {
+    await openHardwarePage(page);
+    await page.route('**/api/hf/mtp-sidecars', route => json(route, { ok: true, sidecars: [] }));
+    await page.evaluate(async () => {
+      const wiz = await import('/js/features/spawn-wizard.js');
+      const rapid = await import('/js/features/spawn-wizard-rapid-mlx.js');
+      wiz.wizardState.model.path = '/fake/hub/models--nightmedia--Qwen3.8-27B-MindMeld-AREX-mxfp4-mlx/snapshots/abc';
+      wiz.wizardState.hardware.speculativeEnabled = true;
+      wiz.wizardState.hardware.speculativeSource = 'external';
+      document.getElementById('spawn-rapid-speculative-enabled').checked = true;
+      rapid.refreshRapidMlxSidecars();
+    });
+    await page.waitForTimeout(800);
+    const hint = await page.evaluate(() => document.getElementById('spawn-rapid-speculative-sidecars-list')?.textContent || '');
+    expect(hint).toContain('rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX');
+    expect(hint).toContain('Preflight');
+  });
+
   test('@in-memory-test Validate protocol opens the in-app reference modal', async ({ page }) => {
     await openHardwarePage(page);
     await expandAllSettings(page);
