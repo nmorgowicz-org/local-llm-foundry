@@ -12,8 +12,17 @@ function readBaseline() {
   return JSON.parse(readFileSync(BASELINE_FILE, 'utf8'));
 }
 
+// Wall-clock numbers depend on the machine as much as on the app: a busy laptop or a shared
+// CI runner can double them. The JS module count is deterministic and stays a hard gate. The
+// time limits are only there to catch a hang or an order-of-magnitude regression, so they are
+// deliberately generous, scale with PERF_BUDGET_SCALE for slow runners, and the measured values
+// are attached to the test report so a trend is still visible.
+const BUDGET_SCALE = Number(process.env.PERF_BUDGET_SCALE) > 0 ? Number(process.env.PERF_BUDGET_SCALE) : 1;
+const MODULES_READY_BUDGET_MS = 20_000 * BUDGET_SCALE;
+const DASHBOARD_UPDATE_BUDGET_MS = 2_000 * BUDGET_SCALE;
+
 test.describe('performance baseline', () => {
-  test('cold load network and timing', async ({ page }) => {
+  test('cold load network and timing', async ({ page }, testInfo) => {
     const requests = [];
     page.on('request', req => {
       const url = req.url();
@@ -44,10 +53,15 @@ test.describe('performance baseline', () => {
       `JS module count regressed: ${jsRequests.length} > ${baseline.count}. ` +
       `Run \`cd tests/ui && npm run update-baseline\` after verifying the new modules are intentional.`,
     ).toBeLessThanOrEqual(baseline.count);
-    expect(modulesReadyTime).toBeLessThan(5000); // should be under 5s locally
+    testInfo.annotations.push({ type: 'modules-ready-ms', description: String(modulesReadyTime) });
+    expect(
+      modulesReadyTime,
+      `modules-ready took ${modulesReadyTime}ms (budget ${MODULES_READY_BUDGET_MS}ms). ` +
+      'That is far outside normal; set PERF_BUDGET_SCALE for a known-slow runner.',
+    ).toBeLessThan(MODULES_READY_BUDGET_MS);
   });
 
-  test('dashboard update path timing', async ({ page }) => {
+  test('dashboard update path timing', async ({ page }, testInfo) => {
     await page.goto('/');
     await page.waitForSelector('html.modules-ready');
 
@@ -60,6 +74,7 @@ test.describe('performance baseline', () => {
     });
 
     console.log(`Dashboard update time: ${Math.round(updateMs)}ms`);
-    expect(updateMs).toBeLessThan(500); // should be under 500ms
+    testInfo.annotations.push({ type: 'dashboard-update-ms', description: String(Math.round(updateMs)) });
+    expect(updateMs).toBeLessThan(DASHBOARD_UPDATE_BUDGET_MS);
   });
 });

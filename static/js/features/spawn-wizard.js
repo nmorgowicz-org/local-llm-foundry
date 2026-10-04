@@ -63,6 +63,7 @@ import {
   bindQuantizerEditor,
   loadCommunityPicks,
   triggerQuantAdvisor,
+  triggerMlxSidebarBody,
   triggerHfFileFetch,
   _applyScopeDefaultForEngine,
 } from './spawn-wizard-hf-browse.js';
@@ -1033,6 +1034,8 @@ export function openSpawnWizard(opts = {}) {
       }
     }
     scheduleRapidMlxProfileFetch(repoId);
+    // Replace the llama.cpp quant ladder with the MLX sidebar and its real estimate.
+    triggerMlxSidebarBody(repoId);
   }
 
   _initViewMode();
