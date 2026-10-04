@@ -3311,14 +3311,15 @@ async function onHfModelSelected(model, filelistContainer, downloadPanel) {
                         newBtn.dataset.dlBusy = '1';
                         newBtn.disabled = true;
                         newBtn.textContent = 'Starting download\u2026';
+                        const fmtGb = (b) => (b / (1024 ** 3)).toFixed(1) + ' GB';
                         try {
                             const headers = window.authHeaders
                                 ? { ...window.authHeaders(), 'Content-Type': 'application/json' }
                                 : { 'Content-Type': 'application/json' };
-                            const resp = await fetch('/api/rapid-mlx/models/download', {
+                            const resp = await fetch('/api/models/downloads', {
                                 method: 'POST',
                                 headers,
-                                body: JSON.stringify({ repo_id: repoId }),
+                                body: JSON.stringify({ repo_id: repoId, engine: 'rapid-mlx' }),
                             });
                             const data = await resp.json().catch(() => ({}));
                             if (!resp.ok || !data.ok) {
@@ -3331,11 +3332,23 @@ async function onHfModelSelected(model, filelistContainer, downloadPanel) {
                             showToast('Download started: ' + repoId, 'info');
                             newBtn.textContent = 'Downloading\u2026';
                             const jobId = data.job_id;
+                            let stalledToasted = false;
                             const poll = async () => {
                                 try {
-                                    const r = await fetch(`/api/rapid-mlx/models/download/${encodeURIComponent(jobId)}`, { headers: window.authHeaders ? window.authHeaders() : {} });
+                                    const r = await fetch(`/api/models/downloads/${encodeURIComponent(jobId)}`, { headers: window.authHeaders ? window.authHeaders() : {} });
                                     const d = await r.json().catch(() => ({}));
                                     const job = d.job || {};
+                                    if (job.bytes_total > 0 && job.state === 'running') {
+                                        const pct = Math.min(100, Math.round((job.bytes_done / job.bytes_total) * 100));
+                                        newBtn.textContent = `Downloading ${pct}% (${fmtGb(job.bytes_done)} / ${fmtGb(job.bytes_total)})`;
+                                        if (job.stalled && !stalledToasted) {
+                                            stalledToasted = true;
+                                            showToast(`Download of ${repoId} stalled \u2014 resuming automatically (finished files are kept).`, 'warning');
+                                        }
+                                        if (!job.stalled) stalledToasted = false;
+                                    } else if (job.state === 'running') {
+                                        newBtn.textContent = 'Downloading\u2026';
+                                    }
                                     if (job.state === 'complete') {
                                         showToast('Downloaded: ' + repoId, 'success');
                                         invalidateModelInventory();
@@ -3350,7 +3363,7 @@ async function onHfModelSelected(model, filelistContainer, downloadPanel) {
                                         showToast('Download failed: ' + (job.error || 'unknown error'), 'error');
                                         newBtn.dataset.dlBusy = '';
                                         newBtn.disabled = false;
-                                        newBtn.textContent = 'Download to models folder';
+                                        newBtn.textContent = 'Retry download';
                                         return;
                                     }
                                     setTimeout(poll, 2000);

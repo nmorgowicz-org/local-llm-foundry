@@ -51,18 +51,32 @@ struct RuntimeApiState {
     client: reqwest::Client,
 }
 
-/// Tracks a pre-download of a Hugging Face MLX repository into the app-scoped
+/// Tracks a pre-download of a Hugging Face model repository into the app-scoped
 /// model cache, so the Spawn Wizard (and spawn itself) find the weights already
-/// local instead of silently downloading at launch time.
+/// local instead of silently downloading at launch time. Engine is carried for
+/// provenance (rapid-mlx today, omlx later) — both read the same HF cache.
 #[derive(Debug, Clone, Serialize)]
 struct ModelDownloadJob {
     repo_id: String,
     revision: String,
+    engine: String,
     state: RuntimeJobState,
     message: String,
     error: Option<String>,
     local_path: Option<String>,
+    // Byte-level progress: total from the repo listing, done accumulated from
+    // per-file completions plus intra-file tqdm percentages.
+    bytes_total: u64,
+    bytes_done: u64,
+    current_file: String,
+    stalled: bool,
+    restarts: u32,
 }
+
+const MODEL_DOWNLOAD_MAX_RESTARTS: u32 = 3;
+/// No forwarded progress for this long counts as a stall; the downloader is
+/// restarted and resumes (the hub skips files it already finished).
+const MODEL_DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 
 fn validate_model_download_repo(repo_id: &str) -> bool {
     let parts: Vec<&str> = repo_id.splitn(3, '/').collect();
@@ -370,12 +384,230 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         .boxed()
 }
 
-/// POST /api/rapid-mlx/models/download — start a background snapshot download of a
-/// Hugging Face MLX repository into the app-scoped model cache. The same resolver
-/// that runs at launch performs the download, so an already-downloaded repo is a
-/// fast no-op and the spawn path reuses exactly what lands on disk.
+/// Shared driver for both model-download routes. Runs `huggingface_hub`
+/// per-file downloads in a Python child, streams progress lines from its
+/// stdout (file boundaries, cumulative bytes, final snapshot path) plus
+/// intra-file tqdm percentages from stderr, detects stalls with a watchdog
+/// and restarts to resume — the hub skips files it already finished.
+fn validate_model_download_engine(engine: &str) -> bool {
+    matches!(engine, "rapid-mlx" | "omlx")
+}
+
+fn spawn_model_download_worker(
+    state: RuntimeApiState,
+    job_id: String,
+    repo_id: String,
+    revision: String,
+    models_dir: std::path::PathBuf,
+) {
+    tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
+        // Raw string on purpose: a `\` line continuation in a normal literal strips the
+        // next line's indentation, which breaks the Python `for` body.
+        let python_code = r#"from huggingface_hub import HfApi, hf_hub_download
+import os, sys
+repo_id, revision, cache = sys.argv[1], sys.argv[2], sys.argv[3]
+info = HfApi().model_info(repo_id, revision=revision, files_metadata=True)
+files = [(f.rfilename, f.size or 0) for f in info.siblings if (f.size or 0) > 0]
+print(f'TOTAL {sum(s for _, s in files)}', flush=True)
+last = ''
+for name, size in files:
+    print(f'FILE {name}\t{size}', flush=True)
+    last = hf_hub_download(repo_id=repo_id, filename=name, revision=revision, cache_dir=cache)
+print('PATH ' + os.path.dirname(last), flush=True)"#;
+
+        // Progress is measured on disk: the hub writes `<blob>.incomplete` files under
+        // models--owner--repo/blobs while downloading, so the directory size is the
+        // true byte count (xet and plain HTTP alike), including files kept from an
+        // earlier attempt when resuming.
+        let blobs_dir = models_dir
+            .join("cache/huggingface/hub")
+            .join(format!("models--{}", repo_id.replace('/', "--")))
+            .join("blobs");
+        let dir_bytes = |dir: &std::path::Path| -> u64 {
+            std::fs::read_dir(dir)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter_map(|e| e.metadata().ok())
+                        .filter(|m| m.is_file())
+                        .map(|m| m.len())
+                        .sum()
+                })
+                .unwrap_or(0)
+        };
+
+        let mut attempt = 0u32;
+        loop {
+            let mut child = match tokio::process::Command::new(if cfg!(windows) {
+                "python.exe"
+            } else {
+                "python3"
+            })
+            .args(["-c", python_code, &repo_id, &revision])
+            .arg(models_dir.join("cache/huggingface/hub"))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            {
+                Ok(c) => c,
+                Err(error) => {
+                    let mut downloads = state
+                        .model_downloads
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    {
+                        if let Some(job) = downloads.get_mut(&job_id) {
+                            job.state = RuntimeJobState::Failed;
+                            job.message = "Download failed".into();
+                            job.error =
+                                Some(format!("Could not start the hub downloader: {error}"));
+                        }
+                    }
+                    return;
+                }
+            };
+            attempt += 1;
+            let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped")).lines();
+            let mut stderr = child.stderr.take().expect("stderr piped");
+            let mut last_progress = tokio::time::Instant::now();
+            let mut last_bytes: u64 = 0;
+            let mut total: u64 = 0;
+            let mut final_path: Option<String> = None;
+            let mut failure: Option<String> = None;
+            let mut stalled = false;
+            let mut err_tail = String::new();
+            let mut err_buf = [0u8; 4096];
+            let mut stderr_open = true;
+            let mut tick = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                tokio::select! {
+                    line = stdout.next_line() => {
+                        match line {
+                            Ok(Some(line)) => {
+                                last_progress = tokio::time::Instant::now();
+                                if let Some(rest) = line.strip_prefix("TOTAL ") {
+                                    total = rest.trim().parse().unwrap_or(0);
+                                } else if let Some(rest) = line.strip_prefix("FILE ") {
+                                    let name = rest.rsplit_once('\t').map(|(n, _)| n).unwrap_or(rest);
+                                    let mut downloads = state.model_downloads.lock().unwrap_or_else(|e| e.into_inner());
+                                    if let Some(job) = downloads.get_mut(&job_id) {
+                                        job.current_file = name.to_string();
+                                    }
+                                } else if let Some(rest) = line.strip_prefix("PATH ") {
+                                    final_path = Some(rest.trim().to_string());
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(error) => {
+                                failure = Some(format!("Downloader stream error: {error}"));
+                                break;
+                            }
+                        }
+                    }
+                    read = stderr.read(&mut err_buf), if stderr_open => {
+                        match read {
+                            Ok(0) | Err(_) => stderr_open = false,
+                            Ok(n) => {
+                                err_tail.push_str(&String::from_utf8_lossy(&err_buf[..n]));
+                                if err_tail.len() > 2000 {
+                                    let cut = err_tail.len() - 2000;
+                                    err_tail = err_tail.split_at(err_tail.ceil_char_boundary(cut)).1.to_string();
+                                }
+                            }
+                        }
+                    }
+                    _ = tick.tick() => {
+                        let bytes = dir_bytes(&blobs_dir);
+                        if bytes != last_bytes {
+                            last_bytes = bytes;
+                            last_progress = tokio::time::Instant::now();
+                        }
+                        {
+                            let mut downloads = state.model_downloads.lock().unwrap_or_else(|e| e.into_inner());
+                            if let Some(job) = downloads.get_mut(&job_id) {
+                                job.bytes_total = total.max(job.bytes_total);
+                                job.bytes_done = if job.bytes_total > 0 { bytes.min(job.bytes_total) } else { bytes };
+                                if last_progress.elapsed() < Duration::from_secs(30) {
+                                    job.stalled = false;
+                                }
+                            }
+                        }
+                        if last_progress.elapsed() > MODEL_DOWNLOAD_STALL_TIMEOUT {
+                            stalled = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let status = child.wait().await;
+            if !stalled && failure.is_none() && final_path.is_none() {
+                // Non-stall exit without a PATH line: pull the error from stderr text.
+                let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
+                let detail = err_tail
+                    .lines()
+                    .rev()
+                    .find(|l| {
+                        let l = l.to_ascii_lowercase();
+                        l.contains("error") || l.contains("exception")
+                    })
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                failure = Some(if detail.is_empty() {
+                    format!("Hub downloader exited with status {code}")
+                } else {
+                    format!("Hub downloader exited with status {code}: {detail}")
+                });
+            }
+
+            let mut restart = false;
+            let mut downloads = state
+                .model_downloads
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            {
+                if let Some(job) = downloads.get_mut(&job_id) {
+                    if let Some(path) = final_path.filter(|_| failure.is_none()) {
+                        job.state = RuntimeJobState::Complete;
+                        job.message = "Downloaded".into();
+                        job.error = None;
+                        job.local_path = Some(path);
+                        job.stalled = false;
+                        job.bytes_done = job.bytes_total;
+                    } else if stalled {
+                        job.stalled = true;
+                        job.restarts = attempt;
+                        if attempt <= MODEL_DOWNLOAD_MAX_RESTARTS {
+                            job.message = "Stalled \u{2014} resuming download".into();
+                            restart = true;
+                        } else {
+                            job.state = RuntimeJobState::Failed;
+                            job.message = "Download stalled".into();
+                            job.error = Some("No progress for 8 minutes across 4 attempts. Retry when your connection is stable — finished files are kept and the download resumes.".into());
+                        }
+                    } else {
+                        job.state = RuntimeJobState::Failed;
+                        job.message = "Download failed".into();
+                        job.error = failure.or_else(|| Some("Download failed".into()));
+                    }
+                }
+            }
+            if !restart {
+                return;
+            }
+        }
+    });
+}
+
+/// POST /api/models/downloads — start a background snapshot download of a
+/// Hugging Face model repository into the app-scoped model cache. Engine is
+/// provenance ("rapid-mlx" today, "omlx" later); both read the same HF cache.
 fn model_download_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
-    warp::path!("api" / "rapid-mlx" / "models" / "download")
+    warp::path!("api" / "models" / "downloads")
         .and(warp::post())
         .and(warp::header::optional::<String>("authorization"))
         .and(super::super::safe_json_body::<serde_json::Value>())
@@ -392,6 +624,11 @@ fn model_download_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
                     .map(|r| r.trim().to_string())
                     .filter(|r| !r.is_empty())
                     .unwrap_or_else(|| "main".to_string());
+                let engine = body["engine"]
+                    .as_str()
+                    .map(|e| e.trim().to_string())
+                    .filter(|e| !e.is_empty())
+                    .unwrap_or_else(|| "rapid-mlx".to_string());
                 if !validate_model_download_repo(&repo_id) {
                     return Ok(Box::new(warp::reply::with_status(
                         warp::reply::json(&serde_json::json!({
@@ -401,47 +638,74 @@ fn model_download_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
                         StatusCode::BAD_REQUEST,
                     )) as ApiReply);
                 }
+                if !validate_model_download_engine(&engine) {
+                    return Ok(Box::new(warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({
+                            "ok": false,
+                            "error": "Unknown engine. Expected 'rapid-mlx' or 'omlx'"
+                        })),
+                        StatusCode::BAD_REQUEST,
+                    )) as ApiReply);
+                }
 
-                // One download at a time per repo; report an in-flight job instead of
-                // stacking duplicate snapshot downloads.
-                if let Ok(downloads) = state.model_downloads.lock()
-                    && let Some(existing) = downloads
-                        .values()
-                        .find(|job| job.repo_id == repo_id && job.revision == revision)
-                    && matches!(
-                        existing.state,
-                        RuntimeJobState::Queued | RuntimeJobState::Running
-                    )
+                // One download at a time per repo@revision; report the in-flight job
+                // instead of stacking duplicate downloads. The guard is scoped so it
+                // is dropped before the insert lock below (std Mutex is not
+                // reentrant — holding it across the second lock self-deadlocks).
                 {
-                    return Ok(Box::new(warp::reply::json(&serde_json::json!({
-                        "ok": true,
-                        "already_running": true,
-                        "repo_id": repo_id,
-                    }))) as ApiReply);
+                    let downloads = state
+                        .model_downloads
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if let Some(_existing) = downloads.values().find(|job| {
+                        job.repo_id == repo_id
+                            && job.revision == revision
+                            && matches!(
+                                job.state,
+                                RuntimeJobState::Queued | RuntimeJobState::Running
+                            )
+                    }) {
+                        return Ok(Box::new(warp::reply::json(&serde_json::json!({
+                            "ok": true,
+                            "already_running": true,
+                            "repo_id": repo_id,
+                        }))) as ApiReply);
+                    }
                 }
 
                 let models_dir = super::models::get_effective_models_dir(&ctx.state)
                     .unwrap_or_else(|| ctx.config.default_models_dir.clone());
+                static MODEL_DL_SEQ: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
                 let job_id = {
-                    let fallback = std::time::SystemTime::now()
+                    let nanos = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_nanos() as u64)
                         .unwrap_or(0);
-                    let mut bytes = [0u8; 8];
-                    if SysRng.try_fill_bytes(&mut bytes).is_err() {
-                        bytes = fallback.to_le_bytes();
-                    }
-                    format!("mdl-{}", u64::from_le_bytes(bytes))
+                    // Nanoseconds plus a process-wide counter: unique without a CSPRNG,
+                    // which is overkill for an opaque job id.
+                    let seq = MODEL_DL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    format!("mdl-{}-{}", nanos, seq)
                 };
                 let job = ModelDownloadJob {
                     repo_id: repo_id.clone(),
                     revision: revision.clone(),
+                    engine: engine.clone(),
                     state: RuntimeJobState::Running,
                     message: "Downloading from Hugging Face".into(),
                     error: None,
                     local_path: None,
+                    bytes_total: 0,
+                    bytes_done: 0,
+                    current_file: String::new(),
+                    stalled: false,
+                    restarts: 0,
                 };
-                if let Ok(mut downloads) = state.model_downloads.lock() {
+                let mut downloads = state
+                    .model_downloads
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                {
                     downloads.insert(job_id.clone(), job);
                     while downloads.len() > MAX_RETAINED_JOBS {
                         if let Some(oldest) = downloads.keys().next().cloned() {
@@ -450,66 +714,29 @@ fn model_download_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
                     }
                 }
 
-                let spawn_state = state.clone();
-                let spawn_job_id = job_id.clone();
-                let spawn_repo_id = repo_id.clone();
-                let spawn_revision = revision.clone();
-                tokio::spawn(async move {
-                    let repo_id = spawn_repo_id;
-                    let source = RapidMlxModelSource::HuggingFaceRepo {
-                        repo_id,
-                        revision: spawn_revision,
-                    };
-                    let context =
-                        crate::inference::rapid_mlx::model_resolver::RapidMlxResolveContext {
-                            models_dir,
-                            python_executable: std::path::PathBuf::from(if cfg!(windows) {
-                                "python.exe"
-                            } else {
-                                "python3"
-                            }),
-                            // Only quoted in error text; naming a fixed release there would be
-                            // wrong the day the installed runtime changes.
-                            runtime_version: "runtime".into(),
-                            hf_token: None,
-                            verified_aliases: Vec::new(),
-                            execute_conversion: false,
-                        };
-                    let result =
-                        crate::inference::rapid_mlx::model_resolver::resolve(source, &context)
-                            .await;
-                    if let Ok(mut downloads) = spawn_state.model_downloads.lock()
-                        && let Some(job) = downloads.get_mut(&spawn_job_id)
-                    {
-                        match result {
-                            Ok(model) => {
-                                job.state = RuntimeJobState::Complete;
-                                job.message = "Downloaded".into();
-                                job.local_path = Some(model.launch_argument.clone());
-                            }
-                            Err(error) => {
-                                job.state = RuntimeJobState::Failed;
-                                job.message = "Download failed".into();
-                                job.error = Some(error.to_string());
-                            }
-                        }
-                    }
-                });
+                spawn_model_download_worker(
+                    state.clone(),
+                    job_id.clone(),
+                    repo_id.clone(),
+                    revision.clone(),
+                    models_dir,
+                );
 
                 Ok(Box::new(warp::reply::json(&serde_json::json!({
                     "ok": true,
                     "job_id": job_id,
                     "repo_id": repo_id,
                     "revision": revision,
+                    "engine": engine,
                 }))) as ApiReply)
             }
         })
         .boxed()
 }
 
-/// GET /api/rapid-mlx/models/download/{id} — poll a model snapshot download job.
+/// GET /api/models/downloads/:jobId — poll a model download job.
 fn model_download_status_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
-    warp::path!("api" / "rapid-mlx" / "models" / "download" / String)
+    warp::path!("api" / "models" / "downloads" / String)
         .and(warp::get())
         .and(warp::header::optional::<String>("authorization"))
         .and_then(move |id: String, auth: Option<String>| {

@@ -134,6 +134,7 @@ Summary of endpoints:
 - `GET /api/capabilities` — current metrics capability state (api-token)
 
 ### `GET /api/sessions`
+
 Auth: api-token.
 Returns the persisted session list from `sessions.json`.
 
@@ -157,22 +158,25 @@ Returns the persisted session list from `sessions.json`.
 All `Session` fields now use `#[serde(default)]` for backward compatibility. New fields:
 
 | Field | Type | Default |
-|-------|------|---------|
+| ------- | ------ | --------- |
 | `last_connected_at` | integer (unix timestamp) | `0` |
 | `connect_count` | integer | `0` |
 | `last_error` | string or null | `null` |
 
 `mode` is serde's enum shape:
+
 - launched session: `{ "Spawn": { "port": 8001 } }`
 - attached session: `{ "Attach": { "endpoint": "http://192.168.1.50:8001" } }`
 
 `status` is one of:
+
 - `"Stopped"`
 - `"Running"`
 - `"Disconnected"`
 - `{ "Error": "message" }`
 
 ### `POST /api/sessions`
+
 Auth: api-token.
 Creates a session record only. It does not start a server.
 
@@ -203,6 +207,7 @@ On failure:
 ```
 
 ### `DELETE /api/sessions/{id}`
+
 Auth: db-admin-token.
 
 ```json
@@ -210,6 +215,7 @@ Auth: db-admin-token.
 ```
 
 ### `GET /api/sessions/active`
+
 Auth: api-token.
 Returns a compact active-session summary, not the full `Session` object.
 
@@ -230,6 +236,7 @@ If there is no active session:
 ```
 
 ### `GET /api/sessions/recent`
+
 Auth: api-token.
 Returns recent attach-mode sessions sorted by `last_connected_at` descending, limited to 10.
 
@@ -254,6 +261,7 @@ Returns recent attach-mode sessions sorted by `last_connected_at` descending, li
 ```
 
 ### `POST /api/sessions/active`
+
 Auth: api-token.
 
 ```json
@@ -267,9 +275,11 @@ Response:
 ```
 
 ### `POST /api/sessions/spawn`
+
 Auth: db-admin-token.
 Creates a launch session, starts `llama-server` from a saved preset, and makes it active.
 Used by:
+
 - Spawn wizard
 - Tuning panel "Apply" flow (to restart llama-server with adjusted configuration)
 
@@ -308,6 +318,7 @@ Success response:
 ```
 
 ### `POST /api/attach`
+
 Auth: api-token.
 Attaches to a reachable private-network or loopback endpoint.
 
@@ -352,6 +363,7 @@ If the runtime is ready but its diagnostics endpoint is unavailable, attach stil
 succeeds and `warning` explains that diagnostics are unavailable.
 
 ### `POST /api/detach`
+
 Auth: api-token.
 Detaches only if the active session is an attach session.
 
@@ -360,6 +372,7 @@ Detaches only if the active session is an attach session.
 ```
 
 ### `GET /api/metrics/inference`
+
 Auth: api-token.
 Returns the latest backend-neutral inference sample and a privacy-safe metric
 dictionary. Numeric values are aggregate-only; each dictionary entry includes
@@ -390,6 +403,7 @@ never represented as zero.
 ```
 
 ### `GET /api/capabilities`
+
 Auth: api-token.
 Returns the current metrics capability state.
 
@@ -419,14 +433,17 @@ Returns the current metrics capability state.
 ## Server Control
 
 ### `POST /api/start`
+
 Auth: api-token.
 Starts `llama-server` for the active spawn session. Request body is the full server config payload used by the launcher.
 
 ### `POST /api/stop`
+
 Auth: api-token.
 Stops the managed `llama-server`.
 
 ### `POST /api/kill-llama`
+
 Emergency process kill for `llama-server`.
 
 ## Presets
@@ -436,6 +453,7 @@ cards and selection resolution are handled separately from legacy CRUD in
 `src/web/api/preset_bundles.rs`.
 
 ### `GET /api/presets`
+
 Auth: api-token.
 
 ```json
@@ -487,6 +505,7 @@ Auth: api-token.
 ```
 
 ### `GET /api/preset-cards`
+
 Auth: api-token.
 
 Returns the redacted setup-card projection and a catalog concurrency token. Cards expose safe artifact labels and availability, saved bundle selections, and bundle identity; local paths and API keys are not included.
@@ -499,6 +518,7 @@ Returns the redacted setup-card projection and a catalog concurrency token. Card
 ```
 
 ### `POST /api/presets/{id}/resolve`
+
 Auth: api-token.
 
 Resolves the saved bundle selection or an optional one-shot `selection` through the server-owned resolver. Resolution does not write state. The optional top-level `workload_policy` overrides the bundle policy for this preview only; it is not part of the typed selection. The response includes `sel-v1:` and `cfg-v1:` identifiers, normalized selection, changes, capability reasons, and a tagged estimate status. It never includes a flat preset, local artifact paths, API keys, or raw launch arguments.
@@ -508,6 +528,7 @@ Resolves the saved bundle selection or an optional one-shot `selection` through 
 ```
 
 ### `PATCH /api/presets/{id}/selection`
+
 Auth: api-token.
 
 Updates a bundled preset’s saved default selection and, when supplied, its bundle-level `workload_policy`. `expected_revision` is required; the server strips any submitted `intent_source`, validates the candidate, durably saves it, then changes in-memory state. A stale revision returns `409` and leaves state unchanged. Workload policy is a top-level PATCH field, not a member of the typed selection.
@@ -521,7 +542,7 @@ Updates a bundled preset’s saved default selection and, when supplied, its bun
 `resolve`, `selection` (PATCH), and a session launch that resolves a bundled preset all share `crate::presets::resolver::resolve_preset`. When resolution fails, all three return `400` with `{"ok": false, "code": "selection_invalid", "error": <issues>}`, where `error` is the serialized `Vec<ValidationIssue>` (`{field, code, message, repair}`); the `/resolve` and PATCH routes JSON-stringify it into `error`, the session-launch route embeds the array directly. A successful `/resolve` response never carries these codes — its `capability_reasons` field only reports kv_policy quality-floor and mixed-K/V warnings, which are advisory, not blocking.
 
 | Code | Field | Trigger |
-|---|---|---|
+| --- | --- | --- |
 | `PRESET_NOT_BUNDLED` | `selection` | a one-shot `selection` was supplied for a non-bundled preset |
 | `INVALID_BUNDLE` | `bundle` | `bundle::validate_bundle_structural` rejected the bundle shape |
 | `INVALID_BACKEND_CONFIG` | `backend` | `validate_preset_backend_config` rejected the backend/rapid_mlx combination |
@@ -537,6 +558,7 @@ Updates a bundled preset’s saved default selection and, when supplied, its bun
 | `CAPABILITY_UNAVAILABLE` | `mmproj_offload`, `llama_reasoning_effort`, `llama_reasoning_format`, `llama_reasoning_preserve` | the requested typed flag's polarity is `Unavailable` in the binary's capability snapshot (e.g. `mmproj_offload: Some(true)` requires `typed.mmproj_offload.positive` to be `Available`) |
 
 ### `POST /api/model-defaults`
+
 Auth: api-token.
 
 Returns model-family sampling recommendations used by the setup wizard and preset editor.
@@ -566,6 +588,7 @@ Returns model-family sampling recommendations used by the setup wizard and prese
 ```
 
 ### `POST /api/presets`
+
 Auth: api-token.
 Creates a preset from a full `ModelPreset` payload. If `id` is omitted, serde supplies one.
 
@@ -650,7 +673,7 @@ All fields use `#[serde(default)]` for backward compatibility.
 **Spawn V2 extended fields** (added after initial preset schema):
 
 | Field | Type | Default | Notes |
-|-------|------|---------|-------|
+| ------- | ------ | --------- | ------- |
 | `hf_repo` | Option<String> | null | HF repo identifier for model download |
 | `chat_template_file` | Option<String> | null | Path to chat template file |
 | `mmproj` | Option<String> | null | Multimodal projector path |
@@ -690,7 +713,7 @@ All fields use `#[serde(default)]` for backward compatibility.
 Speculative decoding V2 fields:
 
 | Field | Type | Default | Notes |
-|-------|------|---------|-------|
+| ------- | ------ | --------- | ------- |
 | `spec_type` | Option<String> | null | Speculative decoding type |
 | `spec_default` | bool | false | Use default spec settings |
 | `spec_draft_n_max` | Option<u32> | null | Max draft tokens |
@@ -723,6 +746,7 @@ Response:
 ```
 
 ### `PUT /api/presets/{id}`
+
 Auth: api-token.
 Updates the preset matched by the path `id`. Accepts the same `ModelPreset`
 shape as POST. Updates must be sent as
@@ -732,6 +756,7 @@ and bundled presets. The submitted flat projection must agree with
 `409` for a stale revision or `400` for a projection conflict.
 
 ### `POST /api/presets/{id}/copy`
+
 Auth: api-token.
 
 Creates a new preset from the current preset after checking its revision. The
@@ -743,6 +768,7 @@ source is unchanged; the new preset receives a server-generated ID and
 ```
 
 ### `POST /api/presets/{id}/convert-to-bundle`
+
 Auth: api-token.
 
 Explicitly converts one legacy flat preset into a one-artifact bundle. The
@@ -763,6 +789,7 @@ automatically. Duplicate local paths and duplicate HF repo/file/revision
 coordinates are rejected.
 
 ### `DELETE /api/presets/{id}`
+
 Auth: db-admin-token. Requires the exact confirmation string and the current
 preset revision.
 
@@ -776,6 +803,7 @@ returns `409` and makes no change. Successful deletion also removes the preset
 from saved collections.
 
 ### `POST /api/presets/reset`
+
 Auth: db-admin-token. Requires the current catalog etag and the exact
 confirmation string. Replaces the in-memory and on-disk preset list with
 factory defaults only after both guards pass.
@@ -794,6 +822,7 @@ Templates are stored in `templates.json`. Built-in personas live in the frontend
 Route handlers: `src/web/api/templates.rs`.
 
 ### `GET /api/templates`
+
 Auth: api-token.
 
 ```json
@@ -813,6 +842,7 @@ Auth: api-token.
 `explicit_policies` is optional, and each level field is optional.
 
 ### `POST /api/templates`
+
 Auth: api-token.
 Creates a template from a full `SystemPromptTemplate` payload.
 
@@ -821,10 +851,12 @@ Creates a template from a full `SystemPromptTemplate` payload.
 ```
 
 ### `PUT /api/templates/{id}`
+
 Auth: api-token.
 Updates the template matched by the path `id`.
 
 ### `DELETE /api/templates/{id}`
+
 Auth: api-token.
 
 ```json
@@ -836,6 +868,7 @@ Auth: api-token.
 Route handlers: `src/web/api/models.rs`.
 
 ### `GET /api/models`
+
 Auth: api-token.
 Returns the unified typed inventory for the configured `models_dir` as an array. Legacy
 GGUF fields remain available, while every entry also reports its format, source,
@@ -870,10 +903,12 @@ source when applicable. GGUF entries retain `tags` and filename-derived
 ```
 
 Improved quant detection (branch-specific):
+
 - Now recognizes `-IQ` and `_IQ` patterns (e.g., IQ2_XXS, IQ3_M).
 - MTP models: files ending in `-mtp.gguf` (Unsloth naming) are marked as MTP and shown with a badge in the UI.
 
 ### `GET /api/models/inventory`
+
 Auth: api-token.
 
 Returns `{ models_dir, entries, truncated }`. `entries` uses the same typed inventory
@@ -881,6 +916,7 @@ objects as `GET /api/models`; this wrapper also reports the canonical library ro
 whether the 10,000-entry safety bound was reached.
 
 ### `POST /api/models/rapid-mlx/resolve/preview`
+
 Auth: api-token.
 
 Validates a tagged Rapid-MLX model source without downloading, converting, or launching
@@ -888,28 +924,33 @@ it. The response state is `ready`, `conversion_required`, `unsupported_source`, 
 `invalid`, with warnings and remediation. GGUF returns `unsupported_source` and retains
 the llama.cpp recommendation.
 
-### `POST /api/rapid-mlx/models/download`
+### `POST /api/models/downloads`
+
 Auth: api-token.
 
-Starts a background snapshot download of a Hugging Face MLX repository into the
+Starts a background snapshot download of a Hugging Face model repository into the
 app-scoped model cache (`<models_dir>/cache/huggingface/hub`). The body is
-`{"repo_id": "owner/repo", "revision": "main"}`; the revision defaults to `main`
-and is never pinned by the caller. The download runs through the same Rapid-MLX
-model resolver the launch path uses, so re-downloading an already-present repo is
-a fast no-op and spawn reuses exactly what landed on disk. Re-posting a repo with
-a job already in flight returns `{"ok": true, "already_running": true}` instead of
-stacking downloads.
+`{"repo_id": "owner/repo", "revision": "main", "engine": "rapid-mlx"}`. `revision`
+defaults to `main` and is never pinned by the caller; `engine` (`rapid-mlx` or
+`omlx`, default `rapid-mlx`) is provenance only, since every engine reads the same
+HF cache. Re-posting a repo with a job already in flight returns
+`{"ok": true, "already_running": true}` instead of stacking downloads. Re-posting
+after a failure starts a new job; files the hub already finished are kept.
 
-### `GET /api/rapid-mlx/models/download/:jobId`
+### `GET /api/models/downloads/:jobId`
+
 Auth: api-token.
 
-Polls a model download job. The `job` object carries `repo_id`, `revision`,
-`state` (`queued`/`running`/`complete`/`failed`), `message`, `error`, and, on
-success, `local_path` (the resolved snapshot directory). Unknown job ids return
-404.
-
+Polls a download job. The `job` object carries `repo_id`, `revision`, `engine`,
+`state` (`running`/`complete`/`failed`), `message`, `error`, `current_file`,
+`bytes_done`, `bytes_total`, `stalled`, `restarts`, and, on success, `local_path`
+(the snapshot directory). `bytes_done` is measured from the repo's blob directory on
+disk, so it advances as the hub writes data (in chunks, not per byte). If nothing
+changes for 8 minutes the downloader is restarted and resumes, up to three times
+(`stalled` is true while that happens) before the job fails. Unknown ids return 404.
 
 ### `POST /api/models/gguf/import/compatibility/preview`
+
 Auth: api-token.
 
 Performs a converter-free, network-free metadata inspection for experimental
@@ -933,12 +974,14 @@ Malformed JSON, traversal, symlinks, non-GGUF files, paths outside the model lib
 incomplete headers, or metadata/tensor directories over 64 MiB return `400`.
 
 ### `GET /api/models/import-lab/availability`
+
 Auth: api-token.
 
 Returns the local Apple-Silicon execution gate, exact experimental profile, llama.cpp
 fallback, and the invariant that recovered output is not launchable.
 
 ### `POST /api/models/import-lab/resource-estimate`
+
 Auth: api-token.
 
 Accepts the same `{ "path": "gguf/model.gguf" }` library-relative request as the
@@ -949,6 +992,7 @@ return `400`; saturation fails fast with `429`; a timeout returns `408`. A timed
 blocking task retains its worker permit until it exits, preventing hidden overcommit.
 
 ### `GET /api/models/import-lab/jobs`
+
 Auth: api-token.
 
 Lists up to 32 retained in-memory recovery jobs. Jobs expose a typed state, phase,
@@ -958,6 +1002,7 @@ remain durable model-library provenance. Public failure diagnostics use stable,
 path-free messages rather than raw worker errors.
 
 ### `POST /api/models/import-lab/jobs`
+
 Auth: api-token.
 
 Queues the exact supported experimental profile and returns `202`:
@@ -972,16 +1017,20 @@ worker runs at a time. The original GGUF is never modified and published results
 `experimental` and `launchable: false`.
 
 ### `GET /api/models/import-lab/jobs/{id}`
+
 Auth: api-token. Returns one job or `404`.
 
 ### `POST /api/models/import-lab/jobs/{id}/cancel`
+
 Auth: api-token. Requests cooperative process-group cancellation and staging cleanup.
 
 ### `DELETE /api/models/import-lab/jobs/{id}`
+
 Auth: api-token. Removes a terminal in-memory job record. Active jobs cannot be removed,
 and this endpoint never deletes the source GGUF or a published cache.
 
 ### `POST /api/models/library/migration/preview`
+
 Auth: api-token.
 
 Builds a non-mutating, bounded migration plan. The optional body selects only explicit
@@ -992,6 +1041,7 @@ legacy Hugging Face repositories:
 ```
 
 ### `POST /api/models/library/migration/execute`
+
 Auth: db-admin-token.
 
 Executes the exact previewed plan. Concurrent executions are rejected.
@@ -1009,6 +1059,7 @@ restartable; a stale preview, collision, path escape, or changed persistence fil
 rejected before a new plan starts.
 
 ### `GET /api/models/root-relocation/status`
+
 Auth: api-token.
 
 Returns the legacy default model root, Foundry destination, current selection marker,
@@ -1016,6 +1067,7 @@ and whether an explicit choice is required. Custom/external model roots are repo
 but are never eligible for implicit relocation.
 
 ### `POST /api/models/root-relocation/preview`
+
 Auth: api-token.
 
 Builds a read-only, deterministic plan for the default legacy model root. Choose one
@@ -1036,6 +1088,7 @@ unknown entries, free-space headroom, SHA-256 identities, and absolute persisten
 path rewrites.
 
 ### `POST /api/models/root-relocation/execute`
+
 Auth: db-admin-token.
 
 Executes the exact root-relocation preview. The choice, 64-character `plan_id`, and
@@ -1055,6 +1108,7 @@ absolute model paths once, retains the source, and returns `restart_required: tr
 Cleanup is a separate receipt-scoped operation.
 
 ### `POST /api/models/refresh`
+
 Auth: api-token.
 Rescans `models_dir`.
 
@@ -1109,6 +1163,7 @@ Failure when no model directory is configured:
 ```
 
 ### `POST /api/models/download/start`
+
 Start a new model download (currently HuggingFace only).
 
 - Auth: api-token (or db-admin-token).
@@ -1157,6 +1212,7 @@ Failure examples:
 ```
 
 ### `GET /api/models/download/{id}/status`
+
 Poll download progress for a given `download_id`.
 
 - Auth: api-token.
@@ -1224,6 +1280,7 @@ If not found:
 (404 status code)
 
 ### `POST /api/models/download/{id}/cancel`
+
 Cancel an active download.
 
 - Auth: api-token.
@@ -1241,6 +1298,7 @@ Or:
 ```
 
 ### `POST /api/models/gguf-meta`
+
 Read GGUF metadata directly from a local model file (no llama-server spawn).
 
 - Auth: api-token.
@@ -1279,10 +1337,12 @@ Response:
 Route handlers: `src/web/api/config.rs`.
 
 ### `GET /api/settings`
+
 Auth: api-token.
 Returns the persisted `UiSettings` object from `ui-settings.json`, with sensitive fields masked.
 
 Security:
+
 - `remote_agent_token` is masked (e.g., `"••••••••"`) to reduce exposure when consumed by the browser.
 
 Example:
@@ -1331,9 +1391,11 @@ New field:
 `extra_models_dirs` is an array of additional directories to scan for models beyond the primary `models_dir`. Useful for models distributed across multiple drives or folders.
 
 ### `GET /api/settings/full`
+
 Returns the same `UiSettings` object, but with the real `remote_agent_token` value instead of a masked placeholder.
 
 Security:
+
 - Requires `api-token` authentication:
   - Header: `Authorization: Bearer <api-token>`
 - Intended for trusted clients (e.g., internal tools, remote-agent.js) that need the actual token.
@@ -1375,6 +1437,7 @@ Example:
 ```
 
 ### `PUT /api/settings`
+
 Auth: api-token.
 Saves the `UiSettings` object to disk.
 
@@ -1385,6 +1448,7 @@ Response:
 ```
 
 Notes:
+
 - The live handler expects the current full `UiSettings` shape.
 - The frontend also uses a narrow partial-update path for `ws_push_interval_ms`; external clients should prefer sending the full object.
 - `custom_suggestion_categories` is a map of category key to `{ "prompt": string, "explicit": bool }`.
@@ -1415,6 +1479,7 @@ Notes:
 `detected` can be `null` if no GPU probe succeeds.
 
 ### `PUT /api/gpu-env`
+
 Auth: api-token.
 Request body is the persisted `GpuEnv` object:
 
@@ -1438,10 +1503,12 @@ Response:
 Route handlers: `src/web/api/browse.rs`.
 
 ### `GET /api/browse`
+
 Auth: api-token.
 Browses a local directory.
 
 Query params:
+
 - `path`: absolute or relative path; if omitted, starts at the current user's home directory
 - `filter`: optional, currently `gguf` or `executable`
 
@@ -1481,6 +1548,7 @@ Route handlers: `src/web/api/chat/stream.rs`, `src/web/api/chat/suggestions.rs`,
 `src/web/api/chat/notes.rs`, `src/web/api/chat/guided.rs`.
 
 ### `POST /api/chat`
+
 Auth: api-token.
 Pass-through streaming proxy to the active session's `/v1/chat/completions`.
 
@@ -1489,6 +1557,7 @@ The request body is forwarded as raw bytes. The server does not validate or resh
 The response is an SSE stream that forwards upstream `data: ...` events.
 
 Inference admission behavior:
+
 - llama-monitor serializes its own inference requests per active session before forwarding them upstream.
 - On single-slot llama.cpp servers, the route waits briefly for the current upstream request to finish instead of immediately issuing a competing request.
 - If the upstream server stays occupied, the route returns `429 Too Many Requests` with a plain-text busy message instead of a generic `500`.
@@ -1496,6 +1565,7 @@ Inference admission behavior:
 - If the upstream server accepts the connection but does not respond in time, the route returns `504 Gateway Timeout`.
 
 ### `POST /api/chat/abort`
+
 Auth: api-token.
 Accepts an optional upstream request ID and attempts native cancellation only when the
 active backend advertises a verified compatible contract. Browser Stop closes local
@@ -1521,6 +1591,7 @@ Runtimes without verified native cancellation return an explicit local-only resu
 When native cancellation succeeds, `cancelled` is `true` and `mode` is `native`.
 
 ### `POST /api/chat/suggestions`
+
 Auth: api-token.
 Generates guided-generation suggestions using either supplied chat context or a fallback tab lookup.
 
@@ -1570,6 +1641,7 @@ For `category: "director"`, `cards` can contain structured entries:
 ```
 
 ### `POST /api/keywords/generate`
+
 Auth: api-token.
 
 This route uses the same monitor-side inference queue and busy/offline/timeout handling as `POST /api/chat`.
@@ -1585,6 +1657,7 @@ Response:
 ```
 
 ### `POST /api/context-notes/analyze`
+
 Auth: api-token.
 
 This route uses the same monitor-side inference queue and busy/offline/timeout handling as `POST /api/chat`.
@@ -1642,6 +1715,7 @@ Chat tab management endpoints:
 - `GET /api/chat/search` — full-text search across messages (api-token)
 
 ### `GET /api/chat/tabs`
+
 Auth: api-token.
 Returns tab metadata only, without message bodies.
 
@@ -1674,12 +1748,14 @@ New field:
 `composer_draft` holds per-tab composer draft text. It is persisted to the backend on input, restored on tab switch or reload, and cleared on successful send.
 
 ### `POST /api/chat/tabs`
+
 Auth: api-token.
 Creates one tab. Request body is a full `ChatTabRow`. If `id` is empty, the server generates one. `created_at` and `updated_at` are overwritten server-side.
 
 Response is the created tab object.
 
 ### `GET /api/chat/tabs/{id}`
+
 Auth: api-token.
 Returns the full tab row plus messages.
 
@@ -1728,6 +1804,7 @@ Returns the full tab row plus messages.
 ```
 
 ### `PUT /api/chat/tabs/{id}`
+
 Auth: api-token.
 Full save for one tab. The handler updates tab metadata and then replaces all messages for that tab.
 
@@ -1738,16 +1815,19 @@ Response:
 ```
 
 Important behavior:
+
 - `id` is taken from the path.
 - `updated_at` is overwritten server-side.
 - message order is rewritten from array order
 - during this replace path, only `role`, `content`, `timestamp_ms`, `input_tokens`, `output_tokens`, and `compaction_marker` are persisted for each message; cumulative token fields and variant fields are not preserved by this route
 
 ### `PATCH /api/chat/tabs/{id}/meta`
+
 Auth: api-token.
 Metadata-only update for one tab. Request body uses the same tab shape, but `messages` are ignored.
 
 ### `POST /api/chat/tabs/{id}/messages`
+
 Auth: api-token.
 Appends one or more messages.
 
@@ -1781,11 +1861,13 @@ Response:
 ```
 
 Important behavior:
+
 - `tab_id` in each message is overwritten from the path
 - `seq` is ignored and assigned automatically
 - this append route does persist `cumulative_input_tokens`, `cumulative_output_tokens`, `variants`, and `variant_index`
 
 ### `PATCH /api/chat/tabs/order`
+
 Auth: api-token.
 
 ```json
@@ -1801,6 +1883,7 @@ Response:
 ```
 
 ### `DELETE /api/chat/tabs/{id}`
+
 Auth: api-token.
 
 ```json
@@ -1810,10 +1893,12 @@ Auth: api-token.
 ## Chat Search
 
 ### `GET /api/chat/search`
+
 Auth: api-token.
 Full-text search over non-compaction-marker messages in `chat.db`.
 
 Query params:
+
 - `q`: required search string
 - `limit`: optional page size, default `20`, max `100`
 - `offset`: optional result offset, default `0`
@@ -1854,6 +1939,7 @@ Response:
 ```
 
 Search notes:
+
 - punctuation is normalized before FTS lookup
 - prefix matching is used internally
 - empty or unparseable queries return an empty paged result object
@@ -1871,6 +1957,7 @@ Sleep mode is a 3-state system: off, logs-only, sleep.
 All sleep-mode endpoints require `api-token`.
 
 ### `GET /api/sleep-mode`
+
 Returns current sleep-mode status.
 
 ```json
@@ -1888,6 +1975,7 @@ Returns current sleep-mode status.
 - `enabled` is `true` when `mode != "off"`.
 
 ### `POST /api/sleep-mode/toggle`
+
 Cycles the mode. Behavior depends on how the current mode was set:
 
 - If set by the user (manual), cycles: `off` → `logs-only` → `sleep` → `off`.
@@ -1905,6 +1993,7 @@ Response:
 ```
 
 ### `POST /api/sleep-mode/set`
+
 Explicitly set the mode.
 
 - Supports new `"mode"` field:
@@ -1924,6 +2013,7 @@ Route handlers: `src/web/api/db.rs`.
 All `/api/db/*` routes operate on the SQLite chat database.
 
 Authentication:
+
 - `GET /api/auth/status`:
   - Public endpoint used by the frontend to discover whether auth is enabled.
   - Returns enabled methods, whether auth is managed by startup flags, a local recovery command,
@@ -1965,6 +2055,7 @@ Authentication:
 - `GET /api/internal/api-token` follows the same bootstrap policy for the main UI.
 
 ### `GET /api/db/stats`
+
 Requires `api-token`.
 
 ```json
@@ -1976,6 +2067,7 @@ Requires `api-token`.
 ```
 
 ### `GET /api/db/integrity`
+
 Requires `api-token`.
 
 ```json
@@ -1988,6 +2080,7 @@ Requires `api-token`.
 If `detail` is not `"ok"`, `status` is `"corrupted"`.
 
 ### `POST /api/db/maintenance`
+
 Requires `api-token`.
 
 ```json
@@ -1995,6 +2088,7 @@ Requires `api-token`.
 ```
 
 Supported operations:
+
 - `checkpoint`
 - `vacuum`
 - `rebuild_fts`
@@ -2019,6 +2113,7 @@ Responses:
 ```
 
 ### `POST /api/db/backup`
+
 Requires `api-token`.
 
 Creates a manual backup in `~/.config/llama-monitor/backups/chat_<timestamp>.db`.
@@ -2034,6 +2129,7 @@ Creates a manual backup in `~/.config/llama-monitor/backups/chat_<timestamp>.db`
 Manual backups are pruned to the 7 newest `chat_*.db` files.
 
 ### `DELETE /api/db/backup`
+
 Requires `db-admin-token`.
 
 ```json
@@ -2052,6 +2148,7 @@ Response:
 ```
 
 ### `GET /api/db/backups`
+
 Requires `api-token`.
 
 Lists both manual backups (`chat_*.db`) and automatic hourly backups (`chat_auto_*.db`).
@@ -2071,9 +2168,11 @@ Lists both manual backups (`chat_*.db`) and automatic hourly backups (`chat_auto
 ```
 
 ### `POST /api/db/restore`
+
 Requires `db-admin-token`.
 
 Validates backup_name:
+
 - No path traversal (no ‘..’, leading ‘/’, or backslashes).
 - Resolved path must be inside the backups directory.
 
@@ -2098,6 +2197,7 @@ Success:
 Before restore, the server creates `pre_restore_<timestamp>.db` in the same `backups/` directory.
 
 ### `POST /api/db/repair`
+
 Requires `db-admin-token`.
 
 ```json
@@ -2105,6 +2205,7 @@ Requires `db-admin-token`.
 ```
 
 Supported operations:
+
 - `repair_indexes`
 - `emergency_recovery`
 
@@ -2119,6 +2220,7 @@ Responses:
 ```
 
 ### `GET /api/db/indexes`
+
 Requires `api-token`.
 
 ```json
@@ -2135,9 +2237,11 @@ Requires `api-token`.
 The metadata response is bounded to 256 backup entries. `truncated: true` means additional owned files were not included; it never exposes backup contents or filesystem paths.
 
 ### `POST /api/db/query`
+
 Requires `api-token` or `db-admin-token` (dual-token).
 
 Safeguards:
+
 - Max body size: 256 KB; max SQL length: 16 KB; execution timeout: 10 seconds.
 - Query results are capped at 1,000 rows and 1 MiB of serialized row data; add a `LIMIT` clause or narrow selected columns when a query exceeds either bound.
 - Single-statement only: a semicolon anywhere in the SQL is rejected via a simple substring
@@ -2148,6 +2252,7 @@ Safeguards:
   and WAL checkpoint PRAGMAs are blocked.
 
 PRAGMA allowlist:
+
 - The code in `chat_storage.rs` uses an explicit allowlist (e.g. `INTEGRITY_CHECK`,
   `QUICK_CHECK`, `PAGE_COUNT`, `FREELIST_COUNT`, `SCHEMA_VERSION`, `USER_VERSION`,
   `INDEX_LIST`, `INDEX_INFO`, `TABLE_INFO`, `TABLE_XINFO`, `FOREIGN_KEY_LIST`,
@@ -2159,6 +2264,7 @@ PRAGMA allowlist:
   are permitted; the allowlist is not strictly "read-only."
 
 Auth behavior:
+
 - With `api-token`:
   - `SELECT` queries are allowed but with a relaxed column filter: sensitive columns
     (message content, `system_prompt`, `context_notes`, `model_params`) are blocked unless
@@ -2194,6 +2300,7 @@ Route handlers: `src/web/api/tls.rs`.
 Endpoints for managing TLS and ACME-based certificate provisioning.
 
 Authentication:
+
 - GET /api/tls/config: requires api-token.
 - PUT /api/tls/config: requires api-token.
 - POST /api/tls/acme/request: requires api-token.
@@ -2201,9 +2308,11 @@ Authentication:
 - All TLS/ACME endpoints reject requests without a valid Bearer api-token.
 
 ### `GET /api/tls/config`
+
 Returns the current TLS mode and ACME summary (without secrets).
 
 Header:
+
 - `Authorization: Bearer <api-token>`
 
 Response:
@@ -2227,15 +2336,18 @@ Response:
 ```
 
 `mode` can be:
+
 - `"none"`
 - `"self-signed"`
 - `"custom"`
 - `"acme"`
 
 ### `PUT /api/tls/config`
+
 Updates TLS configuration, including ACME settings.
 
 Header:
+
 - `Authorization: Bearer <api-token>`
 - `Content-Type: application/json`
 
@@ -2264,9 +2376,11 @@ Response:
 ```
 
 ### `POST /api/tls/acme/request`
+
 Triggers an ACME certificate request.
 
 Header:
+
 - `Authorization: Bearer <api-token>`
 
 Response:
@@ -2276,9 +2390,11 @@ Response:
 ```
 
 ### `POST /api/tls/acme/renew`
+
 Triggers an ACME certificate renewal.
 
 Header:
+
 - `Authorization: Bearer <api-token>`
 
 Response:
@@ -2290,6 +2406,7 @@ Response:
 ## System and Hardware
 
 ### `POST /api/system/set-metal-gpu-limit`
+
 ( macOS only ) Adjust Metal GPU wired memory limit via `sysctl iogpu.wired_limit_mb`.
 
 - Auth: `db-admin-token` (elevated, system-level change).
@@ -2305,7 +2422,7 @@ Branch-specific addition.
 `SystemMetrics` (reported via WebSocket telemetry and used internally for monitoring) includes cross-platform memory-pressure fields. macOS reads the Mach `host_statistics64` syscall plus `kern.memorystatus_vm_pressure_level`/`vm.swapusage` sysctls (no subprocess), Linux uses `/proc/pressure/memory` plus `/proc/meminfo`, and Windows uses `GlobalMemoryStatusEx` (via sysinfo). The normalized `memory_pressure_score` is band-aligned across platforms: 0-50 = ok, 50-80 = warning, 80-100 = critical.
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `ram_available_gb` | float | Available RAM in GB |
 | `memory_pressure_level` | string | `"ok"`, `"warning"`, or `"critical"` |
 | `memory_pressure_source` | string | Platform source such as `"host_statistics64"`, `"linux_psi"`, or `"windows_memstatus"` |
@@ -2324,6 +2441,7 @@ Branch-specific addition.
 | `memory_pressure_advice` | string | Short platform-aware action hint |
 
 The UI uses this data for:
+
 - A Memory Pressure sparkline and metric in the system card.
 - A memory-pressure pill in the top navigation bar (shown when warning/critical).
 - Contextual advice that distinguishes wired/pinned memory from reclaimable cache.
@@ -2337,6 +2455,7 @@ Route handlers: `src/web/api/llama_binary.rs`.
 Endpoints to manage llama-server binary.
 
 ### `GET /api/llama-binary/platform-info`
+
 Return current platform and backend information.
 
 - Auth: `api-token`.
@@ -2345,6 +2464,7 @@ Return current platform and backend information.
   gate local configure actions. This does not prohibit attaching to a remote endpoint.
 
 ### `GET /api/llama-binary/latest`
+
 Return the latest installable nightly (`b<digits>`) llama.cpp release for the
 current platform.
 
@@ -2355,6 +2475,7 @@ current platform.
   cached, so a nightly published after an error is visible on the next poll.
 
 ### `GET /api/llama-binary/releases`
+
 Return recent llama.cpp releases, newest first by GitHub publication timestamp. Each item includes:
 
 - `installable` — a binary asset exists for the current platform's default backend (the backend the version picker installs with).
@@ -2367,11 +2488,13 @@ window.
 - Auth: `api-token`.
 
 ### `GET /api/llama-binary/version`
+
 Return the currently installed llama-server binary version.
 
 - Auth: `api-token`.
 
 ### `POST /api/llama-binary/update`
+
 Download and install a specific llama.cpp release.
 
 - Auth: `api-token`.
@@ -2384,6 +2507,7 @@ Download and install a specific llama.cpp release.
   - Copies all files (CUDA/Vulkan/SYCL builds require co-located libs).
 
 ### `POST /api/llama/restart`
+
 Restart a locally running llama-server with the current binary (useful after installing a new version).
 
 - Auth: `api-token`.
@@ -3047,6 +3171,7 @@ Route handlers: `src/web/api/hf.rs`.
 All endpoints require `api-token` unless noted.
 
 ### `POST /api/hf/search`
+
 Search the HuggingFace Hub for MLX and GGUF models.
 
 - Rate limit: 60 requests per 60 seconds (local self-protection; Hugging Face itself allows
@@ -3061,24 +3186,30 @@ Search the HuggingFace Hub for MLX and GGUF models.
 - Sort options: `downloads` (default), `likes`, `trending`, `recent`.
 
 ### `POST /api/hf/author-models`
+
 List GGUF models for a specific author.
 
 ### `GET /api/hf/community-picks`
+
 Return the curated community picks list (used by the wizard's discover panel).
 
 - Read: no auth (public).
 - Update: `api-token` via `PUT` (if configured).
 
 ### `GET /api/hf/quantizers`
+
 Return the tracked list of quantizer authors.
 
 ### `PUT /api/hf/quantizers`
+
 Update quantizer author list.
 
 ### `POST /api/hf/files`
+
 List GGUF files in a repo with sizes and quant labels.
 
 ### `GET /api/hf/card`
+
 Fetch raw model card markdown by `repo` param.
 
 - Auth: no auth (public).
@@ -3086,6 +3217,7 @@ Fetch raw model card markdown by `repo` param.
 - Used for in-app model card display.
 
 ### `GET /api/hf/token`
+
 Check if HF token is set (masked).
 
 - Auth: `api-token`.
@@ -3097,6 +3229,7 @@ Response:
 ```
 
 ### `PUT /api/hf/token`
+
 Set/update HF token (written to `hf-token` with mode 600).
 
 - Auth: `api-token`.
@@ -3114,6 +3247,7 @@ Response:
 ```
 
 ### `DELETE /api/hf/token`
+
 Remove stored HF token.
 
 - Auth: `api-token`.
@@ -3125,6 +3259,7 @@ Response:
 ```
 
 ### `GET /api/hf/download-dir`
+
 Return effective models download directory.
 
 - Auth: `api-token`.
@@ -3140,6 +3275,7 @@ Response:
 Branch-specific addition (UI + preset editor only; no new endpoint).
 
 When editing or creating a preset on macOS, if:
+
 - `mlock` is enabled,
 - and the VRAM estimate indicates the model is large relative to available memory,
 
@@ -3150,74 +3286,90 @@ the preset editor and spawn wizard display a warning that mlock pins model memor
 These endpoints manage LibreHardwareMonitor on Windows. On non-Windows platforms they return a "Not supported on this platform" error.
 
 ### `GET /api/lhm/check`
+
 No authentication required.
 Returns whether LHM is installed and currently running.
 
 Response:
+
 ```json
 { "running": true, "installed": true, "available": true }
 ```
 
 On non-Windows:
+
 ```json
 { "running": false, "installed": false, "available": false, "error": "Not supported on this platform" }
 ```
 
 ### `POST /api/lhm/start`
+
 Auth: api-token.
 Starts LHM if installed.
 
 Response:
+
 ```json
 { "success": true }
 ```
 
 ### `GET /api/lhm/progress`
+
 No authentication required.
 Returns the current LHM installation progress string (e.g. "not_started", "downloading", "installing", "completed").
 
 Response:
+
 ```json
 { "progress": "completed" }
 ```
 
 ### `GET /api/lhm/status`
+
 No authentication required.
 Returns whether LHM is disabled via the persisted flag.
 
 Response:
+
 ```json
 { "disabled": false }
 ```
 
 ### `POST /api/lhm/install`
+
 Auth: api-token.
 Downloads and installs LHM.
 
 Response:
+
 ```json
 { "success": true }
 ```
 
 ### `POST /api/lhm/uninstall`
+
 Auth: api-token.
 Uninstalls LHM.
 
 Response:
+
 ```json
 { "success": true }
 ```
 
 ### `POST /api/lhm/disable`
+
 Auth: api-token.
 Sets the LHM disabled flag.
 
 Request:
+
 ```json
 { "disabled": true }
 ```
 
 Response:
+
 ```json
 { "ok": true }
 ```
@@ -3229,19 +3381,23 @@ Route handlers: `src/web/api/sensor_bridge.rs`.
 Manages the local sensor-bridge service on Windows. On non-Windows platforms these endpoints return a "Not supported on this platform" error.
 
 ### `GET /api/sensor-bridge/status`
+
 Auth: api-token.
 Returns whether the sensor-bridge service is installed, running, and available.
 
 Response:
+
 ```json
 { "installed": true, "running": true, "available": true }
 ```
 
 ### `POST /api/sensor-bridge/install`
+
 Auth: api-token.
 Installs the sensor-bridge service via UAC prompt.
 
 Response:
+
 ```json
 {
   "started": true,
@@ -3250,10 +3406,12 @@ Response:
 ```
 
 ### `POST /api/sensor-bridge/uninstall`
+
 Auth: api-token.
 Uninstalls the sensor-bridge service via UAC prompt.
 
 Response:
+
 ```json
 {
   "started": true,
@@ -3292,6 +3450,7 @@ Route handlers: `src/web/api/self_update.rs`, `src/agent.rs` (`self_update_binar
 ## Kill-Llama
 
 POST /api/kill-llama:
+
 - Emergency kill for llama-server.
 - Requires `db-admin-token` (elevated operation).
 - Requires confirmation field: `{ "confirm": "kill" }`.
@@ -3308,25 +3467,31 @@ Route handlers: `src/web/api/config.rs`.
 All three endpoints require `api-token` and return 401 if missing or invalid.
 
 ### `POST /api/rotate-agent-token`
+
 Rotates the remote-agent token stored in `UiSettings`. Updates both on-disk and in-memory state, and notifies the agent-poll loop.
 
 Response:
+
 ```json
 { "ok": true, "message": "Agent token rotated" }
 ```
 
 ### `POST /api/rotate-api-token`
+
 Generates a new api-token, writes it to disk (encrypted if configured), and updates the live in-memory value atomically. Old token stops working immediately.
 
 Response:
+
 ```json
 { "ok": true, "message": "API token rotated successfully." }
 ```
 
 ### `POST /api/rotate-db-admin-token`
+
 Generates a new db-admin-token, writes it to disk (encrypted if configured), and updates the live in-memory value atomically. Old token stops working immediately.
 
 Response:
+
 ```json
 { "ok": true, "message": "DB admin token rotated successfully." }
 ```
@@ -3334,6 +3499,7 @@ Response:
 ## Internal Token Bootstrap
 
 ### `GET /api/internal/api-token`
+
 No authentication header is required.
 
 Returns the api-token for use by the in-browser UI. Access is governed by a bootstrap policy:
@@ -3347,6 +3513,7 @@ Returns the api-token for use by the in-browser UI. Access is governed by a boot
   - Otherwise returns 403.
 
 Response:
+
 ```json
 { "token": "<api-token>" }
 ```
@@ -3360,13 +3527,14 @@ ws://localhost:7778/ws
 ```
 
 Limits:
+
 - Maximum 50 concurrent connections.
 - Excess connections are rejected with 429 Too Many Requests.
 
 The WebSocket payload includes the following remote-agent fields:
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `remote_agent_connected` | boolean | Agent process is reachable |
 | `remote_agent_health_reachable` | boolean | `/metrics` HTTP call succeeds; independent from `remote_agent_connected` |
 | `remote_agent_protocol_too_old` | boolean | True when agent protocol version is below minimum enforced version |
@@ -3375,6 +3543,7 @@ The WebSocket payload includes the following remote-agent fields:
 `remote_agent_health_reachable` is set to true when the `/metrics` HTTP call succeeds and reset to false on disconnect. It is used to detect the firewall-blocked state (agent connected but health unreachable).
 
 Platform memory-pressure fields are also emitted when present:
+
 - `memory_pressure_level`, `memory_pressure_source`, `memory_pressure_score`, `memory_free_gb`,
   `memory_reclaimable_gb`, `memory_compressor_gb`, `memory_compressed_gb`, `swap_used_gb`,
   `memory_psi_some_avg10`, `memory_psi_full_avg10`, `memory_pressure_advice`.
@@ -3386,6 +3555,7 @@ See `docs/reference/realtime-communication.md` and `docs/reference/capabilities.
 The project previously used a flat-file chat format. The live SQLite-backed API no longer persists several legacy fields that still appear in old docs, old exports, or migration code.
 
 Not part of the live `ChatTabRow` API:
+
 - `ai_gender`
 - `role_boundary_custom`
 - `quick_guide_active`
@@ -3394,6 +3564,7 @@ Not part of the live `ChatTabRow` API:
 - `quick_guide_draft`
 
 Not part of the live `MessageRow` API:
+
 - `thinking_content`
 - `summarized`
 - `dropped_count`
@@ -3408,6 +3579,7 @@ Not part of the live `MessageRow` API:
 - `recent_tail_kept`
 
 Compatibility note:
+
 - startup migration from legacy `chat-tabs.json` still reads some of those older fields
 - the live REST persistence API does not return or preserve them
 
@@ -3422,6 +3594,7 @@ Most handlers return JSON error payloads rather than relying on HTTP status alon
 ```json
 { "error": "No active session" }
 ```
+
 ## Application-home migration
 
 These endpoints support the Local LLM Foundry 2.0 application-home upgrade.
