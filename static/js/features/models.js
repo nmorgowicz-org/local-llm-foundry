@@ -3333,6 +3333,28 @@ async function onHfModelSelected(model, filelistContainer, downloadPanel) {
                             newBtn.textContent = 'Downloading\u2026';
                             const jobId = data.job_id;
                             let stalledToasted = false;
+                            // Cancel control sits beside the main button while a job runs.
+                            let cancelBtn = newBtn.parentNode.querySelector('.mm-dl-cancel-btn');
+                            if (!cancelBtn) {
+                                cancelBtn = document.createElement('button');
+                                cancelBtn.type = 'button';
+                                cancelBtn.className = 'btn-wizard-tertiary mm-dl-cancel-btn';
+                                cancelBtn.textContent = 'Cancel';
+                                cancelBtn.style.marginLeft = '8px';
+                                newBtn.insertAdjacentElement('afterend', cancelBtn);
+                            }
+                            cancelBtn.style.display = '';
+                            cancelBtn.disabled = false;
+                            cancelBtn.onclick = async () => {
+                                cancelBtn.disabled = true;
+                                try {
+                                    await fetch(`/api/models/downloads/${encodeURIComponent(jobId)}/cancel`, {
+                                        method: 'POST',
+                                        headers: window.authHeaders ? window.authHeaders() : {},
+                                    });
+                                } catch { /* the next poll reports the real state */ }
+                            };
+                            const hideCancel = () => { cancelBtn.style.display = 'none'; };
                             const poll = async () => {
                                 try {
                                     const r = await fetch(`/api/models/downloads/${encodeURIComponent(jobId)}`, { headers: window.authHeaders ? window.authHeaders() : {} });
@@ -3349,7 +3371,16 @@ async function onHfModelSelected(model, filelistContainer, downloadPanel) {
                                     } else if (job.state === 'running') {
                                         newBtn.textContent = 'Downloading\u2026';
                                     }
+                                    if (job.state === 'cancelled') {
+                                        hideCancel();
+                                        showToast('Download cancelled. Finished files are kept; start again to resume.', 'info');
+                                        newBtn.dataset.dlBusy = '';
+                                        newBtn.disabled = false;
+                                        newBtn.textContent = 'Resume download';
+                                        return;
+                                    }
                                     if (job.state === 'complete') {
+                                        hideCancel();
                                         showToast('Downloaded: ' + repoId, 'success');
                                         invalidateModelInventory();
                                         loadModels({ refresh: true });
@@ -3360,6 +3391,7 @@ async function onHfModelSelected(model, filelistContainer, downloadPanel) {
                                         return;
                                     }
                                     if (job.state === 'failed') {
+                                        hideCancel();
                                         showToast('Download failed: ' + (job.error || 'unknown error'), 'error');
                                         newBtn.dataset.dlBusy = '';
                                         newBtn.disabled = false;

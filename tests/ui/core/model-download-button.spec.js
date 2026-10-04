@@ -64,4 +64,56 @@ test.describe('MLX model download button', () => {
     await expect(btn).toHaveText('Open in Spawn Wizard', { timeout: 15000 });
     expect(posts).toBe(2);
   });
+
+  test('@in-memory-test Cancel stops a running download and offers Resume', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    const GB = 1024 ** 3;
+    let cancelled = false;
+    await page.route('**/api/hf/**', route => route.abort('blockedbyclient'));
+    await page.route('**/api/hf/community-sources', route => json(route, {
+      ok: true, catalog: { entries: [], preferences: {}, version: 1 }, roles: [],
+    }));
+    await page.route('**/api/hf/search', route => json(route, {
+      models: [{ id: REPO, tags: ['mlx'], format: 'mlx', param_b: 27, downloads: 5, model_size_bytes: 15_200_000_000 }],
+      next_cursor: null,
+    }));
+    await page.route('**/api/models/mlx-introspect', route => json(route, { ok: false, error: 'mocked' }));
+    await page.route('**/metrics/gpu', route => json(route, [
+      { name: 'Apple M-series', vendor: 'apple', backend: 'metal', vram_total_mb: 57344, metal_gpu_limit_mb: 57344 },
+    ]));
+    await page.route('**/api/memory-availability', route => json(route, {
+      ok: true, snapshot: { current_safe_availability_bytes: 40 * GB },
+    }));
+    await page.route('**/api/vram/quant-compare', route => json(route, { ok: true, quants: [] }));
+    await page.route('**/api/models/downloads', route => json(route, { ok: true, job_id: 'job-1', repo_id: REPO }));
+    await page.route('**/api/models/downloads/job-1/cancel', route => {
+      cancelled = true;
+      return json(route, { ok: true, cancelling: true });
+    });
+    await page.route('**/api/models/downloads/job-1', route => json(route, {
+      ok: true,
+      job: { state: cancelled ? 'cancelled' : 'running', bytes_done: 2 * GB, bytes_total: 16 * GB },
+    }));
+
+    await page.evaluate(() => window.openModelsModal?.());
+    await page.waitForSelector('#models-modal.open');
+    await page.locator('.mm-tab[data-tab="download"]').click();
+    await page.locator('.mm-tab-panel--download .hf-scope-selector').waitFor();
+    await page.locator('#mm-hf-search-input').fill('mindmeld');
+    await page.waitForSelector('.hf-search-group');
+    await page.locator('.hf-sg-toggle').first().click();
+    await page.locator('.hf-sg-variant').first().click();
+
+    const btn = page.locator('#mm-hf-dlp-download-btn');
+    await btn.click();
+    await expect(btn).toContainText('Downloading 13%');
+    const cancel = page.locator('.mm-dl-cancel-btn');
+    await expect(cancel).toBeVisible();
+    await cancel.click();
+    await expect(btn).toHaveText('Resume download', { timeout: 15000 });
+    await expect(cancel).toBeHidden();
+    expect(cancelled).toBe(true);
+  });
 });

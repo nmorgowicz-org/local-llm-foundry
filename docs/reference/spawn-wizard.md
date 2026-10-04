@@ -441,8 +441,8 @@ When Rapid-MLX is selected, the wizard adapts the Model and Hardware step UI:
   - The Download tab's "Download to models folder" button downloads an MLX repo
     snapshot through `POST /api/models/downloads` (engine-neutral, so oMLX can reuse it)
     with live progress on the button (`Downloading 42% (12.1 GB / 28.7 GB)`), a toast
-    when a stalled download resumes automatically, a `Retry download` button after a
-    failure, and a completion toast, then offers "Open in Spawn Wizard". The wizard
+    when a stalled download resumes automatically, a `Cancel` button while it runs
+    (then `Resume download`), a `Retry download` button after a failure, and a completion toast, then offers "Open in Spawn Wizard". The wizard
     handoff hydrates the repo's file size and parameter count immediately, so the
     sidebar VRAM budget is populated on arrival rather than showing dashes.
 

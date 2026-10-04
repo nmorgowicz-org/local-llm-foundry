@@ -71,6 +71,9 @@ struct ModelDownloadJob {
     current_file: String,
     stalled: bool,
     restarts: u32,
+    /// Set by the cancel route; the worker polls it and kills the downloader.
+    #[serde(skip)]
+    cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 const MODEL_DOWNLOAD_MAX_RESTARTS: u32 = 3;
@@ -109,6 +112,7 @@ enum RuntimeJobState {
     Running,
     Complete,
     Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -364,6 +368,8 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         .unify()
         .or(model_download_status_route(ctx.clone(), state.clone()))
         .unify()
+        .or(model_download_cancel_route(ctx.clone(), state.clone()))
+        .unify()
         .or(profile_route(ctx.clone(), state.clone()))
         .unify()
         .or(unified_profile_route(ctx.clone()))
@@ -438,8 +444,61 @@ print('PATH ' + os.path.dirname(last), flush=True)"#;
                 .unwrap_or(0)
         };
 
+        let python = if cfg!(windows) {
+            "python.exe"
+        } else {
+            "python3"
+        };
+        let cancel = state
+            .model_downloads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&job_id)
+            .map(|job| job.cancel.clone())
+            .unwrap_or_default();
+
+        // Preflight: say exactly what is missing instead of a bare exit status.
+        let preflight = tokio::process::Command::new(python)
+            .args(["-c", "import huggingface_hub"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await;
+        let preflight_error = match preflight {
+            Err(_) => Some(format!(
+                "Python 3 was not found ({python}). Model downloads use the Hugging Face hub client; install Python 3 and run: pip install huggingface_hub"
+            )),
+            Ok(out) if !out.status.success() => Some(
+                "The Python package huggingface_hub is not installed. Run: pip install huggingface_hub"
+                    .to_string(),
+            ),
+            Ok(_) => None,
+        };
+        if let Some(message) = preflight_error {
+            let mut downloads = state
+                .model_downloads
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(job) = downloads.get_mut(&job_id) {
+                job.state = RuntimeJobState::Failed;
+                job.message = "Download unavailable".into();
+                job.error = Some(message);
+            }
+            return;
+        }
+
         let mut attempt = 0u32;
         loop {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                let mut downloads = state
+                    .model_downloads
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if let Some(job) = downloads.get_mut(&job_id) {
+                    job.state = RuntimeJobState::Cancelled;
+                    job.message = "Cancelled".into();
+                }
+                return;
+            }
             let mut child = match tokio::process::Command::new(if cfg!(windows) {
                 "python.exe"
             } else {
@@ -450,6 +509,7 @@ print('PATH ' + os.path.dirname(last), flush=True)"#;
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .stdin(std::process::Stdio::null())
+            .kill_on_drop(true)
             .spawn()
             {
                 Ok(c) => c,
@@ -478,6 +538,7 @@ print('PATH ' + os.path.dirname(last), flush=True)"#;
             let mut final_path: Option<String> = None;
             let mut failure: Option<String> = None;
             let mut stalled = false;
+            let mut cancelled = false;
             let mut err_tail = String::new();
             let mut err_buf = [0u8; 4096];
             let mut stderr_open = true;
@@ -520,6 +581,11 @@ print('PATH ' + os.path.dirname(last), flush=True)"#;
                         }
                     }
                     _ = tick.tick() => {
+                        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                            cancelled = true;
+                            let _ = child.start_kill();
+                            break;
+                        }
                         let bytes = dir_bytes(&blobs_dir);
                         if bytes != last_bytes {
                             last_bytes = bytes;
@@ -544,6 +610,18 @@ print('PATH ' + os.path.dirname(last), flush=True)"#;
             }
 
             let status = child.wait().await;
+            if cancelled {
+                let mut downloads = state
+                    .model_downloads
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if let Some(job) = downloads.get_mut(&job_id) {
+                    job.state = RuntimeJobState::Cancelled;
+                    job.message = "Cancelled".into();
+                    job.stalled = false;
+                }
+                return;
+            }
             if !stalled && failure.is_none() && final_path.is_none() {
                 // Non-stall exit without a PATH line: pull the error from stderr text.
                 let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
@@ -700,6 +778,7 @@ fn model_download_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
                     current_file: String::new(),
                     stalled: false,
                     restarts: 0,
+                    cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 };
                 let mut downloads = state
                     .model_downloads
@@ -729,6 +808,50 @@ fn model_download_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
                     "revision": revision,
                     "engine": engine,
                 }))) as ApiReply)
+            }
+        })
+        .boxed()
+}
+
+/// POST /api/models/downloads/:jobId/cancel — stop a running download. Finished
+/// files stay in the cache, so a later download of the same repo resumes.
+fn model_download_cancel_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
+    warp::path!("api" / "models" / "downloads" / String / "cancel")
+        .and(warp::post())
+        .and(warp::header::optional::<String>("authorization"))
+        .and_then(move |id: String, auth: Option<String>| {
+            let state = state.clone();
+            let ctx = ctx.clone();
+            async move {
+                if !check_api_token(&auth, &ctx.config) {
+                    return Ok::<ApiReply, warp::Rejection>(unauthorized_api_token());
+                }
+                let downloads = state
+                    .model_downloads
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                Ok(match downloads.get(&id) {
+                    Some(job) => {
+                        let active = matches!(
+                            job.state,
+                            RuntimeJobState::Queued | RuntimeJobState::Running
+                        );
+                        if active {
+                            job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Box::new(warp::reply::json(&serde_json::json!({
+                            "ok": true,
+                            "cancelling": active,
+                        }))) as ApiReply
+                    }
+                    None => Box::new(warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({
+                            "ok": false,
+                            "error": "Unknown download job"
+                        })),
+                        StatusCode::NOT_FOUND,
+                    )) as ApiReply,
+                })
             }
         })
         .boxed()

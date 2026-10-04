@@ -937,17 +937,29 @@ HF cache. Re-posting a repo with a job already in flight returns
 `{"ok": true, "already_running": true}` instead of stacking downloads. Re-posting
 after a failure starts a new job; files the hub already finished are kept.
 
+### `POST /api/models/downloads/:jobId/cancel`
+
+Auth: api-token.
+
+Stops a running download: the downloader process is killed and the job moves to
+`cancelled`. Files the hub already finished stay in the cache, so posting the same
+repo again resumes. Returns `{"ok": true, "cancelling": true}` for an active job,
+`cancelling: false` for one that already finished, and 404 for an unknown id.
+
 ### `GET /api/models/downloads/:jobId`
 
 Auth: api-token.
 
 Polls a download job. The `job` object carries `repo_id`, `revision`, `engine`,
-`state` (`running`/`complete`/`failed`), `message`, `error`, `current_file`,
+`state` (`running`/`complete`/`failed`/`cancelled`), `message`, `error`, `current_file`,
 `bytes_done`, `bytes_total`, `stalled`, `restarts`, and, on success, `local_path`
 (the snapshot directory). `bytes_done` is measured from the repo's blob directory on
 disk, so it advances as the hub writes data (in chunks, not per byte). If nothing
 changes for 8 minutes the downloader is restarted and resumes, up to three times
-(`stalled` is true while that happens) before the job fails. Unknown ids return 404.
+(`stalled` is true while that happens) before the job fails. The downloader is the
+Hugging Face hub's Python client, so the job first checks for `python3` and the
+`huggingface_hub` package and fails with an install hint if either is missing.
+Unknown ids return 404.
 
 ### `POST /api/models/gguf/import/compatibility/preview`
 
