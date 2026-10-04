@@ -1,3 +1,7 @@
+use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
 use warp::Filter;
 
 use serde::Deserialize;
@@ -22,13 +26,52 @@ struct QueueRequest {
 }
 
 fn migration_roots(config: &crate::config::AppConfig) -> Result<AppHomeRoots, String> {
+    resolve_migration_roots(config).map_err(|error| error.to_string())
+}
+
+fn resolve_migration_roots(config: &crate::config::AppConfig) -> anyhow::Result<AppHomeRoots> {
     config
         .migration_test_root
         .as_deref()
         .map(disposable_roots)
         .transpose()
         .map(|roots| roots.unwrap_or_else(default_roots))
-        .map_err(|error| error.to_string())
+}
+
+static NEXT_PREVIEW_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Request-local scope for the application's stderr logging convention.
+/// IDs are process-local counters, not credentials or client-supplied values.
+struct PreviewDiagnostics {
+    id: u64,
+    started: Instant,
+}
+
+impl PreviewDiagnostics {
+    fn new() -> Self {
+        Self {
+            id: NEXT_PREVIEW_ID.fetch_add(1, Ordering::Relaxed),
+            started: Instant::now(),
+        }
+    }
+
+    fn log(&self, level: &str, stage: &str, fields: fmt::Arguments<'_>) {
+        eprintln!(
+            "[{level}] app_home_migration_preview preview_id={} elapsed_ms={} stage={stage} {fields}",
+            self.id,
+            self.started.elapsed().as_millis(),
+        );
+    }
+
+    fn failure(&self, stage: &str, error: &anyhow::Error) {
+        // Debug-quote the full display chain to keep paths/OS errors on one
+        // log line. Never pass configuration or authorization values here.
+        self.log(
+            "error",
+            stage,
+            format_args!("outcome=failed error_chain={:?}", format!("{error:#}")),
+        );
+    }
 }
 
 /// Read-only migration status used by the non-blocking frontend migration
@@ -80,30 +123,69 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
                     if !check_api_token(&authorization, &config) {
                         return Ok::<ApiReply, warp::Rejection>(Box::new(unauthorized_api_token()));
                     }
-                    let roots = migration_roots(&config).map_err(|error| {
+                    let diagnostics = PreviewDiagnostics::new();
+                    diagnostics.log("info", "start", format_args!("authenticated=true"));
+                    let roots = resolve_migration_roots(&config).map_err(|error| {
+                        diagnostics.failure("resolve_roots", &error);
                         warp::reject::custom(super::ApiError::new(
                             warp::http::StatusCode::BAD_REQUEST,
-                            error,
+                            error.to_string(),
                         ))
                     })?;
+                    diagnostics.log(
+                        "info",
+                        "resolve_roots",
+                        format_args!(
+                            "outcome=success disposable={} canonical_root={:?} legacy_root={:?}",
+                            roots.disposable, roots.canonical, roots.legacy,
+                        ),
+                    );
                     let inspection = inspect_application_roots(&roots).map_err(|error| {
+                        diagnostics.failure("inspect_roots", &error);
                         warp::reject::custom(super::ApiError::migration(&error))
                     })?;
+                    diagnostics.log(
+                        "info",
+                        "inspect_roots",
+                        format_args!("outcome=success state={:?}", inspection.state),
+                    );
                     if !matches!(
                         inspection.state,
                         crate::app_migration::RootState::LegacyActive
                     ) {
+                        diagnostics.log(
+                            "info",
+                            "complete",
+                            format_args!(
+                                "outcome=no_plan state={:?} reason=not_legacy_active",
+                                inspection.state,
+                            ),
+                        );
                         return Ok(Box::new(warp::reply::json(&serde_json::json!({
                             "ok": true,
                             "state": inspection.state,
                             "plan": null,
                         }))));
                     }
+                    diagnostics.log("info", "plan", format_args!("outcome=started"));
                     let plan =
                         plan_application_home(&inspection.legacy_root, &inspection.canonical_root)
                             .map_err(|error| {
+                                diagnostics.failure("plan", &error);
                                 warp::reject::custom(super::ApiError::migration(&error))
                             })?;
+                    diagnostics.log(
+                        "info",
+                        "complete",
+                        format_args!(
+                            "outcome=planned state={:?} entry_count={} retained_entry_count={} required_copy_bytes={} total_seen_bytes={}",
+                            inspection.state,
+                            plan.entries.len(),
+                            plan.retained_entries.len(),
+                            plan.required_copy_bytes,
+                            plan.total_seen_bytes,
+                        ),
+                    );
                     Ok(Box::new(warp::reply::json(&serde_json::json!({
                         "ok": true,
                         "state": inspection.state,
@@ -123,11 +205,14 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
             .and_then(move |authorization: Option<String>, body: QueueRequest| {
                 let config = config.clone();
                 async move {
+                    let diagnostics = PreviewDiagnostics::new();
                     if !check_db_admin_token(&authorization, &config) {
+                        diagnostics.log("warn", "queue_auth", format_args!("outcome=rejected"));
                         return Ok::<ApiReply, warp::Rejection>(Box::new(
                             unauthorized_db_admin_token(),
                         ));
                     }
+                    diagnostics.log("info", "queue_start", format_args!("requested_plan_id={}", body.plan_id));
                     if body.confirmation != "MIGRATE TO LOCAL LLM FOUNDRY" {
                         return Ok(Box::new(warp::reply::with_status(
                             warp::reply::json(&serde_json::json!({
@@ -144,6 +229,7 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
                         ))
                     })?;
                     let inspection = inspect_application_roots(&roots).map_err(|error| {
+                        diagnostics.failure("queue_inspect_roots", &error);
                         warp::reject::custom(super::ApiError::migration(&error))
                     })?;
                     if !matches!(
@@ -159,9 +245,20 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
                     let plan =
                         plan_application_home(&inspection.legacy_root, &inspection.canonical_root)
                             .map_err(|error| {
+                                diagnostics.failure("queue_plan", &error);
                                 warp::reject::custom(super::ApiError::migration(&error))
                             })?;
                     if plan.plan_id != body.plan_id {
+                        diagnostics.log(
+                            "error",
+                            "queue_stale_check",
+                            format_args!(
+                                "outcome=stale requested_plan_id={} current_plan_id={} entry_count={}",
+                                body.plan_id,
+                                plan.plan_id,
+                                plan.entries.len(),
+                            ),
+                        );
                         return Ok(Box::new(warp::reply::with_status(
                             warp::reply::json(&serde_json::json!({
                                 "ok": false,
@@ -170,9 +267,12 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
                             warp::http::StatusCode::CONFLICT,
                         )));
                     }
+                    diagnostics.log("info", "queue_stale_check", format_args!("outcome=match"));
                     let request = queue_application_home_migration(&plan).map_err(|error| {
+                        diagnostics.failure("queue_write", &error);
                         warp::reject::custom(super::ApiError::migration(&error))
                     })?;
+                    diagnostics.log("info", "queue_complete", format_args!("outcome=queued"));
                     Ok(Box::new(warp::reply::json(&serde_json::json!({
                         "ok": true,
                         "restart_required": true,

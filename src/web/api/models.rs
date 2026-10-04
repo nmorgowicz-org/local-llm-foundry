@@ -106,7 +106,10 @@ fn model_root_relocation_paths(
     let legacy = crate::paths::AppPaths::legacy_default_root().join("models");
     let configured =
         get_effective_models_dir(state).unwrap_or_else(|| config.default_models_dir.clone());
-    let source = if configured == canonical
+    let pending = crate::models::root_relocation::load_pending_plan(&canonical)?;
+    let source = if let Some(pending) = pending {
+        pending.source
+    } else if configured == canonical
         && crate::models::root_relocation::load_selection(&canonical)?.is_none()
         && legacy.is_dir()
     {
@@ -150,7 +153,13 @@ fn api_model_root_relocation_status(
                 };
                 let configured = get_effective_models_dir(&state)
                     .unwrap_or_else(|| config.default_models_dir.clone());
-                let source = if configured == canonical && selected.is_none() && legacy.is_dir() {
+                let pending = match crate::models::root_relocation::load_pending_plan(&canonical) {
+                    Ok(pending) => pending,
+                    Err(error) => return Ok(error_reply(warp::http::StatusCode::INTERNAL_SERVER_ERROR, error)),
+                };
+                let source = if let Some(pending) = &pending {
+                    pending.source.clone()
+                } else if configured == canonical && selected.is_none() && legacy.is_dir() {
                     legacy.clone()
                 } else {
                     configured
@@ -162,7 +171,8 @@ fn api_model_root_relocation_status(
                     "source_exists": source.is_dir(),
                     "selection": selected,
                     "custom_root": source != legacy && source != canonical,
-                    "relocation_required": source == legacy && source.is_dir(),
+                    "relocation_required": source == legacy && (source.is_dir() || pending.is_some()),
+                    "move_pending": pending.is_some(),
                 }))) as Box<dyn warp::reply::Reply>)
             }
         })
@@ -262,7 +272,7 @@ fn api_model_root_relocation_execute(
                 };
                 let confirmation = match choice {
                     crate::models::root_relocation::ModelRootChoice::KeepLegacy => "KEEP_LEGACY_MODEL_ROOT",
-                    crate::models::root_relocation::ModelRootChoice::CopyIntoFoundry => "MOVE_MODELS_INTO_FOUNDRY",
+                    crate::models::root_relocation::ModelRootChoice::MoveIntoFoundry => "MOVE_MODELS_INTO_FOUNDRY",
                 };
                 if request.confirmation != confirmation || request.plan_id.len() != 64 {
                     return Ok(error_reply(warp::http::StatusCode::BAD_REQUEST, "model-root relocation requires the preview plan_id and exact confirmation"));
@@ -279,6 +289,7 @@ fn api_model_root_relocation_execute(
                 let result = tokio::time::timeout(
                     std::time::Duration::from_secs(600),
                     tokio::task::spawn_blocking(move || {
+                        let _guard = _guard;
                         let plan = crate::models::root_relocation::plan_model_root_relocation_with_persistence(
                             &source,
                             &destination,
@@ -836,9 +847,9 @@ fn api_rapid_model_resolver_preview(
                     } else {
                         "python3"
                     }),
-                    runtime_version:
-                        crate::inference::rapid_mlx::compatibility::LATEST_QUALIFIED_VERSION_TEXT
-                            .into(),
+                    // Only quoted in error text; naming a fixed release there would be wrong the
+                    // day the installed runtime changes.
+                    runtime_version: "runtime".into(),
                     hf_token: None,
                     verified_aliases: Vec::new(),
                     execute_conversion: false,

@@ -4988,3 +4988,162 @@ button:disabled {
   .mm-disk-row { grid-template-columns: 20px 82px 1fr; }
   .mm-disk-badges { grid-column: 2 / -1; justify-content: flex-start; }
 }
+
+/* Application-home migration: readable preview and optional diagnostics. */
+#settings-modal #settings-migration {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app-home-migration-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--color-bg-surface);
+  box-shadow: none;
+  color: var(--color-text-primary);
+  line-height: 1.55;
+  transition: none;
+}
+
+.app-home-migration-card:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--border-subtle);
+}
+
+.app-home-migration-state {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+#settings-modal #app-home-migration-card .settings-help {
+  margin: 8px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.app-home-migration-plan {
+  margin-top: 16px;
+}
+
+.app-home-migration-plan[hidden],
+.app-home-migration-details[hidden] {
+  display: none;
+}
+
+.app-home-migration-plan h4 {
+  margin: 0 0 10px;
+  font-size: 1rem;
+}
+
+.app-home-migration-facts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 16px;
+  margin: 0;
+  padding: 12px 0;
+  border-block: 1px solid var(--border-subtle);
+}
+
+.app-home-migration-facts dt,
+.app-home-migration-locations dt,
+.app-home-migration-notes {
+  color: var(--color-text-secondary);
+}
+
+.app-home-migration-facts dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.app-home-migration-notes {
+  margin: 12px 0;
+  padding-left: 20px;
+}
+
+.app-home-migration-notes li + li {
+  margin-top: 4px;
+}
+
+.app-home-migration-details {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.app-home-migration-details summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.app-home-migration-details summary:focus-visible,
+.app-home-migration-actions .btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 4px;
+}
+
+.app-home-migration-locations {
+  margin: 12px 0 0;
+}
+
+.app-home-migration-locations dd {
+  margin: 4px 0 12px;
+}
+
+.app-home-migration-details code,
+.app-home-migration-details pre {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.app-home-migration-details pre {
+  max-height: 220px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--color-bg);
+}
+
+.app-home-migration-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+[data-theme="light"] .app-home-migration-card,
+[data-theme="light"] .app-home-migration-card:hover {
+  background: var(--color-bg-surface);
+  border-color: var(--border-subtle);
+  box-shadow: none;
+}
+
+@media (max-width: 480px) {
+  .app-home-migration-actions .btn {
+    width: 100%;
+    white-space: normal;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-home-migration-card,
+  .app-home-migration-actions .btn {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .app-home-migration-actions .btn:hover {
+    transform: none !important;
+  }
+}
