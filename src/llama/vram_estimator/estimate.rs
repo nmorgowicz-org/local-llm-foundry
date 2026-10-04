@@ -1648,6 +1648,7 @@ struct QuantTableCtx<'a> {
     is_unified_memory: bool,
     backend: Backend,
     headroom: f64,
+    usable_vram_bytes: u64,
     is_gemma4_qat: bool,
     min_fit_context_tokens: u64,
     effective_parallel_slots: u32,
@@ -1701,6 +1702,9 @@ impl<'a> QuantTableCtx<'a> {
             is_unified_memory,
             backend,
             headroom,
+            // Same shrunk budget max_context() uses; keeps the fit dot and the ctx
+            // columns from disagreeing on borderline rows (green dot with a dash).
+            usable_vram_bytes: (available_vram_bytes as f64 * (1.0 - headroom)) as u64,
             is_gemma4_qat,
             min_fit_context_tokens,
             effective_parallel_slots,
@@ -1733,7 +1737,7 @@ impl<'a> QuantTableCtx<'a> {
             }
             Backend::LlamaCpp => discrete_overhead_base_bytes(self.arch, 512),
         };
-        let fits = model_bytes + oh + min_kv < self.available_vram_bytes;
+        let fits = model_bytes + oh + min_kv < self.usable_vram_bytes;
 
         let max_q8 = max_context(
             model_bytes,
