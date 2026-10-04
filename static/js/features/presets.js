@@ -383,6 +383,58 @@ async function freshPresetCatalogEtag() {
     return data.catalog_etag || null;
 }
 
+/**
+ * Destructive preset routes (delete, reset) are guarded by the separate db-admin
+ * token, not the API token that window.authHeaders() carries. Fetch it the same
+ * way the other admin flows do; it is empty when no admin token is configured,
+ * in which case the server accepts the request without a bearer.
+ */
+async function presetAdminHeaders() {
+    const response = await fetch('/api/db/admin-token', {
+        headers: window.authHeaders ? window.authHeaders() : {},
+    });
+    if (!response.ok) throw new Error('Authentication required');
+    const data = await response.json().catch(() => ({}));
+    return data.token ? { Authorization: `Bearer ${data.token}` } : {};
+}
+
+/**
+ * Delete one preset. The server requires the db-admin token, the preset revision,
+ * the current catalog etag and the literal confirmation string; anything less is
+ * rejected. Returns true only when the server confirms the delete, and reports
+ * every failure instead of failing silently.
+ */
+export async function requestPresetDelete(preset) {
+    let catalogEtag;
+    let adminHeaders;
+    try {
+        [catalogEtag, adminHeaders] = await Promise.all([freshPresetCatalogEtag(), presetAdminHeaders()]);
+    } catch (error) {
+        showToast('Delete cancelled', 'error', error.message || String(error));
+        return false;
+    }
+    try {
+        const resp = await fetch('/api/presets/' + encodeURIComponent(preset.id), {
+            method: 'DELETE',
+            headers: { ...adminHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                expected_revision: preset.revision ?? 1,
+                expected_catalog_etag: catalogEtag,
+                confirmation: 'DELETE PRESET',
+            }),
+        });
+        if (!resp.ok) {
+            const payload = await resp.json().catch(() => ({}));
+            showToast('Delete failed', 'error', payload.error || `HTTP ${resp.status}`);
+            return false;
+        }
+        return true;
+    } catch (err) {
+        showToast('Delete failed', 'error', err.message || String(err));
+        return false;
+    }
+}
+
 async function convertCurrentPresetToBundle() {
     const id = document.getElementById('modal-preset-id')?.value;
     const current = sessionState.presets.find(preset => preset.id === id);
@@ -2179,15 +2231,9 @@ function _renderPresetsPanel() {
                         label: 'Delete',
                         primary: true,
                         handler: async () => {
-                            try {
-                                const headers = window.authHeaders ? { ...window.authHeaders() } : {};
-                                const resp = await fetch(`/api/presets/${preset.id}`, { method: 'DELETE', headers });
-                                if (resp.ok) {
-                                    await loadPresets();
-                                    _renderPresetsPanel();
-                                }
-                            } catch (err) {
-                                console.error('Delete preset failed:', err);
+                            if (await requestPresetDelete(preset)) {
+                                await loadPresets();
+                                _renderPresetsPanel();
                             }
                         }
                     }
@@ -2223,15 +2269,9 @@ function _renderPresetsPanel() {
                         label: 'Delete',
                         primary: true,
                         handler: async () => {
-                            try {
-                                const headers = window.authHeaders ? { ...window.authHeaders() } : {};
-                                const resp = await fetch(`/api/presets/${preset.id}`, { method: 'DELETE', headers });
-                                if (resp.ok) {
-                                    await loadPresets();
-                                    _renderPresetsPanel();
-                                }
-                            } catch (err) {
-                                console.error('Delete preset failed:', err);
+                            if (await requestPresetDelete(preset)) {
+                                await loadPresets();
+                                _renderPresetsPanel();
                             }
                         }
                     }
@@ -3547,31 +3587,12 @@ export async function deletePreset() {
     const p = sessionState.presets.find(pr => pr.id === id);
     if (!p) { showToast('No preset selected', 'warn'); return; }
 
-    let catalogEtag;
-    try {
-        catalogEtag = await freshPresetCatalogEtag();
-    } catch (error) {
-        showToast(`Delete cancelled: ${error.message || error}`, 'error');
-        return;
-    }
     const confirmed = await _showConfirm('Delete preset', 'Delete preset "' + escapeHtml(p.name) + '"? This cannot be undone.');
     if (!confirmed) return;
 
-    try {
-        const resp = await fetch('/api/presets/' + encodeURIComponent(id), {
-            method: 'DELETE',
-            headers: { ...(window.authHeaders ? window.authHeaders() : {}), 'Content-Type': 'application/json' },
-            body: JSON.stringify({ expected_revision: p.revision ?? 1, expected_catalog_etag: catalogEtag, confirmation: 'DELETE PRESET' }),
-        });
-        if (!resp.ok) {
-            const err = await resp.text().catch(() => 'Unknown error');
-            showToast('Delete failed: ' + err, 'error');
-            return;
-        }
+    if (await requestPresetDelete(p)) {
         await loadPresets(null);
         showToast('Preset deleted', 'success');
-    } catch (err) {
-        showToast('Delete failed: ' + err.message, 'error');
     }
 }
 
@@ -3592,7 +3613,7 @@ export async function resetPresets() {
     try {
         const resp = await fetch('/api/presets/reset', {
             method: 'POST',
-            headers: { ...(window.authHeaders ? window.authHeaders() : {}), 'Content-Type': 'application/json' },
+            headers: { ...(await presetAdminHeaders()), 'Content-Type': 'application/json' },
             body: JSON.stringify({ expected_catalog_etag: catalogEtag, confirmation: 'RESET PRESETS' }),
         });
         if (!resp.ok) {
@@ -4132,35 +4153,16 @@ export function initPresets() {
         const id = document.getElementById('modal-preset-id').value;
         const p = sessionState.presets.find(pr => pr.id === id);
         if (!p) { showToast('No preset selected', 'warn'); return; }
-        let catalogEtag;
-        try {
-            catalogEtag = await freshPresetCatalogEtag();
-        } catch (error) {
-            showToast(`Delete cancelled: ${error.message || error}`, 'error');
-            return;
-        }
         const ok = await showConfirmDialog(
             'Delete preset',
             `Delete preset "${p.name}"? This cannot be undone.`,
             'Delete'
         );
         if (!ok) return;
-        try {
-            const resp = await fetch('/api/presets/' + encodeURIComponent(id), {
-                method: 'DELETE',
-                headers: { ...(window.authHeaders ? window.authHeaders() : {}), 'Content-Type': 'application/json' },
-                body: JSON.stringify({ expected_revision: p.revision ?? 1, expected_catalog_etag: catalogEtag, confirmation: 'DELETE PRESET' }),
-            });
-            if (!resp.ok) {
-                const err = await resp.text().catch(() => 'Unknown error');
-                showToast('Delete failed: ' + err, 'error');
-                return;
-            }
+        if (await requestPresetDelete(p)) {
             closePresetModal();
             await loadPresets();
             showToast('Preset deleted', 'success');
-        } catch (err) {
-            showToast('Delete failed: ' + err.message, 'error');
         }
     });
     document.getElementById('preset-browse-model-btn')?.addEventListener('click', () => openModelFileBrowser('modal-model-path', 'gguf', null, 'model'));

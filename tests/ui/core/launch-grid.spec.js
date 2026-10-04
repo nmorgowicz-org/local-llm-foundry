@@ -34,6 +34,8 @@ async function installLaunchGridMocks(page, options = {}) {
     presets: [...(options.presets || [])],
     collections: options.collections || [],
     deleteRequests: [],
+    deleteBodies: [],
+    deleteAuth: [],
   };
 
   await page.route('**/api/settings', route => route.fulfill({
@@ -144,6 +146,37 @@ async function installLaunchGridMocks(page, options = {}) {
     }
 
     if (id && method === 'DELETE') {
+      // Mirror api_delete_preset: a bare DELETE is rejected, as the real server does.
+      // The real route is guarded by the db-admin token (not the API token).
+      const auth = request.headers()['authorization'] || '';
+      state.deleteAuth.push(auth);
+      if (auth !== 'Bearer admin-token') {
+        await route.fulfill({
+          status: 401,
+          contentType: 'application/json',
+          body: JSON.stringify({ ok: false, error: 'db-admin token required' }),
+        });
+        return;
+      }
+      let body = {};
+      try { body = JSON.parse(request.postData() || '{}'); } catch { body = {}; }
+      state.deleteBodies.push(body);
+      if (options.deleteStatus) {
+        await route.fulfill({
+          status: options.deleteStatus,
+          contentType: 'application/json',
+          body: JSON.stringify({ ok: false, code: 'revision_conflict', error: 'preset revision is stale' }),
+        });
+        return;
+      }
+      if (body.confirmation !== 'DELETE PRESET' || typeof body.expected_revision !== 'number') {
+        await route.fulfill({
+          status: 400,
+          contentType: 'application/json',
+          body: JSON.stringify({ ok: false, error: 'delete contract not satisfied' }),
+        });
+        return;
+      }
       state.deleteRequests.push(id);
       state.presets = state.presets.filter(p => p.id !== id);
       await route.fulfill({
@@ -396,5 +429,35 @@ test.describe('launch grid — sort, collections, running badge, delete', () => 
     await expect(dialog).not.toBeVisible();
     await expect(card).toHaveCount(1);
     expect(state.deleteRequests).toEqual([]);
+  });
+
+  test('per-card delete sends the revision, catalog etag and confirmation', async ({ page }) => {
+    const state = await installLaunchGridMocks(page, {
+      presets: [preset('alpha', 'Alpha Model'), preset('throwaway', 'Throwaway Preset')],
+    });
+    await boot(page);
+    await page.locator('.launch-card[data-preset-id="throwaway"] .launch-card-btn-trash').click();
+    await page.locator('.app-confirm-dialog .btn-modal-save').click();
+    await expect.poll(() => state.deleteBodies.length).toBe(1);
+    expect(state.deleteBodies[0]).toMatchObject({
+      confirmation: 'DELETE PRESET',
+      expected_catalog_etag: 'catalog-v1:test',
+    });
+    expect(typeof state.deleteBodies[0].expected_revision).toBe('number');
+    expect(state.deleteAuth).toEqual(['Bearer admin-token']);
+  });
+
+  test('per-card delete failure is shown and keeps the card', async ({ page }) => {
+    const state = await installLaunchGridMocks(page, {
+      presets: [preset('alpha', 'Alpha Model')],
+      deleteStatus: 409,
+    });
+    await boot(page);
+    const card = page.locator('.launch-card[data-preset-id="alpha"]');
+    await card.locator('.launch-card-btn-trash').click();
+    await page.locator('.app-confirm-dialog .btn-modal-save').click();
+    await expect.poll(() => state.deleteBodies.length).toBe(1);
+    await expect(page.locator('.toast', { hasText: 'Delete failed' })).toBeVisible();
+    await expect(card).toHaveCount(1);
   });
 });

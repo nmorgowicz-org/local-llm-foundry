@@ -57,6 +57,8 @@ export function initDbAdmin() {
     });
     document.getElementById('db-btn-backup')?.addEventListener('click', handleBackup);
     document.getElementById('db-btn-check')?.addEventListener('click', handleIntegrityCheck);
+    document.getElementById('settings-db-btn-backup')?.addEventListener('click', handleBackup);
+    document.getElementById('settings-db-btn-check')?.addEventListener('click', handleIntegrityCheck);
     document.getElementById('db-btn-checkpoint')?.addEventListener('click', () => handleMaintenance('checkpoint'));
     document.getElementById('db-btn-vacuum')?.addEventListener('click', () => handleMaintenance('vacuum'));
     document.getElementById('db-btn-rebuild-fts')?.addEventListener('click', () => handleMaintenance('rebuild_fts'));
@@ -362,30 +364,29 @@ async function loadBackups() {
         countEl.textContent = data.backups.length;
         sizeEl.textContent = formatBytes(data.total_size || 0);
 
-        // eslint-disable-next-line no-unsanitized/property -- all content escaped via escapeHtml()
-        listEl.innerHTML = data.backups.map(b => {
+        listEl.replaceChildren(...data.backups.map(b => {
             const displayName = b.name.includes('/') ? b.name.split('/').pop() : b.name;
             const kind = b.kind || (b.name.startsWith('auto/') ? 'auto' : b.name.startsWith('daily/') ? 'daily' : 'manual');
             const kindLabel = { auto: 'hourly', daily: 'daily', manual: 'manual' }[kind] || kind;
-            return `
-            <div class="db-backup-item">
-                <div class="db-backup-info">
-                    <div class="db-backup-name-row">
-                        <span class="db-backup-name">${escapeHtml(displayName)}</span>
-                        <span class="db-backup-kind db-backup-kind-${escapeHtml(kind)}">${escapeHtml(kindLabel)}</span>
-                    </div>
-                    <span class="db-backup-meta">${formatBytes(b.size)} &middot; ${formatDate(b.modified)}</span>
-                </div>
-                <div class="db-backup-actions">
-                    <button type="button" class="db-action-btn small" onclick="restoreBackup('${escapeHtml(b.name)}')" title="Restore">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 019-9 9.75 9.75 0 016.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 01-9 9 9.75 9.75 0 01-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
-                    </button>
-                    <button type="button" class="db-action-btn small" onclick="deleteBackup('${escapeHtml(b.name)}')" title="Delete">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
-                    </button>
-                </div>
-            </div>`;
-        }).join('');
+
+            const nameRow = el('div', 'db-backup-name-row');
+            nameRow.append(
+                el('span', 'db-backup-name', displayName),
+                el('span', `db-backup-kind db-backup-kind-${String(kind).replace(/[^a-z0-9_-]/gi, '')}`, kindLabel),
+            );
+            const info = el('div', 'db-backup-info');
+            info.append(nameRow, el('span', 'db-backup-meta', `${formatBytes(b.size)} \u00b7 ${formatDate(b.modified)}`));
+
+            const actions = el('div', 'db-backup-actions');
+            actions.append(
+                iconButton('Restore', RESTORE_ICON, () => window.restoreBackup(b.name)),
+                iconButton('Delete', DELETE_ICON, () => window.deleteBackup(b.name)),
+            );
+
+            const item = el('div', 'db-backup-item');
+            item.append(info, actions);
+            return item;
+        }));
     } catch (error) {
         console.error('[db-admin] Failed to load backups:', error);
     }
@@ -418,18 +419,20 @@ async function loadIndexes() {
             return;
         }
 
-        // eslint-disable-next-line no-unsanitized/property -- all content escaped via escapeHtml()
-        listEl.innerHTML = data.indexes.map(idx => `
-            <div class="db-index-item">
-                <div>
-                    <div class="db-index-name">${escapeHtml(idx.name)}</div>
-                    <div class="db-index-table">${escapeHtml(idx.table || '')}</div>
-                </div>
-                <div class="db-index-actions">
-                    ${idx.rebuildable ? `<button type="button" class="db-action-btn small" onclick="rebuildIndex('${escapeHtml(idx.name)}')">Rebuild</button>` : ''}
-                </div>
-            </div>
-        `).join('');
+        listEl.replaceChildren(...data.indexes.map(idx => {
+            const info = el('div');
+            info.append(el('div', 'db-index-name', idx.name), el('div', 'db-index-table', idx.table || ''));
+            const actions = el('div', 'db-index-actions');
+            if (idx.rebuildable) {
+                const rebuild = el('button', 'db-action-btn small', 'Rebuild');
+                rebuild.type = 'button';
+                rebuild.addEventListener('click', () => window.rebuildIndex(idx.name));
+                actions.append(rebuild);
+            }
+            const item = el('div', 'db-index-item');
+            item.append(info, actions);
+            return item;
+        }));
     } catch (error) {
         console.error('[db-admin] Failed to load indexes:', error);
     }
@@ -794,36 +797,87 @@ function addLogEntry(type, message) {
     renderLog();
 }
 
-function renderLog() {
-    const logContent = document.getElementById('db-log-content');
-    if (!logContent) return;
-
-    // eslint-disable-next-line no-unsanitized/property -- all content escaped via escapeHtml()
-    logContent.innerHTML = dbAdminLog
-        .map(
-            (entry) =>
-                `<div class="db-log-entry ${entry.type}">
-                    <span class="db-log-time">${entry.timestamp}</span>
-                    <span class="db-log-message">${escapeHtml(entry.message)}</span>
-                </div>`
-        )
-        .join('');
-
-    // Scroll to bottom
-    logContent.scrollTop = logContent.scrollHeight;
+function buildLogEntry(entry) {
+    const row = el('div', `db-log-entry ${String(entry.type)}`);
+    row.append(
+        el('span', 'db-log-time', entry.timestamp),
+        el('span', 'db-log-message', entry.message),
+    );
+    return row;
 }
 
-function setButtonLoading(btnId, loading) {
-    const btn = document.getElementById(btnId);
-    if (!btn) return;
+function renderLog() {
+    // Modal log and the inline settings-card log share one entry list.
+    for (const id of ['db-log-content', 'settings-db-log-content']) {
+        const logContent = document.getElementById(id);
+        if (!logContent) continue;
+        logContent.replaceChildren(...dbAdminLog.map(buildLogEntry));
+        // Scroll to bottom
+        logContent.scrollTop = logContent.scrollHeight;
+    }
+}
 
-    if (loading) {
-        btn.disabled = true;
-        btn.dataset.originalText = btn.textContent;
-        btn.innerHTML = '<svg class="db-spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg> Working...';
-    } else {
-        btn.disabled = false;
-        btn.textContent = btn.dataset.originalText || btn.textContent;
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** Create an element; `text` is assigned via textContent so it is never parsed as markup. */
+function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+}
+
+/** Small stroked SVG icon built from path/polyline definitions (static, trusted). */
+function svgIcon(size, shapes) {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('width', String(size));
+    svg.setAttribute('height', String(size));
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    for (const [tag, attr, value] of shapes) {
+        const shape = document.createElementNS(SVG_NS, tag);
+        shape.setAttribute(attr, value);
+        svg.append(shape);
+    }
+    return svg;
+}
+
+function iconButton(title, shapes, onClick) {
+    const btn = el('button', 'db-action-btn small');
+    btn.type = 'button';
+    btn.title = title;
+    btn.append(svgIcon(12, shapes));
+    btn.addEventListener('click', onClick);
+    return btn;
+}
+
+const RESTORE_ICON = [
+    ['path', 'd', 'M3 12a9 9 0 019-9 9.75 9.75 0 016.74 2.74L21 8'],
+    ['path', 'd', 'M21 3v5h-5'],
+    ['path', 'd', 'M21 12a9 9 0 01-9 9 9.75 9.75 0 01-6.74-2.74L3 16'],
+    ['path', 'd', 'M3 21v-5h5'],
+];
+const DELETE_ICON = [
+    ['polyline', 'points', '3 6 5 6 21 6'],
+    ['path', 'd', 'M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2'],
+];
+
+function setButtonLoading(btnId, loading) {
+    // Each action exists in the modal and in the settings card (`settings-` prefix).
+    for (const id of [btnId, `settings-${btnId}`]) {
+        const btn = document.getElementById(id);
+        if (!btn) continue;
+
+        if (loading) {
+            btn.disabled = true;
+            btn.dataset.originalText = btn.textContent;
+            btn.innerHTML = '<svg class="db-spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-6.219-8.56"/></svg> Working...';
+        } else {
+            btn.disabled = false;
+            btn.textContent = btn.dataset.originalText || btn.textContent;
+        }
     }
 }
 
@@ -853,10 +907,4 @@ function formatDate(timestamp) {
     if (dayDiff === 1) return 'yesterday';
     if (dayDiff < 7) return `${dayDiff}d ago`;
     return date.toLocaleDateString();
-}
-
-function escapeHtml(s) {
-    const div = document.createElement('div');
-    div.textContent = s;
-    return div.innerHTML;
 }

@@ -1304,12 +1304,11 @@ function _buildLaunchCard(preset, activePresetId) {
             );
             if (!ok) return;
             try {
-                const headers = window.authHeaders ? window.authHeaders() : {};
-                const resp = await fetch(`/api/presets/${preset.id}`, { method: 'DELETE', headers });
-                if (resp.ok) {
-                    await import('./presets.js').then(({ loadPresets }) => loadPresets());
-                    renderLaunchGrid();
-                }
+                const { requestPresetDelete, loadPresets } = await import('./presets.js');
+                if (!(await requestPresetDelete(preset))) return;
+                await loadPresets();
+                renderLaunchGrid();
+                showToast('Preset deleted', 'success');
             } catch (err) {
                 console.error('Delete preset failed:', err);
                 showToast('Failed to delete preset', 'error', err.message || String(err));
