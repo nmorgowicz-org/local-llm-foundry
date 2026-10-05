@@ -47,6 +47,7 @@ import scenarioSpawnWizardMmprojSelection from './scenarios/wizard-llamacpp/spaw
 import scenarioSpawnWizardGuidedDrawer from './scenarios/wizard-llamacpp/spawn-wizard-guided-drawer.mjs';
 import scenarioSpawnWizardCalibration from './scenarios/wizard-llamacpp/spawn-wizard-calibration.mjs';
 import scenarioSpawnWizardRapidMlxGif from './scenarios/wizard-rapidmlx/spawn-wizard-rapid-mlx-gif.mjs';
+import scenarioSpawnWizardRapidCatalog from './scenarios/wizard-rapidmlx/spawn-wizard-rapid-catalog.mjs';
 import scenarioRapidMlxRuntime from './scenarios/features/rapid-mlx-runtime.mjs';
 import scenarioRapidMlxLive from './scenarios/validation/rapid-mlx-live.mjs';
 import scenarioDashboardRapidMlx from './scenarios/features/dashboard-rapid-mlx.mjs';
@@ -451,6 +452,18 @@ export const SCENARIOS = {
                 'llamacpp-local--spawn-wizard-guided-cache-slots.png',
                 'llamacpp-local--spawn-wizard-guided-mmproj-offload.png',
                 'llamacpp-local--spawn-wizard-guided-reasoning.png',
+            ],
+        },
+    },
+    'spawn-wizard-rapid-catalog': {
+        run: scenarioSpawnWizardRapidCatalog, category: 'wizard-rapidmlx', runtime: 'rapidmlx-local', requiresRapidMlx: true,
+        contract: {
+            intent: 'Curated-only Rapid-MLX picker: pinned recipe picks, search, one-click selection, uninstall confirm.',
+            expectedOutputs: [
+                'spawn-wizard-rapid-catalog--rapidmlx-local--picker.png',
+                'spawn-wizard-rapid-catalog--rapidmlx-local--search.png',
+                'spawn-wizard-rapid-catalog--rapidmlx-local--selected.png',
+                'rapidmlx-local--runtime-uninstall-confirm.png',
             ],
         },
     },

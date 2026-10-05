@@ -361,3 +361,13 @@ export async function enableGuidedGeneration(page) {
 }
 
 // ── Welcome Screen ──────────────────────────────────────────────────────────────
+
+// Hide the toast stack (persistent-notification cards included) for clean
+// captures: existing toasts are removed and the container is pinned shut, so
+// later showToast calls render nothing.
+export async function suppressToasts(page) {
+  await page.addStyleTag({ content: '#toast-container { display: none !important; }' });
+  await page.evaluate(() => {
+    document.getElementById('toast-container')?.replaceChildren();
+  }).catch(() => {});
+}

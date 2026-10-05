@@ -179,12 +179,12 @@ function clearValidationErrorIfAvailable() {
   import('./spawn-wizard.js').then(m => m.clearValidationError?.()).catch(() => {});
 }
 function refreshAfterSelection(entry) {
-  import('./spawn-wizard-hf-browse.js').then(m => {
-    m.triggerMlxSidebarBody?.(entry.name);
+  import('./spawn-wizard-hf-browse.js').then(m => m.triggerMlxSidebarBody?.(entry.name)).catch(() => {});
+  import('./spawn-wizard.js').then(m => {
     m.refreshEngineRecommendation?.();
     m.refreshStepGuardrails?.();
-    m.scheduleRapidMlxProfileFetch?.(entry.name);
   }).catch(() => {});
+  import('./spawn-wizard-rapid-mlx.js').then(m => m.scheduleRapidMlxProfileFetch?.(entry.name)).catch(() => {});
 }
 
 export async function mountRapidCatalogPicker(panel, { visible } = {}) {

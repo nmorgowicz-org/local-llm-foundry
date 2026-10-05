@@ -2665,7 +2665,7 @@ button:disabled {
 /* ── Tag picker (popup) ── */
 .mm-tag-picker {
   position: fixed;
-  z-index: 1000;
+  z-index: 11000;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
@@ -5259,20 +5259,20 @@ button:disabled {
   font-weight: 600;
   padding: 6px 12px;
   border-radius: 8px;
-  border: 1px solid color-mix(in srgb, var(--color-danger, #ef4444) 35%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-error, #f43f5e) 35%, transparent);
   background: transparent;
-  color: var(--color-danger, #ef4444);
+  color: var(--color-error, #f43f5e);
   cursor: pointer;
 }
 
 .runtime-uninstall-btn:hover {
-  background: color-mix(in srgb, var(--color-danger, #ef4444) 10%, transparent);
+  background: color-mix(in srgb, var(--color-error, #f43f5e) 10%, transparent);
 }
 
 .runtime-uninstall-confirm-overlay {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: 11000;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -5281,7 +5281,7 @@ button:disabled {
 
 .runtime-uninstall-confirm {
   background: var(--color-bg, #1a1a1e);
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.14));
   border-radius: 12px;
   padding: 20px 22px;
   max-width: 420px;
@@ -5311,17 +5311,17 @@ button:disabled {
   font-weight: 600;
   padding: 7px 14px;
   border-radius: 8px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.14));
   background: transparent;
-  color: var(--color-text);
+  color: var(--color-text, inherit);
   cursor: pointer;
 }
 
 .runtime-uninstall-go--danger {
-  border-color: color-mix(in srgb, var(--color-danger, #ef4444) 45%, transparent) !important;
-  color: var(--color-danger, #ef4444) !important;
+  border-color: color-mix(in srgb, var(--color-error, #f43f5e) 45%, transparent) !important;
+  color: var(--color-error, #f43f5e) !important;
 }
 
 .runtime-uninstall-go--danger:hover {
-  background: color-mix(in srgb, var(--color-danger, #ef4444) 12%, transparent) !important;
+  background: color-mix(in srgb, var(--color-error, #f43f5e) 12%, transparent) !important;
 }

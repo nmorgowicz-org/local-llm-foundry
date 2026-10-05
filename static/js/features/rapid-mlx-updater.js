@@ -474,7 +474,7 @@ function updateSettingsSummary() {
 
 // ── Modal ────────────────────────────────────────────────────────────────────
 
-async function openRapidMlxModal() {
+export async function openRapidMlxModal() {
   if (_mutationInflight) return;
 
   await Promise.all([fetchRuntimeStatus(), fetchReleases()]);

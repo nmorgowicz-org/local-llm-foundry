@@ -228,7 +228,11 @@ selected the model step swaps Hugging Face discovery for the curated catalog
 (`GET /api/rapid-mlx/catalog`). Upstream's per-machine tier recommendations
 ("Smart"/"Fast") are pinned on top, chat models are searchable below, and
 selecting a row fills the alias, measured size, and paired speculative sidecar
-in one step. Models outside the catalog still launch when they resolve locally
+in one step.
+
+![Curated Rapid-MLX model picker](../screenshots/rapidmlx-local--spawn-wizard-rapid-catalog-picker.png)
+
+![One-click catalog selection](../screenshots/rapidmlx-local--spawn-wizard-rapid-catalog-selected.png) Models outside the catalog still launch when they resolve locally
 or on Hugging Face, and the review step flags them as unvalidated. Quantized
 KV options are hidden for Rapid-MLX: every catalog model is hybrid-attention
 and rapid-mlx refuses quantized KV at startup, so they always serve bf16.
