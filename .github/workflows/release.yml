@@ -55,6 +55,68 @@ jobs:
       - name: Build ${{ matrix.target }}
         run: bash scripts/build-single-target.sh ${{ matrix.target }}
 
+      # macOS signing + notarization (cross-compiled on Linux, so we use
+      # rcodesign — pure Rust, no Xcode/macOS runner needed). Mirrors the
+      # verified pipeline from persona-forge:
+      # docs/archive/macos-code-signing/20260918-macos_code_signing.md
+      - name: Install rcodesign (macOS signing)
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: |
+          set -euo pipefail
+          RCODESIGN_VERSION="0.29.0"
+          # Release tags on apple-platform-rs use a `apple-codesign/X.Y.Z`
+          # (slash) format, assets are `.tar.gz` archives, and only the musl
+          # target ships — no bare glibc binary exists.
+          RCODESIGN_ASSET="apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl"
+          curl --fail --location --silent --show-error -o rcodesign.tar.gz \
+            "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${RCODESIGN_VERSION}/${RCODESIGN_ASSET}.tar.gz"
+          tar -xzf rcodesign.tar.gz "${RCODESIGN_ASSET}/rcodesign"
+          mv "${RCODESIGN_ASSET}/rcodesign" ./rcodesign
+          chmod +x ./rcodesign
+
+      - name: Prepare App Store Connect API key (macOS)
+        if: matrix.target == 'aarch64-apple-darwin'
+        env:
+          APPLE_ISSUER_ID: ${{ secrets.APPLE_ISSUER_ID }}
+          APPLE_KEY_ID: ${{ secrets.APPLE_KEY_ID }}
+          APPLE_PRIVATE_KEY: ${{ secrets.APPLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.appstoreconnect
+          echo "$APPLE_PRIVATE_KEY" | tr ' ' '\n' > /tmp/AuthKey.pem
+          ./rcodesign encode-app-store-connect-api-key \
+            -o ~/.appstoreconnect/key.json \
+            "$APPLE_ISSUER_ID" "$APPLE_KEY_ID" /tmp/AuthKey.pem
+
+      - name: Sign macOS binary
+        if: matrix.target == 'aarch64-apple-darwin'
+        env:
+          MACOS_KEY_PEM: ${{ secrets.MACOS_KEY_PEM }}
+          MACOS_CERT_PEM: ${{ secrets.MACOS_CERT_PEM }}
+        run: |
+          set -euo pipefail
+          echo "$MACOS_KEY_PEM" > key.pem
+          echo "$MACOS_CERT_PEM" > cert.pem
+          ./rcodesign sign \
+            --pem-file key.pem --pem-file cert.pem \
+            --for-notarization \
+            target/aarch64-apple-darwin/release/local-llm-foundry
+
+      - name: Notarize macOS binary
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: |
+          set -euo pipefail
+          # rcodesign cannot notarize a bare Mach-O binary; it must be zipped.
+          zip notarize.zip target/aarch64-apple-darwin/release/local-llm-foundry
+          ./rcodesign notary-submit \
+            --api-key-file ~/.appstoreconnect/key.json \
+            --wait \
+            notarize.zip
+
+      - name: Verify macOS signature
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: ./rcodesign verify target/aarch64-apple-darwin/release/local-llm-foundry
+
       - name: Build sensor bridge
         if: matrix.target == 'x86_64-pc-windows-gnu'
         run: dotnet publish sensor_bridge/sensor_bridge.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o sensor_bridge/publish
