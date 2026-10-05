@@ -226,7 +226,11 @@ function buildEstimateBodyFromWizardState(state) {
     // Rapid execution policy fields (when wizard populates them).
     ...rapidEstimatePolicyFromWizardHardware(hw),
     // Explicit planning fields are intentionally separate from the profile ID.
-    rapid_planning_context_tokens: hw.rapidPlanningContextTokens || null,
+    // The context the user picks on the hardware step IS the planning context:
+    // without it the backend fills planning tokens from the workload scenario
+    // (e.g. 128k for the agent scenario) and the context input stops affecting
+    // the active-KV estimate entirely.
+    rapid_planning_context_tokens: hw.rapidPlanningContextTokens || hw.contextSize || null,
     rapid_retained_cache_tokens: hw.rapidRetainedCacheTokens || null,
     client_type: hw.clientType || null,
   });

@@ -552,6 +552,9 @@ Behavior per backend:
 - Rapid-MLX:
   - Uses Rapid-MLX-specific memory modeling based on the selected model.
   - Incorporates workload_scenario for memory policy (KV dtype, retained cache, TurboQuant).
+  - The hardware step's context size is sent as the explicit planning context, so
+    active KV is sized for the context the user picked — the scenario's planning
+    target only fills the gap when no context has been chosen.
   - Reflects backend-specific overhead and any Rapid-MLX-native memory considerations.
 
 The VRAM bar and side panel always use the same visual layout regardless of engine,

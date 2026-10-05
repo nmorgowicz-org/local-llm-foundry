@@ -102,6 +102,11 @@ export function updateVramDisplay() {
       : Math.max(0, cachedRamTotal - cachedRamUsed);
     wizardState.vram.isUnifiedMemory = isUnifiedMemory();
 
+  // The current-context rail summary must respond to context changes even when
+  // scenario cards can't render (no model bytes yet, panel absent, MLX path) —
+  // it reads wizard state directly and costs nothing.
+  updateContextRailSummary();
+
   // Always render scenario cards so the UI doesn't go blank when the backend is unavailable.
   // renderScenarioCards will degrade gracefully if individual estimates fail.
   renderScenarioCards(modelBytes, arch, availVram);
