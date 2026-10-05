@@ -204,7 +204,7 @@ function renderNotesList() {
                         ${escapeHtml(sectionDef.name)}
                     </div>
                     <div class="sidebar-section-actions">
-                        <button class="sidebar-add-note-btn" data-section="${escapeHtml(sectionDef.name)}" title="Add note to ${sectionDef.name}">${isComposing ? 'Writing…' : '+ Add Note'}</button>
+                        <button class="sidebar-add-note-btn" data-section="${escapeHtml(sectionDef.name)}" title="Add note to ${escapeHtml(sectionDef.name)}">${isComposing ? 'Writing…' : '+ Add Note'}</button>
                     </div>
                 </div>
                 <div class="sidebar-section-notes">
@@ -259,7 +259,7 @@ function renderNotesList() {
         const draft = sidebarState.composerDrafts[sectionName] || '';
         const sectionWrapper = document.createElement('div');
         sectionWrapper.className = 'sidebar-section-wrapper';
-        sectionWrapper.dataset.section = escapeHtml(sectionName);
+        sectionWrapper.dataset.section = sectionName;
         // eslint-disable-next-line no-unsanitized/property
         sectionWrapper.innerHTML = `
             <div class="sidebar-section-header">
@@ -268,7 +268,7 @@ function renderNotesList() {
                     ${escapeHtml(sectionName)}
                 </div>
                 <div class="sidebar-section-actions">
-                    <button class="sidebar-add-note-btn" data-section="${escapeHtml(sectionName)}" title="Add note to ${sectionName}">${isComposing ? 'Writing…' : '+ Add Note'}</button>
+                    <button class="sidebar-add-note-btn" data-section="${escapeHtml(sectionName)}" title="Add note to ${escapeHtml(sectionName)}">${isComposing ? 'Writing…' : '+ Add Note'}</button>
                 </div>
             </div>
             <div class="sidebar-section-notes">
@@ -869,7 +869,7 @@ function updateAnalysisPanelUI() {
         </div>
         <div class="sidebar-analysis-cards" id="sidebar-analysis-cards">
             ${visible.map(result => {
-                const status = result.status || 'new';
+                const status = ['new', 'current', 'stale'].includes(result.status) ? result.status : 'new';
                 const existingNote = existingNotes.find(n => n.section === result.section);
                 const statusLabel = status === 'stale' ? '⚠ Stale' : status === 'current' ? '✓ Current' : '+ New';
                 const statusClass = `sidebar-analysis-status-${status}`;

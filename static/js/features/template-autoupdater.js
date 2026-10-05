@@ -21,9 +21,11 @@ const STORAGE_LAST_CHECK = 'template_autoupdater_lastCheck';
 const STORAGE_BUSY = 'template_autoupdater_busy';
 const STORAGE_LAST_STATUS = 'template_autoupdater_lastStatus';
 const STORAGE_ANNOUNCED = 'template_autoupdater_announced';
+const STORAGE_LAST_ATTEMPT = 'template_autoupdater_lastAttempt';
 
 const INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
 const BUSY_TTL_MS = 60 * 1000; // busy guard: 1 minute
+const RETRY_BACKOFF_MS = 15 * 60 * 1000; // after a failed check, try again no sooner than this
 const TOAST_DURATION_MS = 30 * 1000; // long enough to read and act; the bell entry persists anyway
 
 let _intervalId = null;
@@ -111,9 +113,27 @@ function getLastCheck() {
   }
 }
 
+// Only a check that reached the server and got a template list counts as "checked". A failed
+// attempt is recorded separately so it backs off briefly instead of waiting out the 12 hours.
 function setLastCheck(ts) {
   try {
     localStorage.setItem(STORAGE_LAST_CHECK, String(ts));
+  } catch {
+    // ignore
+  }
+}
+
+function getLastAttempt() {
+  try {
+    return Number(localStorage.getItem(STORAGE_LAST_ATTEMPT) || '0');
+  } catch {
+    return 0;
+  }
+}
+
+function setLastAttempt(ts) {
+  try {
+    localStorage.setItem(STORAGE_LAST_ATTEMPT, String(ts));
   } catch {
     // ignore
   }
@@ -125,6 +145,8 @@ function shouldRunCheck() {
 
   const last = getLastCheck();
   if (last > 0 && nowTs() - last < INTERVAL_MS) return false;
+  const attempt = getLastAttempt();
+  if (attempt > 0 && nowTs() - attempt < RETRY_BACKOFF_MS) return false;
   return true;
 }
 
@@ -252,7 +274,7 @@ function showSummaryToast(fresh) {
   );
 }
 
-function announce(updates) {
+function announce(updates, unverified = new Set()) {
   const announced = readAnnounced();
   const fresh = updates.filter(update => announced[update.name] !== update.current_sha256);
 
@@ -274,6 +296,11 @@ function announce(updates) {
 
   const next = {};
   for (const update of updates) next[update.name] = update.current_sha256;
+  // A template whose check failed this time is unknown, not up to date: keep what the user was
+  // already told so the next successful check does not announce it a second time.
+  for (const name of unverified) {
+    if (!(name in next) && name in announced) next[name] = announced[name];
+  }
   writeAnnounced(next);
 
   if (fresh.length > 0) showSummaryToast(fresh);
@@ -289,7 +316,7 @@ export async function checkTemplateUpdates() {
   const changedTemplates = [];
   if (document.hidden) return { changedTemplates };
   setBusy();
-  setLastCheck(nowTs());
+  setLastAttempt(nowTs());
 
   try {
     const resp = await (await fetch('/api/chat-template/active', {
@@ -299,8 +326,10 @@ export async function checkTemplateUpdates() {
     if (!resp.ok || !Array.isArray(resp.templates)) {
       return { changedTemplates };
     }
+    setLastCheck(nowTs());
 
     const seen = new Set();
+    const unverified = new Set();
     for (const tpl of resp.templates) {
       if (!tpl.path) continue;
       // Leftovers of the retired no-JSON transform have no upstream of their own to update from.
@@ -316,7 +345,10 @@ export async function checkTemplateUpdates() {
           body: JSON.stringify({ path: tpl.path }),
         });
 
-        if (!checkResp.ok) continue;
+        if (!checkResp.ok) {
+          unverified.add(tpl.name);
+          continue;
+        }
         const data = await checkResp.json();
 
         if (data.ok === true && data.changed === true) {
@@ -335,7 +367,8 @@ export async function checkTemplateUpdates() {
           resolveNotification(notificationIdFor(tpl.name), 'Up to date.');
         }
       } catch {
-        // Silently ignore per-template errors
+        // Per-template errors are not reported, and must not make the template look up to date.
+        unverified.add(tpl.name);
       }
     }
 
@@ -344,8 +377,12 @@ export async function checkTemplateUpdates() {
       if (!seen.has(name)) resolveNotification(notificationIdFor(name), 'This template is no longer installed.');
     }
 
-    writeStatus(changedTemplates);
-    announce(changedTemplates);
+    // Keep the pending entry of any template we could not re-check this time.
+    const carried = readLastStatus().templates_with_updates.filter(
+      item => unverified.has(item.name) && !changedTemplates.some(changed => changed.name === item.name),
+    );
+    writeStatus([...changedTemplates, ...carried]);
+    announce(changedTemplates, unverified);
 
     // Dispatch event for UI consumers (e.g., spawn wizard)
     window.dispatchEvent(

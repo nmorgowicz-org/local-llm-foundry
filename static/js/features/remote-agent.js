@@ -5,6 +5,7 @@
 import { remoteAgent } from '../core/app-state.js';
 import { wsData } from '../core/app-state.js';
 import { escapeHtml } from '../core/format.js';
+import { setHtml } from '../core/set-html.js';
 import { showToast, showConfirmDialog } from './toast.js';
 import { closeConfigModal, openConfigModal } from './config.js';
 import { closeSettingsModal, saveSettings } from './settings.js';
@@ -329,7 +330,7 @@ async function scanRemoteAgentHostKey() {
     const trustBtn = document.getElementById('btn-agent-setup-trust');
     if (hostKeyEl) {
         hostKeyEl.style.display = '';
-        hostKeyEl.innerHTML = '<em>Scanning host key\u2026</em>';
+        setHtml(hostKeyEl, '<em>Scanning host key\u2026</em>');
     }
     if (trustBtn) trustBtn.style.display = 'none';
 
@@ -345,20 +346,19 @@ async function scanRemoteAgentHostKey() {
         const data = await resp.json();
         if (!data.ok) {
             remoteAgentSetupState.hostKey = null;
-            if (hostKeyEl) hostKeyEl.innerHTML = '<em style="color:#bf616a;">Scan failed: ' + escapeHtml(data.error || 'unknown') + '</em>';
+            if (hostKeyEl) setHtml(hostKeyEl, '<em style="color:#bf616a;">Scan failed: ' + escapeHtml(data.error || 'unknown') + '</em>');
             return;
         }
 
         remoteAgentSetupState.hostKey = data.host_key;
         const trusted = data.host_key.trusted ? 'trusted' : 'not trusted yet';
         if (hostKeyEl) {
-            // eslint-disable-next-line no-unsanitized/property -- all server strings wrapped in escapeHtml(); trusted is a hardcoded string
-            hostKeyEl.innerHTML = [
+            setHtml(hostKeyEl, [
                 '<strong>Key:</strong> ' + escapeHtml(data.host_key.key_type),
                 '<strong>Host:</strong> ' + escapeHtml(data.host_key.host + ':' + data.host_key.port),
                 '<strong>Fingerprint:</strong> ' + escapeHtml(formatHostKey(data.host_key.key_hex)),
                 '<strong>Status:</strong> ' + trusted,
-            ].join('<br>');
+            ].join('<br>'));
         }
         if (trustBtn) trustBtn.style.display = data.host_key.trusted ? 'none' : '';
 
@@ -367,7 +367,7 @@ async function scanRemoteAgentHostKey() {
         }
     } catch (err) {
         remoteAgentSetupState.hostKey = null;
-        if (hostKeyEl) hostKeyEl.innerHTML = '<em style="color:#bf616a;">Scan failed: ' + escapeHtml(err.message) + '</em>';
+        if (hostKeyEl) setHtml(hostKeyEl, '<em style="color:#bf616a;">Scan failed: ' + escapeHtml(err.message) + '</em>');
     }
 }
 
@@ -389,13 +389,13 @@ async function trustRemoteAgentHostKey() {
     });
     const data = await resp.json();
     if (!data.ok) {
-        showAgentSetupStatus('Failed to trust host key: ' + (data.error || 'unknown'), 'error');
+        showAgentSetupStatus('Failed to trust host key: ' + escapeHtml(data.error || 'unknown'), 'error');
         return;
     }
 
     const hostKeyEl = document.getElementById('agent-setup-host-key');
     if (hostKeyEl) {
-        hostKeyEl.innerHTML += '<br><strong style="color:#95bc7a;">\u2713 Trusted for future operations</strong>';
+        setHtml(hostKeyEl, hostKeyEl.innerHTML + '<br><strong style="color:#95bc7a;">\u2713 Trusted for future operations</strong>');
     }
     document.getElementById('btn-agent-setup-trust')?.style.setProperty('display', 'none');
     showAgentSetupStatus('Host key trusted. You can now install and start the agent.', 'ok');
@@ -442,7 +442,7 @@ async function checkRemoteAgentVersions() {
             // Show upgrade button
             if (installBtn) {
                 installBtn.style.display = '';
-                installBtn.innerHTML = '<span class="btn-icon">\u2191</span> Upgrade Agent';
+                setHtml(installBtn, '<span class="btn-icon">\u2191</span> Upgrade Agent');
                 installBtn.className = 'btn btn-agent-upgrade';
             }
             if (startBtn) startBtn.style.display = 'none';
@@ -483,7 +483,7 @@ async function checkRemoteAgentVersions() {
                     // Show upgrade button
                     if (installBtn) {
                         installBtn.style.display = '';
-                        installBtn.innerHTML = '<span class="btn-icon">\u2191</span> Upgrade Agent';
+                        setHtml(installBtn, '<span class="btn-icon">\u2191</span> Upgrade Agent');
                         installBtn.className = 'btn btn-agent-upgrade';
                     }
                 } else {
@@ -533,8 +533,7 @@ function showAgentSetupStatus(message, kind) {
     const el = document.getElementById('agent-setup-status');
     el.style.display = '';
     el.className = 'agent-setup-status ' + kind;
-    // eslint-disable-next-line no-unsanitized/property -- all call sites pass hardcoded strings or strings with server data wrapped in escapeHtml()
-    el.innerHTML = message;
+    setHtml(el, message);
 }
 
 function remoteAgentSetupRequestPayload() {
@@ -637,12 +636,12 @@ async function installRemoteAgent() {
             });
             const data = await resp.json();
             if (!data.ok) {
-                showAgentSetupStatus('Failed to scan host key: ' + (data.error || 'unknown'), 'error');
+                showAgentSetupStatus('Failed to scan host key: ' + escapeHtml(data.error || 'unknown'), 'error');
                 return;
             }
             remoteAgentSetupState.hostKey = data.host_key;
         } catch (err) {
-            showAgentSetupStatus('Failed to scan host key: ' + err.message, 'error');
+            showAgentSetupStatus('Failed to scan host key: ' + escapeHtml(err.message), 'error');
             return;
         }
     }
@@ -662,12 +661,12 @@ async function installRemoteAgent() {
             });
             const data = await resp.json();
             if (!data.ok) {
-                showAgentSetupStatus('Failed to trust host key: ' + (data.error || 'unknown'), 'error');
+                showAgentSetupStatus('Failed to trust host key: ' + escapeHtml(data.error || 'unknown'), 'error');
                 return;
             }
             remoteAgentSetupState.hostKey.trusted = true;
         } catch (err) {
-            showAgentSetupStatus('Failed to trust host key: ' + err.message, 'error');
+            showAgentSetupStatus('Failed to trust host key: ' + escapeHtml(err.message), 'error');
             return;
         }
     }
@@ -686,7 +685,7 @@ async function installRemoteAgent() {
         });
         const detectData = await detectResp.json();
         if (!detectData.ok) {
-            showAgentSetupStatus('Failed to detect remote OS: ' + (detectData.error || 'unknown'), 'error');
+            showAgentSetupStatus('Failed to detect remote OS: ' + escapeHtml(detectData.error || 'unknown'), 'error');
             return;
         }
 
@@ -699,7 +698,7 @@ async function installRemoteAgent() {
 
         const asset = detectData.matching_asset;
         if (!asset) {
-            showAgentSetupStatus('No compatible asset found for ' + remoteOs + ' ' + remoteArch + ': ' + (detectData.error || ''), 'error');
+            showAgentSetupStatus('No compatible asset found for ' + escapeHtml(remoteOs + ' ' + remoteArch) + ': ' + escapeHtml(detectData.error || ''), 'error');
             return;
         }
 
@@ -719,13 +718,13 @@ async function installRemoteAgent() {
 
         if (!resp.ok) {
             const text = await resp.text();
-            showAgentSetupStatus('Install failed: HTTP ' + resp.status + ' - ' + text, 'error');
+            showAgentSetupStatus('Install failed: HTTP ' + resp.status + ' - ' + escapeHtml(text), 'error');
             return;
         }
 
         const data = await resp.json();
         if (!data.ok) {
-            showAgentSetupStatus('Install failed: ' + (data.error || 'unknown'), 'error');
+            showAgentSetupStatus('Install failed: ' + escapeHtml(data.error || 'unknown'), 'error');
             return;
         }
 
@@ -737,7 +736,7 @@ async function installRemoteAgent() {
         showAgentSetupStatus('Agent installed successfully. Starting managed agent\u2026', 'ok');
         await startRemoteAgent();
     } catch (err) {
-        showAgentSetupStatus('Install failed: ' + err.message, 'error');
+        showAgentSetupStatus('Install failed: ' + escapeHtml(err.message), 'error');
         hideAgentSetupProgress();
     }
 }
@@ -763,12 +762,12 @@ async function upgradeRemoteAgent() {
             });
             const data = await resp.json();
             if (!data.ok) {
-                showAgentSetupStatus('Failed to scan host key: ' + (data.error || 'unknown'), 'error');
+                showAgentSetupStatus('Failed to scan host key: ' + escapeHtml(data.error || 'unknown'), 'error');
                 return;
             }
             remoteAgentSetupState.hostKey = data.host_key;
         } catch (err) {
-            showAgentSetupStatus('Failed to scan host key: ' + err.message, 'error');
+            showAgentSetupStatus('Failed to scan host key: ' + escapeHtml(err.message), 'error');
             return;
         }
     }
@@ -788,12 +787,12 @@ async function upgradeRemoteAgent() {
             });
             const data = await resp.json();
             if (!data.ok) {
-                showAgentSetupStatus('Failed to trust host key: ' + (data.error || 'unknown'), 'error');
+                showAgentSetupStatus('Failed to trust host key: ' + escapeHtml(data.error || 'unknown'), 'error');
                 return;
             }
             remoteAgentSetupState.hostKey.trusted = true;
         } catch (err) {
-            showAgentSetupStatus('Failed to trust host key: ' + err.message, 'error');
+            showAgentSetupStatus('Failed to trust host key: ' + escapeHtml(err.message), 'error');
             return;
         }
     }
@@ -812,13 +811,13 @@ async function upgradeRemoteAgent() {
         });
         const detectData = await detectResp.json();
         if (!detectData.ok) {
-            showAgentSetupStatus('Failed to detect remote OS: ' + (detectData.error || 'unknown'), 'error');
+            showAgentSetupStatus('Failed to detect remote OS: ' + escapeHtml(detectData.error || 'unknown'), 'error');
             return;
         }
 
         const asset = detectData.matching_asset;
         if (!asset) {
-            showAgentSetupStatus('No compatible asset found for upgrade: ' + (detectData.error || ''), 'error');
+            showAgentSetupStatus('No compatible asset found for upgrade: ' + escapeHtml(detectData.error || ''), 'error');
             return;
         }
 
@@ -836,7 +835,7 @@ async function upgradeRemoteAgent() {
 
         const data = await resp.json();
         if (!data.ok) {
-            showAgentSetupStatus('Upgrade failed: ' + (data.error || 'unknown'), 'error');
+            showAgentSetupStatus('Upgrade failed: ' + escapeHtml(data.error || 'unknown'), 'error');
             return;
         }
 
@@ -848,7 +847,7 @@ async function upgradeRemoteAgent() {
         if (installBtn) {
             installBtn.style.display = 'none';
             installBtn.className = 'btn btn-agent-install';
-            installBtn.innerHTML = '<span class="btn-icon">\u2b07</span> Install / Repair';
+            setHtml(installBtn, '<span class="btn-icon">\u2b07</span> Install / Repair');
         }
 
         maybeAutoSaveAgentToken(data.agent_token);
@@ -856,11 +855,11 @@ async function upgradeRemoteAgent() {
 
         setTimeout(() => {
             hideAgentSetupProgress();
-            showAgentSetupStatus('Agent upgraded to ' + (data.new_version || 'latest') + '. ' + (data.health_reachable ? 'Connected and reporting metrics.' : 'Started but HTTP not reachable.'), data.health_reachable ? 'ok' : 'warning');
+            showAgentSetupStatus('Agent upgraded to ' + escapeHtml(data.new_version || 'latest') + '. ' + (data.health_reachable ? 'Connected and reporting metrics.' : 'Started but HTTP not reachable.'), data.health_reachable ? 'ok' : 'warning');
             document.getElementById('btn-agent-setup-done').style.display = '';
         }, 800);
     } catch (err) {
-        showAgentSetupStatus('Upgrade failed: ' + err.message, 'error');
+        showAgentSetupStatus('Upgrade failed: ' + escapeHtml(err.message), 'error');
         hideAgentSetupProgress();
     }
 }
@@ -886,7 +885,7 @@ async function startRemoteAgent() {
         const data = await resp.json();
 
         if (!data.ok) {
-            showAgentSetupStatus('Start failed: ' + (data.error || 'unknown'), 'error');
+            showAgentSetupStatus('Start failed: ' + escapeHtml(data.error || 'unknown'), 'error');
             hideAgentSetupProgress();
             return;
         }
@@ -921,7 +920,7 @@ async function startRemoteAgent() {
             showAgentSetupStatus('Agent started but verification failed. Check SSH logs.', 'error');
         }
     } catch (err) {
-        showAgentSetupStatus('Start failed: ' + err.message, 'error');
+        showAgentSetupStatus('Start failed: ' + escapeHtml(err.message), 'error');
         hideAgentSetupProgress();
     }
 }
@@ -1141,15 +1140,14 @@ function previewSshSetupGuide() {
     const agentUrl = 'https://' + connection.host + ':7779';
     const authLabel = auth === 'password' ? 'password for this operation' : auth === 'key' ? 'private key file' : 'SSH agent or keychain';
 
-    // eslint-disable-next-line no-unsanitized/property -- all server/computed strings wrapped in escapeHtml(); remaining items are hardcoded
-    plan.innerHTML = [
+    setHtml(plan, [
         '<strong>SSH target:</strong> ' + escapeHtml(target),
         '<strong>Agent URL:</strong> ' + escapeHtml(agentUrl),
         '<strong>Auth:</strong> ' + escapeHtml(authLabel),
         '<strong>Install path:</strong> detected by OS; usually ~/.config/local-llm-foundry/bin/local-llm-foundry or %APPDATA%\\local-llm-foundry\\bin\\local-llm-foundry.exe',
         '<strong>Release source:</strong> latest Local LLM Foundry GitHub release asset matching remote OS/architecture',
         '<strong>Remote command:</strong> default OS-specific agent start command unless you override it below',
-    ].join('<br>');
+    ].join('<br>'));
 }
 
 async function scanSshHostKey() {
@@ -1186,13 +1184,12 @@ async function scanSshHostKey() {
 
         remoteAgent.latestHostKey = data.host_key;
         if (hostKeyEl) {
-            // eslint-disable-next-line no-unsanitized/property -- all server strings wrapped in escapeHtml(); trusted status is a hardcoded string
-            hostKeyEl.innerHTML = [
+            setHtml(hostKeyEl, [
                 '<strong>Host key:</strong> ' + escapeHtml(data.host_key.key_type),
                 '<strong>Host:</strong> ' + escapeHtml(data.host_key.host + ':' + data.host_key.port),
                 '<strong>Fingerprint:</strong> ' + escapeHtml(formatHostKey(data.host_key.key_hex)),
                 data.host_key.trusted ? '<strong>Status:</strong> trusted' : '<strong>Status:</strong> not trusted yet',
-            ].join('<br>');
+            ].join('<br>'));
         }
         if (trustBtn) trustBtn.style.display = data.host_key.trusted ? 'none' : '';
     } catch (err) {
@@ -1227,7 +1224,7 @@ async function trustSshHostKey() {
     document.getElementById('btn-ssh-guide-trust')?.style.setProperty('display', 'none');
     const hostKeyEl = document.getElementById('ssh-guide-host-key');
     if (hostKeyEl) {
-        hostKeyEl.innerHTML += '<br><strong>Status:</strong> trusted for future SSH operations';
+        setHtml(hostKeyEl, hostKeyEl.innerHTML + '<br><strong>Status:</strong> trusted for future SSH operations');
     }
     setRemoteAgentStatus('SSH host key trusted. You can now click <strong>Check Host</strong>, <strong>Install & Start</strong>, or <strong>Start Agent</strong>.', 'ok');
 }
@@ -1277,8 +1274,7 @@ export function setRemoteAgentStatus(message, kind) {
          kind === 'error' ? 'var(--color-error)' :
          kind === 'ok' ? 'var(--color-success)' :
          'var(--color-text-muted)';
-    // eslint-disable-next-line no-unsanitized/property -- all call sites pass hardcoded strings or strings with server data wrapped in escapeHtml()
-    el.innerHTML = message;
+    setHtml(el, message);
 }
 
 function showRemoteAgentValidation(message, type) {
@@ -1522,7 +1518,7 @@ async function remoteAgentInstall() {
         const detectData = await remoteAgentDetect(true);
 
         if (!detectData.ok || !detectData.matching_asset) {
-            addTimelineItem('Detection failed: ' + (detectData.error || 'unknown'), 'failed');
+            addTimelineItem('Detection failed: ' + escapeHtml(detectData.error || 'unknown'), 'failed');
             hideRemoteAgentProgress();
             setRemoteAgentButtonsDisabled(false);
 
@@ -1548,7 +1544,7 @@ async function remoteAgentInstall() {
         const data = await resp.json();
 
         if (!data.ok) {
-            addTimelineItem('Installation failed: ' + (data.error || 'unknown'), 'failed');
+            addTimelineItem('Installation failed: ' + escapeHtml(data.error || 'unknown'), 'failed');
             hideRemoteAgentProgress();
             setRemoteAgentButtonsDisabled(false);
             setRemoteAgentStatus('Install failed: ' + escapeHtml(data.error || 'unknown'), 'error');
@@ -1591,7 +1587,7 @@ async function remoteAgentStart() {
         const detectData = await remoteAgentDetect(true);
 
         if (!detectData.ok) {
-            addTimelineItem('Detection failed: ' + (detectData.error || 'unknown'), 'failed');
+            addTimelineItem('Detection failed: ' + escapeHtml(detectData.error || 'unknown'), 'failed');
             hideRemoteAgentProgress();
             setRemoteAgentButtonsDisabled(false);
 
@@ -1619,7 +1615,7 @@ async function remoteAgentStart() {
         const data = await resp.json();
 
         if (!data.ok) {
-            addTimelineItem('Start failed: ' + (data.error || 'unknown'), 'failed');
+            addTimelineItem('Start failed: ' + escapeHtml(data.error || 'unknown'), 'failed');
             hideRemoteAgentProgress();
             setRemoteAgentButtonsDisabled(false);
             setRemoteAgentStatus('Start failed: ' + escapeHtml(data.error || 'unknown'), 'error');
@@ -1676,7 +1672,7 @@ async function remoteAgentUpdate() {
         const detectData = await remoteAgentDetect(true);
 
         if (!detectData.ok || !detectData.matching_asset) {
-            addTimelineItem('Detection failed: ' + (detectData.error || 'unknown'), 'failed');
+            addTimelineItem('Detection failed: ' + escapeHtml(detectData.error || 'unknown'), 'failed');
             hideRemoteAgentProgress();
             setRemoteAgentButtonsDisabled(false);
 
@@ -1702,7 +1698,7 @@ async function remoteAgentUpdate() {
         const data = await resp.json();
 
         if (!data.ok) {
-            addTimelineItem('Update failed: ' + (data.error || 'unknown'), 'failed');
+            addTimelineItem('Update failed: ' + escapeHtml(data.error || 'unknown'), 'failed');
             hideRemoteAgentProgress();
             setRemoteAgentButtonsDisabled(false);
             setRemoteAgentStatus('Update failed: ' + escapeHtml(data.error || 'unknown'), 'error');
@@ -1763,7 +1759,7 @@ async function remoteAgentStop() {
         const data = await resp.json();
 
         if (!data.ok) {
-            addTimelineItem('Stop failed: ' + (data.error || 'unknown'), 'failed');
+            addTimelineItem('Stop failed: ' + escapeHtml(data.error || 'unknown'), 'failed');
             hideRemoteAgentProgress();
             setRemoteAgentButtonsDisabled(false);
             setRemoteAgentStatus('Stop failed: ' + escapeHtml(data.error || 'unknown'), 'error');
@@ -1842,7 +1838,7 @@ async function remoteAgentRemove() {
         const data = await resp.json();
 
         if (!data.ok) {
-            addTimelineItem('Remove failed: ' + (data.error || 'unknown'), 'failed');
+            addTimelineItem('Remove failed: ' + escapeHtml(data.error || 'unknown'), 'failed');
             hideRemoteAgentProgress();
             setRemoteAgentButtonsDisabled(false);
             setRemoteAgentStatus('Remove failed: ' + escapeHtml(data.error || 'unknown'), 'error');
@@ -1986,8 +1982,7 @@ function addTimelineItem(message, status) {
     const timestamp = new Date().toLocaleTimeString();
     const item = document.createElement('div');
     item.className = 'remote-agent-timeline-item ' + status;
-    // eslint-disable-next-line no-unsanitized/property -- timestamp is from Date(); message is passed by internal callers as hardcoded strings or escapeHtml()-wrapped server data; status is a hardcoded enum
-    item.innerHTML = '<span class="timestamp">[' + timestamp + ']</span>' + message;
+    setHtml(item, '<span class="timestamp">[' + timestamp + ']</span>' + message);
 
     itemsEl.appendChild(item);
     itemsEl.scrollTop = itemsEl.scrollHeight;
@@ -2108,12 +2103,12 @@ export function initRemoteAgent() {
                     sensorBtn.textContent = 'Setup';
                     sensorBtn.disabled = false;
                     if (callout) {
-                        callout.innerHTML = '<span style="color:#bf616a;">Install failed: ' + escapeHtml(data.error || 'Unknown error') + '</span>';
+                        setHtml(callout, '<span style="color:#bf616a;">Install failed: ' + escapeHtml(data.error || 'Unknown error') + '</span>');
                     }
                     return;
                 }
                 if (callout) {
-                    callout.innerHTML = '<span style="color:#a3be8c;">A UAC prompt will appear on your desktop \u2014 approve it to install the sensor service. This takes a few seconds.</span>';
+                    setHtml(callout, '<span style="color:#a3be8c;">A UAC prompt will appear on your desktop \u2014 approve it to install the sensor service. This takes a few seconds.</span>');
                 }
                 // Poll for running status up to 30 seconds
                 let elapsed = 0;
@@ -2132,7 +2127,7 @@ export function initRemoteAgent() {
                             sensorBtn.textContent = 'Setup';
                             sensorBtn.disabled = false;
                             if (callout) {
-                                callout.innerHTML = 'CPU temperature requires a one-time service install. <button id="btn-sensor-bridge-setup" style="margin-left:8px; padding:3px 10px; background:#5e81ac; border:none; border-radius:4px; color:#eceff4; cursor:pointer; font-size:12px;">Setup</button><span style="color:#ebcb8b; margin-left:8px;">Timed out \u2014 did you approve the UAC prompt?</span>';
+                                setHtml(callout, 'CPU temperature requires a one-time service install. <button id="btn-sensor-bridge-setup" style="margin-left:8px; padding:3px 10px; background:#5e81ac; border:none; border-radius:4px; color:#eceff4; cursor:pointer; font-size:12px;">Setup</button><span style="color:#ebcb8b; margin-left:8px;">Timed out \u2014 did you approve the UAC prompt?</span>');
                                 const newBtn = document.getElementById('btn-sensor-bridge-setup');
                                 if (newBtn) newBtn.addEventListener('click', () => sensorBtn.click());
                             }

@@ -147,7 +147,7 @@ const PROTOCOL_FAMILIES = [
     {
         id: 'tmax',
         match: /\btmax/,
-        anchorFor: () => '/tmax',
+        anchorFor: () => '',
         entries: [
             { series: 'Tmax-9B / 27B agent (Gated-DeltaNet)', tool: 'qwen3_xml', reasoning: '—', flags: 'hybrid' },
         ],
@@ -156,7 +156,7 @@ const PROTOCOL_FAMILIES = [
     {
         id: 'ui-tars',
         match: /\bui[\s_-]?tars/,
-        anchorFor: () => '/ui-tars',
+        anchorFor: () => '',
         entries: [
             { series: 'UI-TARS (vision computer-use)', tool: 'ui_tars', reasoning: 'ui_tars', flags: '' },
         ],
@@ -188,7 +188,11 @@ function detectFamily(modelId) {
     return PROTOCOL_FAMILIES.find(f => f.match.test(lower)) || FALLBACK_FAMILY;
 }
 
-function buildModal(family, modelId) {
+// Closes the open reference modal, drops its Escape listener, and hands focus back to
+// whatever opened it. One handle at module scope, so reopening never stacks listeners.
+let activeClose = null;
+
+function buildModal(family, modelId, opener) {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay open protocol-docs-overlay';
     overlay.id = 'protocol-docs-overlay';
@@ -257,24 +261,47 @@ function buildModal(family, modelId) {
     close.type = 'button';
     close.className = 'btn-wizard-secondary';
     close.textContent = 'Close';
-    close.addEventListener('click', () => overlay.remove());
+    close.addEventListener('click', () => closeModal());
     actions.appendChild(close);
     modal.appendChild(actions);
 
     overlay.appendChild(modal);
+
+    function onKeydown(e) {
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation(); // Escape closes this reference only, not the wizard behind it
+            closeModal();
+        } else if (e.key === 'Tab') {
+            // Two focusable controls (docs link, Close): keep Tab inside the dialog.
+            const stops = [link, close];
+            const index = stops.indexOf(document.activeElement);
+            const next = e.shiftKey ? (index <= 0 ? stops.length - 1 : index - 1) : (index + 1) % stops.length;
+            e.preventDefault();
+            stops[next].focus();
+        }
+    }
+    function closeModal() {
+        document.removeEventListener('keydown', onKeydown, true);
+        overlay.remove();
+        if (activeClose === closeModal) activeClose = null;
+        if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();
+    }
+
     // Clicking the backdrop closes; clicking inside does not.
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-    document.addEventListener('keydown', function onEsc(e) {
-        if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', onEsc); }
-    });
-    return overlay;
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+    document.addEventListener('keydown', onKeydown, true);
+    activeClose = closeModal;
+    return { overlay, focusTarget: close };
 }
 
-export function openProtocolDocsModal() {
-    const existing = document.getElementById('protocol-docs-overlay');
-    if (existing) existing.remove();
+export function openProtocolDocsModal(opener = document.activeElement) {
+    if (activeClose) activeClose();
+    document.getElementById('protocol-docs-overlay')?.remove();
     const modelId = inferModelId();
-    document.body.appendChild(buildModal(detectFamily(modelId), modelId));
+    const { overlay, focusTarget } = buildModal(detectFamily(modelId), modelId, opener);
+    document.body.appendChild(overlay);
+    focusTarget.focus();
 }
 
 // Delegated binding so the wizard and the preset editor can both embed a plain
@@ -283,6 +310,6 @@ document.addEventListener('click', (e) => {
     const trigger = e.target.closest('[data-open-protocol-docs]');
     if (trigger) {
         e.preventDefault();
-        openProtocolDocsModal();
+        openProtocolDocsModal(trigger);
     }
 });

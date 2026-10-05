@@ -74,20 +74,20 @@ function ensureChatElements() {
 // ── Markdown rendering ────────────────────────────────────────────────────────
 
 export function renderMd(src) {
-    if (typeof marked !== 'undefined') {
+    if (typeof marked !== 'undefined' && typeof window.DOMPurify !== 'undefined') {
         try {
             const raw = marked.parse(src);
-            return (typeof window.DOMPurify !== 'undefined' ? window.DOMPurify.sanitize(raw) : raw);
+            return window.DOMPurify.sanitize(raw);
         } catch(_) {}
     }
     return src.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\n/g,'<br>');
 }
 
 export function renderMdStreaming(src) {
-    if (typeof marked !== 'undefined') {
+    if (typeof marked !== 'undefined' && typeof window.DOMPurify !== 'undefined') {
         try {
             const raw = marked.parse(src, { gfm: true, breaks: true, renderer: new marked.Renderer() });
-            return (typeof window.DOMPurify !== 'undefined' ? window.DOMPurify.sanitize(raw) : raw);
+            return window.DOMPurify.sanitize(raw);
         } catch(_) {}
     }
     return src.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\n/g,'<br>');

@@ -14,7 +14,7 @@
 
 import { sessionState } from '../core/app-state.js';
 import { loadPresets, syncSelectedPresetSelection, openPresetModal } from './presets.js';
-import { showToastWithActions } from './toast.js';
+import { showToast as appShowToast, showToastWithActions } from './toast.js';
 import { openEvidenceDrawer, evidenceFromLaunchObservation } from './evidence-drawer.js';
 
 // ── The four known workload policies (wire ids), in display order ────────────
@@ -1095,15 +1095,8 @@ async function handleSaveAndStart() {
 }
 
 function showToast(message, kind = 'info') {
-    // Reuse the app's toast if present; otherwise fall back to console so the
-    // drawer never blocks on a missing host.
-    try {
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, kind);
-            return;
-        }
-    } catch { /* ignore */ }
-    console.warn(`[bundle-drawer] ${message}`);
+    // toast.js owns the app's toast; nothing publishes it on window.
+    appShowToast(message, kind);
 }
 
 // ── Public entry point ───────────────────────────────────────────────────────

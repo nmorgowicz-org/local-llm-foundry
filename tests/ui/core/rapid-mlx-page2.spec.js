@@ -10,6 +10,15 @@ test.describe('Rapid-MLX page-2 layout and protocol reference', () => {
     status, contentType: 'application/json', body: JSON.stringify(body),
   });
 
+  // Two animation frames: layout and style recalculation triggered by the last change are done.
+  const settle = (page) => page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+
+  const sidecarHint = (page) => page.evaluate(
+    () => document.getElementById('spawn-rapid-speculative-sidecars-list')?.textContent || '',
+  );
+
   async function openHardwarePage(page) {
     await page.goto('/');
     await page.waitForLoadState('networkidle');
@@ -36,7 +45,8 @@ test.describe('Rapid-MLX page-2 layout and protocol reference', () => {
       wiz.openSpawnWizard({ templatePreset: { backend: 'rapid_mlx', rapid_mlx: { model_source: { kind: 'mlx_directory', path: '/fake/hub/models--nightmedia--Qwen3.8-27B-MindMeld-AREX-mxfp4-mlx/snapshots/abc' } } } });
       wiz.showStep(1);
     });
-    await page.waitForTimeout(1500);
+    await expect(page.locator('#spawn-rapid-advanced-fields')).toBeAttached();
+    await expect(page.locator('.wizard-body')).toBeVisible();
   }
 
   async function expandAllSettings(page) {
@@ -57,13 +67,13 @@ test.describe('Rapid-MLX page-2 layout and protocol reference', () => {
         rapidFields.querySelectorAll('.hardware-grid').forEach(g => { g.style.display = 'grid'; });
       }
     });
-    await page.waitForTimeout(500);
+    await expect(page.locator('#spawn-rapid-advanced-fields')).toBeVisible();
+    await settle(page);
   }
 
   test('@in-memory-test expanded All settings does not create a grey scroll void', async ({ page }) => {
     await openHardwarePage(page);
     await expandAllSettings(page);
-    await page.waitForTimeout(800);
     const sh = await page.evaluate(() => {
       const body = document.querySelector('.wizard-body');
       return { scroll: body.scrollHeight, client: body.clientHeight, scrollTop: body.scrollTop };
@@ -75,14 +85,13 @@ test.describe('Rapid-MLX page-2 layout and protocol reference', () => {
   test('@in-memory-test toggling MTP speculation does not scroll the page away', async ({ page }) => {
     await openHardwarePage(page);
     await expandAllSettings(page);
-    await page.waitForTimeout(400);
     await page.evaluate(() => {
       const toggle = document.getElementById('spawn-rapid-speculative-enabled');
       toggle.scrollIntoView({ block: 'center' });
       toggle.click();
       toggle.dispatchEvent(new Event('change', { bubbles: true }));
     });
-    await page.waitForTimeout(600);
+    await settle(page);
     // The old bug: the phantom scroll region below the step swallowed the view
     // (body.scrollTop jumped to ~2000 with the toggle far off screen). With the
     // step clipped, the outer scroller has nowhere to take the view.
@@ -100,13 +109,8 @@ test.describe('Rapid-MLX page-2 layout and protocol reference', () => {
       const { scheduleRapidMlxProfileFetch } = await import('/js/features/spawn-wizard-rapid-mlx.js');
       scheduleRapidMlxProfileFetch('nightmedia/Qwen3.8-27B-MindMeld-AREX-mxfp4-mlx');
     });
-    await page.waitForTimeout(1500);
-    const state = await page.evaluate(() => ({
-      autoTool: document.getElementById('spawn-rapid-auto-tool-choice')?.checked,
-      hint: document.getElementById('spawn-rapid-mtp-eligibility')?.textContent || '',
-    }));
-    expect(state.autoTool).toBe(true);
-    expect(state.hint).toContain('embedded MTP prediction heads');
+    await expect(page.locator('#spawn-rapid-auto-tool-choice')).toBeChecked();
+    await expect(page.locator('#spawn-rapid-mtp-eligibility')).toContainText('embedded MTP prediction heads');
   });
 
   test('@in-memory-test protocol modal resolves Gemma, not just Qwen', async ({ page }) => {
@@ -134,10 +138,8 @@ test.describe('Rapid-MLX page-2 layout and protocol reference', () => {
       document.getElementById('spawn-rapid-speculative-enabled').checked = true;
       rapid.refreshRapidMlxSidecars();
     });
-    await page.waitForTimeout(800);
-    const hint = await page.evaluate(() => document.getElementById('spawn-rapid-speculative-sidecars-list')?.textContent || '');
-    expect(hint).toContain('rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX');
-    expect(hint).toContain('Preflight');
+    await expect.poll(() => sidecarHint(page)).toContain('rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX');
+    expect(await sidecarHint(page)).toContain('Preflight');
   });
 
   test('@in-memory-test fingerprint suggests a draft when the trunk name hides its family', async ({ page }) => {
@@ -157,9 +159,7 @@ test.describe('Rapid-MLX page-2 layout and protocol reference', () => {
       document.getElementById('spawn-rapid-speculative-enabled').checked = true;
       rapid.refreshRapidMlxSidecars();
     });
-    await page.waitForTimeout(1200);
-    const hint = await page.evaluate(() => document.getElementById('spawn-rapid-speculative-sidecars-list')?.textContent || '');
-    expect(hint).toContain('rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX');
+    await expect.poll(() => sidecarHint(page)).toContain('rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX');
   });
 
   test('@in-memory-test Validate protocol opens the in-app reference modal', async ({ page }) => {

@@ -2,6 +2,7 @@
 // Sensor bridge setup button handler.
 
 import { escapeHtml } from '../core/format.js';
+import { setHtml } from '../core/set-html.js';
 
 function _bindSensorBridgeSetup() {
     const btn = document.getElementById('btn-sensor-bridge-setup');
@@ -20,12 +21,12 @@ function _bindSensorBridgeSetup() {
                 btn.textContent = 'Setup';
                 btn.disabled = false;
                 if (callout) {
-                    callout.innerHTML = '<span style="color:#bf616a;">Install failed: ' + escapeHtml(data.error || 'Unknown error') + '</span>';
+                    setHtml(callout, '<span style="color:#bf616a;">Install failed: ' + escapeHtml(data.error || 'Unknown error') + '</span>');
                 }
                 return;
             }
             if (callout) {
-                callout.innerHTML = '<span style="color:#a3be8c;">A UAC prompt will appear on your desktop \u2014 approve it to install the sensor service. This takes a few seconds.</span>';
+                setHtml(callout, '<span style="color:#a3be8c;">A UAC prompt will appear on your desktop \u2014 approve it to install the sensor service. This takes a few seconds.</span>');
             }
             let elapsed = 0;
             const poll = setInterval(async () => {
@@ -62,7 +63,7 @@ function _bindSensorBridgeSetup() {
                         btn.textContent = 'Setup';
                         btn.disabled = false;
                         if (callout) {
-                            callout.innerHTML = 'CPU temperature requires a one-time service install. <button id="btn-sensor-bridge-setup" style="margin-left:8px; padding:3px 10px; background:#5e81ac; border:none; border-radius:4px; color:#eceff4; cursor:pointer; font-size:12px;">Setup</button><span style="color:#ebcb8b; margin-left:8px;">Timed out \u2014 did you approve the UAC prompt?</span>';
+                            setHtml(callout, 'CPU temperature requires a one-time service install. <button id="btn-sensor-bridge-setup" style="margin-left:8px; padding:3px 10px; background:#5e81ac; border:none; border-radius:4px; color:#eceff4; cursor:pointer; font-size:12px;">Setup</button><span style="color:#ebcb8b; margin-left:8px;">Timed out \u2014 did you approve the UAC prompt?</span>');
                             const newBtn = document.getElementById('btn-sensor-bridge-setup');
                             if (newBtn) newBtn.addEventListener('click', () => btn.click());
                         }

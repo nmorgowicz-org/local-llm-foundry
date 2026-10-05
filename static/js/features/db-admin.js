@@ -31,10 +31,6 @@ export function initDbAdmin() {
     // Close handlers
     document.getElementById('db-admin-modal-close')?.addEventListener('click', closeDbAdminModal);
 
-    // Open from settings Chat tab
-    document.getElementById('settings-open-db-admin-btn')?.addEventListener('click', () => {
-        openDbAdminModal();
-    });
     dbAdminOverlay?.addEventListener('click', (e) => {
         if (e.target === dbAdminOverlay) closeDbAdminModal();
     });

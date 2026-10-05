@@ -1,16 +1,35 @@
 // Sanitized innerHTML replacement.
 //
-// `setHtml(el, html)` is the one sanctioned way to render an HTML string into an
+// `setHtml(el, html)` is the sanctioned way to render an HTML string into an
 // element: the string passes through DOMPurify and the resulting fragment replaces
 // the element's children — no `innerHTML =` assignment anywhere. If DOMPurify is
-// unavailable (should not happen; dompurify-init loads first) the fragment is built
-// from the raw string, matching the pre-helper behavior.
+// unavailable the markup is rendered as inert text rather than parsed, so a missing
+// sanitizer can never turn into an injection path.
+//
+// `target="_blank"` is allowed through (release-notes links open in a new tab) but
+// every such anchor is forced to `rel="noopener noreferrer"`; any other `target`
+// value is dropped.
+function hardenLinks(fragment) {
+    for (const a of fragment.querySelectorAll('a[target]')) {
+        if (a.getAttribute('target') === '_blank') {
+            a.setAttribute('rel', 'noopener noreferrer');
+        } else {
+            a.removeAttribute('target');
+        }
+    }
+    return fragment;
+}
+
 export function setHtml(el, html) {
     if (!el) return;
-    if (typeof window.DOMPurify !== 'undefined') {
-        el.replaceChildren(window.DOMPurify.sanitize(html, { RETURN_DOM_FRAGMENT: true }));
+    const purify = window.DOMPurify;
+    if (purify && typeof purify.sanitize === 'function') {
+        const fragment = purify.sanitize(String(html ?? ''), {
+            RETURN_DOM_FRAGMENT: true,
+            ADD_ATTR: ['target'],
+        });
+        el.replaceChildren(hardenLinks(fragment));
         return;
     }
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    el.replaceChildren(...doc.body.childNodes);
+    el.textContent = String(html ?? '');
 }

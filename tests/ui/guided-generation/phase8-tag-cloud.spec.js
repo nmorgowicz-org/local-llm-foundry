@@ -99,9 +99,6 @@ test.describe('Phase 8 - Tag Cloud', () => {
     await header.click();
     await expect(header).toHaveAttribute('aria-expanded', 'false');
 
-    // Wait for the collapse transition to settle before expanding again
-    await page.waitForTimeout(300);
-
     // Expand again
     await header.click();
     await expect(header).toHaveAttribute('aria-expanded', 'true');
@@ -115,20 +112,15 @@ test.describe('Phase 8 - Tag Cloud', () => {
     const searchInput = page.locator('#suggestion-search-input');
 
     // All chips visible initially
-    let allChips = page.locator('.suggestion-category-btn');
-    let visibleCount = await allChips.evaluateAll(
+    const allChips = page.locator('.suggestion-category-btn');
+    const visibleCount = await allChips.evaluateAll(
       (els) => els.filter(el => el.style.display !== 'none').length,
     );
     expect(visibleCount).toBe(15);
 
     // Type "horror" — only Horror chip should remain visible
     await searchInput.fill('horror');
-    await page.waitForTimeout(200);
-
-    visibleCount = await allChips.evaluateAll(
-      (els) => els.filter(el => el.style.display !== 'none').length,
-    );
-    expect(visibleCount).toBe(1);
+    await expect.poll(() => countVisible(allChips)).toBe(1);
 
     const visibleChip = allChips.filter({ hasText: /Horror/ });
     await expect(visibleChip).toBeVisible();
@@ -148,12 +140,7 @@ test.describe('Phase 8 - Tag Cloud', () => {
 
     // Clear search — all chips return
     await searchInput.fill('');
-    await page.waitForTimeout(200);
-
-    visibleCount = await allChips.evaluateAll(
-      (els) => els.filter(el => el.style.display !== 'none').length,
-    );
-    expect(visibleCount).toBe(15);
+    await expect.poll(() => countVisible(allChips)).toBe(15);
   });
 
   test('search filter is case-insensitive', async ({ page }) => {
@@ -164,12 +151,7 @@ test.describe('Phase 8 - Tag Cloud', () => {
     const allChips = page.locator('.suggestion-category-btn');
 
     await searchInput.fill('HORROR');
-    await page.waitForTimeout(200);
-
-    const visibleCount = await allChips.evaluateAll(
-      (els) => els.filter(el => el.style.display !== 'none').length,
-    );
-    expect(visibleCount).toBe(1);
+    await expect.poll(() => countVisible(allChips)).toBe(1);
   });
 
   test('explicit group hidden when explicit_level is 0', async ({ page }) => {
@@ -241,12 +223,7 @@ test.describe('Phase 8 - Tag Cloud', () => {
     const allChips = page.locator('.suggestion-category-btn');
 
     await searchInput.fill('sci');
-    await page.waitForTimeout(200);
-
-    const visibleCount = await allChips.evaluateAll(
-      (els) => els.filter(el => el.style.display !== 'none').length,
-    );
-    expect(visibleCount).toBe(1);
+    await expect.poll(() => countVisible(allChips)).toBe(1);
 
     const visibleChip = allChips.filter({ hasText: /Sci-Fi/ });
     await expect(visibleChip).toBeVisible();
