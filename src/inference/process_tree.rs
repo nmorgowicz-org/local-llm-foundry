@@ -88,13 +88,15 @@ pub fn signal_child_group(child: &mut Child, graceful: bool) -> bool {
 
 /// Kill the whole process tree and reap the direct child.
 ///
-/// `pid` is accepted for call-site compatibility; the live handle's own id is
-/// preferred. The group is signalled regardless of whether the direct child
-/// was already reaped: a descendant (for example a python process spawned by
-/// `uv` that still holds stdout/stderr open) can outlive the leader and must
-/// not survive the cleanup. Signalling a nonexistent group is harmless.
-pub async fn terminate_and_reap(child: &mut Child, pid: u32) {
-    let live_pid = child.id().unwrap_or(pid);
+/// The group is signalled only while the child handle is still un-reaped,
+/// which guarantees we own that process-group ID. After a reap the ID could
+/// already belong to an unrelated group, so a stale `pid` fallback is never
+/// signalled. Callers that need to clean up descendants must keep the child
+/// un-reaped (and thus the group) until their output readers finish.
+pub async fn terminate_and_reap(child: &mut Child, _pid: u32) {
+    let Some(live_pid) = child.id() else {
+        return;
+    };
     signal_process_group(live_pid, false);
     let _ = child.start_kill();
     let _ = child.wait().await;
