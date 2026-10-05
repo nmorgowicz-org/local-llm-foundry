@@ -2771,6 +2771,13 @@
 
 /* ── Legend ───────────────────────────────────────────────────────────────── */
 
+.vram-free-explainer {
+  margin: 6px 2px 2px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-text-muted, #9aa3b2);
+}
+
 .vram-legend {
   display: flex;
   flex-wrap: wrap;

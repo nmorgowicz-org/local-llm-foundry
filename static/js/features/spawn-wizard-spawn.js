@@ -14,6 +14,7 @@ import { openEvidenceDrawer, evidenceFromCommandPreview } from './evidence-drawe
 import { setTuneConfig, showTunePanel } from './tune-panel.js';
 import { setHeaderMode } from './attach-detach.js';
 import { showToast } from './toast.js';
+import { wizardModelDisplayName } from './spawn-wizard-review-step.js';
 import { applyChatTemplateDegradeFromReasons } from './spawn-wizard-chat-template.js';
 
 // Reasons from the most recent command-preview fetch (step 6). The spawn endpoint itself does
@@ -148,15 +149,57 @@ async function _renderCommandPreview(host) {
 }
 
 
+let _guidedAccessWired = false;
+
+// Guided mode has no tuning page, so host + API key are editable right in the
+// step-3 rail. Same wizardState fields as the power-user inputs; whichever the
+// user touches wins because both sync from state before rendering.
+function _wireGuidedAccessControls() {
+  if (_guidedAccessWired) return;
+  _guidedAccessWired = true;
+  const host = document.getElementById('spawn-guided-bind-host');
+  const key = document.getElementById('spawn-guided-api-key');
+  host?.addEventListener('change', () => {
+    wizardState.access.bindHost = host.value || '127.0.0.1';
+    _refreshGuidedAccessHint();
+    void _renderSpawnConfigCard();
+  });
+  key?.addEventListener('input', () => {
+    wizardState.access.apiKey = key.value.trim();
+    _refreshGuidedAccessHint();
+  });
+}
+
+function _refreshGuidedAccessHint() {
+  const hint = document.getElementById('spawn-guided-access-hint');
+  if (!hint) return;
+  const lan = wizardState.access.bindHost === '0.0.0.0';
+  const keyed = !!wizardState.access.apiKey;
+  hint.textContent = !lan
+    ? 'Leave the host on “This Mac only” unless another device needs to call this API.'
+    : keyed
+      ? 'Exposed to your network with an API key — clients must send it as a Bearer token.'
+      : '⚠ Exposed to your network with no API key — anyone on your LAN can use this model.';
+  hint.style.color = lan && !keyed ? 'var(--color-error, #ff5470)' : '';
+}
+
+function _syncGuidedAccessControls() {
+  const host = document.getElementById('spawn-guided-bind-host');
+  const key = document.getElementById('spawn-guided-api-key');
+  if (host) host.value = wizardState.access.bindHost || '127.0.0.1';
+  if (key && document.activeElement !== key) key.value = wizardState.access.apiKey || '';
+  _refreshGuidedAccessHint();
+}
+
 export async function _renderSpawnConfigCard() {
+  _wireGuidedAccessControls();
+  _syncGuidedAccessControls();
   const card = document.getElementById('spawn-config-card');
   const sidebar = document.getElementById('spawn-sidebar-config');
   const m = wizardState.model, hw = wizardState.hardware, acc = wizardState.access;
   const rapid = wizardState.engine.selected === 'rapid_mlx';
 
-  const modelName = m.source === 'hf'
-    ? (m.hfFile ? m.hfFile.split('/').pop() : (m.hfRepo || '—'))
-    : (m.path ? (m.path.split(/[\\/]/).pop() || m.path) : '—');
+  const modelName = wizardModelDisplayName();
   const port     = acc.port || 8001;
   const ctx      = hw.contextSize ? hw.contextSize.toLocaleString() + ' tok' : '—';
   const gpu      = hw.gpuLayers === 'manual'

@@ -5413,6 +5413,9 @@
                                  title="Free headroom"></div>
                         </div>
 
+                        <!-- Plain-language memory explainer (Apple Silicon only) -->
+                        <div class="vram-free-explainer" id="vram-free-explainer" style="display:none;"></div>
+
                          <!-- Legend row -->
                          <div class="vram-legend">
                              <span class="vleg-item" id="vleg-weights"><span class="vleg-dot seg-weights"></span><span id="vleg-weights-label">Weights —</span></span>
@@ -5554,6 +5557,21 @@
                 <div class="wizard-sidebar">
                     <div class="wizard-sidebar-title">Configuration</div>
                     <div id="spawn-sidebar-config" style="margin-bottom:10px;"></div>
+
+                    <div class="wizard-sidebar-title">Network access</div>
+                    <div class="sampling-field" style="margin-bottom:8px;">
+                        <label for="spawn-guided-bind-host" style="font-size:12px;">Who can reach this server</label>
+                        <select id="spawn-guided-bind-host" style="width:100%;">
+                            <option value="127.0.0.1">This Mac only (127.0.0.1)</option>
+                            <option value="0.0.0.0">Other devices on my network (0.0.0.0)</option>
+                        </select>
+                    </div>
+                    <div class="sampling-field" style="margin-bottom:8px;">
+                        <label for="spawn-guided-api-key" style="font-size:12px;">API key (password for clients)</label>
+                        <input type="password" id="spawn-guided-api-key" style="width:100%;" placeholder="Set one when exposing to the network">
+                        <div class="field-hint" id="spawn-guided-access-hint">Leave the host on “This Mac only” unless another device needs to call this API.</div>
+                    </div>
+
                     <div class="wizard-sidebar-title">What happens next</div>
                     <ul>
                         <li>llama-server starts as a background process.</li>

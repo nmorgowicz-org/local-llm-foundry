@@ -1518,6 +1518,7 @@ function cacheDom() {
   dom.vramPanel       = document.getElementById('vram-panel');
   dom.vramPanelTotal  = document.getElementById('vram-panel-total');
   dom.vramBar         = document.getElementById('vram-bar');
+  dom.vramFreeExplainer = document.getElementById('vram-free-explainer');
   dom.vSegWeights  = document.getElementById('vseg-weights');
   dom.vSegKv       = document.getElementById('vseg-kv');
   dom.vSegMmproj   = document.getElementById('vseg-mmproj');
@@ -2228,11 +2229,6 @@ function _updateKvProvenanceChips() {
       chip.textContent = 'you';
     }
   }
-}
-
-function _ensureKvUserSet() {
-  wizardState.hardware.kvDtypeUserSet = true;
-  _updateKvProvenanceChips();
 }
 
 export async function refreshHfTokenState() {

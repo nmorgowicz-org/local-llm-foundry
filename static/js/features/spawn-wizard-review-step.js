@@ -213,14 +213,7 @@ export async function renderSummary() {
 
   // Pre-fill preset name input if empty
    if (dom.presetNameInput && !dom.presetNameInput.value.trim()) {
-     const m = wizardState.model;
-     const ctx = wizardState.hardware.contextSize || 0;
-     const modelFile = (m.path || m.hfRepo || '').split(/[/\\]/).pop() || '';
-     const base = (modelFile || '').replace(/\.gguf$/i, '').trim();
-     const name = base && ctx
-       ? base + '-' + formatCtx(ctx).toLowerCase()
-       : base || 'My Preset';
-     dom.presetNameInput.value = name;
+     dom.presetNameInput.value = suggestedPresetName();
    }
 
   const m = wizardState.model, hw = wizardState.hardware;
@@ -452,6 +445,37 @@ export async function renderSummary() {
 }
 
 // ── Sampling field sync (Review step) ────────────────────────────────────────
+
+
+// Suggested preset name: prefer the HF repo id, decoding a hub-cache container
+// (`…/models--owner--repo`) into `owner/repo`; GGUF paths use the bare filename.
+// The context suffix keeps multiple launches of one model distinguishable.
+// Human-readable model name for rails and cards: decodes a hub-cache container
+// (`…/models--owner--repo`) into `owner/repo`; otherwise the bare filename.
+export function wizardModelDisplayName() {
+  const m = wizardState.model;
+  const raw = m.hfRepo || m.path || '';
+  if (m.source === 'hf') return m.hfRepo || '(none)';
+  const container = raw.split(/[/\\]/).find((c) => c.startsWith('models--'));
+  if (container) return container.slice('models--'.length).replace('--', '/');
+  return raw ? (raw.split(/[/\\]/).pop() || raw) : '(none)';
+}
+
+export function suggestedPresetName() {
+  const m = wizardState.model;
+  const ctx = wizardState.hardware.contextSize || 0;
+  const raw = m.hfRepo || m.path || '';
+  const container = raw.split(/[/\\]/).find((c) => c.startsWith('models--'));
+  let base;
+  if (container) {
+    base = container.slice('models--'.length).replace('--', '/');
+  } else {
+    base = (raw.split(/[/\\]/).pop() || '').replace(/\.gguf$/i, '').trim();
+  }
+  return base && ctx
+    ? base + '-' + formatCtx(ctx).toLowerCase()
+    : base || 'My Preset';
+}
 
 function _syncSamplingFields() {
   const h = wizardState.hardware;
@@ -791,14 +815,7 @@ export function _renderPresetParamsStep() {
 
  // Pre-fill preset name from model filename if empty
    if (dom.presetNameInput && !dom.presetNameInput.value.trim()) {
-     const m = wizardState.model;
-     const ctx = wizardState.hardware.contextSize || 0;
-     const modelFile = (m.path || m.hfRepo || '').split(/[/\\]/).pop() || '';
-     const base = (modelFile || '').replace(/\.gguf$/i, '').trim();
-     const name = base && ctx
-       ? base + '-' + formatCtx(ctx).toLowerCase()
-       : base || 'My Preset';
-     dom.presetNameInput.value = name;
+     dom.presetNameInput.value = suggestedPresetName();
    }
   if (dom.savedPresetName) dom.savedPresetName.style.display = 'none';
 

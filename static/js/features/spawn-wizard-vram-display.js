@@ -158,15 +158,32 @@ export function updateVramDisplay() {
 
     updateMlockWarning(availVram, free);
 
+    // Plain-language explainer: on unified memory the scarce resource is what
+    // macOS hasn't already given to apps, not the hardware total. Say so.
+    const explainer = dom.vramFreeExplainer;
+    if (explainer) {
+      if (isUnifiedMemory() && cachedRamTotal > 0 && availVram > 0) {
+        const usedBySystem = Math.max(0, cachedRamTotal - availVram);
+        const usedGib = (usedBySystem / (1024 ** 3)).toFixed(0);
+        explainer.textContent = free >= 0
+          ? `macOS and your running apps are already using ~${usedGib} GB of ${formatVramTotal(cachedRamTotal)}. Only ${formatVramTotal(availVram)} is free to load models — quitting apps raises this.`
+          : `Over by ${formatGB(-free)}: macOS and your running apps already use ~${usedGib} GB of ${formatVramTotal(cachedRamTotal)}, leaving ${formatVramTotal(availVram)} for models. Reduce context or the retained cache below, or quit apps to free more.`;
+        explainer.style.display = '';
+      } else {
+        explainer.style.display = 'none';
+      }
+    }
+
     // Update total label — leads with the model's estimated usage (what the bar
     // graph actually represents) rather than just the ceiling, since the ceiling
     // alone gives no sense of how much of it this model will consume.
     if (dom.vramPanelTotal) {
       if (availVram > 0) {
-        const usedOfTotal = `${formatGB(total)} / ${formatVramTotal(availVram)}`;
+        const usedOfTotal = `${formatGB(total)} estimated / ${formatVramTotal(availVram)} free`;
         if (isUnifiedMemory() && cachedRamTotal > 0) {
+          const capGb = (metalCap(cachedRamTotal) / (1024 ** 3)).toFixed(0);
           dom.vramPanelTotal.textContent =
-            usedOfTotal + ' (Metal cap of ' + formatVramTotal(cachedRamTotal) + ' total)';
+            usedOfTotal + ` — ${formatVramTotal(cachedRamTotal)} machine (GPU cap ${capGb} GB)`;
         } else {
           dom.vramPanelTotal.textContent = usedOfTotal;
         }
@@ -241,7 +258,7 @@ export function updateVramDisplay() {
     // Phase 6 Part B: show prefix cache budget legend when budget exists.
     if (prefixCacheBudget > 0) {
       if (dom.vLegPrefixCacheItem) dom.vLegPrefixCacheItem.style.display = '';
-      if (dom.vLegPrefixCacheLabel) dom.vLegPrefixCacheLabel.textContent = `Rapid retained cache ${formatGB(prefixCacheBudget)}`;
+      if (dom.vLegPrefixCacheLabel) dom.vLegPrefixCacheLabel.textContent = `Retained prefix cache ${formatGB(prefixCacheBudget)} (reserved on launch — lower it in Rapid-MLX settings)`;
     } else {
       if (dom.vLegPrefixCacheItem) dom.vLegPrefixCacheItem.style.display = 'none';
     }
