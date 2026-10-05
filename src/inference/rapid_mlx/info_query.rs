@@ -230,6 +230,65 @@ pub async fn fetch_model_list(binary: &Path) -> Result<Vec<ModelListEntry>> {
     parse_model_list(&output.stdout)
 }
 
+/// One entry of `rapid-mlx recipe`: upstream's tier recommendation for this
+/// exact machine ("Smart"/"Fast" picks), pinned atop the catalog picker.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RecipeRecommendation {
+    /// 1-based rank as printed by upstream.
+    pub rank: u32,
+    /// Upstream's tier label ("Smart", "Fast", …).
+    pub label: String,
+    /// The model alias to serve.
+    pub name: String,
+    /// True when the model is already in the local cache.
+    pub cached: bool,
+    /// Advertised footprint/speed line ("20.0 GB RAM · 92% capability · ~41 tok/s").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub specs: Option<String>,
+}
+
+pub async fn fetch_recipe(binary: &Path) -> Result<Vec<RecipeRecommendation>> {
+    let output = run_query(binary, &["recipe"], MODELS_TIMEOUT, MAX_OUTPUT_BYTES).await?;
+    Ok(parse_recipe_output(&output.stdout))
+}
+
+fn parse_recipe_output(output: &str) -> Vec<RecipeRecommendation> {
+    let mut recommendations = Vec::new();
+    let lines: Vec<&str> = output.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        // Rank line: "1. Smart — qwen3.8-27b-4bit · cached"
+        let Some((rank_part, rest)) = trimmed.split_once(". ") else {
+            continue;
+        };
+        let Ok(rank) = rank_part.parse::<u32>() else {
+            continue;
+        };
+        let Some((label, name_part)) = rest.split_once(" — ") else {
+            continue;
+        };
+        let mut segments = name_part.split(" · ");
+        let name = segments.next().unwrap_or("").trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let cached = segments.any(|seg| seg.trim() == "cached");
+        // The specs line follows ("20.0 GB RAM · 92% capability · ~41 tok/s").
+        let specs = lines
+            .get(i + 1)
+            .map(|l| l.trim().to_string())
+            .filter(|l| l.contains("·"));
+        recommendations.push(RecipeRecommendation {
+            rank,
+            label: label.trim().to_string(),
+            name,
+            cached,
+            specs,
+        });
+    }
+    recommendations
+}
+
 async fn run_query(
     binary: &Path,
     args: &[&str],
@@ -1076,6 +1135,25 @@ mod tests {
         assert!(!second.mtp);
         assert!(second.hybrid);
         assert!(second.mtp_sidecar.is_none());
+    }
+
+    #[test]
+    fn recipe_output_parses_ranked_recommendations() {
+        let output = "Recommended for this 64.0 GB Mac (64 GB tier)\n\n1. Smart \u{2014} qwen3.8-27b-4bit \u{b7} cached\n   20.0 GB RAM \u{b7} 92% capability \u{b7} ~41 tok/s\n   rapid-mlx serve qwen3.8-27b-4bit\n\n2. Fast \u{2014} qwen3.6-35b-4bit\n   20.0 GB RAM \u{b7} 87% capability \u{b7} ~60 tok/s\n   rapid-mlx serve qwen3.6-35b-4bit\n";
+        let recs = parse_recipe_output(output);
+        assert_eq!(recs.len(), 2);
+        assert_eq!(recs[0].rank, 1);
+        assert_eq!(recs[0].label, "Smart");
+        assert_eq!(recs[0].name, "qwen3.8-27b-4bit");
+        assert!(recs[0].cached);
+        assert!(
+            recs[0]
+                .specs
+                .as_deref()
+                .is_some_and(|s| s.contains("41 tok/s"))
+        );
+        assert_eq!(recs[1].name, "qwen3.6-35b-4bit");
+        assert!(!recs[1].cached);
     }
 
     #[test]

@@ -391,6 +391,15 @@ export async function renderSummary() {
       warns.push("q4_0 KV not recommended for agentic workflows — reduces tool-call coherence. Prefer q8_0 or q6_K when VRAM allows.");
     }
 
+    // Curated-catalog coverage: non-catalog models still launch if they resolve
+    // (local snapshot or HF repo), but upstream guarantees nothing about them.
+    if (wizardState.engine.selected === 'rapid_mlx') {
+      const alias = wizardState.model.hfRepo || wizardState.model.path || '';
+      if (alias && !wizardState.model.rapidCatalogEntry) {
+        warns.push('This model is not in the Rapid-MLX validated catalog. It may still launch if it resolves locally or on Hugging Face, but parser pairing and speculative decoding are not guaranteed.');
+      }
+    }
+
     // Binding/host visibility warnings
     if (wizardState.access.bindHost === '0.0.0.0' && !wizardState.access.apiKey) {
       warns.push('LAN-visible endpoint without a server API key. Set one unless you intentionally want an open local-network server.');

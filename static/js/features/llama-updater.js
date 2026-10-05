@@ -6,6 +6,8 @@
 // any build (including older ones) can be installed from there.
 
 import { showToast } from './toast.js';
+import { setHtml } from '../core/set-html.js';
+import { wireUninstallButton } from './runtime-uninstall.js';
 import { attachModalFocusTrap, detachModalFocusTrap, fetchReleaseList, buildReleaseBadges } from './updater-shared.js';
 
 const LLAMA_CPP_REPO = 'https://github.com/ggml-org/llama.cpp';
@@ -26,6 +28,7 @@ let _versionCheckTimer = null;
 export function initLlamaUpdater() {
   const pill = document.getElementById('llama-pill');
   if (pill) pill.addEventListener('click', openVersionModal);
+  wireUninstallButton(document.getElementById('llama-uninstall-btn'), 'llama_cpp');
 
   const closeBtn = document.getElementById('llama-version-modal-close');
   if (closeBtn) closeBtn.addEventListener('click', closeVersionModal);
@@ -158,7 +161,7 @@ async function loadReleaseList() {
   const listEl = document.getElementById('llama-version-list');
   if (!listEl) return;
 
-  listEl.innerHTML = '<div class="llama-version-loading">Loading releases…</div>';
+  setHtml(listEl, '<div class="llama-version-loading">Loading releases…</div>');
 
   try {
     const headers = window.authHeaders ? window.authHeaders() : {};
@@ -167,11 +170,11 @@ async function loadReleaseList() {
 
     const releases = sortReleasesChronologically(data.releases ?? []);
     if (!releases.length) {
-      listEl.innerHTML = '<div class="llama-version-loading">No releases found.</div>';
+      setHtml(listEl, '<div class="llama-version-loading">No releases found.</div>');
       return;
     }
 
-    listEl.innerHTML = '';
+    listEl.replaceChildren();
     // The API may append the latest versioned (stable) release flagged
     // `stable: true` once it ages out of the newest-8 window; render it as a
     // pinned row below the window, after the installed-build pin.
@@ -247,12 +250,9 @@ function showReleaseNotes(release) {
       html = normalizeReleaseNotes(release.body).replace(/\n/g, '<br>');
     }
     html = linkPrRefs(html);
-    // eslint-disable-next-line no-unsanitized/property
-    bodyEl.innerHTML = typeof DOMPurify !== 'undefined'
-      ? DOMPurify.sanitize(html, { ADD_ATTR: ['target'] })
-      : html;
+    setHtml(bodyEl, html);
   } else {
-    bodyEl.innerHTML = '<p class="llama-version-notes-none">No release notes for this build.</p>';
+    setHtml(bodyEl, '<p class="llama-version-notes-none">No release notes for this build.</p>');
   }
 }
 

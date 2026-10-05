@@ -2601,6 +2601,48 @@ re-resolves a moving branch. The response uses the same asynchronous `job_id`
 contract as release installation. A new commit creates a new immutable managed
 environment and must be requalified for MTP/speculative decoding.
 
+### `GET /api/rapid-mlx/catalog`
+
+Auth: `api-token`.
+
+The curated Rapid-MLX model catalog: rows of the upstream-validated
+`rapid-mlx models` listing. Each entry carries the alias, measured size in
+bytes, the tool parser upstream pairs with it, the chat template family, a
+hybrid-attention marker, and the MTP flag plus paired speculative sidecar.
+Image-generation and other non-chat rows are filtered out. Upstream's
+per-machine tier recommendations (`rapid-mlx recipe`) ride along as
+`recommendations` (rank, label, alias, cached, specs) and are best-effort:
+an unknown `recipe` output never takes the catalog down.
+
+Response:
+
+```json
+{
+  "ok": true,
+  "models": [
+    {
+      "name": "qwen3.8-27b-4bit",
+      "display_name": "qwen3.8-27b-4bit",
+      "size_bytes": 16320875724,
+      "parser": "qwen3_coder_xml",
+      "template": "qwen3",
+      "hybrid": false,
+      "mtp": true,
+      "mtp_sidecar": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX@3"
+    }
+  ],
+  "recommendations": [
+    { "rank": 1, "label": "Smart", "name": "qwen3.8-27b-4bit", "cached": true,
+      "specs": "20.0 GB RAM · 92% capability · ~41 tok/s" }
+  ]
+}
+```
+
+The spawn wizard's Rapid-MLX path is curated-only: model selection is this
+catalog (recommendations pinned on top), not raw Hugging Face discovery.
+Non-catalog models still launch when they resolve locally or on Hugging Face,
+and the review step flags them as unvalidated.
+
 ### `GET /api/rapid-mlx/runtime/status`
 
 Auth: `api-token`.
@@ -3066,6 +3108,24 @@ Route handlers: `src/web/api/llama_binary.rs`.
 - `POST /api/llama-binary/update` — download and install a release.
   - Request: `{ "version": "b5700", "backend": "metal" }`
 - `POST /api/llama/restart` — restart a locally running llama-server with the current binary (useful after installing a new version).
+
+### Runtime Uninstall
+
+Route handlers: `src/web/api/runtime_uninstall.rs`. One contract for every
+managed runtime: report what it occupies, remove the runtime itself on
+request. Downloaded models are never touched — they live outside the runtime
+roots.
+
+- `GET /api/runtimes/storage` — bytes occupied by each managed runtime
+  (`rapid_mlx_bytes`, `llama_bin_bytes`).
+- `DELETE /api/rapid-mlx/runtime/uninstall` — remove every managed Rapid-MLX
+  environment and the active pointer. Returns 409 while another runtime
+  mutation (install/upgrade/rollback) is in progress.
+- `DELETE /api/llama-binary/uninstall` — remove the managed llama.cpp binary
+  and its rollback backups (`bin-previous*`). 404 when nothing is installed.
+
+The UI flow (Rapid-MLX manage modal and the llama.cpp version modal) shows the
+size, requires an explicit confirm, and states that models are kept.
 
 All require `api-token` unless noted.
 

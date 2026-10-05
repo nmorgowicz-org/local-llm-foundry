@@ -220,6 +220,19 @@ The two visible intents map as follows: `agentic` → `interactive_coding_agent`
 Engine selection, model source input, and model-specific options also live on this step. See
 [Engine selection](#engine-selection) below.
 
+#### Rapid-MLX model selection is curated-only
+
+Rapid-MLX only behaves predictably for models upstream hand-validates (tool
+parser pairing, MTP sidecars, measured sizes), so when the Rapid-MLX engine is
+selected the model step swaps Hugging Face discovery for the curated catalog
+(`GET /api/rapid-mlx/catalog`). Upstream's per-machine tier recommendations
+("Smart"/"Fast") are pinned on top, chat models are searchable below, and
+selecting a row fills the alias, measured size, and paired speculative sidecar
+in one step. Models outside the catalog still launch when they resolve locally
+or on Hugging Face, and the review step flags them as unvalidated. Quantized
+KV options are hidden for Rapid-MLX: every catalog model is hybrid-attention
+and rapid-mlx refuses quantized KV at startup, so they always serve bf16.
+
 ### Step 1: Hardware
 
 Backend-specific hardware controls, plus the pre-launch review summary (merged in from the

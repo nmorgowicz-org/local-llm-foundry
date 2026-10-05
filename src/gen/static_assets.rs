@@ -152,6 +152,8 @@ pub const FEATURES_RAPID_MLX_UPDATER_JS: &str =
     include_str!("../../static/js/features/rapid-mlx-updater.js");
 pub const FEATURES_REMOTE_AGENT_JS: &str = include_str!("../../static/js/features/remote-agent.js");
 pub const FEATURES_ROUTER_JS: &str = include_str!("../../static/js/features/router.js");
+pub const FEATURES_RUNTIME_UNINSTALL_JS: &str =
+    include_str!("../../static/js/features/runtime-uninstall.js");
 pub const FEATURES_SENSOR_BRIDGE_JS: &str =
     include_str!("../../static/js/features/sensor-bridge.js");
 pub const FEATURES_SESSIONS_JS: &str = include_str!("../../static/js/features/sessions.js");
@@ -196,6 +198,8 @@ pub const FEATURES_SPAWN_WIZARD_MODEL_CARD_JS: &str =
     include_str!("../../static/js/features/spawn-wizard-model-card.js");
 pub const FEATURES_SPAWN_WIZARD_MTP_DRAFT_JS: &str =
     include_str!("../../static/js/features/spawn-wizard-mtp-draft.js");
+pub const FEATURES_SPAWN_WIZARD_RAPID_CATALOG_JS: &str =
+    include_str!("../../static/js/features/spawn-wizard-rapid-catalog.js");
 pub const FEATURES_SPAWN_WIZARD_RAPID_MLX_JS: &str =
     include_str!("../../static/js/features/spawn-wizard-rapid-mlx.js");
 pub const FEATURES_SPAWN_WIZARD_REVIEW_STEP_JS: &str =

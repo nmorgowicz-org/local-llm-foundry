@@ -5154,3 +5154,174 @@ button:disabled {
     transform: none !important;
   }
 }
+
+
+/* ── Rapid-MLX curated catalog picker ──────────────────────────────────────── */
+
+.rapid-catalog-mode > :not(#rapid-catalog-panel) {
+  display: none !important;
+}
+
+#rapid-catalog-panel {
+  margin-bottom: 12px;
+}
+
+.rapid-catalog-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.rapid-catalog-search {
+  flex: 1;
+}
+
+.rapid-catalog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.rapid-catalog-heading {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin: 8px 0 2px;
+}
+
+.rapid-catalog-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.rapid-catalog-row:hover {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+}
+
+.rapid-catalog-name {
+  font-weight: 600;
+}
+
+.rapid-catalog-meta {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rapid-catalog-badge,
+.rapid-catalog-tier {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+}
+
+.rapid-catalog-row--recommended {
+  border-color: color-mix(in srgb, var(--color-success) 40%, transparent);
+}
+
+.rapid-catalog-tier {
+  border-color: color-mix(in srgb, var(--color-success) 45%, transparent);
+  color: var(--color-success);
+}
+
+.rapid-catalog-empty {
+  color: var(--color-text-muted);
+  font-size: 13px;
+  padding: 12px 4px;
+}
+
+/* ── Runtime uninstall flow ────────────────────────────────────────────────── */
+
+.runtime-uninstall-btn {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-danger, #ef4444) 35%, transparent);
+  background: transparent;
+  color: var(--color-danger, #ef4444);
+  cursor: pointer;
+}
+
+.runtime-uninstall-btn:hover {
+  background: color-mix(in srgb, var(--color-danger, #ef4444) 10%, transparent);
+}
+
+.runtime-uninstall-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.runtime-uninstall-confirm {
+  background: var(--color-bg, #1a1a1e);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 20px 22px;
+  max-width: 420px;
+  width: calc(100% - 40px);
+}
+
+.runtime-uninstall-confirm h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.runtime-uninstall-confirm p {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+}
+
+.runtime-uninstall-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.runtime-uninstall-confirm-actions button {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.runtime-uninstall-go--danger {
+  border-color: color-mix(in srgb, var(--color-danger, #ef4444) 45%, transparent) !important;
+  color: var(--color-danger, #ef4444) !important;
+}
+
+.runtime-uninstall-go--danger:hover {
+  background: color-mix(in srgb, var(--color-danger, #ef4444) 12%, transparent) !important;
+}

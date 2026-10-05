@@ -2945,6 +2945,7 @@ export function selectWizardEngine(engine, explicit) {
   }
   renderEngineSelection();
   _applyScopeDefaultForEngine(engine);
+  _updateRapidCatalogVisibility();
   clearValidationError();
   refreshStepGuardrails();
   _checkBinaryPrereq();
@@ -2953,6 +2954,33 @@ export function selectWizardEngine(engine, explicit) {
   if (engine === 'rapid_mlx') {
     const modelId = wizardState.model.hfRepo || wizardState.model.path || '';
     scheduleRapidMlxProfileFetch(modelId);
+  }
+}
+
+// Rapid-MLX only behaves predictably for upstream-validated models, so in
+// Rapid-MLX mode the curated catalog replaces the HF browse controls.
+let _rapidCatalogMounted = false;
+function _updateRapidCatalogVisibility() {
+  const rapid = wizardState.engine.selected === 'rapid_mlx';
+  const hfArea = document.getElementById('model-input-hf');
+  const panel = document.getElementById('rapid-catalog-panel');
+  if (!hfArea || !panel) return;
+  hfArea.classList.toggle('rapid-catalog-mode', rapid);
+  // Quantized KV is unlaunchable for Rapid-MLX (hybrid ArraysCache models refuse
+  // it at startup — measured on the stock text-only recipe model), so the dial
+  // is hidden entirely in Rapid-MLX mode instead of showing dead options.
+  const kvField = document.getElementById('spawn-kv-cache-dtype')?.closest('.hardware-field');
+  if (kvField) kvField.style.display = rapid ? 'none' : '';
+  if (!rapid) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = '';
+  if (!_rapidCatalogMounted) {
+    _rapidCatalogMounted = true;
+    import('./spawn-wizard-rapid-catalog.js')
+      .then(m => m.mountRapidCatalogPicker(panel, { visible: true }))
+      .catch(() => { panel.style.display = 'none'; });
   }
 }
 

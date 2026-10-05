@@ -1886,15 +1886,24 @@ fn catalog_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
                         ));
                     }
                 };
-                match tokio::time::timeout(
+                let list = tokio::time::timeout(
                     Duration::from_secs(15),
                     info_query::fetch_model_list(&binary),
                 )
-                .await
-                {
+                .await;
+                // Tier recommendations are best-effort: an absent or unknown
+                // `recipe` output must not take the catalog down.
+                let recommendations =
+                    tokio::time::timeout(Duration::from_secs(8), info_query::fetch_recipe(&binary))
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or_default();
+                match list {
                     Ok(Ok(models)) => Ok(Box::new(warp::reply::json(&serde_json::json!({
                         "ok": true,
                         "models": models,
+                        "recommendations": recommendations,
                     }))) as ApiReply),
                     Ok(Err(message)) => Ok(json_error(
                         StatusCode::BAD_GATEWAY,

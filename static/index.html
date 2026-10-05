@@ -4006,6 +4006,8 @@
 
                     <!-- HF repo input -->
                     <div class="model-input-area" id="model-input-hf">
+                        <!-- Curated Rapid-MLX catalog — replaces HF browse when the Rapid-MLX engine is selected -->
+                        <div id="rapid-catalog-panel" style="display:none;"></div>
                         <!-- HF token — shown first so users set it before browsing -->
                         <div class="settings-card wizard-hf-token-card" style="margin-bottom:10px;">
                             <div class="wizard-hf-token-header">
@@ -4257,7 +4259,7 @@
                                          <option value="int8">int8 — recommended (tool calling)</option>
                                          <option value="bf16">bf16 — highest precision</option>
                                      </select>
-                                      <div class="field-hint">This build always launches with int8 active KV, regardless of this selection — Rapid-MLX's <code>--reasoning</code> flag pins it unconditionally. This control is not yet wired to the launch; it is kept visible so a future runtime that respects it doesn't require new UI.</div>
+                                      <div class="field-hint">Rapid-MLX models are hybrid-attention: quantized KV is refused at startup, so they always serve bf16 KV. This dial is hidden for Rapid-MLX and applies to engines that support quantized KV.</div>
                                  </div>
                                  <div class="hardware-field">
                                      <label for="spawn-rapid-cache-mode" title="Auto tracks the measured single-user coding-agent recommendation (8 GiB, 16 entries) even if it changes later. Off disables the retained cache. Custom uses the Retained cache selector below as configured.">Prompt cache mode</label>
@@ -7767,6 +7769,7 @@
         <div class="llama-version-modal-current" id="llama-version-modal-current">
             <span class="llama-version-current-label">Installed</span>
             <span class="llama-version-current-build" id="llama-version-current-build">—</span>
+            <button id="llama-uninstall-btn" class="runtime-uninstall-btn" type="button" title="Remove the managed llama.cpp binary from this machine (downloaded models are kept)">Uninstall…</button>
         </div>
         <div class="llama-version-modal-body">
             <div class="llama-version-panes">
@@ -7889,6 +7892,7 @@
             <button id="rapid-mlx-upgrade-btn" class="rapid-mlx-action-btn" type="button" style="display:none;">Upgrade</button>
             <button id="rapid-mlx-repair-btn" class="rapid-mlx-action-btn" type="button" style="display:none;">Repair</button>
             <button id="rapid-mlx-rollback-btn" class="rapid-mlx-action-btn rapid-mlx-action-btn-soft" type="button" style="display:none;">Rollback</button>
+            <button id="rapid-mlx-uninstall-btn" class="rapid-mlx-action-btn runtime-uninstall-btn" type="button" title="Remove the Rapid-MLX runtime from this machine (downloaded models are kept)">Uninstall…</button>
         </div>
         <div class="rapid-mlx-modal-body">
             <div class="rapid-mlx-panes">

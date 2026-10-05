@@ -5,6 +5,7 @@
 // Uses existing API endpoints under /api/rapid-mlx/runtime/.
 
 import { showToast } from './toast.js';
+import { wireUninstallButton } from './runtime-uninstall.js';
 import { setHtml } from '../core/set-html.js';
 import { attachModalFocusTrap, detachModalFocusTrap, fetchReleaseList, buildReleaseBadges } from './updater-shared.js';
 
@@ -36,6 +37,9 @@ export function initRapidMlxUpdater() {
   if (pill) {
     pill.addEventListener('click', openRapidMlxModal);
   }
+  wireUninstallButton(document.getElementById('rapid-mlx-uninstall-btn'), 'rapid_mlx', {
+    onDone: () => fetchRuntimeStatus(),
+  });
 
   const actionRow = document.querySelector('#rapid-mlx-modal .rapid-mlx-modal-actions');
   const officialTab = document.getElementById('rapid-mlx-source-official');

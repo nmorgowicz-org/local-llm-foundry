@@ -510,6 +510,52 @@ impl RapidMlxRuntimeManager {
         Ok(entries)
     }
 
+    /// Remove every managed environment and the active pointer. Model caches
+    /// live outside this root and are untouched. Fails while another runtime
+    /// mutation (install/upgrade/rollback) holds the gate.
+    pub fn uninstall_all(&self) -> Result<()> {
+        let _permit = self
+            .mutation_gate
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| anyhow!("Another Rapid-MLX runtime mutation is in progress"))?;
+        // Drop the pointer first so a crash mid-delete cannot leave the app
+        // pointing at a half-removed environment.
+        let pointer_path = self.root.join(POINTER_FILE);
+        if pointer_path.exists() {
+            fs::remove_file(&pointer_path).context("Cannot remove the Rapid-MLX pointer file")?;
+        }
+        if self.root.exists() {
+            fs::remove_dir_all(&self.root)
+                .context("Cannot remove the managed Rapid-MLX runtime root")?;
+        }
+        Ok(())
+    }
+
+    /// Best-effort recursive byte size of the managed runtime root.
+    pub fn storage_bytes(&self) -> u64 {
+        fn walk(dir: &Path, acc: &mut u64) {
+            let Ok(entries) = fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                match entry.file_type() {
+                    Ok(t) if t.is_dir() => walk(&path, acc),
+                    Ok(_) => {
+                        if let Ok(meta) = entry.metadata() {
+                            *acc += meta.len();
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+        let mut total = 0;
+        walk(&self.root, &mut total);
+        total
+    }
+
     pub fn active_git_source(&self) -> Result<Option<ManagedGitSourceSelection>> {
         let Some(pointer) = self.load_pointer()? else {
             return Ok(None);
@@ -2117,6 +2163,31 @@ mod tests {
         assert!(error.to_string().contains("already in progress"));
         drop(held);
         assert!(manager.install("0.10.10").await.is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uninstall_removes_managed_root_and_refuses_during_mutation() {
+        let (_temp, manager, _probe) = fixture_manager();
+
+        // A populated root (fake environment + pointer) is removed wholesale.
+        let env_dir = manager.root.join(ENVIRONMENTS_DIR).join("0.99.9-testdead");
+        fs::create_dir_all(&env_dir).unwrap();
+        fs::write(env_dir.join("marker"), "x").unwrap();
+        fs::write(manager.root.join(POINTER_FILE), "{}").unwrap();
+        assert!(manager.storage_bytes() > 0);
+
+        let held = manager.mutation_gate.clone().try_acquire_owned().unwrap();
+        let err = manager.uninstall_all().unwrap_err();
+        assert!(
+            format!("{err:#}").contains("mutation is in progress"),
+            "{err:#}"
+        );
+        drop(held);
+
+        manager.uninstall_all().unwrap();
+        assert!(!manager.root.exists());
+        assert_eq!(manager.storage_bytes(), 0);
     }
 
     #[cfg(unix)]
