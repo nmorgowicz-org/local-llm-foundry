@@ -212,6 +212,18 @@ async fn fetch_hf_commit_date(repo: &str, revision: &str) -> Option<String> {
         .map(|c| c.date)
 }
 
+/// True only for `https://` URLs whose exact host is `huggingface.co` or a
+/// subdomain of it. Substring matching is not enough: a token must never be
+/// attached to `https://evil.example/huggingface.co`.
+fn is_huggingface_url(url: &str) -> bool {
+    match reqwest::Url::parse(url) {
+        Ok(u) if u.scheme() == "https" => u
+            .host_str()
+            .is_some_and(|h| h == "huggingface.co" || h.ends_with(".huggingface.co")),
+        _ => false,
+    }
+}
+
 /// Extracts `owner/name` from a `source_url` of the form
 /// `https://huggingface.co/{repo}/blob/main/{file}` (as written by
 /// `write_template_install_meta_at`'s callers) — needed because `ReleaseRecord`
@@ -1236,8 +1248,41 @@ fn api_chat_template_check_update(
                     ));
                 }
 
-                let path = std::path::Path::new(&path_str);
-                let meta_path = template_meta_path(path);
+                // The path comes from the request body, so it must be forced
+                // through the same managed-root resolver as /chat-template/read:
+                // without it this handler could read (hash) any file the
+                // process can see and write a .jinja.meta.json beside it.
+                let path = {
+                    let Some(template_root) = chat_template_dir_path() else {
+                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                            warp::reply::json(&serde_json::json!({
+                                "ok": false,
+                                "error": "managed template directory unavailable"
+                            })),
+                        ));
+                    };
+                    match resolve_managed_chat_template_path(std::path::Path::new(&path_str), &template_root)
+                    {
+                        Ok(resolved) => resolved,
+                        Err(PathValidationError::OutsideManagedRoot) => {
+                            return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                                warp::reply::json(&serde_json::json!({
+                                    "ok": false,
+                                    "error": "template path must be inside the managed template directory"
+                                })),
+                            ));
+                        }
+                        Err(_) => {
+                            return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                                warp::reply::json(&serde_json::json!({
+                                    "ok": false,
+                                    "error": "absolute .jinja path required, no .."
+                                })),
+                            ));
+                        }
+                    }
+                };
+                let meta_path = template_meta_path(&path);
                 let existing_meta = read_template_install_meta(&meta_path);
 
                 // Legacy installs (from before update-tracking metadata existed) have no
@@ -1265,7 +1310,7 @@ fn api_chat_template_check_update(
                                     })),
                                 ));
                             };
-                            let local_bytes = match std::fs::read(path) {
+                            let local_bytes = match std::fs::read(&path) {
                                 Ok(b) => b,
                                 Err(e) => {
                                     return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
@@ -1287,6 +1332,9 @@ fn api_chat_template_check_update(
 
                 let client = match reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(15))
+                    // Never follow redirects: a check URL must not bounce the
+                    // request (and possibly the bearer token) to another host.
+                    .redirect(reqwest::redirect::Policy::none())
                     .user_agent("llama-monitor/1.0")
                     .build()
                 {
@@ -1317,7 +1365,7 @@ fn api_chat_template_check_update(
                 };
 
                 let mut req = client.get(&check_url);
-                if check_url.contains("huggingface.co")
+                if is_huggingface_url(&check_url)
                     && let Some(ref tok) = crate::hf::hf_load_token()
                     && !tok.is_empty()
                 {
@@ -1361,7 +1409,7 @@ fn api_chat_template_check_update(
                 // update would install. Best effort: a failure only drops the label.
                 let hf_token = crate::hf::hf_load_token();
                 let upstream_revision = match parse_repo_from_source_url(&baseline_source_url) {
-                    Some(repo) if check_url.contains("huggingface.co") => {
+                    Some(repo) if is_huggingface_url(&check_url) => {
                         resolve_hf_commit_sha(&client, &repo, &hf_token).await
                     }
                     _ => None,
@@ -1371,16 +1419,16 @@ fn api_chat_template_check_update(
                 // so subsequent checks no longer need the fallback fields from the client.
                 // Approximate the original install date with the file's mtime, since the
                 // true install time was never recorded.
-                let mtime_rfc3339 = std::fs::metadata(path)
+                let mtime_rfc3339 = std::fs::metadata(&path)
                     .and_then(|m| m.modified())
                     .ok()
                     .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
 
                 if existing_meta.is_none()
-                    && let Ok(local_bytes) = std::fs::read(path)
+                    && let Ok(local_bytes) = std::fs::read(&path)
                 {
                     write_template_install_meta_at(
-                        path,
+                        &path,
                         &baseline_source_url,
                         &fetch_url,
                         &local_bytes,
@@ -1396,7 +1444,7 @@ fn api_chat_template_check_update(
                 let installed_version = existing_meta
                     .as_ref()
                     .and_then(|m| m.template_version.clone())
-                    .or_else(|| std::fs::read(path).ok().and_then(|b| extract_template_version(&b)));
+                    .or_else(|| std::fs::read(&path).ok().and_then(|b| extract_template_version(&b)));
                 let installed_revision = existing_meta.as_ref().and_then(|m| m.revision.clone());
                 let name = path
                     .file_stem()

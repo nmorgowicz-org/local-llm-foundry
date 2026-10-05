@@ -3117,17 +3117,22 @@ request. Downloaded models are never touched — they live outside the runtime
 roots.
 
 - `GET /api/runtimes/storage` — bytes occupied by each managed runtime
-  (`rapid_mlx_bytes`, `llama_bin_bytes`).
+  (`rapid_mlx_bytes`, `llama_bin_bytes`). Requires `api-token`.
 - `DELETE /api/rapid-mlx/runtime/uninstall` — remove every managed Rapid-MLX
-  environment and the active pointer. Returns 409 while another runtime
-  mutation (install/upgrade/rollback) is in progress.
+  environment and the active pointer. Body: `{"confirm":"UNINSTALL_RAPID_MLX"}`.
+  Requires `db-admin-token`. Returns 400 on a wrong confirm string and 409
+  while a server is running or another runtime mutation is in progress.
 - `DELETE /api/llama-binary/uninstall` — remove the managed llama.cpp binary
-  and its rollback backups (`bin-previous*`). 404 when nothing is installed.
+  and its rollback backups (`bin-previous*`). Body:
+  `{"confirm":"UNINSTALL_LLAMA_CPP"}`. Requires `db-admin-token`. 404 when
+  nothing is installed; 409 while a server is running.
 
 The UI flow (Rapid-MLX manage modal and the llama.cpp version modal) shows the
-size, requires an explicit confirm, and states that models are kept.
+size, requires typing the exact confirmation phrase, and states that models are
+kept.
 
-All require `api-token` unless noted.
+Storage requires `api-token`; both uninstall routes require `db-admin-token`
+plus the exact confirm string, matching install/upgrade/repair/rollback.
 
 ### System Information
 

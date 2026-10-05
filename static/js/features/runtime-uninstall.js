@@ -6,6 +6,8 @@
 // models are never touched — they live outside the runtime roots and are the
 // expensive part users want to keep.
 
+import { showToast } from './toast.js';
+
 const UNINSTALL_ENDPOINTS = {
   rapid_mlx: '/api/rapid-mlx/runtime/uninstall',
   llama_cpp: '/api/llama-binary/uninstall',
@@ -15,6 +17,23 @@ const UNINSTALL_LABELS = {
   rapid_mlx: 'Rapid-MLX',
   llama_cpp: 'llama.cpp',
 };
+
+// Must match the backend constants in src/web/api/runtime_uninstall.rs.
+const UNINSTALL_CONFIRM_PHRASES = {
+  rapid_mlx: 'UNINSTALL_RAPID_MLX',
+  llama_cpp: 'UNINSTALL_LLAMA_CPP',
+};
+
+// Uninstall is db-admin gated server-side; trade the api token for the
+// db-admin token the same way the database admin panel does.
+async function ensureDbAdminToken() {
+  const headers = window.authHeaders ? window.authHeaders() : {};
+  const res = await fetch('/api/db/admin-token', { headers });
+  if (!res.ok) throw new Error('Could not obtain admin authorization for uninstall');
+  const data = await res.json();
+  if (!data.token) throw new Error('Admin authorization unavailable');
+  return data.token;
+}
 
 export function formatBytes(bytes) {
   if (!bytes || bytes <= 0) return '0 B';
@@ -44,6 +63,16 @@ function confirmUninstall(kind, bytes, onConfirm) {
   title.textContent = `Uninstall ${label}?`;
   const body = document.createElement('p');
   body.textContent = `This removes the ${label} runtime (${formatBytes(bytes)}) from this machine. Downloaded models are kept. You can reinstall at any time.`;
+  const phrase = UNINSTALL_CONFIRM_PHRASES[kind] || kind.toUpperCase();
+  const prompt = document.createElement('p');
+  prompt.className = 'runtime-uninstall-confirm-prompt';
+  prompt.textContent = `Type ${phrase} to confirm.`;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'runtime-uninstall-confirm-input';
+  input.setAttribute('aria-label', `Type ${phrase} to confirm`);
+  input.autocomplete = 'off';
+  input.spellcheck = false;
   const actions = document.createElement('div');
   actions.className = 'runtime-uninstall-confirm-actions';
   const cancel = document.createElement('button');
@@ -54,29 +83,63 @@ function confirmUninstall(kind, bytes, onConfirm) {
   go.type = 'button';
   go.className = 'runtime-uninstall-go runtime-uninstall-go--danger';
   go.textContent = 'Uninstall';
-  actions.append(cancel, go);
-  dialog.append(title, body, actions);
-  overlay.appendChild(dialog);
-  const close = () => overlay.remove();
-  overlay.addEventListener('click', (ev) => {
-    if (ev.target === overlay) close();
+  go.disabled = true;
+  input.addEventListener('input', () => {
+    go.disabled = input.value.trim() !== phrase;
   });
-  overlay.querySelector('.runtime-uninstall-cancel').addEventListener('click', close);
-  overlay.querySelector('.runtime-uninstall-go').addEventListener('click', async (ev) => {
+  actions.append(cancel, go);
+  dialog.append(title, body, prompt, input, actions);
+  overlay.appendChild(dialog);
+  const opener = document.activeElement;
+  let busy = false;
+  // Registered on window in the capture phase so Escape and Tab are handled here before the
+  // runtime manage modal underneath (which traps keys on document) can react to them.
+  const onKeydown = (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!busy) close();
+      return;
+    }
+    if (ev.key !== 'Tab') return;
+    const stops = [input, cancel, go].filter((el) => !el.disabled);
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!stops.length) return;
+    const index = stops.indexOf(document.activeElement);
+    const next = ev.shiftKey ? (index <= 0 ? stops.length - 1 : index - 1) : (index + 1) % stops.length;
+    stops[next].focus();
+  };
+  function close() {
+    window.removeEventListener('keydown', onKeydown, true);
+    overlay.remove();
+    if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();
+  }
+  window.addEventListener('keydown', onKeydown, true);
+  overlay.addEventListener('click', (ev) => {
+    if (ev.target === overlay && !busy) close();
+  });
+  cancel.addEventListener('click', () => { if (!busy) close(); });
+  go.addEventListener('click', async (ev) => {
     const btn = ev.currentTarget;
+    busy = true;
+    cancel.disabled = true;
     btn.disabled = true;
     btn.textContent = 'Uninstalling…';
     try {
       await onConfirm();
       close();
     } catch (err) {
+      busy = false;
+      cancel.disabled = false;
       btn.textContent = 'Uninstall';
       btn.disabled = false;
       showToast(`Uninstall failed: ${err.message}`, 'error');
     }
   });
   document.body.appendChild(overlay);
-  overlay.querySelector('.runtime-uninstall-go').focus();
+  // A destructive dialog opens on the safe choice.
+  input.focus();
 }
 
 export async function uninstallRuntime(kind, { onDone } = {}) {
@@ -91,8 +154,12 @@ export async function uninstallRuntime(kind, { onDone } = {}) {
   } catch { /* size is advisory */ }
 
   confirmUninstall(kind, bytes, async () => {
-    const headers = { ...(window.authHeaders ? window.authHeaders() : {}) };
-    const resp = await fetch(endpoint, { method: 'DELETE', headers });
+    const adminToken = await ensureDbAdminToken();
+    const resp = await fetch(endpoint, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ confirm: UNINSTALL_CONFIRM_PHRASES[kind] }),
+    });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data.ok === false) {
       throw new Error(data.error || `Uninstall failed (${resp.status})`);
@@ -110,12 +177,4 @@ export function wireUninstallButton(button, kind, { onDone } = {}) {
       showToast(`Uninstall failed: ${err.message}`, 'error');
     });
   });
-}
-
-function showToast(message, type) {
-  if (typeof window.showToast === 'function') {
-    window.showToast(message, type);
-  } else {
-    import('./toast.js').then(m => m.showToast?.(message, type)).catch(() => {});
-  }
 }

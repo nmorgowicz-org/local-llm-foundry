@@ -10,9 +10,22 @@ use std::path::Path;
 use warp::Filter;
 use warp::http::StatusCode;
 
-use super::common::check_api_token;
-use super::{ApiCtx, ApiReply, ApiRoute, unauthorized_api_token};
+use super::common::{check_api_token, check_db_admin_token};
+use super::{ApiCtx, ApiReply, ApiRoute, unauthorized_api_token, unauthorized_db_admin_token};
 use crate::inference::rapid_mlx::updater::RapidMlxRuntimeManager;
+
+/// Typed confirmations for the two destructive uninstall flows. Install and
+/// upgrade already demand a db-admin token plus an exact confirm string;
+/// uninstall removes more (whole runtimes), so it must be gated at least as
+/// strongly.
+pub(crate) const RAPID_MLX_UNINSTALL_CONFIRM: &str = "UNINSTALL_RAPID_MLX";
+pub(crate) const LLAMA_CPP_UNINSTALL_CONFIRM: &str = "UNINSTALL_LLAMA_CPP";
+
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct UninstallRequest {
+    #[serde(default)]
+    pub(crate) confirm: String,
+}
 
 fn json_error(status: StatusCode, message: impl Into<String>) -> ApiReply {
     Box::new(warp::reply::with_status(
@@ -104,14 +117,31 @@ fn storage_route(ctx: ApiCtx) -> ApiRoute {
 /// Rapid-MLX environment and the active pointer. Downloaded models are kept.
 fn rapid_uninstall_route(ctx: ApiCtx) -> ApiRoute {
     let config = ctx.config.clone();
+    let state = ctx.state.clone();
     warp::path!("api" / "rapid-mlx" / "runtime" / "uninstall")
         .and(warp::delete())
         .and(warp::header::optional::<String>("authorization"))
-        .and_then(move |auth: Option<String>| {
+        .and(super::super::safe_json_body::<UninstallRequest>())
+        .and_then(move |auth: Option<String>, request: UninstallRequest| {
             let config = config.clone();
+            let state = state.clone();
             async move {
-                if !check_api_token(&auth, &config) {
-                    return Ok(unauthorized_api_token());
+                if !check_db_admin_token(&auth, &config) {
+                    return Ok(unauthorized_db_admin_token());
+                }
+                if request.confirm != RAPID_MLX_UNINSTALL_CONFIRM {
+                    return Ok::<ApiReply, warp::Rejection>(json_error(
+                        StatusCode::BAD_REQUEST,
+                        format!(
+                            "uninstall requires the exact confirmation string {RAPID_MLX_UNINSTALL_CONFIRM}"
+                        ),
+                    ));
+                }
+                if *state.local_server_running.lock().unwrap() {
+                    return Ok(json_error(
+                        StatusCode::CONFLICT,
+                        "A server is running; stop it before uninstalling the runtime",
+                    ));
                 }
                 let manager = match RapidMlxRuntimeManager::new(&config.config_dir) {
                     Ok(manager) => manager,
@@ -141,14 +171,31 @@ fn rapid_uninstall_route(ctx: ApiCtx) -> ApiRoute {
 /// binaries and rollback backups. Downloaded models are kept.
 fn llama_uninstall_route(ctx: ApiCtx) -> ApiRoute {
     let config = ctx.config.clone();
+    let state = ctx.state.clone();
     warp::path!("api" / "llama-binary" / "uninstall")
         .and(warp::delete())
         .and(warp::header::optional::<String>("authorization"))
-        .and_then(move |auth: Option<String>| {
+        .and(super::super::safe_json_body::<UninstallRequest>())
+        .and_then(move |auth: Option<String>, request: UninstallRequest| {
             let config = config.clone();
+            let state = state.clone();
             async move {
-                if !check_api_token(&auth, &config) {
-                    return Ok(unauthorized_api_token());
+                if !check_db_admin_token(&auth, &config) {
+                    return Ok(unauthorized_db_admin_token());
+                }
+                if request.confirm != LLAMA_CPP_UNINSTALL_CONFIRM {
+                    return Ok::<ApiReply, warp::Rejection>(json_error(
+                        StatusCode::BAD_REQUEST,
+                        format!(
+                            "uninstall requires the exact confirmation string {LLAMA_CPP_UNINSTALL_CONFIRM}"
+                        ),
+                    ));
+                }
+                if *state.local_server_running.lock().unwrap() {
+                    return Ok(json_error(
+                        StatusCode::CONFLICT,
+                        "A server is running; stop it before uninstalling the binaries",
+                    ));
                 }
                 let paths = llama_bin_paths(&config);
                 if paths.is_empty() {
