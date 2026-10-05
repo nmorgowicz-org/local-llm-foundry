@@ -1,0 +1,5 @@
+self_hosted_runner_labels:
+  # Custom labels of the repo's self-hosted Proxmox LXC runner
+  # (see docs/reference/cross-compilation.md, "Runner requirements").
+  - arc-llama-monitor
+  - arc-llama-monitor-fast

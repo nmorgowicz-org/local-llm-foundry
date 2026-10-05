@@ -149,6 +149,47 @@ cargo +nightly udeps
 
 ---
 
+## macOS signing and notarization
+
+The `aarch64-apple-darwin` binary is code-signed with a **Developer ID
+Application** certificate and notarized by Apple as part of the release
+workflow — entirely on the Linux runner, using
+[`rcodesign`](https://github.com/indygreg/apple-platform-rs) (pure Rust, no
+Xcode or macOS runner required). The pipeline mirrors the verified
+persona-forge setup (see that repo's
+`docs/archive/macos-code-signing/20260918-macos_code_signing.md`).
+
+### Secrets
+
+All five are organization secrets, available to the release workflow:
+
+| Secret | Content |
+| --- | --- |
+| `MACOS_KEY_PEM` | Developer ID Application private key (PEM) |
+| `MACOS_CERT_PEM` | Developer ID Application certificate chain (PEM; include the Apple intermediate + root) |
+| `APPLE_ISSUER_ID` | App Store Connect API key issuer UUID |
+| `APPLE_KEY_ID` | App Store Connect API key identifier |
+| `APPLE_PRIVATE_KEY` | App Store Connect API private key (`.p8` PEM) |
+
+### Flow
+
+1. `rcodesign sign --pem-file key.pem --pem-file cert.pem --for-notarization`
+   — `--for-notarization` enables the hardened runtime and forces a secure
+   timestamp in one flag. (Signing with only
+   `--code-signature-flags runtime` omits the timestamp and the notary
+   service rejects the binary.)
+2. Zip the binary (`rcodesign` cannot notarize a bare Mach-O) and
+   `rcodesign notary-submit --api-key-file … --wait`. Typical wait is 1–5
+   minutes.
+3. `rcodesign verify`.
+
+No stapling step: Apple supports stapling only for `.app`/`.pkg`/`.dmg`,
+not bare executables. Gatekeeper performs its normal online ticket check on
+first launch instead, which removes the manual
+`xattr -dr com.apple.quarantine` workaround.
+
+---
+
 ## Common errors and fixes
 
 | Error | Cause | Fix |
