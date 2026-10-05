@@ -163,7 +163,7 @@ fn api_vram_estimate_breakdown(
                 //
                 // We mirror model_resolver.rs: first try as local directory;
                 // if it fails and looks like an alias, treat it as an HF repo ID.
-                let (model_size_bytes, mut arch, evidence, native_context_limit, estimator_hf_repo_id) =
+                let (model_size_bytes, mut arch, evidence, native_context_limit, estimator_hf_repo_id, rapid_is_multimodal_resolved) =
                     if is_rapid_mlx {
                     // Rapid-MLX is Apple-Silicon/unified-memory only.
                     is_unified_memory = true;
@@ -172,6 +172,7 @@ fn api_vram_estimate_breakdown(
                     // repository container, not a model directory: `…/hub/models--owner--repo`
                     // (optionally `/snapshots/<commit>`). Its folder name encodes the repo id,
                     // so resolve through HuggingFace instead of failing the local-dir read.
+                    let _rapid_is_multimodal = false;
                     let model_path =
                         match crate::inference::rapid_mlx::model_resolver::hf_cache_repo_id(
                             std::path::Path::new(&model_path),
@@ -219,6 +220,8 @@ fn api_vram_estimate_breakdown(
                                 })),
                             ));
                         }
+                        let rapid_is_multimodal =
+                            profile.vision.as_ref().is_some_and(|vision| vision.is_some());
                         let param_b = crate::llama::vram_estimator::estimate_param_b_from_size(size, 4.85);
                         let mut arch = crate::llama::vram_estimator::ModelArch::from(&profile);
                         arch.param_b = param_b;
@@ -232,7 +235,14 @@ fn api_vram_estimate_breakdown(
                         } else {
                             crate::llama::vram_estimator::EstimateEvidence::Degraded
                         };
-                        (size, arch, ev, profile.model_context_limit.map(u64::from), None)
+                        (
+                            size,
+                            arch,
+                            ev,
+                            profile.model_context_limit.map(u64::from),
+                            None,
+                            rapid_is_multimodal,
+                        )
                     } else if is_mlx_hf_repo_alias(&model_path) {
                         // model_path is not a local directory but looks like an HF-repo-style alias
                         // (e.g. "mlx-community/Qwen3-30B-A3B-4bit"). Treat it as hf_repo_id.
@@ -241,7 +251,7 @@ fn api_vram_estimate_breakdown(
                             &effective_repo,
                             model_size_override,
                         ).await;
-                        let (size, arch, ev, native_context_limit) = match mlx_hf_estimate_from_repo(
+                        let (size, arch, ev, native_context_limit, rapid_is_multimodal) = match mlx_hf_estimate_from_repo(
                             &effective_repo,
                             &hf_repo_revision,
                             size,
@@ -256,11 +266,11 @@ fn api_vram_estimate_breakdown(
                                 ));
                             }
                         };
-                        (size, arch, ev, native_context_limit, Some(effective_repo))
+                        (size, arch, ev, native_context_limit, Some(effective_repo), rapid_is_multimodal)
                     } else if !hf_repo_id.is_empty() {
                         // Caller provided explicit hf_repo_id
                         let size = resolve_mlx_hf_size(&hf_repo_id, model_size_override).await;
-                        let (size, arch, ev, native_context_limit) = match mlx_hf_estimate_from_repo(
+                        let (size, arch, ev, native_context_limit, rapid_is_multimodal) = match mlx_hf_estimate_from_repo(
                             &hf_repo_id,
                             &hf_repo_revision,
                             size,
@@ -275,7 +285,7 @@ fn api_vram_estimate_breakdown(
                                 ));
                             }
                         };
-                        (size, arch, ev, native_context_limit, Some(hf_repo_id.clone()))
+                        (size, arch, ev, native_context_limit, Some(hf_repo_id.clone()), rapid_is_multimodal)
                     } else {
                         return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
                             warp::reply::json(&serde_json::json!({
@@ -317,7 +327,7 @@ fn api_vram_estimate_breakdown(
                             None,
                         ),
                     };
-                    (size, arch, ev, native_context_limit, None)
+                    (size, arch, ev, native_context_limit, None, false)
                 } else if !hf_repo_id.is_empty() && !hf_file_path.is_empty() {
                     // Size must be supplied by the caller (from the HF file listing).
                     let size = model_size_override.unwrap_or(0);
@@ -349,7 +359,7 @@ fn api_vram_estimate_breakdown(
                                 None,
                             ),
                         };
-                    (size, arch, ev, native_context_limit, Some(hf_repo_id.clone()))
+                    (size, arch, ev, native_context_limit, Some(hf_repo_id.clone()), false)
                 } else {
                     return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
                         warp::reply::json(&serde_json::json!({
@@ -515,6 +525,24 @@ fn api_vram_estimate_breakdown(
                     workload_scenario,
                 };
 
+                // Multimodal (MLLM-lane) checkpoints: rapid-mlx has no quantized
+                // KV path for them and refuses `--kv-cache-dtype int8/int4` at
+                // startup, so the estimate must price what a launch actually
+                // allocates — bf16 KV.
+                let mut rapid_execution_policy = rapid_execution_policy;
+                let mut rapid_mllm_kv_note: Option<String> = None;
+                if is_rapid_mlx
+                    && rapid_is_multimodal_resolved
+                    && rapid_execution_policy.effective_kv_dtype
+                        != crate::llama::vram_estimator::execution_policy::KvCacheDtype::Bf16
+                {
+                    rapid_execution_policy.effective_kv_dtype =
+                        crate::llama::vram_estimator::execution_policy::KvCacheDtype::Bf16;
+                    rapid_mllm_kv_note = Some(
+                        "Multimodal checkpoint: rapid-mlx serves KV in bf16 (the MLLM lane has no quantized KV path); the estimate prices bf16.".to_string(),
+                    );
+                }
+
                 // `ctk` / `ctv` are llama.cpp vocabulary. Rapid uses its
                 // resolved native policy, so do not let a stale llama default
                 // decide MLX KV bytes. `f16` is the estimator's two-byte proxy
@@ -600,7 +628,10 @@ fn api_vram_estimate_breakdown(
                         "available_ram_bytes": breakdown.available_ram_bytes,
                         "ram_headroom_bytes": breakdown.ram_headroom_bytes,
                         "recommendation": serde_json::to_value(&breakdown.recommendation).unwrap_or(serde_json::Value::Null),
-                        "note": breakdown.note,
+                        "note": match &rapid_mllm_kv_note {
+                            Some(extra) => format!("{} {}", breakdown.note, extra),
+                            None => breakdown.note.clone(),
+                        },
                         "mlx_prefix_cache_bytes": breakdown.mlx_prefix_cache_bytes,
                         "evidence": serde_json::to_value(breakdown.evidence).unwrap_or(serde_json::Value::Null),
                         "effective_turboquant": serde_json::to_value(breakdown.effective_turboquant).unwrap_or(serde_json::Value::Null),
@@ -1456,6 +1487,7 @@ async fn mlx_hf_estimate_from_repo(
         crate::llama::vram_estimator::ModelArch,
         crate::llama::vram_estimator::EstimateEvidence,
         Option<u64>,
+        bool,
     ),
     String,
 > {
@@ -1482,7 +1514,14 @@ async fn mlx_hf_estimate_from_repo(
             } else {
                 0
             };
-            Ok((size, arch, ev, profile.model_context_limit.map(u64::from)))
+            let is_multimodal = profile.vision.as_ref().is_some_and(|v| v.is_some());
+            Ok((
+                size,
+                arch,
+                ev,
+                profile.model_context_limit.map(u64::from),
+                is_multimodal,
+            ))
         }
         Err(_) => {
             let arch = crate::llama::vram_estimator::ModelArch::from_name_and_params(
@@ -1494,6 +1533,7 @@ async fn mlx_hf_estimate_from_repo(
                 arch,
                 crate::llama::vram_estimator::EstimateEvidence::Degraded,
                 None,
+                false,
             ))
         }
     }

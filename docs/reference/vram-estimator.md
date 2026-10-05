@@ -1186,3 +1186,16 @@ device suffix and host prefix independently, then return the smallest feasible
 placement. The returned selection is re-resolved before hashing, so its change
 list and configuration identity describe the exact proposal. A zero-placement
 proposal does not emit `--n-cpu-moe 0`.
+
+## Rapid-MLX hybrid KV receipts (measured)
+
+The hybrid DeltaNet active-KV slope is receipt-based: `base_factor(dtype) × n_attn_layers × n_kv_heads`,
+scaled by `head_dim / 256` for models whose head width differs from the calibration geometry
+(Qwen3.5/3.6-27B: 16 attention layers, 4 KV heads, head_dim 256).
+
+Re-verified 2026-10-04, rapid-mlx 0.15.5, Qwen3.8-27B hybrid (16 attn / 4 KV / head_dim 256):
+a single 185,576-token prefill peaked at ≈127 bytes/token in bf16 — the ~2× factor over the
+naive K+V analytic (65,536 B/token) is real runtime allocation, not measurement error. The
+multimodal (MLLM) serving lane has **no quantized KV path**: `--kv-cache-dtype int8/int4` is
+refused at startup, so estimates price bf16 KV for multimodal checkpoints regardless of the
+requested dtype.
