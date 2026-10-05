@@ -7,7 +7,7 @@ import Router from './router.js';
 import {
   dom, wizardState, closeSpawnWizard, getEffectiveArch, isUnifiedMemory,
 } from './spawn-wizard.js';
-import './spawn-wizard-review-step.js';
+import { _renderPresetParamsStep } from './spawn-wizard-review-step.js';
 import { _binaryReady } from './spawn-wizard-binary-prereq.js';
 import { buildRapidMlxConfig } from './spawn-wizard-rapid-mlx.js';
 import { openEvidenceDrawer, evidenceFromCommandPreview } from './evidence-drawer.js';
@@ -150,6 +150,8 @@ async function _renderCommandPreview(host) {
 
 
 let _guidedAccessWired = false;
+let _aliasPreviewTimer = null;
+let _configRenderGeneration = 0;
 
 // Guided mode has no tuning page, so host + API key are editable right in the
 // step-3 rail. Same wizardState fields as the power-user inputs; whichever the
@@ -167,6 +169,16 @@ function _wireGuidedAccessControls() {
   key?.addEventListener('input', () => {
     wizardState.access.apiKey = key.value.trim();
     _refreshGuidedAccessHint();
+  });
+  document.getElementById('spawn-alias')?.addEventListener('input', () => {
+    // The canonical input binding updates hardware.alias immediately. Debounce
+    // only the summary/command refresh so saving or launching never lags behind.
+    clearTimeout(_aliasPreviewTimer);
+    _aliasPreviewTimer = setTimeout(() => {
+      if (!document.querySelector('#wizard-step-2.active')) return;
+      _renderPresetParamsStep();
+      void _renderSpawnConfigCard();
+    }, 200);
   });
 }
 
@@ -188,10 +200,14 @@ function _syncGuidedAccessControls() {
   const key = document.getElementById('spawn-guided-api-key');
   if (host) host.value = wizardState.access.bindHost || '127.0.0.1';
   if (key && document.activeElement !== key) key.value = wizardState.access.apiKey || '';
+  const alias = document.getElementById('spawn-alias');
+  if (alias && document.activeElement !== alias) alias.value = wizardState.hardware.alias || '';
   _refreshGuidedAccessHint();
 }
 
 export async function _renderSpawnConfigCard() {
+  clearTimeout(_aliasPreviewTimer);
+  const generation = ++_configRenderGeneration;
   _wireGuidedAccessControls();
   _syncGuidedAccessControls();
   const card = document.getElementById('spawn-config-card');
@@ -222,6 +238,7 @@ export async function _renderSpawnConfigCard() {
       }
     }
   } catch { /* ignore */ }
+  if (generation !== _configRenderGeneration) return;
 
   if (card) {
     card.style.display = '';

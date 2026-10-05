@@ -937,6 +937,7 @@ export function openSpawnWizard(opts = {}) {
     if (t.presence_penalty != null) wizardState.hardware.presencePenalty = t.presence_penalty;
     if (t.max_tokens != null)    wizardState.hardware.maxTokens     = t.max_tokens;
     if (t.seed != null)          wizardState.hardware.seed          = t.seed;
+    if (t.alias != null)         wizardState.hardware.alias        = t.alias;
     if (t.backend === 'rapid_mlx' && t.rapid_mlx) {
       const rapid = t.rapid_mlx;
       const source = rapid.model_source || null;

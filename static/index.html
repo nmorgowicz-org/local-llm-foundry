@@ -5358,11 +5358,6 @@
                                 </select>
                             </div>
                             <div class="sampling-field">
-                                <label for="spawn-alias" title="--alias STRING. Model name reported in /v1/models and displayed in API clients. Defaults to the model filename.">Server alias</label>
-                                <input type="text" id="spawn-alias" placeholder="e.g. qwen36-27b">
-                                <div class="field-hint">Name shown in <code>/v1/models</code> and OpenAI-compatible clients. Defaults to the model filename if blank.</div>
-                            </div>
-                            <div class="sampling-field">
                                 <label for="spawn-api-key">Server API key</label>
                                 <input type="password" id="spawn-api-key" placeholder="Optional bearer token for llama-server">
                             </div>
@@ -5559,6 +5554,11 @@
                 <div class="wizard-sidebar">
                     <div class="wizard-sidebar-title">Configuration</div>
                     <div id="spawn-sidebar-config" style="margin-bottom:10px;"></div>
+                    <div class="sampling-field" style="margin-bottom:14px;">
+                        <label for="spawn-alias" title="Model name reported in /v1/models and used by API clients." style="font-size:12px;">Served as (API model name)</label>
+                        <input type="text" id="spawn-alias" style="width:100%;" placeholder="Leave blank to use the model name" aria-describedby="spawn-alias-hint">
+                        <div class="field-hint" id="spawn-alias-hint">Give each preset variant its own name for API clients. This does not change the model being loaded. Leave blank to use the default model name.</div>
+                    </div>
 
                     <div class="wizard-sidebar-title">Network access</div>
                     <div class="sampling-field" style="margin-bottom:8px;">

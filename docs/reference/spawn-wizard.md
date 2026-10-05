@@ -370,6 +370,18 @@ llama.cpp rows identify requested and estimator-effective values; Rapid-MLX rows
 requested values and runtime-effective command-preview evidence. Preset save/load options
 are available here.
 
+In Guided mode, the right-hand Configuration pane includes **Served as (API
+model name)**. Use it to give each preset variant a distinct name in
+`/v1/models` and API clients, such as `qwen3.8-27b-4bit-205k`. This changes
+only the client-facing name, not the catalog alias or model artifact being
+loaded. Leave it blank to use the backend's default model name.
+
+The field is the same control used in Power-user mode. Edits update the launch
+summary and command preview, and **Save as Preset** stores the name with that
+variant. Reopening a saved preset restores its name for both backends.
+
+![Guided launch naming for a preset variant](../screenshots/rapidmlx-local--spawn-wizard-launch-full-config.png)
+
 The Full config review expands to its content height; scroll the wizard page to
 read all settings. The Ready to launch card keeps its natural height, with an
 internal scrollbar only when its content exceeds 340px. Neither card shrinks
