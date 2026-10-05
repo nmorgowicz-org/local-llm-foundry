@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.1.2...v2.2.0) (2026-10-05)
+
+
+### Features
+
+* **ci:** sign and notarize the macOS build ([d852d96](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d852d96e1c614576c0d5742e14ec88fd69911ef9))
+
+
+### Bug Fixes
+
+* **deps:** update rust dependencies to v0.26.6 ([#432](https://github.com/nmorgowicz-org/local-llm-foundry/issues/432)) ([c258a49](https://github.com/nmorgowicz-org/local-llm-foundry/commit/c258a49ff7feae5ff93b81ee059bccec2f5acafb))
+
 ## [2.1.2](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.1.1...v2.1.2) (2026-09-19)
 
 
