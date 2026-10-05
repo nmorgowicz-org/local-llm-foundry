@@ -24,13 +24,17 @@ test.describe('Spawn Wizard - Phases 3, 4, and Rapid-MLX Phase 6', () => {
         { name: 'image', parser: 'image:gen' },
         { name: 'video', template: 'video:gen' },
         { name: 'upper-media', parser: ' AUDIO:TTS ' },
+        { name: 'whisper-large-v3', parser: '[audio:stt]' },
+        { name: 'cogvideox-fun-5b-bf16', parser: '[video:gen]' },
+        { name: 'image-generation', parser: '[image:gen]' },
+        { name: 'bracketed-tts', template: ' [AUDIO:TTS] ', parser: 'qwen' },
         { name: 'unknown', parser: '—', template: '(none)' },
       ];
       const originalFetch = window.fetch;
       try {
         window.fetch = async () => new Response(JSON.stringify({
           models,
-          recommendations: [{ name: 'tts', label: 'Fast' }, { name: 'chat', label: 'Smart' }],
+          recommendations: [{ name: 'whisper-large-v3', label: 'Fast' }, { name: 'chat', label: 'Smart' }],
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
         await loadRapidCatalog(true);
         const container = document.createElement('div');

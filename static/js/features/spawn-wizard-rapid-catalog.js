@@ -18,10 +18,10 @@ let _filterTimer = null;
 
 function isChatModel(entry) {
   // Upstream also uses the parser/template columns for pipeline labels such
-  // as audio:tts, image:gen and video:gen. Those are not chat pairings.
+  // as [audio:tts], [image:gen] and [video:gen]. Those are not chat pairings.
   const pairings = [entry.parser, entry.template]
     .filter(value => typeof value === 'string')
-    .map(value => value.trim().toLowerCase());
+    .map(value => value.trim().toLowerCase().replace(/^\[([^\]]+)\]$/, '$1').trim());
   if (pairings.some(value => /^(audio|image|video)(:|$)/.test(value))) return false;
   return pairings.some(value => value && !['—', '-', 'none', '(none)', 'n/a'].includes(value));
 }

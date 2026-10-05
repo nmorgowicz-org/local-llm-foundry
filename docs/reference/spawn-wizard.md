@@ -233,6 +233,8 @@ in one step.
 The picker includes conversational LLMs, including vision-capable chat models.
 Dedicated audio pipelines (TTS/transcription), image generation, and video
 generation are excluded from both the searchable list and pinned recommendations.
+Upstream pipeline labels such as `[audio:stt]`, `[audio:tts]`, `[image:gen]`,
+and `[video:gen]` are normalized before filtering.
 
 ![Curated Rapid-MLX model picker](../screenshots/rapidmlx-local--spawn-wizard-rapid-catalog-picker.png)
 

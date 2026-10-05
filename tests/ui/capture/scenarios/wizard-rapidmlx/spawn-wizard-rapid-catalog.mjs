@@ -16,6 +16,10 @@ const CATALOG = {
     { name: 'qwen3.8-27b-mixed-3.5bpw', display_name: 'qwen3.8-27b-mixed-3.5bpw', size_bytes: 14817679360, parser: 'qwen3_coder_xml', template: 'qwen3', hybrid: false, mtp: true, mtp_sidecar: 'rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX@3' },
     { name: 'gemma4-27b-4bit', display_name: 'gemma4-27b-4bit', size_bytes: 16106127360, parser: '—', template: 'gemma4', hybrid: true, mtp: false },
     { name: 'llama4-8b-4bit', display_name: 'llama4-8b-4bit', size_bytes: 4294967296, parser: 'llama3_json', template: 'llama4', hybrid: false, mtp: false },
+    // Literal upstream pipeline labels; these must never appear in the picker.
+    { name: 'whisper-large-v3', size_bytes: 3113851289, parser: '[audio:stt]' },
+    { name: 'cogvideox-fun-5b-bf16', size_bytes: 21045339750, parser: '[video:gen]' },
+    { name: 'image-generation', size_bytes: 4294967296, parser: '[image:gen]' },
   ],
   recommendations: [
     { rank: 1, label: 'Smart', name: 'qwen3.8-27b-4bit', cached: true, specs: '20.0 GB RAM · 92% capability · ~41 tok/s' },
@@ -95,6 +99,13 @@ export default async function (ctx) {
     () => document.querySelectorAll('#rapid-catalog-panel .rapid-catalog-row').length >= 5,
     { timeout: 8000 },
   );
+  const visibleNames = await page.evaluate(() =>
+    [...document.querySelectorAll('#rapid-catalog-panel .rapid-catalog-name')].map(row => row.textContent),
+  );
+  const expectedNames = CATALOG.models.slice(0, 5).map(model => model.name);
+  if (visibleNames.length !== expectedNames.length || visibleNames.some(name => !expectedNames.includes(name))) {
+    throw new Error(`Curated picker leaked media pipelines: ${JSON.stringify(visibleNames)}`);
+  }
   await sleep(400);
   await page.evaluate(() => document.getElementById('rapid-catalog-panel')?.scrollIntoView({ behavior: 'instant', block: 'start' }));
   await sleep(250);
