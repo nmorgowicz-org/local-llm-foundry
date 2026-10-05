@@ -749,10 +749,11 @@ impl PresetBundleSpec {
                     .to_string(),
             );
         }
-        if !self
-            .performance_options
-            .iter()
-            .any(|p| p.id == self.default_selection.performance_id)
+        if !self.performance_options.is_empty()
+            && !self
+                .performance_options
+                .iter()
+                .any(|p| p.id == self.default_selection.performance_id)
         {
             issues.push(
                 "DEFAULT_SELECTION_PERFORMANCE_NOT_ALLOWED: default performance is not in performance_options"

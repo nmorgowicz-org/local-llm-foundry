@@ -112,11 +112,23 @@ pub fn request_from_api_payload(payload: &serde_json::Value) -> Result<LocalLaun
 }
 
 pub fn validate_preset_backend_config(preset: &ModelPreset) -> Result<()> {
-    if preset.bundle.is_some() && preset.backend != InferenceBackend::LlamaCpp {
-        anyhow::bail!(
-            "preset '{}' contains a llama.cpp bundle but is not a llama.cpp preset",
-            preset.name
-        );
+    // Bundles are legal on both backends: llama.cpp uses the full policy
+    // machinery, Rapid-MLX uses them for variant switching (see
+    // `presets::resolver::resolve_rapid_bundle`). What must never happen is a
+    // llama bundle on a rapid preset carrying llama-only flat fields.
+    if let (Some(bundle), true) = (
+        preset.bundle.as_ref(),
+        preset.backend != InferenceBackend::LlamaCpp,
+    ) {
+        let llama_only = !bundle.kv_policy_options.is_empty()
+            || !bundle.performance_options.is_empty()
+            || !bundle.cpu_moe_options.is_empty();
+        if llama_only {
+            anyhow::bail!(
+                "preset '{}' carries a llama.cpp bundle but is not a llama.cpp preset",
+                preset.name
+            );
+        }
     }
     match preset.backend {
         InferenceBackend::LlamaCpp if preset.rapid_mlx.is_some() => anyhow::bail!(
@@ -723,10 +735,17 @@ mod tests {
 
     #[test]
     fn rapid_mlx_preset_rejects_a_llama_bundle() {
+        // A llama-flavored bundle (K/V policy catalog) on a Rapid-MLX preset is
+        // still rejected; a bare default bundle is legal variant switching.
         let mut preset = valid_rapid_mlx_preset();
-        preset.bundle = Some(crate::presets::bundle::PresetBundleSpec::default());
+        let mut bundle = crate::presets::bundle::PresetBundleSpec::default();
+        bundle.kv_policy_options = vec![crate::presets::bundle::LlamaKvPolicyId::Q8Q8];
+        preset.bundle = Some(bundle);
         let error = validate_preset_backend_config(&preset).unwrap_err();
         assert!(error.to_string().contains("not a llama.cpp preset"));
+        let mut preset = valid_rapid_mlx_preset();
+        preset.bundle = Some(crate::presets::bundle::PresetBundleSpec::default());
+        validate_preset_backend_config(&preset).unwrap();
     }
 
     #[tokio::test]

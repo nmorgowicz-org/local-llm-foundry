@@ -120,7 +120,7 @@ function buildDrawer() {
 
     body.appendChild((() => {
         const row = el('section', 'bundle-row bundle-row-quant');
-        row.appendChild(el('h3', 'bundle-row-label', 'Model quantization'));
+        row.appendChild(el('h3', 'bundle-row-label', 'Model variant'));
         const wrap = el('div', 'bundle-controls bundle-radio-group');
         wrap.dataset.slot = 'quant';
         row.appendChild(wrap);
@@ -553,6 +553,7 @@ function renderContext(d, bundle, reasons) {
 function renderKv(d, bundle, reasons) {
     const wrap = d.body.querySelector('.bundle-row-kv .bundle-radio-group');
     wrap.textContent = '';
+    d.body.querySelector('.bundle-row-kv').hidden = !(bundle?.kv_policy_options || []).length;
     (bundle?.kv_policy_options || []).forEach(policy => {
         const id = `bundle-kv-${policy}`;
         const label = el('label', 'bundle-radio-label');
@@ -586,6 +587,7 @@ function renderKv(d, bundle, reasons) {
 function renderPerf(d, bundle) {
     const controls = d.body.querySelector('.bundle-row-perf .bundle-controls');
     controls.textContent = '';
+    d.body.querySelector('.bundle-row-perf').hidden = !(bundle?.performance_options || []).length;
     (bundle?.performance_options || []).forEach(option => {
         const btn = el('button', 'bundle-perf', option.label || `${option.batch_size} / ${option.ubatch_size}`);
         btn.type = 'button';

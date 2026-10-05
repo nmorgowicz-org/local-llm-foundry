@@ -98,6 +98,12 @@ pub fn resolve_preset(
     selection: Option<&PresetBundleSelection>,
     capabilities: &CapabilitySnapshot,
 ) -> Result<ResolvedLaunch, Vec<ValidationIssue>> {
+    // Rapid-MLX bundles are variant switching only: pick one adopted MLX model
+    // and a context size. The llama.cpp machinery (K/V policies, MoE offload,
+    // capability-gated launch policy) does not apply.
+    if preset.backend == crate::inference::InferenceBackend::RapidMlx {
+        return resolve_rapid_bundle(preset, selection);
+    }
     let mut issues =
         crate::presets::validation::validate_llama_launch_policy(preset, Some(capabilities));
     if let Err(error) = crate::inference::launch::validate_preset_backend_config(preset) {
@@ -163,6 +169,81 @@ pub fn materialize_default_projection(
     capabilities: &CapabilitySnapshot,
 ) -> Result<ResolvedLaunch, Vec<ValidationIssue>> {
     resolve_preset(preset, None, capabilities)
+}
+
+/// Variant-switching resolution for Rapid-MLX bundles: artifact + context only.
+fn resolve_rapid_bundle(
+    preset: &ModelPreset,
+    selection: Option<&PresetBundleSelection>,
+) -> Result<ResolvedLaunch, Vec<ValidationIssue>> {
+    let mut issues = Vec::new();
+    if let Err(error) = crate::inference::launch::validate_preset_backend_config(preset) {
+        issues.push(issue(
+            "backend",
+            "INVALID_BACKEND_CONFIG",
+            error.to_string(),
+        ));
+    }
+    let Some(bundle) = preset.bundle.as_ref() else {
+        if selection.is_some() {
+            issues.push(issue(
+                "selection",
+                "PRESET_NOT_BUNDLED",
+                "a one-shot selection requires a bundled preset",
+            ));
+        }
+        if !issues.is_empty() {
+            return Err(issues);
+        }
+        return Ok(build_result(preset, preset.clone(), None, Vec::new()));
+    };
+    issues.extend(
+        bundle::validate_bundle_structural(preset)
+            .into_iter()
+            .map(|message| issue("bundle", "INVALID_BUNDLE", message)),
+    );
+    let requested = selection.unwrap_or(&bundle.default_selection);
+    let weights = bundle.artifact(&requested.artifact_id).ok_or_else(|| {
+        vec![issue(
+            "selection",
+            "artifact_not_found",
+            format!(
+                "artifact '{}' is not present in the bundle",
+                requested.artifact_id
+            ),
+        )]
+    })?;
+    if weights.role != bundle::PresetArtifactRole::Weights {
+        issues.push(issue(
+            "selection",
+            "artifact_not_weights",
+            "only weights artifacts may be selected",
+        ));
+    }
+    if weights.local_path.is_none() {
+        issues.push(issue(
+            "selection",
+            "artifact_not_local",
+            format!(
+                "artifact '{}' has no adopted local path",
+                requested.artifact_id
+            ),
+        ));
+    }
+    if !bundle.context_options.is_empty()
+        && !bundle.context_options.contains(&requested.context_size)
+    {
+        issues.push(issue(
+            "selection",
+            "context_not_allowed",
+            "selected context is not in the bundle catalog",
+        ));
+    }
+    if !issues.is_empty() {
+        return Err(issues);
+    }
+    let (effective, changes) = materialize_selection(preset, bundle, requested);
+    Ok(build_result(preset, effective, Some(requested), changes))
 }
 
 fn build_result(
@@ -807,6 +888,71 @@ mod tests {
             default_selection: selection,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn rapid_bundle_resolves_artifact_and_context_without_llama_policy() {
+        let weights = bundle::PresetModelArtifact {
+            id: "mxfp4".into(),
+            role: PresetArtifactRole::Weights,
+            local_path: Some("/models/hub/models--nightmedia--Qwen3.8-27B-AREX-mxfp4-mlx".into()),
+            quantization: PresetArtifactQuantization::default(),
+            metadata: PresetArtifactMetadata::default(),
+            ..Default::default()
+        };
+        let selection = PresetBundleSelection {
+            artifact_id: "mxfp4".into(),
+            context_size: 33_000,
+            kv_policy: LlamaKvPolicyId::Unknown("int8".into()),
+            performance_id: String::new(),
+            n_cpu_moe: None,
+            intent_source: None,
+        };
+        let bundle_spec = PresetBundleSpec {
+            artifacts: vec![weights],
+            context_options: vec![33_000, 131_000],
+            kv_policy_options: Vec::new(),
+            performance_options: Vec::new(),
+            cpu_moe_options: Vec::new(),
+            curated_selections: vec![selection.clone()],
+            default_selection: selection,
+            ..Default::default()
+        };
+        let mut preset = bundle::create_bundle_preset("Qwen MLX", bundle_spec);
+        preset.backend = crate::inference::InferenceBackend::RapidMlx;
+        preset.rapid_mlx = Some(crate::inference::rapid_mlx::RapidMlxConfig {
+            model_path: "/models/hub/models--nightmedia--Qwen3.8-27B-AREX-mxfp4-mlx".into(),
+            port: 8123,
+            ..Default::default()
+        });
+
+        // Default projection: no llama capability validation, artifact path wins.
+        let caps = snapshot();
+        let resolved =
+            materialize_default_projection(&preset, &caps).expect("rapid bundle resolves");
+        assert_eq!(
+            resolved.preset.model_path,
+            "/models/hub/models--nightmedia--Qwen3.8-27B-AREX-mxfp4-mlx"
+        );
+        assert_eq!(resolved.preset.context_size, 33_000);
+
+        // A one-shot switch to the other context resolves with a recorded change.
+        let mut switch = preset.bundle.as_ref().unwrap().default_selection.clone();
+        switch.context_size = 131_000;
+        let switched =
+            resolve_preset(&preset, Some(&switch), &caps).expect("context switch resolves");
+        assert_eq!(switched.preset.context_size, 131_000);
+        assert!(
+            switched
+                .changes
+                .iter()
+                .any(|change| change.field == "context_size")
+        );
+
+        // An unlisted context is rejected.
+        let mut bad = switch;
+        bad.context_size = 999;
+        assert!(resolve_preset(&preset, Some(&bad), &caps).is_err());
     }
 
     #[test]

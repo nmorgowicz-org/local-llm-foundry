@@ -65,7 +65,7 @@ arguments, **On** passes `--fit on` with the selected target margin, and **Off**
 **Use cases** influence KV quant defaults and ubatch:
 
 | Use case | Min KV quant | Ubatch | Notes |
-|----------|-------------|--------|-------|
+| ---------- | ------------- | -------- | ------- |
 | General | q8_0 | 1024 | Everyday chat, coding |
 | Agentic | q8_0 | 1024 | Tool-calling, RAG; forces q8_0 minimum |
 | Roleplay | q4_0 | 512 | Max context; q4_0 acceptable |
@@ -82,7 +82,7 @@ explicit choice.
 The recommendation is deterministic:
 
 | Model source | Recommendation |
-|---|---|
+| --- | --- |
 | GGUF file or GGUF repository inventory | llama.cpp |
 | Validated MLX directory | Rapid-MLX when Apple Silicon and a compatible runtime are available |
 | Typed Rapid-MLX Hugging Face repository or alias | Rapid-MLX when locally available |
@@ -99,6 +99,7 @@ llama.cpp exposes three model-source types:
 ![Step 2 — Model source selection](../screenshots/spawn-wizard--llamacpp-local--model-source-cards.png)
 
 #### Local GGUF File
+
 - User enters or browses an absolute path to a `.gguf` file.
 - Parameter count (`param_b`) is inferred from the filename using `infer_param_b_from_name()`.
 - Architecture heuristics are applied via `ModelArch::from_name_and_params()`.
@@ -115,6 +116,7 @@ revision/hash and conversion recipe required for reproducibility.
 GGUF remains first-class under llama.cpp and is not converted during this flow.
 
 #### HuggingFace Hub
+
 See [HuggingFace Integration](#huggingface-integration) below.
 
 ![HuggingFace model setup](../screenshots/spawn-wizard-hf-download--llamacpp-local--idle.png)
@@ -124,6 +126,7 @@ See [HuggingFace Integration](#huggingface-integration) below.
 - Entry point for storing the token in-app: **Settings → Models**.
 
 #### Third-Party Import
+
 See [Third-Party Model Import](#third-party-model-import) below.
 
 When selected, the wizard immediately scans known tool directories and renders discovered models as a grouped, clickable card list — no path typing required. A manual fallback text input and Browse button remain available for models outside the scanned locations.
@@ -137,7 +140,7 @@ template unset. The preset editor exposes the same lookup through its
 **Use recommended template** button next to the chat-template path.
 
 | Model family | Templates (first is recommended) | Source |
-|---|---|---|
+| --- | --- | --- |
 | Qwen models | froggeric's Fixed Template; Sharp Template (peculiar-ragdoll) | HuggingFace: `froggeric/Qwen-Fixed-Chat-Templates`, `peculiar-ragdoll/Qwen-Sharp-Chat-Templates` |
 | Gemma 4 | Google's official template; jscott3201's agentic fork | HuggingFace `google/gemma-4-31B-it`; GitHub |
 
@@ -169,9 +172,11 @@ The core tuning step. Populated using `POST /api/vram/auto-size` after model sel
 The VRAM estimator is a hardware-aware configuration guide: it combines your detected memory capacity, backend (e.g., Metal vs CUDA), and the chosen model’s architecture (layers, experts, MoE depth) to propose settings that fit your machine. It is not a guarantee; extremely large or unusual models can exceed its estimates. For details on how it works and how to correct its assumptions, see [VRAM Estimator Reference](vram-estimator.md).
 
 #### Model Header
+
 Shows the selected repo (`owner/model-name`) and selected quant. If multiple GGUF files exist in the repo, a **Quantization** dropdown lets the user swap without leaving the step. A **Vision (mmproj)** dropdown appears when projector files are detected. For imatrix repositories whose model card links to a separate static-quant repository, the wizard follows that link and lists its projector files automatically. If a Qwen 3.5 variant's linked static repo has no projector, the wizard checks verified same-architecture repositories from mradermacher and then Unsloth.
 
 To change the HuggingFace repo after initial selection:
+
 - Click the small ✎ icon next to the repo label.
 - Type a new repo ID (e.g. `owner/model-GGUF`), then press Enter or click Load.
 - The wizard re-fetches GGUF files and quants from the new repo and refreshes the header.
@@ -181,7 +186,7 @@ Projector choices are ranked only after matching the selected model's filename/s
 The wizard marks and auto-selects these family-specific formats when available:
 
 | Model family | Preferred mmproj | Basis |
-|---|---|---|
+| --- | --- | --- |
 | Qwen 3.5 | F16 | Unsloth's documented llama.cpp vision default |
 | Qwen 3.6 | F16 | Practical default; upstream publishes F16 and BF16 without claiming one is optimized |
 | Gemma 4, including QAT | F16 | Unsloth's documented llama.cpp vision default |
@@ -203,7 +208,7 @@ Upstream references:
 #### Main Hardware Grid
 
 | Control | ID | Default | Notes |
-|---------|----|---------|-------|
+| --------- | ---- | --------- | ------- |
 | GPU layers | `spawn-gpu-layers` | Auto | Auto / All / Manual |
 | Layers count | `spawn-gpu-layers-manual` | — | Shown only when Manual selected |
 | Context size | `spawn-context-size` | 8192 | Primary tuning control. Quick-pick buttons: 65k RP, 131k Agent, 160k Large, 212k Large, 262k Max, Model max |
@@ -212,7 +217,9 @@ Upstream references:
 | KV Unified | `spawn-kv-unified` | Default | Default omits the flag; On passes `--kv-unified`; Off passes `--no-kv-unified` |
 
 #### Context Fit Modes
+
 The right rail leads with a **Current context** summary and model-max status, then shows outcome-oriented presets:
+
 - **Reliable agents** — high-precision KV cache (`q8_0/q8_0`)
 - **More context** — lower-precision KV cache (`q4_0/q4_0`)
 - **Full precision** — lossless KV cache (`f16/f16`)
@@ -220,10 +227,11 @@ The right rail leads with a **Current context** summary and model-max status, th
 Selecting a mode applies its KV quant preset and fills `Context size` to the maximum that fits that mode. The raw K/V cache dropdowns remain available underneath for advanced users and continue to populate from llama-server capabilities.
 
 #### VRAM Breakdown Bar
+
 Animated stacked bar updated live as controls change. Segments:
 
 | Segment | Color | Content |
-|---------|-------|---------|
+| --------- | ------- | --------- |
 | Weights | Indigo | Model weights after MoE CPU offload |
 | KV cache | Amber | Context × KV bytes per token |
 | mmproj | Cyan | Vision projector (if loaded) |
@@ -234,20 +242,23 @@ Animated stacked bar updated live as controls change. Segments:
 Recommendation thresholds (from `full_estimate`):
 
 | State | Condition | Indicator |
-|-------|-----------|-----------|
+| ------- | ----------- | ----------- |
 | Fit | total ≤ 82% of VRAM | green |
 | Tight | total ≤ 100% of VRAM | yellow |
 | Risk | total ≤ 120% of VRAM | orange |
 | WontFit | total > 120% of VRAM | red |
 
 #### MTP Section
+
 Shown automatically when the model has `mtp_depth > 0` (detected from GGUF metadata or architecture heuristics). Controls:
+
 - **Enable MTP (experimental)** checkbox — adds `--spec-type draft-mtp,ngram-mod`. It defaults off on Apple Metal because current llama.cpp builds can lose throughput there; other backends keep the opt-out default.
 - **Draft tokens/step** (`hw-mtp-depth`) — sets `--spec-draft-n-max` and forces `--parallel 1`. Benchmark enabled versus disabled because results vary by model, backend, context length, and acceptance rate.
 
 #### mlock Warning (macOS)
 
 When mlock is checked and the VRAM estimate is Tight or Risk, a warning appears:
+
 - mlock pins model memory so macOS cannot page it out.
 - On unified-memory Macs, with a tight estimate, this can push macOS into compression or swap and make the desktop unresponsive.
 - If the warning is shown, either disable mlock, reduce context size, or choose a smaller quant.
@@ -257,7 +268,7 @@ This guidance is also shown in the preset editor.
 #### Advanced Options Grid
 
 | Control | ID | Default | Notes |
-|---------|----|---------|-------|
+| --------- | ---- | --------- | ------- |
 | Batch size | `spawn-batch-size` | 2048 | Prompt batch size (`-b`) |
 | Parallel slots | `spawn-parallel-slots` | 1 | Concurrent inference slots |
 | Ubatch size | `spawn-ubatch-size` | 512 | Micro-batch for prompt processing |
@@ -284,7 +295,7 @@ These native controls are distinct from chat-template thinking kwargs and from
 Rapid-MLX reasoning mode:
 
 | Control | ID | Behavior |
-|---------|----|----------|
+| --------- | ---- | ---------- |
 | Projector offload | `spawn-mmproj-offload` | Default / On / Off for the multimodal projector; On/Off is disabled when the selected binary's capability snapshot does not advertise that polarity (`CAPABILITY_UNAVAILABLE` on resolve) |
 | Reasoning effort | `spawn-reasoning-effort` | Native `--reasoning-effort`; unsupported advertised values remain visible but disabled |
 | Reasoning format | `spawn-reasoning-format` | Native `--reasoning-format`; unsupported values remain visible but disabled |
@@ -297,7 +308,7 @@ round-tripping; it is not migrated to native reasoning preservation.
 #### Speculative Decoding
 
 | Mode | Flag | Notes |
-|------|------|-------|
+| ------ | ------ | ------- |
 | None | — | Disabled |
 | N-gram | `--spec-type ngram-mod` | Zero model-memory overhead; workload-dependent speedup |
 | MTP + N-gram | `--spec-type draft-mtp,ngram-mod` | Built-in MTP heads; benchmark per backend, especially on Metal |
@@ -311,6 +322,7 @@ round-tripping; it is not migrated to native reasoning preservation.
 
 Merged into the Hardware step alongside the tuning controls above. Shows a human-readable
 review of all selected parameters. Health checks:
+
 - VRAM fit status
 - Context fit relative to training context (`n_ctx_train`); the hardware step highlights whether the current value is within model max, at model max, or extended beyond it, and warns when n_ctx > n_ctx_train with a YaRN suggestion
 - MoE CPU offload impact on generation speed
@@ -318,6 +330,7 @@ review of all selected parameters. Health checks:
 - Network exposure warnings when the user selects `0.0.0.0`, especially if no API key is set
 
 This step also includes:
+
 - Editable sampling defaults
 - Model-family mode pills from `/api/model-defaults` so users can switch between recommended presets before editing individual fields
 - Additional sampling controls for `top_k` and `max_tokens`
@@ -343,6 +356,11 @@ to Launch.
   the editor checks GGUF metadata and asks for confirmation when a candidate
   does not match the existing tune. It never groups files from a shared name or
   family automatically.
+- Rapid-MLX presets support the same **Model variants** section for variant
+  switching: each artifact is an adopted local MLX model directory (verified by
+  introspection), and the launch choice is which variant to run at which
+  context size. K/V policy, batch geometry, and CPU MoE placement are
+  llama.cpp-only and are not offered for Rapid-MLX bundles.
 - A bundle keeps the selected weights artifact, context, named K/V policy,
   concrete batch/micro-batch pair, and (for proven MoE models) CPU expert
   placement as one saved default. Dense models do not offer CPU MoE choices.
@@ -367,7 +385,6 @@ list.
 
 ![Step 6 — Spawn](../screenshots/spawn-wizard--llamacpp-local--launch-spawn.png)
 
-
 - A launched `llama-server` process is started with `--no-warmup`.
 - Rapid-MLX launches use the selected typed model source and compatible discovered
   runtime without carrying llama.cpp-only flags.
@@ -384,7 +401,7 @@ Structured output forces the model to produce output matching a specific format 
 ### Options
 
 | Option | What it is | When to use |
-|--------|-----------|-------------|
+| -------- | ----------- | ------------- |
 | Freeform | No constraints | Normal chatting (default) |
 | GBNF Grammar | Rules defining a custom output language | Fine-grained control, compact formats |
 | JSON Schema | JSON structure definition | App contracts, most structured output use cases |
@@ -396,6 +413,7 @@ GBNF (Grouped Backus-Naur Form) defines rules for what the model can generate. T
 Community grammars are available at [llama.cpp/grammars](https://github.com/ggml-org/llama.cpp/tree/master/grammars).
 
 Example — a grammar that produces valid JSON objects:
+
 ```
 root ::= object
 object ::= "{" ws string ":" value ("," string ":" value)* "}" ws
@@ -408,6 +426,7 @@ JSON Schema defines the shape of the JSON the model returns (field names, types,
 Easier than raw GBNF for most cases.
 
 Example — a schema requiring a `answer` field:
+
 ```json
 {
   "type": "object",
@@ -425,6 +444,7 @@ Structured output adds a small per-token validation overhead. For simple schemas
 ### API Payload
 
 When a grammar or JSON schema is configured, the launch payload includes:
+
 - `grammar`: the GBNF grammar string (passed as `--grammar`)
 - `json_schema`: the JSON schema object (passed as `--json-schema`)
 
@@ -448,6 +468,7 @@ Only one should be set at a time. If both are configured, the output mode settin
 - The Model-step wizard helper links directly to the Hugging Face token settings page and explains the `New token` → `Read` flow.
 
 #### POST /api/hf/search
+
 Search the HuggingFace Hub for GGUF model repos.
 
 ```json
@@ -477,6 +498,7 @@ Search the HuggingFace Hub for GGUF model repos.
 - Sort options: `downloads` (default), `likes`, `trending`, `createdAt`
 
 #### POST /api/hf/author-models
+
 Browse all GGUF repos by a specific author.
 
 ```json
@@ -486,13 +508,17 @@ Browse all GGUF repos by a specific author.
 ```
 
 #### GET /api/hf/community-picks
+
 Returns the curated community picks list (hot models shown in the wizard discover panel). Requires `api-token`.
 
 #### GET /api/hf/quantizers
+
 Returns the list of tracked quantizer authors (used to filter search results). Requires `api-token`.
 
 #### PUT /api/hf/quantizers
+
 Update the quantizer author list.
+
 ```json
 { "quantizers": [{ "username": "bartowski", "display_name": "bartowski", "description": "..." }] }
 ```
@@ -504,6 +530,7 @@ Update the quantizer author list.
   - Recommended quants are still marked with a badge (★) for guidance.
 
 #### POST /api/hf/files
+
 List GGUF files in a repo.
 
 ```json
@@ -540,7 +567,7 @@ List GGUF files in a repo.
 Every GGUF file listed by `/api/hf/files` includes a `quant_type` field indicating how the quantization was produced:
 
 | `quant_type` | Label | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `standard` | Standard | Standard llama.cpp quantization (Q4_K_M, Q5_K_M, Q8_0, etc.). No calibration data required. |
 | `imatrix` | imatrix | Importance-matrix calibrated (typically mradermacher's `i1-*` naming). Generally better quality at the same bits-per-weight. |
 | `unsloth_dynamic` | UD (Unsloth) | Unsloth Dynamic quants (UD-*) use a mixed bits-per-weight approach per layer. Excellent quality/size tradeoff. |
@@ -558,7 +585,7 @@ Note: The VRAM estimator runs before the wizard asks you to choose a context siz
 The wizard discover panel includes quantizer quick-pick buttons to filter by known GGUF producers:
 
 | Quantizer | Style | Description |
-|---|---|---|
+| --- | --- | --- |
 | bartowski | standard | Standard GGUF quants, most popular, extremely reliable |
 | mradermacher | imatrix | imatrix specialist; `i1-*` files use importance calibration |
 | Unsloth | ud | UD dynamic quants, mixed bpw per layer, excellent quality/size |
@@ -586,7 +613,7 @@ The quantizer author list is loaded from `GET /api/hf/quantizers` and can be cus
 The HuggingFace search supports the following sort options (passed as `sort` in the `/api/hf/search` request):
 
 | Sort Value | Behavior |
-|---|---|
+| --- | --- |
 | `downloads` | Most downloaded (default; best signal for quality community quants) |
 | `likes` | Most liked |
 | `trendingScore` | HuggingFace trending score |
@@ -597,6 +624,7 @@ The search and browse UI includes param size filter controls for narrowing resul
 ### Download
 
 #### POST /api/hf/download
+
 Start a streaming download. Returns immediately with a download ID; poll `/status` for progress.
 
 ```json
@@ -618,6 +646,7 @@ Start a streaming download. Returns immediately with a download ID; poll `/statu
 - Error handling: stream errors are classified (transient, timeout, auth, not-found) and surfaced as human-readable toasts; the frontend shows start, conflict, and failure toasts so the user always knows the state.
 
 #### GET /api/models/download/:id/status
+
 Poll download progress.
 
 ```json
@@ -631,9 +660,11 @@ Poll download progress.
 - `eta`: seconds remaining (0 when unknown)
 
 #### POST /api/models/download/:id/cancel
+
 Cancel a running download. Returns `{ "ok": true }`.
 
 #### GET /api/hf/download-dir
+
 Returns the effective models directory.
 
 ```json
@@ -652,23 +683,28 @@ When the download starts, the model card displays an indeterminate progress bar 
 ### MTP and IQ Quant Detection
 
 The model browser and library recognize and label:
+
 - MTP (Multi-Token Prediction) / draft models: model cards may show a provisional `-mtp.gguf` or repository hint (Unsloth convention). Separate draft/head files frequently expose little introspectable metadata, so these hints remain useful for candidate discovery but are labeled inferred and never treated as confirmed MTP depth. Confirmed GGUF/HF metadata wins for primary-model controls and launch policy.
 - IQ quantizations: filenames with `-IQ` or `_IQ` (e.g., `IQ2_XXS`, `IQ3_M`, `IQ4_XL`) are correctly parsed, including the full `IQ` prefix in the quant label.
 
 ### Model Card
 
 #### GET /api/hf/card?repo=owner/model
+
 Fetch and return the raw model card markdown for display in the in-app card panel. Content is rendered with `marked` and sanitized with `DOMPurify` before display.
 
 ### HF Token
 
 #### GET /api/hf/token
+
 Returns whether a token is currently stored: `{ "set": true }`. Requires `api-token`.
 
 #### PUT /api/hf/token
+
 Set or update the HF token: `{ "token": "hf_xxxx..." }`. Requires `api-token`. Written to `~/.config/llama-monitor/hf-token` with mode 600.
 
 #### DELETE /api/hf/token
+
 Remove the stored token. Requires `api-token`.
 
 ### Wizard-to-Settings Flow
@@ -682,6 +718,7 @@ Remove the stored token. Requires `api-token`.
 ## Third-Party Model Import
 
 #### POST /api/third-party-models
+
 Scan local model directories from Ollama, LM Studio, Jan, GPT4All, and the HuggingFace hub cache. Returns models with display names and tool labels — no path knowledge required from the user.
 
 ```json
@@ -704,7 +741,7 @@ Scan local model directories from Ollama, LM Studio, Jan, GPT4All, and the Huggi
 **Scanned tools and paths:**
 
 | Tool | macOS | Linux | Windows |
-|------|-------|-------|---------|
+| ------ | ------- | ------- | --------- |
 | Ollama | `~/.ollama/models/` | `~/.ollama/models/` | `%USERPROFILE%\.ollama\models\` |
 | LM Studio | `~/.lmstudio/models/`, `~/.cache/lm-studio/models/`, `~/Library/Application Support/LM Studio/models/` | `~/.lmstudio/models/`, `~/.cache/lm-studio/models/` | `%USERPROFILE%\.lmstudio\models\` |
 | Jan | `~/Library/Application Support/Jan/models/` | `~/.jan/models/` | `%APPDATA%\Jan\models\` |
@@ -718,6 +755,7 @@ Scan local model directories from Ollama, LM Studio, Jan, GPT4All, and the Huggi
 **Model introspection:** Ollama blob paths are accepted by `POST /api/model/introspect` (the `.gguf` extension check is relaxed for paths matching `*/blobs/sha256-*`).
 
 **Extra model directories:** Users can configure additional scan locations in Settings → Models → Additional model locations. These directories are:
+
 - Scanned recursively (depth 5) and shown in the import card list under a `Local — <dirname>` group header
 - Added to the file browser allowlist so Browse can navigate into them directly
 - Accepted by the model introspection endpoint
@@ -728,6 +766,7 @@ Scan local model directories from Ollama, LM Studio, Jan, GPT4All, and the Huggi
 ## Model Introspection (GGUF Metadata Reader)
 
 #### POST /api/models/gguf-meta
+
 Read the KV metadata header of a GGUF file directly from the binary — no llama-server
 process is required. Works on GGUF v1, v2, and v3. Calling this on a 70B model is
 effectively instant because tensor weights are never touched. Works on GGUF v1, v2, and v3 files. Calling this on a 70B model is effectively instant because tensor weights are never touched.
@@ -762,6 +801,7 @@ effectively instant because tensor weights are never touched. Works on GGUF v1, 
 - The `architecture` field is the canonical key (`general.architecture`) used by llama.cpp to select its model loader, present in every well-formed GGUF regardless of filename
 
 #### POST /api/model/introspect
+
 Legacy endpoint. Runs `llama-server --print-model-metadata` on a local GGUF file and returns parsed architecture fields. Results are cached in `~/.config/llama-monitor/model-cache/<sha256>.json`.
 
 ```json
@@ -789,6 +829,7 @@ Legacy endpoint. Runs `llama-server --print-model-metadata` on a local GGUF file
 ### HF Resolve Origin
 
 #### POST /api/hf/resolve-origin
+
 Identify the HuggingFace source of a local GGUF file from its filename. Searches HF for matching repos, scores candidates by filename match, file existence, and size, and returns a ranked list.
 
 ```json
@@ -823,6 +864,7 @@ Identify the HuggingFace source of a local GGUF file from its filename. Searches
 ### Spawn Wizard Helpers
 
 #### POST /api/spawn-wizard/mtp-draft-check
+
 Check whether a compatible MTP draft model is available (local or on HF) for a Gemma4 model.
 Requires `api-token`.
 
@@ -848,6 +890,7 @@ Requires `api-token`.
 - Resolves Unsloth HF draft model info for download.
 
 #### POST /api/spawn-wizard/import-launch-file
+
 Import settings from an existing launch script (e.g. from another tool).
 Requires `api-token`.
 
@@ -866,6 +909,7 @@ All require `api-token`. Templates are stored under the config directory
 (e.g. `~/.config/llama-monitor/chat-templates/`).
 
 #### POST /api/chat-template/fetch
+
 Fetch a chat template from a URL (https only; SSRF guard applied).
 
 ```json
@@ -874,6 +918,7 @@ Fetch a chat template from a URL (https only; SSRF guard applied).
 ```
 
 #### POST /api/chat-template/upload
+
 Save a chat template to the local library; returns a template ID and on-disk path.
 
 ```json
@@ -882,6 +927,7 @@ Save a chat template to the local library; returns a template ID and on-disk pat
 ```
 
 #### GET /api/chat-template/dir
+
 Return the path to the local chat-template directory (creates it if needed).
 
 ```json
@@ -889,6 +935,7 @@ Return the path to the local chat-template directory (creates it if needed).
 ```
 
 #### POST /api/chat-template/install-hf
+
 Install a template from HuggingFace by repo and file; caches the file so it is not
 redownloaded unless `force` is true.
 
@@ -900,6 +947,7 @@ redownloaded unless `force` is true.
 - Uses the configured HF token (if set) for gated repos.
 
 #### POST /api/chat-template/install-url
+
 Install a template from a GitHub raw URL (only raw.githubusercontent.com allowed);
 cached by name like install-hf.
 
@@ -923,6 +971,7 @@ When you install a new build while a llama-server is already running, llama-moni
 ![Llama.cpp Version Modal](../screenshots/llama-updater--llamacpp-local--version-modal.png)
 
 #### GET /api/llama-binary/platform-info
+
 Returns instant (no network) platform and backend metadata.
 
 ```json
@@ -938,9 +987,11 @@ Returns instant (no network) platform and backend metadata.
 ```
 
 #### GET /api/llama-binary/latest
+
 Returns the latest available release version (cached, fetched from GitHub). Used with `platform-info` to show the version that will be downloaded.
 
 #### POST /api/llama-binary/update
+
 Download and install a llama.cpp release binary.
 
 ```json
@@ -962,6 +1013,7 @@ Download and install a llama.cpp release binary.
 ## Benchmark
 
 #### POST /api/benchmark
+
 Run a quick performance test against the running llama-server. Sends a fixed prompt, measures prompt processing throughput, generation throughput, and time-to-first-token, then classifies the result.
 
 ```json
@@ -991,7 +1043,7 @@ Run a quick performance test against the running llama-server. Sends a fixed pro
 The verdict is determined by generation throughput and time-to-first-token:
 
 | Verdict | Condition |
-|---|---|
+| --- | --- |
 | `good` | gen >= 15 t/s AND TTFT <= 1500 ms |
 | `moderate` | gen >= 4 t/s AND TTFT <= 3000 ms |
 | `poor` | below moderate thresholds |
@@ -1001,7 +1053,7 @@ The verdict is determined by generation throughput and time-to-first-token:
 Hints are plain-text diagnostics. Suggestions are structured one-click fixes:
 
 | Suggestion | Trigger Condition |
-|---|---|
+| --- | --- |
 | Enable flash attention | TTFT > 1500 ms |
 | Reduce context window | gen < 5 t/s |
 | Increase batch size | prompt < 300 t/s |
@@ -1016,6 +1068,7 @@ For MoE models, suggestions include a specific `n_cpu_moe` value computed from t
 See [vram-estimator.md](vram-estimator.md) for the estimation formulas and `ModelArch` field reference.
 
 #### POST /api/vram/estimate
+
 Quick estimate for a single configuration.
 
 ```json
@@ -1045,6 +1098,7 @@ Quick estimate for a single configuration.
 ```
 
 #### POST /api/vram/estimate-breakdown
+
 Full estimate with per-component breakdown.
 
 ```json
@@ -1067,6 +1121,7 @@ Full estimate with per-component breakdown.
 ```
 
 #### POST /api/vram/auto-size
+
 Compute optimal settings for a model + hardware combination.
 
 ```json
@@ -1103,9 +1158,9 @@ Compute optimal settings for a model + hardware combination.
 **MTP Depth:** For models with Multi-Token Prediction capability (`mtp_depth > 0`), the VRAM estimator includes the MTP prediction-head overhead in the `mtp_bytes` field of the breakdown. The overhead is estimated as 1.5% of the model size per MTP depth level. This is visible in the VRAM Breakdown Bar as a purple segment labeled "MTP".
 
 #### POST /api/vram/quant-compare
+
 Pre-download quant comparison table for a model. Shown in the wizard as the **Quant Advisor** panel.
 When a Hugging Face GGUF file has been selected, the wizard supplements this request with architecture fields read from that file's GGUF header. If header metadata is unavailable, the advisor omits those structural fields and keeps the degraded estimate path; it does not infer architecture from the filename or repository name.
-
 
 ![Quant Advisor — pre-download VRAM comparison](../screenshots/spawn-wizard--llamacpp-local--model-quant-advisor.png)
 
@@ -1123,6 +1178,7 @@ When a Hugging Face GGUF file has been selected, the wizard supplements this req
 ```
 
 #### POST /api/model-defaults
+
 Returns model-family sampling recommendations for the Hardware-step review form and the preset editor.
 
 ```json
@@ -1176,7 +1232,7 @@ Returns model-family sampling recommendations for the Hardware-step review form 
 ## Related Files
 
 | File | Purpose |
-|------|---------|
+| ------ | --------- |
 | `src/llama/vram_estimator/` | All VRAM estimation logic and `ModelArch` (module dir: `estimate.rs`, `arch_heuristics.rs`, `quant_table.rs`) |
 | `src/llama/spawn_wizard.rs` | `auto_size` wrapper called by the wizard API |
 | `src/model_download.rs` | Streaming download manager with resume support |

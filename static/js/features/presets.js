@@ -375,6 +375,15 @@ function renderPresetBundleEditor() {
     if (moeSelect && isMoe) replaceOptions(moeSelect, (_presetBundleDraft.cpu_moe_options || []).map(v => ({ value: v, label: v === 0 ? 'All experts on GPU (0)' : `${v} expert layers on CPU` })), _presetBundleDraft.default_selection?.n_cpu_moe ?? 0);
     const meta = section.querySelector('#modal-bundle-artifact-meta');
     if (meta && selected) meta.textContent = `${selected.metadata?.gguf_architecture || 'Unknown architecture'} · ${selected.metadata?.model_kind || 'unknown'}${selected.metadata?.block_count ? ` · ${selected.metadata.block_count} layers` : ''}`;
+    // Rapid-MLX bundles are variant switching: one context dial, no llama.cpp
+    // K/V policy, batch geometry, or MoE placement.
+    const isRapid = _currentModalPreset()?.backend === 'rapid_mlx';
+    const kvField = section.querySelector('#modal-bundle-kv')?.closest('.pe-field, .pe-row, div');
+    const perfField = section.querySelector('#modal-bundle-performance')?.closest('.pe-field, .pe-row, div');
+    const moeField = section.querySelector('#modal-bundle-cpu-moe')?.closest('.pe-field, .pe-row, div');
+    for (const [field, hidden] of [[kvField, isRapid], [perfField, isRapid], [moeField, isRapid]]) {
+        if (field) field.hidden = hidden;
+    }
     updateBundleSelectionFromEditor();
 }
 
@@ -470,8 +479,9 @@ async function addBundleArtifact() {
     const role = document.getElementById('modal-bundle-artifact-role')?.value || 'weights';
     const path = pathEl?.value.trim() || '';
     const warning = document.getElementById('modal-bundle-artifact-warning');
+    const isMlx = _currentModalPreset()?.backend === 'rapid_mlx';
     if (!path) {
-        if (warning) warning.textContent = 'Choose a local GGUF artifact first.';
+        if (warning) warning.textContent = isMlx ? 'Choose a local MLX model directory first.' : 'Choose a local GGUF artifact first.';
         return;
     }
     if ((_presetBundleDraft.artifacts || []).some(artifact => artifact.local_path === path)) {
@@ -480,6 +490,25 @@ async function addBundleArtifact() {
     }
     const headers = { ...(window.authHeaders ? window.authHeaders() : {}), 'Content-Type': 'application/json' };
     let metadata;
+    if (isMlx) {
+        // MLX artifacts are directories; introspection is advisory — the
+        // resolver only needs an adopted local path and a display name.
+        try {
+            const response = await fetch('/api/models/mlx-introspect', { method: 'POST', headers, body: JSON.stringify({ model_path: path }) });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+            const config = data.data?.config || {};
+            metadata = {
+                gguf_architecture: config.model_type || '',
+                model_kind: config.num_experts ? 'moe' : 'dense',
+                block_count: config.num_hidden_layers || null,
+                native_context_limit: data.data?.config?.max_position_embeddings || null,
+            };
+        } catch (error) {
+            if (warning) warning.textContent = `MLX model directory could not be verified: ${error.message || error}`;
+            return;
+        }
+    } else {
     try {
         const response = await fetch('/api/models/gguf-meta', { method: 'POST', headers, body: JSON.stringify({ model_path: path }) });
         const data = await response.json().catch(() => ({}));
@@ -488,6 +517,7 @@ async function addBundleArtifact() {
     } catch (error) {
         if (warning) warning.textContent = `GGUF metadata could not be verified: ${error.message || error}`;
         return;
+    }
     }
     const existingWeights = (_presetBundleDraft.artifacts || []).find(artifact => artifact.role === 'weights');
     const mismatch = existingWeights && role === 'weights' && (
@@ -1601,15 +1631,26 @@ function _renderPresetVram(el, data) {
         ? Math.max(0, Math.min(100, (ramBytes / ramAvail) * 100)).toFixed(1) + '%'
         : '0%';
     const ramLabel = ramAvail > 0 ? `${fmt(ramBytes)} / ${fmt(ramAvail)}` : fmt(ramBytes);
-    const ramBar = !_presetIsUnified && ramBytes > 0
-        ? `<div class="preset-vram-row preset-vram-row--ram">
-            <span class="preset-memory-kind">RAM</span>
-            <div class="vram-bar${ramBytes > ramAvail && ramAvail > 0 ? ' over-budget' : ''}">
-                <div class="vram-segment seg-ram-moe" style="width:${ramPct}" title="CPU model weights"></div>
-            </div>
-            <span class="launch-card-vram-total">${ramLabel}</span>
-        </div>`
-        : '';
+    let ramBar = null;
+    if (!_presetIsUnified && ramBytes > 0) {
+        const ramRow = document.createElement('div');
+        ramRow.className = 'preset-vram-row preset-vram-row--ram';
+        const ramKind = document.createElement('span');
+        ramKind.className = 'preset-memory-kind';
+        ramKind.textContent = 'RAM';
+        const ramBarEl = document.createElement('div');
+        ramBarEl.className = ramBytes > ramAvail && ramAvail > 0 ? 'vram-bar over-budget' : 'vram-bar';
+        const ramSeg = document.createElement('div');
+        ramSeg.className = 'vram-segment seg-ram-moe';
+        ramSeg.style.width = ramPct;
+        ramSeg.title = 'CPU model weights';
+        ramBarEl.appendChild(ramSeg);
+        const ramTotal = document.createElement('span');
+        ramTotal.className = 'launch-card-vram-total';
+        ramTotal.textContent = ramLabel;
+        ramRow.append(ramKind, ramBarEl, ramTotal);
+        ramBar = ramRow;
+    }
 
     const parts = [];
     if (weights > 0) parts.push(`Weights ${fmt(weights)}`);
@@ -1672,52 +1713,71 @@ function _renderPresetVram(el, data) {
         const mlockHint = mlockOn && isTight && _presetIsUnified
             ? ' — disable mlock to avoid wiring all model memory'
             : '';
-        systemLine = `<div class="preset-vram-sysram${isTight ? ' preset-vram-sysram--warn' : ''}">` +
-            `System RAM: ${sysGib.toFixed(1)} GiB now → ~${afterGib.toFixed(1)} GiB after loading (${pctAfter}% of ${totalGib.toFixed(0)} GiB${wiredNote})${mlockHint}` +
-            `</div>`;
+        systemLine = { warn: isTight, text:
+            `System RAM: ${sysGib.toFixed(1)} GiB now → ~${afterGib.toFixed(1)} GiB after loading (${pctAfter}% of ${totalGib.toFixed(0)} GiB${wiredNote})${mlockHint}` };
     } else if (!_presetIsUnified && (data.ram_bytes || 0) > 0) {
         const ramNeeded = data.ram_bytes || 0;
         const ramAvail = data.available_ram_bytes || _presetAvailableRamBytes();
         const ramOver = ramAvail > 0 && ramNeeded > ramAvail;
         const ramCapacity = ramAvail > 0 ? ` / ${fmt(ramAvail)} system RAM available` : '';
-        systemLine = `<div class="preset-vram-sysram${ramOver ? ' preset-vram-sysram--warn' : ''}">` +
-            `CPU weights: ${fmt(ramNeeded)}${ramCapacity}` +
-            `</div>`;
+        systemLine = { warn: ramOver, text: `CPU weights: ${fmt(ramNeeded)}${ramCapacity}` };
     }
 
-    // Builder item 6: distinct active/retained segments for Rapid-MLX when applicable.
-    const kvSegments = isRapidSplit
-        ? `<div class="vram-segment seg-active-kv" style="width:${pct(activeKV)}" title="Active KV Cache"></div>
-           <div class="vram-segment seg-retained-kv" style="width:${pct(retainedKV)}" title="Retained KV Cache"></div>`
-        : `<div class="vram-segment seg-kv" style="width:${pct(kv)}" title="KV Cache"></div>`;
-    const linearSeg = linearState > 0
-        ? `<div class="vram-segment seg-overhead" style="width:${pct(linearState)}" title="Linear Attention State"></div>`
-        : '';
-    const tqSeg = tqTransient > 0
-        ? `<div class="vram-segment seg-overhead" style="width:${pct(tqTransient)}" title="TurboQuant Transient"></div>`
-        : '';
-
-    // eslint-disable-next-line no-unsanitized/property -- DOMPurify sanitizes the VRAM bar HTML
-    el.innerHTML = window.DOMPurify.sanitize(`
-        <div class="preset-vram-row">
-            <span class="preset-memory-kind">${_presetIsUnified ? 'MEM' : 'VRAM'}</span>
-            <div class="vram-bar">
-                <div class="vram-segment seg-weights" style="width:${pct(weights)}" title="Weights"></div>
-                ${kvSegments}
-                <div class="vram-segment seg-mmproj" style="width:${pct(mmproj)}" title="Vision Projector"></div>
-                <div class="vram-segment seg-mtp" style="width:${pct(mtp)}" title="MTP Heads"></div>
-                ${linearSeg}
-                ${tqSeg}
-                <div class="vram-segment seg-overhead" style="width:${pct(overhead)}" title="Overhead"></div>
-                <div class="vram-segment seg-free" style="width:${pct(free)}" title="Budget Headroom"></div>
-            </div>
-            <span class="launch-card-vram-total">~${fmt(used)}</span>
-            <span class="preset-vram-badge preset-vram-badge--${recClass}">${recLabel}</span>
-        </div>
-        ${ramBar}
-        ${parts.length ? `<div class="preset-vram-breakdown">${parts.join(' · ')}</div>` : ''}
-        ${systemLine}
-    `);
+    // Build with DOM APIs — every dynamic value is a width/class, never markup.
+    const seg = (cls, width, title) => {
+        const node = document.createElement('div');
+        node.className = `vram-segment ${cls}`;
+        node.style.width = width;
+        node.title = title;
+        return node;
+    };
+    const row = document.createElement('div');
+    row.className = 'preset-vram-row';
+    const kind = document.createElement('span');
+    kind.className = 'preset-memory-kind';
+    kind.textContent = _presetIsUnified ? 'MEM' : 'VRAM';
+    const bar = document.createElement('div');
+    bar.className = 'vram-bar';
+    bar.append(
+        seg('seg-weights', pct(weights), 'Weights'),
+    );
+    if (isRapidSplit) {
+        bar.append(seg('seg-active-kv', pct(activeKV), 'Active KV Cache'));
+        bar.append(seg('seg-retained-kv', pct(retainedKV), 'Retained KV Cache'));
+    } else {
+        bar.append(seg('seg-kv', pct(kv), 'KV Cache'));
+    }
+    bar.append(
+        seg('seg-mmproj', pct(mmproj), 'Vision Projector'),
+        seg('seg-mtp', pct(mtp), 'MTP Heads'),
+    );
+    if (linearState > 0) bar.append(seg('seg-overhead', pct(linearState), 'Linear Attention State'));
+    if (tqTransient > 0) bar.append(seg('seg-overhead', pct(tqTransient), 'TurboQuant Transient'));
+    bar.append(
+        seg('seg-overhead', pct(overhead), 'Overhead'),
+        seg('seg-free', pct(free), 'Budget Headroom'),
+    );
+    const total = document.createElement('span');
+    total.className = 'launch-card-vram-total';
+    total.textContent = `~${fmt(used)}`;
+    const badge = document.createElement('span');
+    badge.className = `preset-vram-badge preset-vram-badge--${recClass}`;
+    badge.textContent = recLabel;
+    row.append(kind, bar, total, badge);
+    el.replaceChildren(row);
+    if (ramBar) el.appendChild(ramBar);
+    if (parts.length) {
+        const breakdown = document.createElement('div');
+        breakdown.className = 'preset-vram-breakdown';
+        breakdown.textContent = parts.join(' · ');
+        el.appendChild(breakdown);
+    }
+    if (systemLine) {
+        const sysNode = document.createElement('div');
+        sysNode.className = systemLine.warn ? 'preset-vram-sysram preset-vram-sysram--warn' : 'preset-vram-sysram';
+        sysNode.textContent = systemLine.text;
+        el.appendChild(sysNode);
+    }
     el.style.display = '';
     const explain = document.getElementById('preset-vram-explain');
     if (explain) explain.onclick = () => openEstimateEvidenceDrawer(data, 'Preset memory estimate', explain);
@@ -2109,8 +2169,9 @@ export function openPresetModal(mode, section, seedPreset = null) {
 
     const variantsNav = modal.querySelector('.preset-nav-item[data-section="variants"]');
     const variantsSection = modal.querySelector('.preset-editor-section[data-section="variants"]');
-    const supportsBundles = newPresetSeed?.backend !== 'rapid_mlx'
-        && _currentModalPreset()?.backend !== 'rapid_mlx';
+    // Bundles are variant switching on both backends; Rapid-MLX bundles carry
+    // MLX model directories plus context options only (no KV/MoE machinery).
+    const supportsBundles = true;
     if (variantsNav) variantsNav.hidden = !supportsBundles;
     if (variantsSection) variantsSection.hidden = !supportsBundles;
     const convertButton = modal.querySelector('#preset-convert-bundle');
@@ -2287,13 +2348,28 @@ function _renderPresetsPanel() {
         trashBtn.type = 'button';
         trashBtn.className = 'preset-panel-card-trash';
         trashBtn.title = 'Delete preset';
-        trashBtn.innerHTML =
-            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
-            'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-            '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>' +
-            '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>' +
-            '<line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>' +
-            '</svg>';
+        const svgNs = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(svgNs, 'svg');
+        svg.setAttribute('width', '14');
+        svg.setAttribute('height', '14');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('fill', 'none');
+        svg.setAttribute('stroke', 'currentColor');
+        svg.setAttribute('stroke-width', '2');
+        svg.setAttribute('stroke-linecap', 'round');
+        svg.setAttribute('stroke-linejoin', 'round');
+        for (const [tag, attrs] of [
+            ['path', { d: 'M3 6h18' }],
+            ['path', { d: 'M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2' }],
+            ['path', { d: 'M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6' }],
+            ['line', { x1: '10', y1: '11', x2: '10', y2: '17' }],
+            ['line', { x1: '14', y1: '11', x2: '14', y2: '17' }],
+        ]) {
+            const child = document.createElementNS(svgNs, tag);
+            for (const [name, value] of Object.entries(attrs)) child.setAttribute(name, value);
+            svg.appendChild(child);
+        }
+        trashBtn.appendChild(svg);
         trashBtn.addEventListener('click', async (e) => {
             e.stopPropagation();
             showToastWithActions(
@@ -2560,10 +2636,32 @@ async function _fetchSidecarsForPreset() {
             updatePresetVram();
         }
 
-        // Build sidecar list
-        let html = '';
+        // Build sidecar list with DOM APIs — server strings stay text nodes.
+        const hint = (color, text) => {
+            const node = document.createElement('div');
+            node.className = 'pe-field-hint';
+            node.style.color = color;
+            node.style.marginBottom = '5px';
+            node.textContent = text;
+            return node;
+        };
+        const statusSpan = (color, text) => {
+            const node = document.createElement('span');
+            node.style.color = color;
+            node.textContent = ' ' + text;
+            return node;
+        };
+        const timeAgo = (dt) => {
+            if (!dt) return '';
+            const diff = (Date.now() - new Date(dt).getTime()) / 1000;
+            if (diff < 60) return 'just now';
+            if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+            if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+            return Math.floor(diff / 86400) + 'd ago';
+        };
+        listEl.replaceChildren();
         if (matchingSidecar && _speculativeSidecarAutoSelected) {
-            html += '<div class="pe-field-hint" style="color:var(--success,#5ce68a); margin-bottom:5px;">Auto-selected validated sidecar for this trunk. The path remains editable below.</div>';
+            listEl.appendChild(hint('var(--success,#5ce68a)', 'Auto-selected validated sidecar for this trunk. The path remains editable below.'));
         } else if (!matchingSidecar) {
             const reason = selectedTrunk.startsWith('/')
                 ? (modelInput?.value.trim()
@@ -2572,7 +2670,7 @@ async function _fetchSidecarsForPreset() {
                 : (modelInput?.value.trim()
                     ? 'Managed auto-selection is unavailable for this model reference; the explicit sidecar path is preserved.'
                     : 'Select a local MLX trunk or enter an explicit local sidecar.');
-            html += '<div class="pe-field-hint" style="color:var(--warn,#e6a41c); margin-bottom:5px;">' + reason + '</div>';
+            listEl.appendChild(hint('var(--warn,#e6a41c)', reason));
         }
         data.sidecars.forEach((s, i) => {
             const p = rapidMlxSidecarProvenance(s);
@@ -2581,26 +2679,37 @@ async function _fetchSidecarsForPreset() {
                     ? (p.estimatedMemoryBytes / 1073741824).toFixed(1) + ' GB'
                     : Math.round(p.estimatedMemoryBytes / 1048576) + ' MB')
                 : '? VRAM';
-
             const trunkShort = p.trunk ? p.trunk.split('/').pop() : '?';
 
-            html += '<button type="button" class="pe-action-btn" data-sidecar-index="' + i + '" style="display:block; width:100%; text-align:left; padding:6px 8px; margin-bottom:4px; font-size:11px; background:var(--color-surface,#1a1d24); border:1px solid var(--color-border,#2a2d34); border-radius:4px; cursor:pointer;">';
-            html += '<strong>' + DOMPurify.sanitize(s.slug) + '</strong> ';
-            html += '<span style="color:var(--text-muted,#888);">' + vram + '</span>';
-            if (p.trunk) html += ' <span style="color:var(--text-muted,#888);">for ' + DOMPurify.sanitize(trunkShort) + '</span>';
-            if (p.repairMode === 'recipe_reconstruction') html += ' <span style="color:var(--accent,#8cc8ff);">Recipe reconstructed</span>';
-            else if (p.repairMode === 'direct_parent') html += ' <span style="color:var(--text-muted,#888);">Direct parent</span>';
-            if (p.requalificationStatus === 'qualified') html += ' <span style="color:var(--success,#5ce68a);">Qualified</span>';
-            else if (p.requalificationStatus === 'screened') html += ' <span style="color:var(--success,#5ce68a);">Screened</span>';
-            else if (p.requalificationStatus === 'still-blocked') html += ' <span style="color:var(--warn,#e6a41c);">StillBlocked</span>';
-            else if (p.requalificationStatus === 'uninterpretable') html += ' <span style="color:var(--err,#e65c5c);">Uninterpretable</span>';
-            if (p.builtAt) html += ' <span style="color:var(--text-muted,#888);">(' + (function(dt) { if (!dt) return ''; const d = new Date(dt); const diff = (Date.now() - d.getTime()) / 1000; if (diff < 60) return 'just now'; if (diff < 3600) return Math.floor(diff / 60) + 'm ago'; if (diff < 86400) return Math.floor(diff / 3600) + 'h ago'; return Math.floor(diff / 86400) + 'd ago'; })(p.builtAt) + ')</span>';
-            if (!p.normCheckPassed) html += ' <span style="color:var(--err,#e65c5c);">⚠ norm check failed</span>';
-            html += '</button>';
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'pe-action-btn';
+            btn.setAttribute('data-sidecar-index', String(i));
+            btn.style.cssText = 'display:block; width:100%; text-align:left; padding:6px 8px; margin-bottom:4px; font-size:11px; background:var(--color-surface,#1a1d24); border:1px solid var(--color-border,#2a2d34); border-radius:4px; cursor:pointer;';
+            const slug = document.createElement('strong');
+            slug.textContent = s.slug;
+            btn.appendChild(slug);
+            btn.appendChild(document.createTextNode(' '));
+            const vramSpan = document.createElement('span');
+            vramSpan.style.color = 'var(--text-muted,#888)';
+            vramSpan.textContent = vram;
+            btn.appendChild(vramSpan);
+            if (p.trunk) {
+                const forSpan = document.createElement('span');
+                forSpan.style.color = 'var(--text-muted,#888)';
+                forSpan.textContent = ' for ' + trunkShort;
+                btn.appendChild(forSpan);
+            }
+            if (p.repairMode === 'recipe_reconstruction') btn.appendChild(statusSpan('var(--accent,#8cc8ff)', 'Recipe reconstructed'));
+            else if (p.repairMode === 'direct_parent') btn.appendChild(statusSpan('var(--text-muted,#888)', 'Direct parent'));
+            if (p.requalificationStatus === 'qualified') btn.appendChild(statusSpan('var(--success,#5ce68a)', 'Qualified'));
+            else if (p.requalificationStatus === 'screened') btn.appendChild(statusSpan('var(--success,#5ce68a)', 'Screened'));
+            else if (p.requalificationStatus === 'still-blocked') btn.appendChild(statusSpan('var(--warn,#e6a41c)', 'StillBlocked'));
+            else if (p.requalificationStatus === 'uninterpretable') btn.appendChild(statusSpan('var(--err,#e65c5c)', 'Uninterpretable'));
+            if (p.builtAt) btn.appendChild(statusSpan('var(--text-muted,#888)', `(${timeAgo(p.builtAt)})`));
+            if (!p.normCheckPassed) btn.appendChild(statusSpan('var(--err,#e65c5c)', '⚠ norm check failed'));
+            listEl.appendChild(btn);
         });
-
-        // eslint-disable-next-line no-unsanitized/property -- sidecar list built from our own API, all server strings are safe
-        listEl.innerHTML = html;
 
         // Wire click handlers
         listEl.querySelectorAll('[data-sidecar-index]').forEach(btn => {
@@ -2627,8 +2736,11 @@ async function _fetchSidecarsForPreset() {
             });
         });
     } catch (err) {
-        // eslint-disable-next-line no-unsanitized/property -- error message sanitized via DOMPurify
-        listEl.innerHTML = '<span style="color:var(--err,#e65c5c);">Failed to load sidecars: ' + DOMPurify.sanitize(err.message) + '</span>';
+        listEl.replaceChildren();
+        const fail = document.createElement('span');
+        fail.style.color = 'var(--err,#e65c5c)';
+        fail.textContent = 'Failed to load sidecars: ' + err.message;
+        listEl.appendChild(fail);
     }
 }
 
@@ -2904,48 +3016,56 @@ function _renderSpeculativePinStatus() {
     const isLocalSidecar = !_speculativeTrustState.revision || _speculativeTrustState.revision.length > 12;
 
     let parts = [];
-    /* Status indicator */
-    parts.push('<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:' + (stale ? 'var(--warn,#e6a41c)' : 'var(--success,#5ce68a)') + '"></span>');
+    /* Build with DOM APIs — repo ids, paths, and messages stay text nodes. */
+    const span = (color, text) => {
+        const node = document.createElement('span');
+        node.style.color = color;
+        node.textContent = text;
+        return node;
+    };
+    el.replaceChildren();
+    const dot = document.createElement('span');
+    dot.style.cssText = 'display:inline-block; width:8px; height:8px; border-radius:50%; background:' + (stale ? 'var(--warn,#e6a41c)' : 'var(--success,#5ce68a)');
+    el.appendChild(dot);
+    el.appendChild(document.createTextNode(' '));
 
     if (isLocalSidecar) {
-        /* Local sidecar: show slug + label */
-        parts.push('<span>' + _speculativeTrustState.repoId + '</span>');
-        parts.push('<span style="color:var(--text-muted,#888);">(local sidecar)</span>');
+        const name = document.createElement('span');
+        name.textContent = _speculativeTrustState.repoId;
+        el.appendChild(name);
+        el.appendChild(span('var(--text-muted,#888)', '(local sidecar)'));
     } else {
-        /* HF repo pin: show repo@sha */
-        parts.push('<span>' + _speculativeTrustState.repoId + '@' + rev + '</span>');
+        const pin = document.createElement('span');
+        pin.textContent = _speculativeTrustState.repoId + '@' + rev;
+        el.appendChild(pin);
     }
 
-    /* Trust flag */
-    if (trust) {
-        parts.push('<span style="color:var(--err,#e65c5c);">(trust_remote_code)</span>');
-    }
-    /* Memory estimate */
+    if (trust) el.appendChild(span('var(--err,#e65c5c)', '(trust_remote_code)'));
+
     if (mem != null) {
-        let memStr;
-        if (mem >= 1073741824) {
-            memStr = '~' + (mem / 1073741824).toFixed(1) + ' GB';
-        } else {
-            memStr = '~' + Math.round(mem / 1048576) + ' MB';
-        }
-        parts.push('<span style="color:var(--text-muted,#888);">~' + memStr + ' VRAM</span>');
+        const memStr = mem >= 1073741824
+            ? '~' + (mem / 1073741824).toFixed(1) + ' GB'
+            : '~' + Math.round(mem / 1048576) + ' MB';
+        el.appendChild(span('var(--text-muted,#888)', '~' + memStr + ' VRAM'));
     }
-    /* Quantization info (from mtplx_runtime.json) */
     if (sidecar) {
-        parts.push('<span style="color:var(--text-muted,#888);">sidecar:' + sidecar + (depth != null ? ' d' + depth : '') + '</span>');
+        el.appendChild(span('var(--text-muted,#888)', 'sidecar:' + sidecar + (depth != null ? ' d' + depth : '')));
     }
-    /* Resolved time */
     if (_speculativeTrustState.resolvedAt) {
-        parts.push('<span style="color:var(--text-muted,#888);">resolved ' + _timeAgo(_speculativeTrustState.resolvedAt) + '</span>');
+        el.appendChild(span('var(--text-muted,#888)', 'resolved ' + _timeAgo(_speculativeTrustState.resolvedAt)));
     }
 
     /* Re-check button only for HF repo pins */
     if (!isLocalSidecar) {
-        parts.push('<button type="button" class="pe-action-btn" id="modal-rapid-speculative-pin-recheck" style="font-size:11px; padding:2px 8px; margin-left:4px;">Re-check</button>');
+        const recheck = document.createElement('button');
+        recheck.type = 'button';
+        recheck.className = 'pe-action-btn';
+        recheck.id = 'modal-rapid-speculative-pin-recheck';
+        recheck.style.cssText = 'font-size:11px; padding:2px 8px; margin-left:4px;';
+        recheck.textContent = 'Re-check';
+        el.appendChild(recheck);
     }
 
-    // eslint-disable-next-line no-unsanitized/property -- DOMPurify sanitizes HTML
-    el.innerHTML = DOMPurify.sanitize(parts.join(' '));
     wrap.style.display = '';
 
     /* Wire re-check button */
@@ -2962,8 +3082,7 @@ function _renderSpeculativePinStatus() {
                 );
                 const data = await resp.json();
                 if (!data || data.ok !== true) {
-                    // eslint-disable-next-line no-unsanitized/property -- DOMPurify sanitizes HTML
-                    el.innerHTML = DOMPurify.sanitize('<span style="color:var(--err,#e65c5c);">Re-check failed: ' + (data?.error || 'unknown') + '</span>');
+                    el.replaceChildren(span('var(--err,#e65c5c)', 'Re-check failed: ' + (data?.error || 'unknown')));
                     setTimeout(_renderSpeculativePinStatus, 3000);
                     return;
                 }
@@ -2975,8 +3094,7 @@ function _renderSpeculativePinStatus() {
                 _speculativeTrustState.stale = false;
                 _renderSpeculativePinStatus();
             } catch (e) {
-                // eslint-disable-next-line no-unsanitized/property -- DOMPurify sanitizes HTML
-                el.innerHTML = DOMPurify.sanitize('<span style="color:var(--err,#e65c5c);">Re-check failed: ' + e.message + '</span>');
+                el.replaceChildren(span('var(--err,#e65c5c)', 'Re-check failed: ' + e.message));
                 setTimeout(_renderSpeculativePinStatus, 3000);
             } finally {
                 btn.disabled = false;
@@ -3495,7 +3613,19 @@ export async function savePreset(event) {
                 changes.forEach(({ label, from, to }) => {
                     const li = document.createElement('li');
                     li.className = 'preset-change-item';
-                    li.innerHTML = `<span class="preset-change-field">${escapeHtml(label)}</span> <span class="preset-change-from">${escapeHtml(from)}</span><span class="preset-change-arrow">→</span><span class="preset-change-to">${escapeHtml(to)}</span>`;
+                    const field = document.createElement('span');
+                    field.className = 'preset-change-field';
+                    field.textContent = label;
+                    const fromSpan = document.createElement('span');
+                    fromSpan.className = 'preset-change-from';
+                    fromSpan.textContent = from;
+                    const arrow = document.createElement('span');
+                    arrow.className = 'preset-change-arrow';
+                    arrow.textContent = '→';
+                    const toSpan = document.createElement('span');
+                    toSpan.className = 'preset-change-to';
+                    toSpan.textContent = to;
+                    li.append(field, ' ', fromSpan, arrow, toSpan);
                     list.appendChild(li);
                 });
                 summary.style.display = '';

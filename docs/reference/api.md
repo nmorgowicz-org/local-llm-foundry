@@ -521,7 +521,7 @@ Returns the redacted setup-card projection and a catalog concurrency token. Card
 
 Auth: api-token.
 
-Resolves the saved bundle selection or an optional one-shot `selection` through the server-owned resolver. Resolution does not write state. The optional top-level `workload_policy` overrides the bundle policy for this preview only; it is not part of the typed selection. The response includes `sel-v1:` and `cfg-v1:` identifiers, normalized selection, changes, capability reasons, and a tagged estimate status. It never includes a flat preset, local artifact paths, API keys, or raw launch arguments.
+Resolves the saved bundle selection or an optional one-shot `selection` through the server-owned resolver. Resolution does not write state. The optional top-level `workload_policy` overrides the bundle policy for this preview only; it is not part of the typed selection. On Rapid-MLX presets bundles are variant switching: the resolver validates only the selected weights artifact and context size, then materializes the artifact's local path and context into the launch configuration — K/V policies, batch geometry, MoE placement, and llama.cpp capability gating do not apply. The response includes `sel-v1:` and `cfg-v1:` identifiers, normalized selection, changes, capability reasons, and a tagged estimate status. It never includes a flat preset, local artifact paths, API keys, or raw launch arguments.
 
 ```json
 {"selection": {"artifact_id": "weights-q4", "context_size": 160000, "kv_policy": "q4_0_q4_0", "performance_id": "balanced", "n_cpu_moe": 0}, "workload_policy": "general_chat"}
