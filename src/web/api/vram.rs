@@ -1431,7 +1431,11 @@ fn is_mlx_hf_repo_alias(value: &str) -> bool {
 /// Otherwise, query the HF tree API to sum .safetensors sizes.
 /// If that fails or returns nothing, falls back to returning 0 (caller must error).
 async fn resolve_mlx_hf_size(repo_id: &str, model_size_override: Option<u64>) -> u64 {
-    if let Some(s) = model_size_override {
+    // The wizard always sends `model_size_bytes` — 0 for a local path it expects the
+    // server to size itself. A zero override must mean "no override", or the HF
+    // size resolution below is skipped and every HF-cache-picked model fails with
+    // "model_size_bytes is required".
+    if let Some(s) = model_size_override.filter(|s| *s > 0) {
         return s;
     }
     match crate::hf::resolve_mlx_repo_size_bytes(repo_id).await {
@@ -1960,5 +1964,16 @@ mod mlx_estimate_tests {
         assert_eq!(json["snapshot"]["launch_intent"], "replace_existing");
         assert!(json["snapshot"].get("after_reclaim_bytes").is_some());
         assert!(json["snapshot"].get("after_closing_apps_bytes").is_some());
+    }
+
+    #[tokio::test]
+    async fn zero_model_size_bytes_does_not_block_hf_size_resolution() {
+        // The wizard always sends `model_size_bytes` — 0 when it picked a local
+        // HF-cache directory and expects the server to size it. A zero override
+        // must fall through to the HF tree API, never short-circuit to 0.
+        assert_eq!(super::resolve_mlx_hf_size("any/repo", Some(0)).await, 0);
+        assert_eq!(super::resolve_mlx_hf_size("any/repo", None).await, 0);
+        // A real override is still honored without any network call.
+        assert_eq!(super::resolve_mlx_hf_size("any/repo", Some(15)).await, 15);
     }
 }
