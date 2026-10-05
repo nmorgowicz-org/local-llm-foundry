@@ -61,20 +61,16 @@ jobs:
           case "${{ matrix.target }}" in
             x86_64-unknown-linux-gnu)
               cp target/x86_64-unknown-linux-gnu/release/local-llm-foundry local-llm-foundry-linux-x86_64
-              cp target/x86_64-unknown-linux-gnu/release/llama-monitor llama-monitor-linux-x86_64
-              chmod +x local-llm-foundry-linux-x86_64 llama-monitor-linux-x86_64
+              chmod +x local-llm-foundry-linux-x86_64
               ;;
             aarch64-unknown-linux-gnu)
               cp target/aarch64-unknown-linux-gnu/release/local-llm-foundry local-llm-foundry-linux-aarch64
-              cp target/aarch64-unknown-linux-gnu/release/llama-monitor llama-monitor-linux-aarch64
-              chmod +x local-llm-foundry-linux-aarch64 llama-monitor-linux-aarch64
+              chmod +x local-llm-foundry-linux-aarch64
               ;;
             x86_64-pc-windows-gnu)
-              mkdir -p windows-bundle-canonical windows-bundle-legacy
+              mkdir -p windows-bundle-canonical
               cp target/x86_64-pc-windows-gnu/release/local-llm-foundry.exe windows-bundle-canonical/local-llm-foundry.exe
-              cp target/x86_64-pc-windows-gnu/release/llama-monitor.exe windows-bundle-legacy/llama-monitor.exe
               cp sensor_bridge/publish/sensor_bridge.exe windows-bundle-canonical/sensor_bridge.exe
-              cp sensor_bridge/publish/sensor_bridge.exe windows-bundle-legacy/sensor_bridge.exe
               # The WebView2 tray popover (wry, enabled via native-tray,webview-popover)
               # dynamically links WebView2Loader.dll on the GNU target. It must ship next
               # to the exe — the WebView2 *runtime* does not place it on the system path,
@@ -89,25 +85,21 @@ jobs:
               fi
               if [ -z "$webview2_dll" ]; then echo "ERROR: WebView2Loader.dll not found in build output" >&2; exit 1; fi
               cp "$webview2_dll" windows-bundle-canonical/WebView2Loader.dll
-              cp "$webview2_dll" windows-bundle-legacy/WebView2Loader.dll
               (cd windows-bundle-canonical && zip -9 -r ../local-llm-foundry-windows-x86_64.zip .)
-              (cd windows-bundle-legacy && zip -9 -r ../llama-monitor-windows-x86_64.zip .)
               ;;
             aarch64-apple-darwin)
               cp target/aarch64-apple-darwin/release/local-llm-foundry local-llm-foundry-macos-aarch64
-              cp target/aarch64-apple-darwin/release/llama-monitor llama-monitor-macos-aarch64
-              chmod +x local-llm-foundry-macos-aarch64 llama-monitor-macos-aarch64
+              chmod +x local-llm-foundry-macos-aarch64
               tar -czf local-llm-foundry-macos-aarch64.tar.gz local-llm-foundry-macos-aarch64
-              tar -czf llama-monitor-macos-aarch64.tar.gz llama-monitor-macos-aarch64
               ;;
           esac
 
           mkdir -p release-assets
           for asset in \
-            local-llm-foundry-linux-x86_64 llama-monitor-linux-x86_64 \
-            local-llm-foundry-linux-aarch64 llama-monitor-linux-aarch64 \
-            local-llm-foundry-windows-x86_64.zip llama-monitor-windows-x86_64.zip \
-            local-llm-foundry-macos-aarch64.tar.gz llama-monitor-macos-aarch64.tar.gz; do
+            local-llm-foundry-linux-x86_64 \
+            local-llm-foundry-linux-aarch64 \
+            local-llm-foundry-windows-x86_64.zip \
+            local-llm-foundry-macos-aarch64.tar.gz; do
             if [ -f "$asset" ]; then cp "$asset" release-assets/; fi
           done
 
@@ -149,26 +141,10 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ github.event_name == 'release' && github.ref_name || github.event.inputs.tag_name }}"
-          POLICY_VERSION="${VERSION#v}"
-          IFS='.' read -r MAJOR MINOR _ <<< "$POLICY_VERSION"
-          # Mirrors dropsLegacyAssets() in scripts/validate-release-contract.mjs:
-          # llama-monitor-* legacy assets are retired starting at 2.1.0.
-          if [ "$MAJOR" -gt 2 ] || { [ "$MAJOR" -eq 2 ] && [ "$MINOR" -ge 1 ]; }; then
-            DROP_LEGACY=true
-          else
-            DROP_LEGACY=false
-          fi
           ASSETS="local-llm-foundry-linux-x86_64
           local-llm-foundry-linux-aarch64
           local-llm-foundry-windows-x86_64.zip
           local-llm-foundry-macos-aarch64.tar.gz"
-          if [ "$DROP_LEGACY" = "false" ]; then
-            ASSETS="$ASSETS
-          llama-monitor-linux-x86_64
-          llama-monitor-linux-aarch64
-          llama-monitor-windows-x86_64.zip
-          llama-monitor-macos-aarch64.tar.gz"
-          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           {
             echo "assets<<ASSETS_EOF"

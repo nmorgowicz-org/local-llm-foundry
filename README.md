@@ -5,9 +5,9 @@ dashboard for models, live GPU/system telemetry, chat, a hardware-aware setup
 wizard, and managed llama.cpp builds on macOS, Linux, and Windows. Rapid-MLX is
 also supported as a first-class Apple Silicon backend.
 
-This is a compatibility-preserving rebrand of Llama Monitor. The `llama-monitor`
-executable, legacy roots, API routes, browser storage, and release aliases
-remain supported through 2.x. See the [2.0 upgrade guide](docs/reference/upgrade-2-0.md).
+This is a compatibility-preserving rebrand of Llama Monitor. Legacy roots,
+API routes, and browser storage remain supported through 2.x. The executable
+and release assets use `local-llm-foundry`; see the [2.0 upgrade guide](docs/reference/upgrade-2-0.md).
 
 One dashboard for local AI models on macOS, Linux, and Windows. Performance metrics, GPU and system telemetry, active sessions, chat, and a hardware-aware setup wizard.
 

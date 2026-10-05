@@ -19,7 +19,7 @@ if (-not ($targets -contains 'x86_64-pc-windows-gnu')) {
 }
 
 $release = Join-Path $PSScriptRoot '..\target\release'
-foreach ($binary in @('local-llm-foundry.exe', 'llama-monitor.exe')) {
+foreach ($binary in @('local-llm-foundry.exe')) {
     $path = Join-Path $release $binary
     if (-not (Test-Path -LiteralPath $path)) {
         throw "FAIL: missing release binary $path"

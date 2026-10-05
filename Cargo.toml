@@ -12,10 +12,6 @@ path = "src/lib.rs"
 name = "local-llm-foundry"
 path = "src/main.rs"
 
-[[bin]]
-name = "llama-monitor"
-path = "src/bin/llama-monitor.rs"
-
 [features]
 default = ["native-tray", "webview-popover"]
 native-tray = ["dep:tray-icon", "dep:winit"]

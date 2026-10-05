@@ -53,7 +53,7 @@ All repo-managed screenshots and GIFs go through `tests/ui/capture/index.mjs`.
 
 The harness:
 
-- launches `target/release/llama-monitor` on a temporary local port
+- launches `target/release/local-llm-foundry` on a temporary local port
 - seeds a temporary config from local `ui-settings.json`, `presets.json`, and `gpu-env.json` when present
 - attaches to `REMOTE_SERVER` unless the scenario is explicitly no-attach
 
