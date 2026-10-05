@@ -5,6 +5,7 @@
 // Uses existing API endpoints under /api/rapid-mlx/runtime/.
 
 import { showToast } from './toast.js';
+import { setHtml } from '../core/set-html.js';
 import { attachModalFocusTrap, detachModalFocusTrap, fetchReleaseList, buildReleaseBadges } from './updater-shared.js';
 
 let _runtimeStatus = null;
@@ -225,6 +226,41 @@ async function openRuntimeSettingsEvidence(opener) {
   }
 }
 
+// Dotted-numeric comparison: '0.15.10' > '0.15.9'. Non-numeric suffixes split
+// as their own segments, so '0.16.0rc1' sorts after '0.16.0' pieces that match.
+function compareVersions(a, b) {
+  const pa = String(a).split('.');
+  const pb = String(b).split('.');
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = parseInt(pa[i], 10) || 0;
+    const nb = parseInt(pb[i], 10) || 0;
+    if (na !== nb) return na - nb;
+    const sa = (pa[i] || '').replace(/^\d+/, '');
+    const sb = (pb[i] || '').replace(/^\d+/, '');
+    if (sa !== sb) return sa > sb ? 1 : -1;
+  }
+  return 0;
+}
+
+function updateRapidMlxPill() {
+  const pill = document.getElementById('rapid-mlx-pill');
+  const pillVer = document.getElementById('rapid-mlx-pill-version');
+  const active = _runtimeStatus?.active ?? null;
+  if (!pill) return;
+  if (_runtimeStatus?.supported && active && active.source_kind !== 'git') {
+    const latest = _releases[0]?.version || null;
+    const installed = active.version || '';
+    const updateAvailable = latest && installed && compareVersions(latest, installed) > 0;
+    pill.classList.toggle('top-nav-pill-update', !!updateAvailable);
+    if (updateAvailable) {
+      if (pillVer) pillVer.textContent = `Rapid-MLX · ↑ v${latest}`;
+      pill.title = `Update available: v${installed} → v${latest}. Click to manage.`;
+    }
+  } else {
+    pill.classList.remove('top-nav-pill-update');
+  }
+}
+
 export async function fetchRuntimeStatus() {
   try {
     const headers = window.authHeaders ? window.authHeaders() : {};
@@ -242,13 +278,19 @@ export async function fetchRuntimeStatus() {
     const pillVer = document.getElementById('rapid-mlx-pill-version');
     if (pill && supported && active && !mutating) {
       pill.style.display = 'flex';
-      if (pillVer) pillVer.textContent = active.source_kind === 'git'
-        ? `Rapid-MLX · ${active.source_commit?.slice(0, SHA_SHORT_LENGTH) || 'development'}`
-        : `Rapid-MLX · v${active.version}`;
-      pill.title = `${activeRuntimeLabel(active)}. Click to manage.`;
+      if (active.source_kind !== 'git') {
+        // Update state is applied by updateRapidMlxPill() once releases load;
+        // render the plain version here so the pill never shows stale arrows.
+        if (pillVer) pillVer.textContent = `Rapid-MLX · v${active.version}`;
+        pill.title = `${activeRuntimeLabel(active)}. Click to manage.`;
+      } else {
+        if (pillVer) pillVer.textContent = `Rapid-MLX · ${active.source_commit?.slice(0, SHA_SHORT_LENGTH) || 'development'}`;
+        pill.title = `${activeRuntimeLabel(active)}. Click to manage.`;
+      }
     } else if (pill) {
       pill.style.display = 'none';
     }
+    updateRapidMlxPill();
 
     // Update Settings card summary
     updateSettingsSummary();
@@ -267,6 +309,7 @@ export async function fetchReleases() {
   try {
     const data = await fetchReleaseList('/api/rapid-mlx/runtime/releases');
     _releases = data.releases || [];
+    updateRapidMlxPill();
   } catch {
     // silent
   }
@@ -493,7 +536,7 @@ function renderRapidMlxModal() {
   // Render releases list
   const listEl = document.getElementById('rapid-mlx-releases-list');
   if (listEl && supported && !mutating) {
-    listEl.innerHTML = '';
+    listEl.replaceChildren();
     const latestRelease = _releases[0] ?? null;
 
     _releases.slice(0, 10).forEach(release => {
@@ -519,7 +562,7 @@ function resetChangelogSection() {
   if (changelogEl) changelogEl.style.display = 'none';
   if (bodyEl) {
     bodyEl.style.display = 'none';
-    bodyEl.innerHTML = '';
+    bodyEl.replaceChildren();
   }
   if (toggleBtn) toggleBtn.setAttribute('aria-expanded', 'false');
 }
@@ -762,8 +805,7 @@ function showReleaseNotes(release) {
   if (!detailsEl) return;
 
   if (release.release_notes) {
-    /* eslint-disable-next-line no-unsanitized/property */
-    detailsEl.innerHTML = DOMPurify ? DOMPurify.sanitize(release.release_notes) : release.release_notes;
+    setHtml(detailsEl, release.release_notes);
     detailsEl.style.display = '';
   } else {
     detailsEl.textContent = 'No release notes available.';
@@ -801,8 +843,7 @@ function resetChangelogBody(fromVersion, toVersion) {
   bodyEl.style.display = 'none';
 
   if (cached) {
-    /* eslint-disable-next-line no-unsanitized/property */
-    bodyEl.innerHTML = cached;
+    setHtml(bodyEl, cached);
   } else {
     bodyEl.textContent = 'Loading changelog…';
     bodyEl.className = 'rapid-mlx-changelog-loading';
@@ -825,8 +866,8 @@ function toggleChangelog() {
   toggleBtn.setAttribute('aria-expanded', 'true');
   bodyEl.style.display = '';
 
-  const cachedContent = bodyEl.innerHTML.trim();
-  if (!cachedContent.includes('Loading changelog') && !cachedContent.includes('changelog-unavailable')) {
+  const cachedContent = bodyEl.textContent.trim();
+  if (!cachedContent.includes('Loading changelog') && !cachedContent.includes('Changelog unavailable')) {
     return;
   }
 
@@ -841,7 +882,7 @@ async function fetchChangelog() {
   const fromVersion = active?.version;
   const selectedRelease = findSelectedRelease();
   if (!fromVersion || !selectedRelease) {
-    bodyEl.innerHTML = '<div class="rapid-mlx-changelog-error">Changelog unavailable.</div>';
+    setHtml(bodyEl, '<div class="rapid-mlx-changelog-error">Changelog unavailable.</div>');
     return;
   }
 
@@ -868,28 +909,27 @@ async function fetchChangelog() {
 
     const html = renderChangelog(data.changelog);
     _changelogCache[cacheKey] = html;
-    /* eslint-disable-next-line no-unsanitized/property */
-    bodyEl.innerHTML = html;
+    setHtml(bodyEl, html);
   } catch {
-    bodyEl.innerHTML = '<div class="rapid-mlx-changelog-error">Changelog unavailable (network error).</div>';
+    setHtml(bodyEl, '<div class="rapid-mlx-changelog-error">Changelog unavailable (network error).</div>');
   }
 }
 
 function handleChangelogError(resp, bodyEl) {
   if (resp.status === 429 || resp.status === 503) {
-    bodyEl.innerHTML = '<div class="rapid-mlx-changelog-error">Changelog unavailable (rate-limited).</div>';
+    setHtml(bodyEl, '<div class="rapid-mlx-changelog-error">Changelog unavailable (rate-limited).</div>');
     return;
   }
   resp.json().then(data => {
     if (data.kind === 'rate_limited') {
-      bodyEl.innerHTML = '<div class="rapid-mlx-changelog-error">Changelog unavailable (rate-limited).</div>';
+      setHtml(bodyEl, '<div class="rapid-mlx-changelog-error">Changelog unavailable (rate-limited).</div>');
     } else if (data.kind === 'invalid_tag') {
-      bodyEl.innerHTML = '<div class="rapid-mlx-changelog-error">Changelog unavailable (invalid version).</div>';
+      setHtml(bodyEl, '<div class="rapid-mlx-changelog-error">Changelog unavailable (invalid version).</div>');
     } else {
-      bodyEl.innerHTML = '<div class="rapid-mlx-changelog-error">Changelog unavailable.</div>';
+      setHtml(bodyEl, '<div class="rapid-mlx-changelog-error">Changelog unavailable.</div>');
     }
   }).catch(() => {
-    bodyEl.innerHTML = '<div class="rapid-mlx-changelog-error">Changelog unavailable.</div>';
+    setHtml(bodyEl, '<div class="rapid-mlx-changelog-error">Changelog unavailable.</div>');
   });
 }
 
@@ -938,9 +978,12 @@ function renderChangelog(changelog) {
 }
 
 function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
+  return String(text)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 function timeAgo(iso) {

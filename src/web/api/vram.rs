@@ -525,22 +525,29 @@ fn api_vram_estimate_breakdown(
                     workload_scenario,
                 };
 
-                // Multimodal (MLLM-lane) checkpoints: rapid-mlx has no quantized
-                // KV path for them and refuses `--kv-cache-dtype int8/int4` at
-                // startup, so the estimate must price what a launch actually
-                // allocates — bf16 KV.
+                // Quantized KV is not launchable for most of the recipe lineup:
+                // multimodal checkpoints ride the MLLM lane (no quantized KV
+                // path), and hybrid GatedDeltaNet models back their cache with
+                // ArraysCache, which rapid-mlx refuses to quantize at startup
+                // ("the loaded model is incompatible: ArraysCache") — measured
+                // on the stock text-only recipe model, not just finetunes. The
+                // estimate must price what a launch actually allocates: bf16.
+                let rapid_kv_quant_capable =
+                    !rapid_is_multimodal_resolved && !arch.is_hybrid_attn();
                 let mut rapid_execution_policy = rapid_execution_policy;
                 let mut rapid_mllm_kv_note: Option<String> = None;
                 if is_rapid_mlx
-                    && rapid_is_multimodal_resolved
+                    && !rapid_kv_quant_capable
                     && rapid_execution_policy.effective_kv_dtype
                         != crate::llama::vram_estimator::execution_policy::KvCacheDtype::Bf16
                 {
                     rapid_execution_policy.effective_kv_dtype =
                         crate::llama::vram_estimator::execution_policy::KvCacheDtype::Bf16;
-                    rapid_mllm_kv_note = Some(
-                        "Multimodal checkpoint: rapid-mlx serves KV in bf16 (the MLLM lane has no quantized KV path); the estimate prices bf16.".to_string(),
-                    );
+                    rapid_mllm_kv_note = Some(if rapid_is_multimodal_resolved {
+                        "Multimodal checkpoint: rapid-mlx serves KV in bf16 (the MLLM lane has no quantized KV path); the estimate prices bf16.".to_string()
+                    } else {
+                        "Hybrid attention model: rapid-mlx cannot quantize the KV cache for GatedDeltaNet models (startup refuses quantized KV), so the estimate prices bf16.".to_string()
+                    });
                 }
 
                 // `ctk` / `ctv` are llama.cpp vocabulary. Rapid uses its
@@ -628,6 +635,11 @@ fn api_vram_estimate_breakdown(
                         "available_ram_bytes": breakdown.available_ram_bytes,
                         "ram_headroom_bytes": breakdown.ram_headroom_bytes,
                         "recommendation": serde_json::to_value(&breakdown.recommendation).unwrap_or(serde_json::Value::Null),
+                        "kv_quant_supported": if is_rapid_mlx {
+                            serde_json::Value::Bool(rapid_kv_quant_capable)
+                        } else {
+                            serde_json::Value::Null
+                        },
                         "note": match &rapid_mllm_kv_note {
                             Some(extra) => format!("{} {}", breakdown.note, extra),
                             None => breakdown.note.clone(),

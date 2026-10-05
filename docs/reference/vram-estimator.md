@@ -1196,6 +1196,9 @@ scaled by `head_dim / 256` for models whose head width differs from the calibrat
 Re-verified 2026-10-04, rapid-mlx 0.15.5, Qwen3.8-27B hybrid (16 attn / 4 KV / head_dim 256):
 a single 185,576-token prefill peaked at ≈127 bytes/token in bf16 — the ~2× factor over the
 naive K+V analytic (65,536 B/token) is real runtime allocation, not measurement error. The
-multimodal (MLLM) serving lane has **no quantized KV path**: `--kv-cache-dtype int8/int4` is
-refused at startup, so estimates price bf16 KV for multimodal checkpoints regardless of the
-requested dtype.
+multimodal (MLLM) serving lane has **no quantized KV path**, and neither do hybrid GatedDeltaNet
+models: their cache is an `ArraysCache`, which rapid-mlx refuses to quantize at startup
+("the loaded model is incompatible: ArraysCache") — measured on the stock text-only recipe
+model, not just finetunes. `--kv-cache-dtype int8/int4` is refused at startup for both, so
+estimates price bf16 KV whenever the model is multimodal or hybrid (`kv_quant_supported: false`
+in the estimate response), regardless of the requested dtype.

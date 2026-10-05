@@ -3310,6 +3310,13 @@ button:disabled {
   opacity: 0.65;
 }
 
+.top-nav-pill-update {
+  background: color-mix(in srgb, var(--color-warning) 15%, transparent) !important;
+  border-color: color-mix(in srgb, var(--color-warning) 40%, transparent) !important;
+  color: var(--color-warning) !important;
+  opacity: 1;
+}
+
 .llama-pill-update {
   background: color-mix(in srgb, var(--color-warning) 15%, transparent) !important;
   border-color: color-mix(in srgb, var(--color-warning) 40%, transparent) !important;
