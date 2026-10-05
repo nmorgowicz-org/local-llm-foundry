@@ -326,6 +326,8 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
     };
 
     status_route(ctx.clone(), state.clone())
+        .or(catalog_route(ctx.clone(), state.clone()))
+        .unify()
         .or(releases_route(ctx.clone(), state.clone()))
         .unify()
         .or(changelog_route(ctx.clone(), state.clone()))
@@ -1856,6 +1858,65 @@ fn releases_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
             }
         })
         .boxed()
+}
+
+/// The curated Rapid-MLX model catalog: rows of the upstream-validated
+/// `rapid-mlx models` listing (alias, measured size, parser pairing, MTP
+/// sidecar, hybrid marker). This list — not raw HF discovery — is the
+/// Rapid-MLX model surface in the spawn wizard.
+fn catalog_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
+    let config = ctx.config;
+    warp::path!("api" / "rapid-mlx" / "catalog")
+        .and(warp::get())
+        .and(warp::header::optional::<String>("authorization"))
+        .and_then(move |auth: Option<String>| {
+            let config = config.clone();
+            let state = state.clone();
+            async move {
+                if !check_api_token(&auth, &config) {
+                    return Ok(unauthorized_api_token());
+                }
+                let managed_path = managed_executable(&state).await;
+                let binary = match Discovery::resolve_binary(None, managed_path.as_deref()).await {
+                    Ok((binary, _source)) => binary,
+                    Err(_) => {
+                        return Ok::<ApiReply, warp::Rejection>(json_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "Rapid-MLX is not installed",
+                        ));
+                    }
+                };
+                match tokio::time::timeout(
+                    Duration::from_secs(15),
+                    info_query::fetch_model_list(&binary),
+                )
+                .await
+                {
+                    Ok(Ok(models)) => Ok(Box::new(warp::reply::json(&serde_json::json!({
+                        "ok": true,
+                        "models": models,
+                    }))) as ApiReply),
+                    Ok(Err(message)) => Ok(json_error(
+                        StatusCode::BAD_GATEWAY,
+                        format!("Rapid-MLX catalog query failed: {message}"),
+                    )),
+                    Err(_) => Ok(json_error(
+                        StatusCode::GATEWAY_TIMEOUT,
+                        "Rapid-MLX catalog query timed out",
+                    )),
+                }
+            }
+        })
+        .boxed()
+}
+
+async fn managed_executable(state: &RuntimeApiState) -> Option<std::path::PathBuf> {
+    let manager = manager(state).ok()?;
+    let status = tokio::task::spawn_blocking(move || manager.status())
+        .await
+        .ok()?
+        .ok()?;
+    status.active.map(|active| active.executable_path)
 }
 
 fn development_source_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {

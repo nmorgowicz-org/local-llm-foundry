@@ -11,7 +11,6 @@ const INFO_TIMEOUT: Duration = Duration::from_secs(10);
 // The `rapid-mlx models` listing is parsed and unit-tested but has no caller; model
 // discovery currently reads the filesystem and the HF API instead. Phase 8 owns the decision
 // to wire this or drop it.
-#[allow(dead_code)]
 const MODELS_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 
@@ -102,14 +101,29 @@ pub struct ExtraCapabilities {
     pub mtp_dflash: bool,
 }
 
-// The `rapid-mlx models` listing is parsed and unit-tested but has no caller; model
-// discovery currently reads the filesystem and the HF API instead. Phase 8 owns the decision
-// to wire this or drop it.
-#[allow(dead_code)]
+/// One row of the curated `rapid-mlx models` catalog. Upstream hand-validates
+/// every entry (parser pairing, MTP sidecar, measured sizes), so this list —
+/// not raw HF discovery — is the Rapid-MLX model surface.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ModelListEntry {
     pub name: String,
     pub display_name: String,
+    /// Download size in bytes, when the listing reports one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    /// Tool-call parser upstream pairs with this model (`—` → None).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parser: Option<String>,
+    /// Chat template family (`—` → None).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    /// Upstream marks hybrid-attention (GatedDeltaNet) models explicitly; these
+    /// cannot quantize KV (ArraysCache) and always serve bf16.
+    pub hybrid: bool,
+    pub mtp: bool,
+    /// Speculative-decode sidecar repo id when upstream pairs one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtp_sidecar: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -211,10 +225,6 @@ pub async fn fetch_model_profile(binary: &Path, model_id: &str) -> Result<Option
     parse_model_profile(&output.stdout, version_trusted, model_id)
 }
 
-// The `rapid-mlx models` listing is parsed and unit-tested but has no caller; model
-// discovery currently reads the filesystem and the HF API instead. Phase 8 owns the decision
-// to wire this or drop it.
-#[allow(dead_code)]
 pub async fn fetch_model_list(binary: &Path) -> Result<Vec<ModelListEntry>> {
     let output = run_query(binary, &["models"], MODELS_TIMEOUT, MAX_OUTPUT_BYTES).await?;
     parse_model_list(&output.stdout)
@@ -565,10 +575,6 @@ fn vision_keywords_match(id: &str) -> bool {
         || lower.contains("vlm")
 }
 
-// The `rapid-mlx models` listing is parsed and unit-tested but has no caller; model
-// discovery currently reads the filesystem and the HF API instead. Phase 8 owns the decision
-// to wire this or drop it.
-#[allow(dead_code)]
 fn parse_model_list(output: &str) -> Result<Vec<ModelListEntry>> {
     let mut entries = Vec::new();
     for line in output.lines() {
@@ -576,25 +582,80 @@ fn parse_model_list(output: &str) -> Result<Vec<ModelListEntry>> {
         if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('│') {
             continue;
         }
-        if let Some((name, display_name)) = parse_list_line(trimmed) {
-            entries.push(ModelListEntry { name, display_name });
+        if let Some(mut entry) = parse_list_line(trimmed) {
+            // Catalog rows always carry the measured size column; header
+            // prose ("Available models (198…)") and separator rules don't.
+            if entry.size_bytes.is_none() {
+                continue;
+            }
+            if entry.display_name.is_empty() {
+                entry.display_name = entry.name.clone();
+            }
+            entries.push(entry);
         }
     }
     Ok(entries)
 }
 
-// The `rapid-mlx models` listing is parsed and unit-tested but has no caller; model
-// discovery currently reads the filesystem and the HF API instead. Phase 8 owns the decision
-// to wire this or drop it.
-#[allow(dead_code)]
-fn parse_list_line(line: &str) -> Option<(String, String)> {
+fn parse_list_line(line: &str) -> Option<ModelListEntry> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.is_empty() {
         return None;
     }
     let name = parts[0].to_string();
-    let display = parts[1..].join(" ").trim().to_string();
-    Some((name, display))
+    let mut idx = 1usize;
+    let mut size_bytes = None;
+    // Optional "N.N GiB" column directly after the name.
+    if idx + 1 < parts.len() && parts[idx + 1] == "GiB" {
+        size_bytes = parts[idx]
+            .parse::<f64>()
+            .ok()
+            .map(|gib| (gib * 1024.0 * 1024.0 * 1024.0) as u64);
+        idx += 2;
+    }
+    // The parser and template columns always occupy a slot (a `—` placeholder
+    // means "absent"), so consume the column even when the value is absent.
+    let dash = |p: &str| p == "—" || p == "-";
+    let parser = parts.get(idx).filter(|p| !dash(p)).map(|p| p.to_string());
+    if parts.get(idx).is_some() {
+        idx += 1;
+    }
+    let template = parts.get(idx).filter(|p| !dash(p)).map(|p| p.to_string());
+    if parts.get(idx).is_some() {
+        idx += 1;
+    }
+    // MTP column: "✓ MTP" with an optional trailing sidecar id, or "✗ hybrid".
+    let mut mtp = false;
+    let mut hybrid = false;
+    let mut mtp_sidecar = None;
+    if let Some(marker) = parts.get(idx) {
+        if *marker == "✓" {
+            mtp = parts.get(idx + 1).is_some_and(|p| p.contains("MTP"));
+            if mtp {
+                idx += 2;
+                // Sidecar id ("MTP@repo@revision") trails the n/a/tier columns,
+                // so scan a bounded window rather than assuming one offset.
+                mtp_sidecar = parts.get(idx..).and_then(|rest| {
+                    rest.iter()
+                        .take(6)
+                        .find(|sc| **sc != "n/a" && (sc.contains('@') || sc.contains('/')))
+                        .map(|sc| sc.trim_start_matches("MTP@").to_string())
+                });
+            }
+        } else if *marker == "✗" {
+            hybrid = parts.get(idx + 1).is_some_and(|p| p.contains("hybrid"));
+        }
+    }
+    Some(ModelListEntry {
+        name,
+        display_name: String::new(),
+        size_bytes,
+        parser,
+        template,
+        hybrid,
+        mtp,
+        mtp_sidecar,
+    })
 }
 
 // ── Local MLX Introspection (Phase 8A3) ───────────────────────────────────────────────────
@@ -983,6 +1044,38 @@ mod tests {
             profile.extras.has_vision_tower,
             "should set has_vision_tower from HF repo path"
         );
+    }
+
+    /// Real `rapid-mlx models` table rows (0.15.x): size, parser, template,
+    /// MTP marker with sidecar, and the hybrid marker for non-MTP models.
+    #[test]
+    fn model_list_rows_capture_catalog_columns() {
+        let rows = "  qwen3.8-27b-4bit                  15.2 GiB   qwen3_coder_xml  qwen3               \u{2713} MTP      n/a         exp     exp     MTP@rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX@3\n  qwen3.8-27b-tensorfold            15.0 GiB   \u{2014}                qwen3               \u{2717} hybrid   n/a         verified exp     \u{2014}\n";
+        let entries = parse_model_list(rows).expect("parse");
+        assert_eq!(entries.len(), 2);
+
+        let first = &entries[0];
+        assert_eq!(first.name, "qwen3.8-27b-4bit");
+        assert_eq!(
+            first.size_bytes,
+            Some((15.2f64 * 1024.0 * 1024.0 * 1024.0) as u64)
+        );
+        assert_eq!(first.parser.as_deref(), Some("qwen3_coder_xml"));
+        assert_eq!(first.template.as_deref(), Some("qwen3"));
+        assert!(first.mtp);
+        assert!(!first.hybrid);
+        assert_eq!(
+            first.mtp_sidecar.as_deref(),
+            Some("rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX@3")
+        );
+
+        let second = &entries[1];
+        assert_eq!(second.name, "qwen3.8-27b-tensorfold");
+        assert!(second.parser.is_none());
+        assert_eq!(second.template.as_deref(), Some("qwen3"));
+        assert!(!second.mtp);
+        assert!(second.hybrid);
+        assert!(second.mtp_sidecar.is_none());
     }
 
     #[test]
