@@ -53,6 +53,33 @@ test.describe('Spawn Wizard - Phases 3, 4, and Rapid-MLX Phase 6', () => {
     expect(result.tiers).toEqual(['Smart']);
   });
 
+  test('@in-memory-test curated catalog selection uses the alias wire contract for preview and spawn', async ({ page }) => {
+    await page.route('**/api/**', route => route.abort());
+    await page.route('**/api/rapid-mlx/catalog', route => route.fulfill({
+      json: { models: [{ name: 'qwen3.8-27b-4bit', parser: 'qwen3_coder_xml' }], recommendations: [] },
+    }));
+    await page.goto('/');
+    const result = await page.evaluate(async () => {
+      const { mountRapidCatalogPicker } = await import('/js/features/spawn-wizard-rapid-catalog.js');
+      const { wizardState, buildSpawnPayload } = await import('/js/features/spawn-wizard.js');
+      const { buildRapidMlxConfig } = await import('/js/features/spawn-wizard-rapid-mlx.js');
+      wizardState.engine.selected = 'rapid_mlx';
+      wizardState.model.source = 'hf';
+      const panel = document.createElement('div');
+      await mountRapidCatalogPicker(panel, { visible: true });
+      panel.querySelector('.rapid-catalog-row').click();
+      return {
+        selected: wizardState.model.rapidMlxSource,
+        preview: buildRapidMlxConfig(wizardState.hardware, wizardState.model).model_source,
+        spawn: buildSpawnPayload().rapid_mlx.model_source,
+      };
+    });
+    const expected = { kind: 'alias', value: 'qwen3.8-27b-4bit' };
+    expect(result.selected).toEqual(expected);
+    expect(result.preview).toEqual(expected);
+    expect(result.spawn).toEqual(expected);
+  });
+
   test('@in-memory-test calibration candidates apply through canonical wizard controls', async ({ page }) => {
     await page.goto('/');
     const result = await page.evaluate(async () => {

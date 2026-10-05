@@ -263,6 +263,8 @@ enum KnownRapidMlxModelSource {
         revision: String,
     },
     Alias {
+        // Accept catalog sources saved by builds that used `name`; emit `value`.
+        #[serde(alias = "name")]
         value: String,
     },
     AuthoritativeSafetensors {
@@ -1886,6 +1888,25 @@ fn create_file_symlink(src: &Path, dest: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_alias_source_round_trips_with_canonical_value() {
+        for field in ["value", "name"] {
+            let wire = serde_json::json!({"kind": "alias", field: "qwen3.8-27b-4bit"});
+            let source: RapidMlxModelSource = serde_json::from_value(wire).unwrap();
+            assert_eq!(
+                source,
+                RapidMlxModelSource::Alias {
+                    value: "qwen3.8-27b-4bit".into()
+                },
+                "catalog field {field}"
+            );
+            assert_eq!(
+                serde_json::to_value(source).unwrap(),
+                serde_json::json!({"kind": "alias", "value": "qwen3.8-27b-4bit"})
+            );
+        }
+    }
 
     #[test]
     fn hf_cache_repo_id_extracts_owner_and_repo() {

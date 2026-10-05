@@ -230,6 +230,10 @@ selected the model step swaps Hugging Face discovery for the curated catalog
 selecting a row fills the alias, measured size, and paired speculative sidecar
 in one step.
 
+Catalog selections use the typed source `{"kind":"alias","value":"<model-name>"}`
+for both command preview and launch. Saved sources using the older `name` field
+are accepted and serialized back with `value`.
+
 The picker includes conversational LLMs, including vision-capable chat models.
 Dedicated audio pipelines (TTS/transcription), image generation, and video
 generation are excluded from both the searchable list and pinned recommendations.

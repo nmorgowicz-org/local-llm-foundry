@@ -3463,6 +3463,44 @@ mod tests {
         assert_eq!(config.managed_runtime_path, Some(override_path));
     }
 
+    #[tokio::test]
+    async fn command_preview_accepts_catalog_alias_wire_shapes() {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("rapid-mlx");
+        std::fs::write(&binary, b"not executed: capabilities supplied").unwrap();
+        for field in ["value", "name"] {
+            let mut wire = serde_json::to_value(RapidMlxConfig::default()).unwrap();
+            wire["model_source"] = serde_json::json!({"kind": "alias", field: "qwen3.8-27b-4bit"});
+            wire["executable_path"] = serde_json::json!(binary);
+            wire["capabilities"] = serde_json::json!(
+                super::command_preview_parity_tests::ALL_SERVE_FLAGS
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+            );
+            let models_dir = temp.path().to_path_buf();
+            let route = warp::any().and_then(move || {
+                let req = serde_json::from_value::<CommandPreviewRequest>(wire.clone()).unwrap();
+                let models_dir = models_dir.clone();
+                async move {
+                    Ok::<_, warp::Rejection>(build_command_preview(req, models_dir).await)
+                }
+            });
+            let response = warp::test::request().reply(&route).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "field {field}: {:?}",
+                response.body()
+            );
+            let body: serde_json::Value = serde_json::from_slice(response.body()).unwrap();
+            let argv = body["argv"].as_array().unwrap();
+            assert!(
+                argv.windows(2)
+                    .any(|args| args[0] == "serve" && args[1] == "qwen3.8-27b-4bit")
+            );
+        }
+    }
+
     fn queued_job(id: &str) -> RuntimeJobSnapshot {
         RuntimeJobSnapshot {
             id: id.into(),
@@ -3998,7 +4036,7 @@ mod command_preview_parity_tests {
     /// Every flag the settings below can emit. A missing entry makes `build` fail the
     /// capability check rather than silently drop the flag, so this list is part of the
     /// assertion.
-    const ALL_SERVE_FLAGS: &str = "--host --port --served-model-name --timeout --log-level \
+    pub(super) const ALL_SERVE_FLAGS: &str = "--host --port --served-model-name --timeout --log-level \
         --api-key --tool-call-parser --reasoning-parser --enable-auto-tool-choice \
         --enable-prefix-cache --max-cache-blocks --cache-memory-mb \
         --kv-disk-checkpoint-interval \

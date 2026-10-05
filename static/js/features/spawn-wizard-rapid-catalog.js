@@ -157,7 +157,7 @@ function applyCatalogSelection(entry) {
   wizardState.model.originFile = '';
   wizardState.model.path = '';
   wizardState.model.hfRepo = entry.name;
-  wizardState.model.rapidMlxSource = { kind: 'alias', name: entry.name };
+  wizardState.model.rapidMlxSource = { kind: 'alias', value: entry.name };
   wizardState.model.modelBytes = entry.size_bytes || 0;
   wizardState.model.rapidCatalogEntry = entry;
   if (entry.mtp && entry.mtp_sidecar) {

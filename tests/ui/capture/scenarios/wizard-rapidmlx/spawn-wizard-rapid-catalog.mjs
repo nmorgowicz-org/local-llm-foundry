@@ -138,6 +138,13 @@ export default async function (ctx) {
     document.querySelector('#rapid-catalog-panel .rapid-catalog-row--recommended')?.click();
   });
   await sleep(900);
+  await page.evaluate(async () => {
+    const { buildSpawnPayload } = await import('/js/features/spawn-wizard.js');
+    const source = buildSpawnPayload().rapid_mlx?.model_source;
+    if (source?.kind !== 'alias' || source.value !== 'qwen3.8-27b-4bit' || 'name' in source) {
+      throw new Error(`Catalog alias wire contract drifted: ${JSON.stringify(source)}`);
+    }
+  });
 
   // INTENT: One click selects the model — alias, measured size, MTP sidecar.
   await page.evaluate(() => document.getElementById('rapid-catalog-panel')?.scrollIntoView({ behavior: 'instant', block: 'start' }));
