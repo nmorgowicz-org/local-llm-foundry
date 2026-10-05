@@ -546,7 +546,10 @@ impl RapidMlxConfig {
         }
     }
 
-    pub fn validate_access(&self, fallback_api_key: Option<&str>) -> Result<()> {
+    /// Never refuses: exposing on 0.0.0.0 without a key is the user's call.
+    /// Returns a human-readable warning when the launch is LAN-visible and
+    /// unauthenticated, so launchers can log it instead of blocking.
+    pub fn access_warning(&self, fallback_api_key: Option<&str>) -> Option<String> {
         let loopback = matches!(
             self.host.as_str(),
             "127.0.0.1" | "localhost" | "::1" | "[::1]"
@@ -556,12 +559,13 @@ impl RapidMlxConfig {
             .as_deref()
             .or(fallback_api_key)
             .is_some_and(|key| !key.is_empty());
-        if !loopback && !has_key {
-            return Err(anyhow!(
-                "Rapid-MLX LAN exposure requires an API key; use 127.0.0.1 or configure authenticated access"
-            ));
+        if loopback || has_key {
+            return None;
         }
-        Ok(())
+        Some(format!(
+            "Serving on {} without an API key — anyone on your network can use this model.              Configure an API key or bind to 127.0.0.1 to restrict access.",
+            self.host
+        ))
     }
 
     pub fn validate_speculative_config(&self) -> Result<()> {
@@ -839,12 +843,14 @@ impl RapidMlxAdapter {
                 "default_frequency_penalty must be between -2.0 and 2.0, got {frequency_penalty}"
             ));
         }
-        RapidMlxConfig {
+        let access = RapidMlxConfig {
             host: self.host.clone(),
             api_key: self.api_key.clone(),
             ..Default::default()
+        };
+        if let Some(warning) = access.access_warning(None) {
+            eprintln!("[warn] rapid-mlx adapter: {warning}");
         }
-        .validate_access(None)?;
 
         Ok(())
     }

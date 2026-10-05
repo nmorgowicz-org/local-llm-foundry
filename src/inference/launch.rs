@@ -104,7 +104,9 @@ pub fn request_from_api_payload(payload: &serde_json::Value) -> Result<LocalLaun
             if config.port == 0 {
                 anyhow::bail!("Rapid-MLX launch requires a non-zero port");
             }
-            config.validate_access(None)?;
+            if let Some(warning) = config.access_warning(None) {
+                eprintln!("[warn] rapid-mlx launch: {warning}");
+            }
             config.validate_speculative_config()?;
             Ok(LocalLaunchRequest::RapidMlx(Box::new(config)))
         }
@@ -160,7 +162,9 @@ pub fn validate_preset_backend_config(preset: &ModelPreset) -> Result<()> {
                     preset.name
                 );
             }
-            rapid.validate_access(preset.api_key.as_deref())?;
+            if let Some(warning) = rapid.access_warning(preset.api_key.as_deref()) {
+                eprintln!("[warn] rapid-mlx preset '{}': {warning}", preset.name);
+            }
             rapid.validate_speculative_config()?;
             if let Err(invalid) = crate::inference::rapid_mlx::escape_hatch::validate_escape_flags(
                 &rapid.escape_hatch_flags,
@@ -493,7 +497,9 @@ pub async fn construct_adapter(
         LocalLaunchRequest::RapidMlx(config) => {
             crate::inference::rapid_mlx::ensure_local_platform_supported()?;
             let model_source = config.effective_model_source()?;
-            config.validate_access(None)?;
+            if let Some(warning) = config.access_warning(None) {
+                eprintln!("[warn] rapid-mlx launch: {warning}");
+            }
 
             let (executable_path, source) = Discovery::resolve_binary(
                 config.executable_path.as_deref(),
@@ -869,32 +875,39 @@ mod tests {
     }
 
     #[test]
-    fn rapid_lan_bind_requires_authenticated_access() {
-        let error = request_from_api_payload(&serde_json::json!({
+    fn rapid_lan_bind_never_requires_a_key_but_warns() {
+        // Exposing on 0.0.0.0 without a key is the user's call: the payload is
+        // accepted and the launcher logs a warning instead of refusing.
+        let request = request_from_api_payload(&serde_json::json!({
             "backend": "rapid_mlx",
             "rapid_mlx": {
                 "model_path": "/models/rapid",
                 "host": "0.0.0.0"
             }
         }))
-        .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("LAN exposure requires an API key")
-        );
+        .unwrap();
+        let LocalLaunchRequest::RapidMlx(config) = &request else {
+            panic!("expected rapid config");
+        };
+        let warning = config
+            .access_warning(None)
+            .expect("unauthenticated LAN bind must produce a warning");
+        assert!(warning.contains("without an API key"));
 
-        assert!(
-            request_from_api_payload(&serde_json::json!({
-                "backend": "rapid_mlx",
-                "rapid_mlx": {
-                    "model_path": "/models/rapid",
-                    "host": "0.0.0.0",
-                    "api_key": "protected"
-                }
-            }))
-            .is_ok()
-        );
+        // Keyed LAN binds stay silent.
+        let request = request_from_api_payload(&serde_json::json!({
+            "backend": "rapid_mlx",
+            "rapid_mlx": {
+                "model_path": "/models/rapid",
+                "host": "0.0.0.0",
+                "api_key": "protected"
+            }
+        }))
+        .unwrap();
+        let LocalLaunchRequest::RapidMlx(config) = &request else {
+            panic!("expected rapid config");
+        };
+        assert!(config.access_warning(None).is_none());
     }
 
     #[test]
