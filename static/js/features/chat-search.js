@@ -4,6 +4,7 @@
 
 import { chat } from '../core/app-state.js';
 import Router from './router.js';
+import { escapeHtml } from '../core/format.js';
 
 const SEARCH_PAGE_SIZE = 20;
 
@@ -279,7 +280,7 @@ function renderResults(page, query, { append = false } = {}) {
         const rawSnippet = r.snippet || '';
         const snippet = (typeof window.DOMPurify !== 'undefined')
             ? window.DOMPurify.sanitize(rawSnippet, { ALLOWED_TAGS: ['mark'] })
-            : rawSnippet;
+            : escapeHtml(rawSnippet);
 
         // eslint-disable-next-line no-unsanitized/property
         card.innerHTML =
@@ -403,8 +404,3 @@ function formatTimestamp(timestampMs) {
     }
 }
 
-function escapeHtml(s) {
-    const div = document.createElement('div');
-    div.textContent = s;
-    return div.innerHTML;
-}

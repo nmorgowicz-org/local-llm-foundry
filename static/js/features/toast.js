@@ -2,6 +2,7 @@
 // Toast notifications, progress toasts, and action toasts.
 
 import { escapeHtml } from '../core/format.js';
+import { setHtml } from '../core/set-html.js';
 
 const TOAST_AUTO_DISMISS = 6000;
 const NOTIFICATIONS_STORAGE_KEY = 'llama-monitor-notifications';
@@ -214,7 +215,7 @@ function renderNotificationCenter() {
     });
 }
 
-function registerPersistentNotification(id, title, type, message, actions) {
+export function registerPersistentNotification(id, title, type, message, actions) {
     ensureNotificationState();
     const existing = activeNotifications.get(id);
     const now = Date.now();
@@ -315,8 +316,8 @@ export function showToast(title, type = 'error', message = '', options = {}) {
         `;
     }
 
-    // eslint-disable-next-line no-unsanitized/property -- content is built from hardcoded template; type is a caller-controlled enum used only in CSS class; title/message wrapped in escapeHtml()
-    toast.innerHTML = content;
+
+    setHtml(toast, content);
 
     // Set explicit-level icon and class
     if (type === 'explicit' && options.level !== undefined) {
@@ -336,16 +337,6 @@ export function showToast(title, type = 'error', message = '', options = {}) {
             setTimeout(() => toast.remove(), 300);
         }, options.duration || TOAST_AUTO_DISMISS);
         return null;
-    }
-}
-
-function updateToastProgress(toastElement, percent, message) {
-    if (!toastElement) return;
-    const fill = toastElement.querySelector('.toast-progress-fill');
-    const content = toastElement.querySelector('.toast-content');
-    if (fill) fill.style.width = percent + '%';
-    if (content && message) {
-        content.innerHTML = '<div class="toast-title">' + escapeHtml(message) + '</div>';
     }
 }
 
@@ -379,8 +370,8 @@ export function showToastWithActions(title, type, message, actions = [], options
             }).join('') + '</div>';
     }
 
-    // eslint-disable-next-line no-unsanitized/property -- type is a hardcoded enum used only in CSS class; title/message wrapped in escapeHtml(); actionsHtml uses escapeHtml(); getToastIcon returns hardcoded strings
-    toast.innerHTML = `
+
+    setHtml(toast, `
         <div class="toast-icon ${type}">${getToastIcon(iconType)}</div>
         <div class="toast-content">
             ${title ? '<div class="toast-title">' + escapeHtml(title) + '</div>' : ''}
@@ -388,7 +379,7 @@ export function showToastWithActions(title, type, message, actions = [], options
         </div>
         ${actionsHtml}
         <button class="toast-close" data-toast-close="">&times;</button>
-    `;
+    `);
 
     let actionTaken = false;
 
@@ -417,25 +408,6 @@ export function showToastWithActions(title, type, message, actions = [], options
         toast.classList.remove('show');
         setTimeout(() => toast.remove(), 300);
     }, duration);
-}
-
-function showToastProgress(title, type = 'info') {
-    const container = document.getElementById('toast-container');
-    if (!container) return null;
-
-    const toast = document.createElement('div');
-    toast.className = 'toast toast-' + type;
-    // eslint-disable-next-line no-unsanitized/property -- type is a hardcoded enum used only in CSS class; title wrapped in escapeHtml(); getToastIcon returns hardcoded strings
-    toast.innerHTML = `
-        <div class="toast-icon ${type}">${getToastIcon(type)}</div>
-        <div class="toast-content">
-            ${title ? '<div class="toast-title">' + escapeHtml(title) + '</div>' : ''}
-            <div class="toast-progress-bar"><div class="toast-progress-fill" style="width:0%"></div></div>
-        </div>
-    `;
-    container.appendChild(toast);
-    requestAnimationFrame(() => { toast.classList.add('show'); });
-    return toast;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

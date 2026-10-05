@@ -106,7 +106,10 @@ fn model_root_relocation_paths(
     let legacy = crate::paths::AppPaths::legacy_default_root().join("models");
     let configured =
         get_effective_models_dir(state).unwrap_or_else(|| config.default_models_dir.clone());
-    let source = if configured == canonical
+    let pending = crate::models::root_relocation::load_pending_plan(&canonical)?;
+    let source = if let Some(pending) = pending {
+        pending.source
+    } else if configured == canonical
         && crate::models::root_relocation::load_selection(&canonical)?.is_none()
         && legacy.is_dir()
     {
@@ -150,7 +153,13 @@ fn api_model_root_relocation_status(
                 };
                 let configured = get_effective_models_dir(&state)
                     .unwrap_or_else(|| config.default_models_dir.clone());
-                let source = if configured == canonical && selected.is_none() && legacy.is_dir() {
+                let pending = match crate::models::root_relocation::load_pending_plan(&canonical) {
+                    Ok(pending) => pending,
+                    Err(error) => return Ok(error_reply(warp::http::StatusCode::INTERNAL_SERVER_ERROR, error)),
+                };
+                let source = if let Some(pending) = &pending {
+                    pending.source.clone()
+                } else if configured == canonical && selected.is_none() && legacy.is_dir() {
                     legacy.clone()
                 } else {
                     configured
@@ -162,7 +171,8 @@ fn api_model_root_relocation_status(
                     "source_exists": source.is_dir(),
                     "selection": selected,
                     "custom_root": source != legacy && source != canonical,
-                    "relocation_required": source == legacy && source.is_dir(),
+                    "relocation_required": source == legacy && (source.is_dir() || pending.is_some()),
+                    "move_pending": pending.is_some(),
                 }))) as Box<dyn warp::reply::Reply>)
             }
         })
@@ -181,6 +191,39 @@ struct ModelRootRelocationExecuteRequest {
     choice: Option<crate::models::root_relocation::ModelRootChoice>,
     #[serde(default)]
     confirmation: String,
+}
+
+/// A model move into the Foundry root is only safe once the application-home
+/// migration has settled: `canonical/models` is itself an app-state marker,
+/// so creating it while the legacy root is still active (or in conflict)
+/// produces a start-up Conflict with no recovery path.
+fn ensure_model_move_allowed(
+    choice: crate::models::root_relocation::ModelRootChoice,
+) -> anyhow::Result<()> {
+    use crate::app_migration::RootState;
+    use crate::models::root_relocation::ModelRootChoice;
+    if choice != ModelRootChoice::MoveIntoFoundry {
+        return Ok(());
+    }
+    let inspection = crate::app_migration::inspect_default_roots()?;
+    match inspection.state {
+        RootState::Fresh
+        | RootState::NewActive
+        | RootState::RollbackAvailable
+        | RootState::CustomConfig
+        | RootState::BothIdentical => Ok(()),
+        RootState::LegacyActive | RootState::MigrationQueued => anyhow::bail!(
+            "resolve the application-home migration before moving the model tree into Foundry"
+        ),
+        RootState::Conflict => {
+            anyhow::bail!(
+                "application roots are in conflict; resolve the conflict before moving the model tree"
+            )
+        }
+        RootState::Migrating | RootState::MigrationFailed => anyhow::bail!(
+            "an application-home migration is in progress or failed; resolve it before moving the model tree"
+        ),
+    }
 }
 
 fn api_model_root_relocation_preview(
@@ -207,6 +250,9 @@ fn api_model_root_relocation_preview(
                             return Ok(error_reply(warp::http::StatusCode::BAD_REQUEST, error));
                         }
                     };
+                    if let Err(error) = ensure_model_move_allowed(request.choice) {
+                        return Ok(error_reply(warp::http::StatusCode::CONFLICT, error));
+                    }
                     let persistence = migration_persistence_files(&state);
                     let result = tokio::time::timeout(
                     std::time::Duration::from_secs(30),
@@ -274,11 +320,15 @@ fn api_model_root_relocation_execute(
                     Ok(paths) => paths,
                     Err(error) => return Ok(error_reply(warp::http::StatusCode::BAD_REQUEST, error)),
                 };
+                if let Err(error) = ensure_model_move_allowed(choice) {
+                    return Ok(error_reply(warp::http::StatusCode::CONFLICT, error));
+                }
                 let persistence = migration_persistence_files(&state);
                 let expected_plan_id = request.plan_id;
                 let result = tokio::time::timeout(
                     std::time::Duration::from_secs(600),
                     tokio::task::spawn_blocking(move || {
+                        let _guard = _guard;
                         let plan = crate::models::root_relocation::plan_model_root_relocation_with_persistence(
                             &source,
                             &destination,
@@ -836,9 +886,9 @@ fn api_rapid_model_resolver_preview(
                     } else {
                         "python3"
                     }),
-                    runtime_version:
-                        crate::inference::rapid_mlx::compatibility::LATEST_QUALIFIED_VERSION_TEXT
-                            .into(),
+                    // Only quoted in error text; naming a fixed release there would be wrong the
+                    // day the installed runtime changes.
+                    runtime_version: "runtime".into(),
                     hf_token: None,
                     verified_aliases: Vec::new(),
                     execute_conversion: false,

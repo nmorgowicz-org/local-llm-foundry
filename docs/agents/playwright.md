@@ -2,7 +2,7 @@
 
 ## Key Principle: Protect Live Instance
 
-Default Playwright (`npm test` with no flags) spawns a fresh `llama-monitor` on 7778
+Default Playwright (`npm test` with no flags) spawns a fresh `local-llm-foundry` on 7778
 and kills any existing process on that port. This can terminate active models or sessions.
 
 **ALWAYS specify a test port locally. Never run bare `npm test`.**
@@ -30,7 +30,7 @@ If you haven’t built a release binary: `cargo build --release` first.
 ## Attaching to Live Instance (Advanced)
 
 ```bash
-target/release/llama-monitor --headless --port 17778
+target/release/local-llm-foundry --headless --port 17778
 cd tests/ui && LLAMA_MONITOR_UI_URL=http://127.0.0.1:17778 npm test
 ```
 

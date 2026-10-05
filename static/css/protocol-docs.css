@@ -1,0 +1,86 @@
+/* Model protocol reference modal (spawn wizard + preset editor share it). */
+
+.protocol-docs-overlay {
+    position: fixed;
+    inset: 0;
+    /* Above the spawn-wizard overlay and its sticky bars (wizard internals top
+       out around 1600; app confirm dialogs use 2000). */
+    z-index: 2500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(4px);
+}
+
+.protocol-docs-modal {
+    width: min(560px, calc(100vw - 32px));
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+    background: var(--color-bg-elevated, #1a1f28);
+    border: 1px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
+    border-radius: 12px;
+    padding: 20px 22px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+
+.protocol-docs-modal h3 {
+    margin: 0 0 6px;
+    font-size: 16px;
+}
+
+.protocol-docs-subtitle {
+    margin: 0 0 14px;
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    overflow-wrap: anywhere;
+}
+
+.protocol-docs-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    margin-bottom: 12px;
+}
+
+.protocol-docs-table th,
+.protocol-docs-table td {
+    text-align: left;
+    padding: 6px 8px;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 14%, transparent);
+    overflow-wrap: anywhere;
+}
+
+.protocol-docs-table th {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-text-muted);
+}
+
+.protocol-docs-table code,
+.protocol-docs-table td {
+    font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.protocol-docs-note {
+    margin: 0 0 12px;
+    font-size: 12px;
+    color: var(--color-text-secondary);
+}
+
+.protocol-docs-link {
+    display: inline-block;
+    font-size: 12px;
+    color: var(--color-accent);
+    margin-bottom: 16px;
+}
+
+.protocol-docs-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+[data-theme="light"] .protocol-docs-modal {
+    background: #ffffff;
+}

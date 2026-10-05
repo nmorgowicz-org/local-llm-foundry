@@ -130,6 +130,9 @@ impl Supervisor {
     async fn spawn(&self, launch: SupervisedLaunch) -> Result<Child> {
         let mut cmd = Command::new(&launch.program);
         crate::platform::no_window_tokio(&mut cmd);
+        // Own process group so stop() can signal the whole tree (Python
+        // workers included) instead of only the direct child.
+        crate::inference::process_tree::configure_process_group(&mut cmd);
         cmd.args(&launch.args);
         cmd.envs(launch.env);
         cmd.stdout(std::process::Stdio::piped());
@@ -254,15 +257,13 @@ impl Supervisor {
         let result = async {
             #[cfg(unix)]
             {
-                let status = Command::new("kill")
-                    .args(["-TERM", &pid.to_string()])
-                    .status()
-                    .await
-                    .with_context(|| {
-                        format!("Failed to request graceful stop for supervised process pid={pid}")
-                    })?;
-                if !status.success() && self.pid.lock().unwrap().is_some() {
-                    anyhow::bail!("Failed to request graceful stop for supervised process pid={pid}");
+                // The child runs in its own process group, so signal the
+                // group: orphaned Python workers must not keep the port or
+                // accelerator memory after stop() returns.
+                crate::inference::process_tree::signal_process_group(pid, true);
+                if self.pid.lock().unwrap().is_none() {
+                    // Already gone before the first signal.
+                    return Ok(());
                 }
 
                 if tokio::time::timeout(self.graceful_stop_timeout, self.wait_for_exit())
@@ -272,16 +273,7 @@ impl Supervisor {
                     self.state.push_log(format!(
                         "[monitor] process supervisor: pid={pid} did not exit after SIGTERM; sending SIGKILL"
                     ));
-                    let status = Command::new("kill")
-                        .args(["-KILL", &pid.to_string()])
-                        .status()
-                        .await
-                        .with_context(|| {
-                            format!("Failed to force-stop supervised process pid={pid}")
-                        })?;
-                    if !status.success() && self.pid.lock().unwrap().is_some() {
-                        anyhow::bail!("Failed to force-stop supervised process pid={pid}");
-                    }
+                    crate::inference::process_tree::signal_process_group(pid, false);
                 }
             }
             #[cfg(windows)]
@@ -289,7 +281,7 @@ impl Supervisor {
                 let mut kill_cmd = Command::new("taskkill");
                 crate::platform::no_window_tokio(&mut kill_cmd);
                 let status = kill_cmd
-                    .args(["/F", "/PID", &pid.to_string()])
+                    .args(["/F", "/T", "/PID", &pid.to_string()])
                     .status()
                     .await
                     .with_context(|| format!("Failed to terminate supervised process pid={pid}"))?;

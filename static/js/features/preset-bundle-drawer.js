@@ -14,7 +14,7 @@
 
 import { sessionState } from '../core/app-state.js';
 import { loadPresets, syncSelectedPresetSelection, openPresetModal } from './presets.js';
-import { showToastWithActions } from './toast.js';
+import { showToast as appShowToast, showToastWithActions } from './toast.js';
 import { openEvidenceDrawer, evidenceFromLaunchObservation } from './evidence-drawer.js';
 
 // ── The four known workload policies (wire ids), in display order ────────────
@@ -120,7 +120,7 @@ function buildDrawer() {
 
     body.appendChild((() => {
         const row = el('section', 'bundle-row bundle-row-quant');
-        row.appendChild(el('h3', 'bundle-row-label', 'Model quantization'));
+        row.appendChild(el('h3', 'bundle-row-label', 'Model variant'));
         const wrap = el('div', 'bundle-controls bundle-radio-group');
         wrap.dataset.slot = 'quant';
         row.appendChild(wrap);
@@ -310,7 +310,7 @@ function moeLayerCount(bundle, selection) {
 }
 
 function cloneSelection(sel) {
-    return sel ? JSON.parse(JSON.stringify(sel)) : {};
+    return sel ? structuredClone(sel) : {};
 }
 
 function selectionsEqual(a, b) {
@@ -325,7 +325,7 @@ function apiHeaders(json = false) {
 // A reason lookup against the backend's capability_reasons. Entries are
 // { field, value, reason }; a match means the option is unavailable and must be
 // rendered disabled (never hidden) with the reason wired via aria-describedby.
-function reasonFor(bundleId, capabilityReasons, field, value) {
+function reasonFor(_bundleId, capabilityReasons, field, value) {
     const match = (capabilityReasons || []).find(r => r && r.field === field && (value == null || r.value === value));
     return match ? match.reason || 'Unavailable' : null;
 }
@@ -394,7 +394,7 @@ function applyResolve(data) {
         // The resolver's normalized selection is the draft going forward — not
         // just a transient preview payload. This is what lets an applied intent
         // or a "Fit automatically" proposal actually stick as the editable draft.
-        const { intent_source, ...rest } = data.selection;
+        const { intent_source: _intentSource, ...rest } = data.selection;
         state.draftSelection = { ...state.draftSelection, ...rest };
     }
     state.normalizedPreview = {
@@ -553,6 +553,7 @@ function renderContext(d, bundle, reasons) {
 function renderKv(d, bundle, reasons) {
     const wrap = d.body.querySelector('.bundle-row-kv .bundle-radio-group');
     wrap.textContent = '';
+    d.body.querySelector('.bundle-row-kv').hidden = !(bundle?.kv_policy_options || []).length;
     (bundle?.kv_policy_options || []).forEach(policy => {
         const id = `bundle-kv-${policy}`;
         const label = el('label', 'bundle-radio-label');
@@ -586,6 +587,7 @@ function renderKv(d, bundle, reasons) {
 function renderPerf(d, bundle) {
     const controls = d.body.querySelector('.bundle-row-perf .bundle-controls');
     controls.textContent = '';
+    d.body.querySelector('.bundle-row-perf').hidden = !(bundle?.performance_options || []).length;
     (bundle?.performance_options || []).forEach(option => {
         const btn = el('button', 'bundle-perf', option.label || `${option.batch_size} / ${option.ubatch_size}`);
         btn.type = 'button';
@@ -613,7 +615,7 @@ function renderPerf(d, bundle) {
     current.textContent = `Current: batch ${state.draftSelection?.batch_size ?? '—'} · ubatch ${state.draftSelection?.ubatch_size ?? '—'}`;
 }
 
-function renderMoe(d, bundle, reasons, preview) {
+function renderMoe(d, bundle, reasons, _preview) {
     const row = d.body.querySelector('.bundle-row-moe');
     const sel = state.draftSelection || {};
     const artifact = selectedArtifact(bundle, sel);
@@ -837,7 +839,7 @@ function diffFromSaved() {
     return rows;
 }
 
-function renderDiff(d, bundle) {
+function renderDiff(d, _bundle) {
     const list = d.body.querySelector('.bundle-diff-list');
     const cause = d.body.querySelector('.bundle-diff-cause');
     list.textContent = '';
@@ -1093,15 +1095,8 @@ async function handleSaveAndStart() {
 }
 
 function showToast(message, kind = 'info') {
-    // Reuse the app's toast if present; otherwise fall back to console so the
-    // drawer never blocks on a missing host.
-    try {
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, kind);
-            return;
-        }
-    } catch { /* ignore */ }
-    console.warn(`[bundle-drawer] ${message}`);
+    // toast.js owns the app's toast; nothing publishes it on window.
+    appShowToast(message, kind);
 }
 
 // ── Public entry point ───────────────────────────────────────────────────────

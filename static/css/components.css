@@ -2665,7 +2665,7 @@ button:disabled {
 /* ── Tag picker (popup) ── */
 .mm-tag-picker {
   position: fixed;
-  z-index: 1000;
+  z-index: 11000;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
@@ -3308,6 +3308,13 @@ button:disabled {
 
 .llama-pill-idle {
   opacity: 0.65;
+}
+
+.top-nav-pill-update {
+  background: color-mix(in srgb, var(--color-warning) 15%, transparent) !important;
+  border-color: color-mix(in srgb, var(--color-warning) 40%, transparent) !important;
+  color: var(--color-warning) !important;
+  opacity: 1;
 }
 
 .llama-pill-update {
@@ -4987,4 +4994,387 @@ button:disabled {
   .mm-disk-totals { text-align: left; min-width: 0; }
   .mm-disk-row { grid-template-columns: 20px 82px 1fr; }
   .mm-disk-badges { grid-column: 2 / -1; justify-content: flex-start; }
+}
+
+/* Application-home migration: readable preview and optional diagnostics. */
+#settings-modal #settings-migration {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app-home-migration-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--color-bg-surface);
+  box-shadow: none;
+  color: var(--color-text-primary);
+  line-height: 1.55;
+  transition: none;
+}
+
+.app-home-migration-card:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--border-subtle);
+}
+
+.app-home-migration-state {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+#settings-modal #app-home-migration-card .settings-help {
+  margin: 8px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.app-home-migration-plan {
+  margin-top: 16px;
+}
+
+.app-home-migration-plan[hidden],
+.app-home-migration-details[hidden] {
+  display: none;
+}
+
+.app-home-migration-plan h4 {
+  margin: 0 0 10px;
+  font-size: 1rem;
+}
+
+.app-home-migration-facts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 16px;
+  margin: 0;
+  padding: 12px 0;
+  border-block: 1px solid var(--border-subtle);
+}
+
+.app-home-migration-facts dt,
+.app-home-migration-locations dt,
+.app-home-migration-notes {
+  color: var(--color-text-secondary);
+}
+
+.app-home-migration-facts dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.app-home-migration-notes {
+  margin: 12px 0;
+  padding-left: 20px;
+}
+
+.app-home-migration-notes li + li {
+  margin-top: 4px;
+}
+
+.app-home-migration-details {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.app-home-migration-details summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.app-home-migration-details summary:focus-visible,
+.app-home-migration-actions .btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 4px;
+}
+
+.app-home-migration-locations {
+  margin: 12px 0 0;
+}
+
+.app-home-migration-locations dd {
+  margin: 4px 0 12px;
+}
+
+.app-home-migration-details code,
+.app-home-migration-details pre {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.app-home-migration-details pre {
+  max-height: 220px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--color-bg);
+}
+
+.app-home-migration-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+[data-theme="light"] .app-home-migration-card,
+[data-theme="light"] .app-home-migration-card:hover {
+  background: var(--color-bg-surface);
+  border-color: var(--border-subtle);
+  box-shadow: none;
+}
+
+@media (max-width: 480px) {
+  .app-home-migration-actions .btn {
+    width: 100%;
+    white-space: normal;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-home-migration-card,
+  .app-home-migration-actions .btn {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .app-home-migration-actions .btn:hover {
+    transform: none !important;
+  }
+}
+
+
+/* ── Rapid-MLX curated catalog picker ──────────────────────────────────────── */
+
+.rapid-catalog-mode > :not(#rapid-catalog-panel) {
+  display: none !important;
+}
+
+#rapid-catalog-panel {
+  margin-bottom: 12px;
+}
+
+.rapid-catalog-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+  align-items: stretch;
+}
+
+.rapid-catalog-search {
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  font-size: 13px;
+}
+
+.rapid-catalog-search::placeholder {
+  color: var(--color-text-muted);
+}
+
+.rapid-catalog-search:focus {
+  outline: none;
+  border-color: var(--acc-50);
+  box-shadow: 0 0 0 2px var(--acc-08);
+}
+
+.rapid-catalog-refresh {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.rapid-catalog-refresh:hover {
+  border-color: var(--acc-50);
+  color: var(--color-text-primary);
+  background: var(--acc-08);
+}
+
+.rapid-catalog-refresh:focus-visible {
+  outline: none;
+  border-color: var(--acc-50);
+  box-shadow: 0 0 0 2px var(--acc-08);
+}
+
+.rapid-catalog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.rapid-catalog-heading {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin: 8px 0 2px;
+}
+
+.rapid-catalog-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.rapid-catalog-row:hover {
+  border-color: var(--acc-50);
+  background: var(--acc-08);
+}
+
+.rapid-catalog-row:focus-visible {
+  outline: none;
+  border-color: var(--acc-50);
+  box-shadow: 0 0 0 2px var(--acc-08);
+}
+
+.rapid-catalog-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.rapid-catalog-meta {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rapid-catalog-badge,
+.rapid-catalog-tier {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  color: var(--color-text-muted);
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+}
+
+.rapid-catalog-row--recommended {
+  border-color: color-mix(in srgb, var(--color-success, #10b981) 40%, transparent);
+}
+
+.rapid-catalog-tier {
+  border-color: color-mix(in srgb, var(--color-success, #10b981) 45%, transparent);
+  color: var(--color-success, #10b981);
+  background: color-mix(in srgb, var(--color-success, #10b981) 10%, transparent);
+}
+
+.rapid-catalog-empty {
+  color: var(--color-text-muted);
+  font-size: 13px;
+  padding: 12px 4px;
+}
+
+/* ── Runtime uninstall flow ────────────────────────────────────────────────── */
+
+.runtime-uninstall-btn {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-error, #f43f5e) 35%, transparent);
+  background: transparent;
+  color: var(--color-error, #f43f5e);
+  cursor: pointer;
+}
+
+.runtime-uninstall-btn:hover {
+  background: color-mix(in srgb, var(--color-error, #f43f5e) 10%, transparent);
+}
+
+.runtime-uninstall-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 11000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.runtime-uninstall-confirm {
+  background: var(--color-bg, #1a1a1e);
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.14));
+  border-radius: 12px;
+  padding: 20px 22px;
+  max-width: 420px;
+  width: calc(100% - 40px);
+}
+
+.runtime-uninstall-confirm h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.runtime-uninstall-confirm p {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+}
+
+.runtime-uninstall-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.runtime-uninstall-confirm-actions button {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.14));
+  background: transparent;
+  color: var(--color-text, inherit);
+  cursor: pointer;
+}
+
+.runtime-uninstall-go--danger {
+  border-color: color-mix(in srgb, var(--color-error, #f43f5e) 45%, transparent) !important;
+  color: var(--color-error, #f43f5e) !important;
+}
+
+.runtime-uninstall-go--danger:hover {
+  background: color-mix(in srgb, var(--color-error, #f43f5e) 12%, transparent) !important;
 }

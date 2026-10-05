@@ -11,6 +11,75 @@ import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 test.describe('Spawn Wizard - Phases 3, 4, and Rapid-MLX Phase 6', () => {
+  test('@in-memory-test curated catalog excludes dedicated media pipelines from list and recommendations', async ({ page }) => {
+    await page.route('**/api/**', route => route.abort());
+    await page.goto('/');
+    const result = await page.evaluate(async () => {
+      const { filterChatModels, loadRapidCatalog, renderRapidCatalogPicker } = await import('/js/features/spawn-wizard-rapid-catalog.js');
+      const models = [
+        { name: 'chat', parser: 'hermes' },
+        { name: 'vision-chat', template: 'qwen-vl' },
+        { name: 'tts', parser: 'audio:tts', template: 'qwen' },
+        { name: 'transcription', parser: 'audio:stt' },
+        { name: 'image', parser: 'image:gen' },
+        { name: 'video', template: 'video:gen' },
+        { name: 'upper-media', parser: ' AUDIO:TTS ' },
+        { name: 'whisper-large-v3', parser: '[audio:stt]' },
+        { name: 'cogvideox-fun-5b-bf16', parser: '[video:gen]' },
+        { name: 'image-generation', parser: '[image:gen]' },
+        { name: 'bracketed-tts', template: ' [AUDIO:TTS] ', parser: 'qwen' },
+        { name: 'unknown', parser: '—', template: '(none)' },
+      ];
+      const originalFetch = window.fetch;
+      try {
+        window.fetch = async () => new Response(JSON.stringify({
+          models,
+          recommendations: [{ name: 'whisper-large-v3', label: 'Fast' }, { name: 'chat', label: 'Smart' }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        await loadRapidCatalog(true);
+        const container = document.createElement('div');
+        renderRapidCatalogPicker(container);
+        return {
+          names: filterChatModels(models).map(model => model.name),
+          rows: [...container.querySelectorAll('.rapid-catalog-name')].map(row => row.textContent),
+          tiers: [...container.querySelectorAll('.rapid-catalog-tier')].map(row => row.textContent),
+        };
+      } finally {
+        window.fetch = originalFetch;
+      }
+    });
+    expect(result.names).toEqual(['chat', 'vision-chat']);
+    expect(result.rows).toEqual(['chat', 'vision-chat']);
+    expect(result.tiers).toEqual(['Smart']);
+  });
+
+  test('@in-memory-test curated catalog selection uses the alias wire contract for preview and spawn', async ({ page }) => {
+    await page.route('**/api/**', route => route.abort());
+    await page.route('**/api/rapid-mlx/catalog', route => route.fulfill({
+      json: { models: [{ name: 'qwen3.8-27b-4bit', parser: 'qwen3_coder_xml' }], recommendations: [] },
+    }));
+    await page.goto('/');
+    const result = await page.evaluate(async () => {
+      const { mountRapidCatalogPicker } = await import('/js/features/spawn-wizard-rapid-catalog.js');
+      const { wizardState, buildSpawnPayload } = await import('/js/features/spawn-wizard.js');
+      const { buildRapidMlxConfig } = await import('/js/features/spawn-wizard-rapid-mlx.js');
+      wizardState.engine.selected = 'rapid_mlx';
+      wizardState.model.source = 'hf';
+      const panel = document.createElement('div');
+      await mountRapidCatalogPicker(panel, { visible: true });
+      panel.querySelector('.rapid-catalog-row').click();
+      return {
+        selected: wizardState.model.rapidMlxSource,
+        preview: buildRapidMlxConfig(wizardState.hardware, wizardState.model).model_source,
+        spawn: buildSpawnPayload().rapid_mlx.model_source,
+      };
+    });
+    const expected = { kind: 'alias', value: 'qwen3.8-27b-4bit' };
+    expect(result.selected).toEqual(expected);
+    expect(result.preview).toEqual(expected);
+    expect(result.spawn).toEqual(expected);
+  });
+
   test('@in-memory-test calibration candidates apply through canonical wizard controls', async ({ page }) => {
     await page.goto('/');
     const result = await page.evaluate(async () => {
@@ -723,7 +792,7 @@ test.describe('Spawn Wizard - Phases 3, 4, and Rapid-MLX Phase 6', () => {
         await page.waitForLoadState('networkidle');
 
         // First request: start a download.
-        const [first] = await Promise.all([
+        await Promise.all([
             page.waitForResponse(r => r.url().includes('/api/hf/download')),
             page.evaluate(async () => {
                 const headers = window.authHeaders ? window.authHeaders() : {};
@@ -881,19 +950,25 @@ test.describe('Spawn Wizard - Phases 3, 4, and Rapid-MLX Phase 6', () => {
         await page.waitForLoadState('networkidle');
 
         const templates = await page.evaluate(async () => {
- const { COMMUNITY_TEMPLATES, buildCommunityTemplateInstallRequest } = await import('/js/features/chat-template-registry.js?community-template-test=1');
- return {
-   templates: COMMUNITY_TEMPLATES,
-   qwenInstall: buildCommunityTemplateInstallRequest(COMMUNITY_TEMPLATES.qwen),
- };
+            const { COMMUNITY_TEMPLATES, buildCommunityTemplateInstallRequest } = await import('/js/features/chat-template-registry.js?community-template-test=1');
+            return {
+                templates: COMMUNITY_TEMPLATES,
+                qwenInstall: buildCommunityTemplateInstallRequest(COMMUNITY_TEMPLATES.qwen[0]),
+            };
         });
 
- expect(templates.templates.qwen.installEndpoint).toBe('/api/chat-template/install-hf');
- expect(templates.templates.qwen.repo).toBe('froggeric/Qwen-Fixed-Chat-Templates');
- expect(templates.templates.qwen.version).toBe('qwen3.8-froggeric-v22');
- expect(templates.templates.qwen.revision).toBe('9f14778c92c3b5ed3e0738085694c0d3452802dd');
- expect(templates.qwenInstall.body.revision).toBe(templates.templates.qwen.revision);
- expect(templates.qwenInstall.body.force).toBe(true);
+        // Qwen offers froggeric's template (recommended, first) and the Sharp fork. Neither is
+        // pinned to a version or commit: both track their repository's current `main`, and the
+        // update checker offers new versions as upstream publishes them.
+        const [froggeric, sharp] = templates.templates.qwen;
+        expect(froggeric.installEndpoint).toBe('/api/chat-template/install-hf');
+        expect(froggeric.repo).toBe('froggeric/Qwen-Fixed-Chat-Templates');
+        expect(froggeric.revision).toBeUndefined();
+        expect(froggeric.version).toBeUndefined();
+        expect(templates.qwenInstall.body.revision).toBeUndefined();
+        expect(sharp.installEndpoint).toBe('/api/chat-template/install-hf');
+        expect(sharp.repo).toBe('peculiar-ragdoll/Qwen-Sharp-Chat-Templates');
+        expect(sharp.revision).toBeUndefined();
         // Google's official template is the priority default (first entry);
         // jscott3201's agentic fork is kept as a fallback entry.
  expect(templates.templates.gemma4[0].installEndpoint).toBe('/api/chat-template/install-hf');

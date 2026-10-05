@@ -14,6 +14,7 @@
 // shared wizard shell and delegates to this module at its Rapid-MLX call sites.
 
 import { wizardState, dom } from './spawn-wizard.js';
+import { setHtml } from '../core/set-html.js';
 import {
     RAPID_MLX_DEFAULT_SPECULATIVE_TOKENS,
     rapidMlxPrefillStepSizeDefault,
@@ -53,7 +54,7 @@ export function renderRapidExclusionWarnings() {
     box.style.gridColumn = '1 / -1';
     host.appendChild(box);
   }
-  box.innerHTML = '';
+  setHtml(box, '');
   const title = document.createElement('div');
   title.className = 'spawn-command-preview-error-title';
   title.textContent = conflicts.length === 1 ? 'Conflicting setting' : 'Conflicting settings';
@@ -151,8 +152,8 @@ function _renderSpawnPinStatus() {
     parts.push('<button type="button" class="hw-action-btn" id="spawn-rapid-speculative-pin-recheck" style="font-size:11px; padding:2px 8px; margin-left:4px;">Re-check</button>');
   }
 
-  // eslint-disable-next-line no-unsanitized/property -- DOMPurify sanitizes HTML
-  el.innerHTML = DOMPurify.sanitize(parts.join(' '));
+
+  setHtml(el, parts.join(' '));
   wrap.style.display = '';
 
   const btn = document.getElementById('spawn-rapid-speculative-pin-recheck');
@@ -168,8 +169,8 @@ function _renderSpawnPinStatus() {
         );
         const data = await resp.json();
         if (!data || data.ok !== true) {
-          // eslint-disable-next-line no-unsanitized/property -- DOMPurify sanitizes HTML
-          el.innerHTML = DOMPurify.sanitize('<span style="color:var(--err,#e65c5c);">Re-check failed: ' + (data?.error || 'unknown') + '</span>');
+
+          setHtml(el, '<span style="color:var(--err,#e65c5c);">Re-check failed: ' + (data?.error || 'unknown') + '</span>');
           setTimeout(_renderSpawnPinStatus, 3000);
           return;
         }
@@ -181,8 +182,8 @@ function _renderSpawnPinStatus() {
         h.speculativeTrustStale = false;
         _renderSpawnPinStatus();
       } catch (e) {
-        // eslint-disable-next-line no-unsanitized/property -- DOMPurify sanitizes HTML
-        el.innerHTML = DOMPurify.sanitize('<span style="color:var(--err,#e65c5c);">Re-check failed: ' + e.message + '</span>');
+
+        setHtml(el, '<span style="color:var(--err,#e65c5c);">Re-check failed: ' + e.message + '</span>');
         setTimeout(_renderSpawnPinStatus, 3000);
       } finally {
         btn.disabled = false;
@@ -313,18 +314,52 @@ async function _spawnRecheckTrustPin() {
   }
 }
 
+function renderOfficialDraftHint(draft) {
+    return '<div class="field-hint" style="color:var(--accent,#8cc8ff); margin:5px 0;">'
+      + 'Official upstream MTP draft exists for this tier: <code>' + draft.repo + '</code>'
+      + (draft.note ? ' (' + draft.note + ')' : '')
+      + ' <button type="button" class="hw-action-btn" id="spawn-rapid-speculative-official-preflight" style="font-size:11px; padding:2px 8px; margin-left:4px;">Preflight</button>'
+      + '</div>';
+}
+
+function wireOfficialDraftPreflight() {
+    const btn = document.getElementById('spawn-rapid-speculative-official-preflight');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      const code = btn.closest('.field-hint')?.querySelector('code');
+      if (!code) return;
+      btn.disabled = true;
+      btn.textContent = 'Preflighting…';
+      try {
+        await _spawnCheckTrust(code.textContent);
+        btn.textContent = 'Preflighted';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+}
+
 async function _fetchSpawnSidecars() {
   const listEl = document.getElementById('spawn-rapid-speculative-sidecars-list');
   if (!listEl) return;
 
-  listEl.innerHTML = '<span style="color:var(--text-muted,#888);">Loading…</span>';
+  setHtml(listEl, '<span style="color:var(--text-muted,#888);">Loading…</span>');
 
   try {
     const resp = await fetch('/api/hf/mtp-sidecars', { headers: window.authHeaders ? window.authHeaders() : {} });
     const data = await resp.json();
 
     if (!data.ok || !data.sidecars || data.sidecars.length === 0) {
-      listEl.innerHTML = '<span style="color:var(--text-muted,#888);">No local sidecars found. Build one with scripts/build-mtp-head.py</span>';
+      // Even with no managed sidecar, a known tier may have an official upstream
+      // draft worth preflighting before the user builds one from scratch.
+      const emptyDraft = await resolveOfficialDraft((wizardState.model.path || '').trim());
+      if (emptyDraft && !wizardState.hardware.speculativeModel) {
+        setHtml(listEl, '<span style="color:var(--text-muted,#888);">No local sidecars found.</span> '
+          + renderOfficialDraftHint(emptyDraft));
+        wireOfficialDraftPreflight();
+        return;
+      }
+      setHtml(listEl, '<span style="color:var(--text-muted,#888);">No local sidecars found. Build one with scripts/build-mtp-head.py</span>');
       return;
     }
 
@@ -364,6 +399,16 @@ async function _fetchSpawnSidecars() {
           : 'Select a local trunk or enter an explicit local sidecar; managed auto-selection is unavailable for this model reference.');
       html += '<div class="field-hint" style="color:var(--warn,#e6a41c); margin-bottom:5px;">' + reason + '</div>';
     }
+    // No managed sidecar for this trunk? Offer the official upstream draft for the
+    // trunk's tier — preflighting pins it and records provenance; launch still needs
+    // an immutable local copy (build one from the preflighted source when ready).
+    if (!matchingSidecar && !h.speculativeModel) {
+      const officialDraft = await resolveOfficialDraft(selectedTrunk);
+      if (officialDraft) {
+        html += renderOfficialDraftHint(officialDraft);
+      }
+    }
+
     data.sidecars.forEach((s, i) => {
       const p = rapidMlxSidecarProvenance(s);
       const vram = p.estimatedMemoryBytes != null
@@ -385,8 +430,10 @@ async function _fetchSpawnSidecars() {
       html += '</button>';
     });
 
-    // eslint-disable-next-line no-unsanitized/property -- sidecar list built from our own API, all server strings are safe
-    listEl.innerHTML = html;
+
+    setHtml(listEl, html);
+
+    wireOfficialDraftPreflight();
 
     // Wire click handlers
     listEl.querySelectorAll('[data-sidecar-index]').forEach(btn => {
@@ -415,8 +462,8 @@ async function _fetchSpawnSidecars() {
       });
     });
   } catch (err) {
-    // eslint-disable-next-line no-unsanitized/property -- error message sanitized via DOMPurify
-    listEl.innerHTML = '<span style="color:var(--err,#e65c5c);">Failed to load sidecars: ' + DOMPurify.sanitize(err.message) + '</span>';
+
+    setHtml(listEl, '<span style="color:var(--err,#e65c5c);">Failed to load sidecars: ' + DOMPurify.sanitize(err.message) + '</span>');
   }
 }
 
@@ -586,7 +633,9 @@ if (dom.speculativeModelInput && !dom.speculativeModelInput.dataset.sidecarOverr
    };
    bindCheck(dom.speculativeEnabledCheck, 'speculativeEnabled', syncRapidSpeculativeFields);
    bindCheck(dom.speculativeDisableAutoKCheck, 'speculativeDisableAutoK');
-   bindCheck(dom.autoToolChoiceCheck, 'autoToolChoice');
+   bindCheck(dom.autoToolChoiceCheck, 'autoToolChoice', () => {
+     wizardState.hardware.autoToolChoiceTouched = true;
+   });
    dom.speculativeSourceSelect?.addEventListener('change', syncRapidSpeculativeFields);
 
     if (dom.reasoningModeCheck && !dom.reasoningModeCheck.dataset.bound) {
@@ -690,7 +739,7 @@ function _renderRapidMlxProfileHints() {
     return;
   }
   hintsEl.style.display = '';
-  hintsEl.innerHTML = '';
+  setHtml(hintsEl, '');
 
     const hasVision = rapidMlxProfileHasVision(profile);
   const hasEmbeddings = profile.extras && profile.extras.embeddings;
@@ -699,6 +748,14 @@ function _renderRapidMlxProfileHints() {
     if (dom.reasoningModeCheck) dom.reasoningModeCheck.checked = true;
     applyReasoningModeLock();
     (window.scheduleVramUpdate || (() => {}))();
+  }
+
+  // A model that reports a tool-call parser is by definition compatible, so the
+  // safe-by-default toggle can flip on automatically. Only when the user hasn't
+  // expressed a choice yet (null sentinel from bindCheck's change tracking).
+  if (profile.tool_format && !wizardState.hardware.autoToolChoice && !wizardState.hardware.autoToolChoiceTouched) {
+    wizardState.hardware.autoToolChoice = true;
+    if (dom.autoToolChoiceCheck) dom.autoToolChoiceCheck.checked = true;
   }
 
   // Tool format + reasoning parser row
@@ -726,7 +783,23 @@ function _renderRapidMlxProfileHints() {
       row.textContent = 'Speculative decoding: unknown';
     }
     hintsEl.appendChild(row);
+  }
 
+  // Answer "does this model have MTP, and embedded or sidecar?" straight from the
+  // runtime profile, next to the toggle, instead of leaving the user to guess.
+  const mtpEligibility = document.getElementById('spawn-rapid-mtp-eligibility');
+  if (mtpEligibility) {
+    const hasEmbeddedHeads = !!(profile.extras && (profile.extras.mtp || profile.extras.mtp_dflash))
+      || profile.spec_decode === 'supported';
+    if (profile.spec_decode === 'supported' || hasEmbeddedHeads) {
+      mtpEligibility.textContent = 'This model reports embedded MTP prediction heads — “Embedded prediction heads” below needs no sidecar.';
+      mtpEligibility.style.display = '';
+    } else if (profile.spec_decode === 'unsupported') {
+      mtpEligibility.textContent = 'No embedded MTP heads detected for this model. Speculation needs a matching local sidecar (build one from the model’s base checkpoint) or should stay off.';
+      mtpEligibility.style.display = '';
+    } else {
+      mtpEligibility.style.display = 'none';
+    }
   }
 
   // DFlash / DDTree eligibility
@@ -884,6 +957,44 @@ async function _fetchRapidMlxModelProfile(modelId) {
     wizardState.arch.metadataReason = 'Rapid-MLX profile request failed; safe defaults retained';
     _renderRapidMlxProfileHints();
   }
+}
+
+// Official upstream MTP draft repos, keyed by trunk tier. Upstream publishes a
+// standalone MTP drafter per Qwen tier (rapid_mlx/aliases.json), so a finetune of
+// that tier can preflight the official draft instead of building one from scratch.
+// Extract: tier regex, upstream draft repo id.
+const OFFICIAL_MTP_DRAFTS = [
+    { match: /qwen3\.8.*27b/i, repo: 'rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX', note: 'a bf16 variant (…-MTP-fp16-MLX) also exists' },
+    { match: /qwen3\.6.*35b/i, repo: 'mlx-community/Qwen3.6-35B-A3B-MTP-4bit', note: '' },
+    { match: /qwen3\.6.*27b/i, repo: 'mlx-community/Qwen3.6-27B-MTP-4bit', note: '' },
+    { match: /qwen3\.5.*9b/i, repo: 'mlx-community/Qwen3.5-9B-MTP-4bit', note: '' },
+    { match: /qwen3\.5.*4b/i, repo: 'mlx-community/Qwen3.5-4B-MTP-4bit', note: '' },
+];
+
+function officialMtpDraftForTrunk(trunkPath) {
+    const name = String(trunkPath || '').toLowerCase();
+    for (const entry of OFFICIAL_MTP_DRAFTS) {
+        if (entry.match.test(name)) return { repo: entry.repo, note: entry.note };
+    }
+    return null;
+}
+
+// Finetune names rarely carry the base family ("Scarlett-Opus-oQ4e-MLX" is a
+// Qwen3.8-27B finetune), so fall back to the backend's architecture fingerprint:
+// the trunk's own config.json decides the tier, not the directory name.
+async function resolveOfficialDraft(trunkPath) {
+    const named = officialMtpDraftForTrunk(trunkPath);
+    if (named) return named;
+    if (!trunkPath) return null;
+    try {
+        const headers = window.authHeaders ? window.authHeaders() : {};
+        const res = await fetch('/api/rapid-mlx/mtp/draft-suggestion?path=' + encodeURIComponent(trunkPath), { headers });
+        if (!res.ok) return null;
+        const d = await res.json().catch(() => ({}));
+        return d?.suggestion || null;
+    } catch {
+        return null;
+    }
 }
 
 // Debounced wrapper: schedule a profile fetch after model selection stabilizes.

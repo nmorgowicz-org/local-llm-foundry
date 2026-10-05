@@ -7,14 +7,27 @@ import {
   getDefaultTemplateForFamily,
   getTemplateFamilies,
   getTemplatesForFamily,
+  provenanceSuffix,
 } from './chat-template-registry.js';
 import { wizardState, showStep, snapshotPendingRestore } from './spawn-wizard.js';
 import { awaitOriginResolve } from './spawn-wizard-hf-origin.js';
 import { CT_LABELS, openChatTemplateManageModal, repoFromSourceUrl } from './chat-template-panel.js';
+import { applyTemplateUpdate, describeUpdate } from './chat-template-update.js';
+import { readLastStatus } from './template-autoupdater.js';
 
 // Cache of installed community templates keyed by template name.
 // Avoids re-downloading the same template for each model of the same family.
 const _installedTemplateCache = {};
+
+// After an update (from the toast, the bell, Manage template, or the button on the status line),
+// drop the session cache so the status line re-reads the refreshed install, then redraw it.
+window.addEventListener('chatTemplateUpdated', (event) => {
+  delete _installedTemplateCache[event.detail?.name];
+  const section = document.getElementById('chat-template-section');
+  if (wizardState.model.chatTemplateMode === 'auto' && section && section.style.display !== 'none') {
+    void autoInstallChatTemplate();
+  }
+});
 
 export function _chatTemplateDisplayName(path) {
   if (!path) return 'Embedded (from model file)';
@@ -163,7 +176,6 @@ export async function autoInstallChatTemplate(force = false) {
 
   // Fast path: family already known (resolved from real metadata earlier in the flow)
   let family = wizardState.model.family || null;
-  const tpl = getDefaultTemplateForFamily(family);
 
   // If no family from fast path, we need to detect it.
   // For local/import models, await the origin resolver first (it fires from
@@ -222,7 +234,7 @@ export async function autoInstallChatTemplate(force = false) {
   // Cache hit: template already installed for this family (skip when forcing a re-fetch)
   const cached = !force && _installedTemplateCache[tplForFamily.name];
   if (cached) {
-    wizardState.model.chatTemplatePath = (tplForFamily.transformed && cached.transformed_path) ? cached.transformed_path : cached.path;
+    wizardState.model.chatTemplatePath = cached.path;
     wizardState.model.chatTemplateMode = 'auto';
     _renderChatTemplateStatus('installed', family, tplForFamily, cached);
     return;
@@ -241,7 +253,7 @@ export async function autoInstallChatTemplate(force = false) {
     });
     const data = resp.ok ? await resp.json() : { ok: false, error: `HTTP ${resp.status}` };
     if (data.ok && data.path) {
-      wizardState.model.chatTemplatePath = (tplForFamily.transformed && data.transformed_path) ? data.transformed_path : data.path;
+      wizardState.model.chatTemplatePath = data.path;
       wizardState.model.chatTemplateMode = 'auto';
       // Cache the template metadata for this family (avoids re-downloading for
       // other models of the same family in the same session)
@@ -270,14 +282,11 @@ export async function autoInstallChatTemplate(force = false) {
   }
 }
 
-// Formats display name with provenance label when multiple candidates exist for the family
+// Display name for a template. A provenance suffix is added only when the family mixes
+// provenance (see provenanceSuffix), so two community templates are told apart by name.
 function _templateDisplayName(tpl, family) {
   if (!tpl) return '';
-  const candidates = family ? getTemplatesForFamily(family) : [];
-  const provLabel = candidates.length > 1 && tpl.provenance
-    ? ` (${tpl.provenance === 'official' ? 'Official' : 'Community'})`
-    : '';
-  return tpl.display + provLabel;
+  return tpl.display + provenanceSuffix(tpl, family);
 }
 
 function _renderChatTemplateStatus(state, family, tpl, data) {
@@ -408,7 +417,7 @@ function _renderChatTemplateStatus(state, family, tpl, data) {
         const famName = fam.charAt(0).toUpperCase() + fam.slice(1);
         group.label = famName;
         candidates.forEach(tpl => {
-          provLabels[tpl.name] = tpl.provenance ? ` (${tpl.provenance === 'official' ? 'Official' : 'Community'})` : '';
+          provLabels[tpl.name] = provenanceSuffix(tpl, fam);
           const opt = document.createElement('option');
           opt.value = `${fam}:${tpl.name}`;
           opt.textContent = `${tpl.display}${provLabels[tpl.name]}`;
@@ -466,7 +475,7 @@ function _renderChatTemplateStatus(state, family, tpl, data) {
     if (statusEl) { statusEl.textContent = 'Embedded'; statusEl.className = 'ct-status ct-neutral'; }
     if (bodyEl) {
       bodyEl.textContent = family && tpl
-        ? 'Using the template embedded in the model file instead of the recommended community override.'
+        ? 'Using the template embedded in the model file instead of the recommended community template.'
         : 'Using template embedded in model file. You can choose an existing Jinja or upload a new one here.';
     }
     return;
@@ -517,14 +526,9 @@ function _renderChatTemplateStatus(state, family, tpl, data) {
       hintSpan.textContent = installedDate ? `Installed ${installedDate}.` : 'Template installed.';
       hint.appendChild(hintSpan);
 
-      // Base (pre-transform) path — this is what carries the install meta.json
-      // sidecar that "Check for updates"/version history read, so it must stay
-      // the raw cache path even when a transform is active.
+      // The raw install path: it carries the install meta.json sidecar that "Check for updates"
+      // and Version history read.
       const tplPath = data?.path;
-      // File actually in effect (the froggeric no-JSON transform output, when
-      // applicable) — used only for the Lifecycle modal's "Transform:" status
-      // line so it doesn't misreport a correctly-installed transform as stock.
-      const activePath = (tpl?.transformed && data?.transformed_path) ? data.transformed_path : data?.path;
       const tplName = data?.name || tpl?.name;
       const manageBtn = document.createElement('button');
       manageBtn.type = 'button';
@@ -542,13 +546,39 @@ function _renderChatTemplateStatus(state, family, tpl, data) {
           tplName,
           tplRepo: repoFromSourceUrl(data?.source_url) || (tpl?.repo || ''),
           currentPath: tplPath,
-          activePath,
+          activePath: tplPath,
           onActivated: async () => {
             await autoInstallChatTemplate();
           },
         });
       });
       hint.appendChild(manageBtn);
+
+      // If the background checker found a newer upstream version of this template, say so and
+      // let the user act on it right here instead of hunting for it in Manage template.
+      const pending = readLastStatus().templates_with_updates.find(item => item.name === tplName);
+      if (pending) {
+        const note = document.createElement('span');
+        note.className = 'ct-update-note';
+        note.style.marginLeft = '8px';
+        note.style.color = 'var(--color-warning)';
+        note.textContent = `Update available (${describeUpdate(pending)}).`;
+        const updateBtn = document.createElement('button');
+        updateBtn.type = 'button';
+        updateBtn.className = 'btn-wizard-tertiary ct-update-btn';
+        updateBtn.style.fontSize = '11px';
+        updateBtn.style.fontWeight = '700';
+        updateBtn.style.marginLeft = '6px';
+        updateBtn.style.padding = '2px 8px';
+        updateBtn.textContent = 'Update';
+        updateBtn.title = 'Download the new version. The current one stays in Version history.';
+        updateBtn.addEventListener('click', async () => {
+          updateBtn.disabled = true;
+          const applied = await applyTemplateUpdate({ name: tplName, sourceUrl: pending.source_url, info: pending });
+          if (!applied.ok) updateBtn.disabled = false;
+        });
+        hint.append(note, updateBtn);
+      }
       bodyEl.appendChild(hint);
     }
     return;

@@ -9,48 +9,6 @@ use crate::state::AppState;
 
 use super::common::{ApiCtx, ApiRoute, check_api_token, unauthorized_api_token};
 
-/// Runs the froggeric template transform script on the given input file.
-/// Returns the path to the transformed output file, or an error string.
-/// Transform output goes to same directory as `<name>-no_json.jinja`.
-fn run_froggeric_transform(input_path: &std::path::Path) -> Result<std::path::PathBuf, String> {
-    let script_path = std::env::current_dir()
-        .map_err(|e| format!("Cannot determine current directory: {e}"))?
-        .join("scripts")
-        .join("transform-froggeric-template.mjs");
-
-    if !script_path.exists() {
-        return Err(format!(
-            "Transform script not found at: {}",
-            script_path.display()
-        ));
-    }
-
-    let input_str = input_path
-        .to_str()
-        .ok_or_else(|| "Invalid input path".to_string())?;
-
-    let output = std::process::Command::new("node")
-        .arg(&script_path)
-        .arg(input_str)
-        .output()
-        .map_err(|e| format!("Failed to run transform script: {e}"))?;
-
-    if !output.status.success() {
-        let err_msg = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Transform script failed: {err_msg}"));
-    }
-
-    // Parse output path from "Wrote: <path>" message
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let written_path = stdout
-        .lines()
-        .find(|l| l.starts_with("Wrote:"))
-        .and_then(|l| l.strip_prefix("Wrote:").map(str::trim))
-        .ok_or_else(|| "Transform script did not report output path".to_string())?;
-
-    Ok(std::path::PathBuf::from(written_path))
-}
-
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ChatTemplateInstallMeta {
     source_url: String,
@@ -252,6 +210,18 @@ async fn fetch_hf_commit_date(repo: &str, revision: &str) -> Option<String> {
         .ok()
         .and_then(|c| c.into_iter().next())
         .map(|c| c.date)
+}
+
+/// True only for `https://` URLs whose exact host is `huggingface.co` or a
+/// subdomain of it. Substring matching is not enough: a token must never be
+/// attached to `https://evil.example/huggingface.co`.
+fn is_huggingface_url(url: &str) -> bool {
+    match reqwest::Url::parse(url) {
+        Ok(u) if u.scheme() == "https" => u
+            .host_str()
+            .is_some_and(|h| h == "huggingface.co" || h.ends_with(".huggingface.co")),
+        _ => false,
+    }
 }
 
 /// Extracts `owner/name` from a `source_url` of the form
@@ -752,28 +722,13 @@ fn api_chat_template_install_hf(
                     let source_url = existing_meta.as_ref().map(|m| m.source_url.clone());
                     let installed_at = existing_meta.as_ref().map(|m| m.installed_at.clone());
 
-                    // The no-JSON transform is opt-in (the "Fix vX.Y" button in the Lifecycle
-                    // modal) — only report an already-transformed variant if one already
-                    // exists on disk from a prior explicit click; never create one here.
-                    let transformed_path = {
-                        let base = dest
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or(&name);
-                        let transformed = dest.with_file_name(format!("{base}-no_json.jinja"));
-                        transformed
-                            .exists()
-                            .then(|| transformed.to_string_lossy().to_string())
-                    };
-
                     return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
                         warp::reply::json(&serde_json::json!({
                             "ok": true,
                             "path": dest.to_string_lossy(),
                             "already_existed": true,
                             "source_url": source_url,
-                            "installed_at": installed_at,
-                            "transformed_path": transformed_path
+                            "installed_at": installed_at
                         })),
                     ));
                 }
@@ -871,18 +826,13 @@ fn api_chat_template_install_hf(
                 );
                 record_release(&name, &meta, content.as_bytes());
 
-                // The no-JSON transform is opt-in (the "Fix vX.Y" button in the Lifecycle
-                // modal) — never auto-applied on fetch.
-                let transformed_path: Option<String> = None;
-
                 Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(warp::reply::json(
                     &serde_json::json!({
                         "ok": true,
                         "path": dest.to_string_lossy(),
                         "already_existed": false,
                         "source_url": source_url,
-                        "revision": revision,
-                        "transformed_path": transformed_path
+                        "revision": revision
                     }),
                 )))
             }
@@ -1101,13 +1051,16 @@ fn api_chat_template_active(
                             .map(|s| s.to_string_lossy().to_string())
                             .unwrap_or_default();
 
+                        // `-no_json` files are leftovers from the retired no-JSON transform. They
+                        // have no update path of their own, so the UI must not offer to update them.
                         list.push(serde_json::json!({
                             "name": name,
                             "path": path.to_string_lossy().to_string(),
                             "fetch_url": meta.fetch_url,
                             "source_url": meta.source_url,
                             "installed_sha256": meta.sha256,
-                            "installed_at": meta.installed_at
+                            "installed_at": meta.installed_at,
+                            "legacy_variant": name.ends_with("-no_json")
                         }));
                     }
                 }
@@ -1258,16 +1211,11 @@ fn api_chat_template_activate(
                     record.revision.clone(),
                 );
 
-                // The no-JSON transform is opt-in (the "Fix vX.Y" button in the Lifecycle
-                // modal) — never auto-applied, including on rollback.
-                let transformed_path: Option<String> = None;
-
                 Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(warp::reply::json(
                     &serde_json::json!({
                         "ok": true,
                         "path": dest.to_string_lossy(),
-                        "sha256": record.sha256,
-                        "transformed_path": transformed_path
+                        "sha256": record.sha256
                     }),
                 )))
             }
@@ -1300,25 +1248,41 @@ fn api_chat_template_check_update(
                     ));
                 }
 
-                let path = std::path::Path::new(&path_str);
-                // Callers may pass either the base cache path or the froggeric transform
-                // output (`<name>-no_json.jinja`) — only the base path carries the
-                // install meta.json sidecar, so fall back to it when the given path has
-                // none (otherwise "Check for updates" always errors on transformed installs).
-                let meta_path = {
-                    let direct = template_meta_path(path);
-                    if direct.exists() {
-                        direct
-                    } else {
-                        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                        if let Some(base_stem) = stem.strip_suffix("-no_json") {
-                            let base_path = path.with_file_name(format!("{base_stem}.jinja"));
-                            template_meta_path(&base_path)
-                        } else {
-                            direct
+                // The path comes from the request body, so it must be forced
+                // through the same managed-root resolver as /chat-template/read:
+                // without it this handler could read (hash) any file the
+                // process can see and write a .jinja.meta.json beside it.
+                let path = {
+                    let Some(template_root) = chat_template_dir_path() else {
+                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                            warp::reply::json(&serde_json::json!({
+                                "ok": false,
+                                "error": "managed template directory unavailable"
+                            })),
+                        ));
+                    };
+                    match resolve_managed_chat_template_path(std::path::Path::new(&path_str), &template_root)
+                    {
+                        Ok(resolved) => resolved,
+                        Err(PathValidationError::OutsideManagedRoot) => {
+                            return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                                warp::reply::json(&serde_json::json!({
+                                    "ok": false,
+                                    "error": "template path must be inside the managed template directory"
+                                })),
+                            ));
+                        }
+                        Err(_) => {
+                            return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                                warp::reply::json(&serde_json::json!({
+                                    "ok": false,
+                                    "error": "absolute .jinja path required, no .."
+                                })),
+                            ));
                         }
                     }
                 };
+                let meta_path = template_meta_path(&path);
                 let existing_meta = read_template_install_meta(&meta_path);
 
                 // Legacy installs (from before update-tracking metadata existed) have no
@@ -1346,7 +1310,7 @@ fn api_chat_template_check_update(
                                     })),
                                 ));
                             };
-                            let local_bytes = match std::fs::read(path) {
+                            let local_bytes = match std::fs::read(&path) {
                                 Ok(b) => b,
                                 Err(e) => {
                                     return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
@@ -1368,6 +1332,9 @@ fn api_chat_template_check_update(
 
                 let client = match reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(15))
+                    // Never follow redirects: a check URL must not bounce the
+                    // request (and possibly the bearer token) to another host.
+                    .redirect(reqwest::redirect::Policy::none())
                     .user_agent("llama-monitor/1.0")
                     .build()
                 {
@@ -1398,16 +1365,16 @@ fn api_chat_template_check_update(
                 };
 
                 let mut req = client.get(&check_url);
-                if check_url.contains("huggingface.co")
+                if is_huggingface_url(&check_url)
                     && let Some(ref tok) = crate::hf::hf_load_token()
                     && !tok.is_empty()
                 {
                     req = req.header("Authorization", format!("Bearer {tok}"));
                 }
 
-                let new_sha = match req.send().await {
+                let (new_sha, upstream_version) = match req.send().await {
                     Ok(resp) if resp.status().is_success() => match resp.bytes().await {
-                        Ok(bytes) => sha256_hex(&bytes),
+                        Ok(bytes) => (sha256_hex(&bytes), extract_template_version(&bytes)),
                         Err(e) => {
                             return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
                                 warp::reply::json(&serde_json::json!({
@@ -1438,20 +1405,30 @@ fn api_chat_template_check_update(
 
                 let changed = new_sha != baseline_sha;
 
+                // The commit `main` points at right now, so the UI can say which revision an
+                // update would install. Best effort: a failure only drops the label.
+                let hf_token = crate::hf::hf_load_token();
+                let upstream_revision = match parse_repo_from_source_url(&baseline_source_url) {
+                    Some(repo) if is_huggingface_url(&check_url) => {
+                        resolve_hf_commit_sha(&client, &repo, &hf_token).await
+                    }
+                    _ => None,
+                };
+
                 // Backfill meta.json for legacy installs once we have a confirmed baseline,
                 // so subsequent checks no longer need the fallback fields from the client.
                 // Approximate the original install date with the file's mtime, since the
                 // true install time was never recorded.
-                let mtime_rfc3339 = std::fs::metadata(path)
+                let mtime_rfc3339 = std::fs::metadata(&path)
                     .and_then(|m| m.modified())
                     .ok()
                     .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
 
                 if existing_meta.is_none()
-                    && let Ok(local_bytes) = std::fs::read(path)
+                    && let Ok(local_bytes) = std::fs::read(&path)
                 {
                     write_template_install_meta_at(
-                        path,
+                        &path,
                         &baseline_source_url,
                         &fetch_url,
                         &local_bytes,
@@ -1464,14 +1441,29 @@ fn api_chat_template_check_update(
                     .or(mtime_rfc3339)
                     .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
 
+                let installed_version = existing_meta
+                    .as_ref()
+                    .and_then(|m| m.template_version.clone())
+                    .or_else(|| std::fs::read(&path).ok().and_then(|b| extract_template_version(&b)));
+                let installed_revision = existing_meta.as_ref().and_then(|m| m.revision.clone());
+                let name = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
                 Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(warp::reply::json(
                     &serde_json::json!({
                         "ok": true,
                         "changed": changed,
+                        "name": name,
                         "installed_at": installed_at,
                         "source_url": baseline_source_url,
                         "installed_sha256": baseline_sha,
                         "current_sha256": new_sha,
+                        "installed_version": installed_version,
+                        "upstream_version": upstream_version,
+                        "installed_revision": installed_revision,
+                        "upstream_revision": upstream_revision,
                         "backfilled": existing_meta.is_none()
                     }),
                 )))
@@ -2053,89 +2045,6 @@ fn api_chat_template_smoke_test(
         })
 }
 
-// Transform endpoint: runs the froggeric no_json transform on an existing template file.
-fn api_chat_template_transform(
-    _state: AppState,
-    app_config: Arc<AppConfig>,
-) -> impl Filter<Extract = (Box<dyn warp::reply::Reply>,), Error = warp::Rejection> + Clone {
-    warp::path!("api" / "chat-template" / "transform")
-        .and(warp::post())
-        .and(warp::header::optional::<String>("authorization"))
-        .and(super::super::safe_json_body::<serde_json::Value>())
-        .and_then(move |auth: Option<String>, body: serde_json::Value| {
-            let cfg = app_config.clone();
-            async move {
-                if !check_api_token(&auth, &cfg) {
-                    return Ok(unauthorized_api_token());
-                }
-                let path = body["path"].as_str().unwrap_or("").to_string();
-                if path.is_empty() {
-                    return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                        warp::reply::json(
-                            &serde_json::json!({ "ok": false, "error": "Missing path" }),
-                        ),
-                    ));
-                }
-                let input_path = std::path::Path::new(&path);
-                if !input_path.exists() {
-                    return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                        warp::reply::json(
-                            &serde_json::json!({ "ok": false, "error": "Input file not found" }),
-                        ),
-                    ));
-                }
-
-                match run_froggeric_transform(input_path) {
-                    Ok(output_path) => {
-                        // Track the transform as its own Version History entry — distinct
-                        // from the base template's releases — so a user who applies (and
-                        // later regrets) the no-JSON fix can see and roll back that action
-                        // specifically, per the two-track history model.
-                        if let Ok(output_content) = std::fs::read(&output_path) {
-                            let base_meta =
-                                read_template_install_meta(&template_meta_path(input_path));
-                            let base_name = input_path
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("template")
-                                .to_string();
-                            let transformed_name = format!("{base_name}-no_json");
-                            let source_url = base_meta
-                                .as_ref()
-                                .map(|m| m.source_url.clone())
-                                .unwrap_or_else(|| input_path.to_string_lossy().to_string());
-                            let fetch_url = base_meta
-                                .as_ref()
-                                .map(|m| m.fetch_url.clone())
-                                .unwrap_or_else(|| source_url.clone());
-                            let revision = base_meta.as_ref().and_then(|m| m.revision.clone());
-                            let meta = write_template_install_meta_at(
-                                &output_path,
-                                &source_url,
-                                &fetch_url,
-                                &output_content,
-                                None,
-                                revision,
-                            );
-                            record_release(&transformed_name, &meta, &output_content);
-                        }
-
-                        Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                            warp::reply::json(&serde_json::json!({
-                                "ok": true,
-                                "path": output_path.to_string_lossy(),
-                                "input_path": input_path.to_string_lossy(),
-                            })),
-                        ))
-                    }
-                    Err(e) => Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                        warp::reply::json(&serde_json::json!({ "ok": false, "error": e })),
-                    )),
-                }
-            }
-        })
-}
-
 #[derive(serde::Serialize)]
 struct UpstreamVersion {
     sha: String,
@@ -2337,6 +2246,43 @@ mod template_name_security_tests {
     }
 }
 
+#[cfg(test)]
+mod template_version_tests {
+    use super::{extract_template_version, infer_source_repo_from_template_name};
+
+    #[test]
+    fn reads_the_authors_embedded_version_whatever_it_is() {
+        let froggeric =
+            b"{%- set template_version = \"qwen3.8-froggeric-v22.5\" %}\n{%- set x = 1 %}";
+        assert_eq!(
+            extract_template_version(froggeric).as_deref(),
+            Some("qwen3.8-froggeric-v22.5")
+        );
+        let sharp = b"{%- set template_version = \"qwen3.8-froggeric-v22.5.0\" %}";
+        assert_eq!(
+            extract_template_version(sharp).as_deref(),
+            Some("qwen3.8-froggeric-v22.5.0")
+        );
+        assert_eq!(extract_template_version(b"{{ messages }}"), None);
+    }
+
+    #[test]
+    fn sharp_templates_resolve_to_their_own_repo_not_froggerics() {
+        assert_eq!(
+            infer_source_repo_from_template_name("qwen-sharp").as_deref(),
+            Some("peculiar-ragdoll/Qwen-Sharp-Chat-Templates")
+        );
+        assert_eq!(
+            infer_source_repo_from_template_name("qwen-froggeric-fixed").as_deref(),
+            Some("froggeric/Qwen-Fixed-Chat-Templates")
+        );
+        assert_eq!(
+            infer_source_repo_from_template_name("gemma4-google-official").as_deref(),
+            Some("google/gemma-4-31B-it")
+        );
+    }
+}
+
 #[derive(serde::Deserialize, Default)]
 struct DiscussionSource {
     #[serde(default)]
@@ -2351,6 +2297,9 @@ fn infer_source_repo_from_template_name(template_name: &str) -> Option<String> {
     let lower = template_name.to_lowercase();
     if lower.contains("gemma") && (lower.contains("4") || lower.contains("gemma4")) {
         return Some("google/gemma-4-31B-it".to_string());
+    }
+    if lower.contains("sharp") {
+        return Some("peculiar-ragdoll/Qwen-Sharp-Chat-Templates".to_string());
     }
     if lower.contains("qwen") || lower.contains("froggeric") {
         return Some("froggeric/Qwen-Fixed-Chat-Templates".to_string());
@@ -3062,10 +3011,6 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         .boxed();
     r = r
         .or(api_chat_template_smoke_test(state.clone(), config.clone()))
-        .unify()
-        .boxed();
-    r = r
-        .or(api_chat_template_transform(state.clone(), config.clone()))
         .unify()
         .boxed();
     r = r

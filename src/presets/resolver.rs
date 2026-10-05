@@ -5,6 +5,7 @@
 //! binary, or performs network I/O.
 
 use crate::inference::llama_cpp_capabilities::CapabilitySnapshot;
+use crate::inference::rapid_mlx::model_resolver::RapidMlxModelSource;
 use crate::llama::vram_estimator::VramBreakdown;
 use crate::presets::validation::ValidationIssue;
 use crate::presets::{ModelPreset, bundle};
@@ -98,6 +99,12 @@ pub fn resolve_preset(
     selection: Option<&PresetBundleSelection>,
     capabilities: &CapabilitySnapshot,
 ) -> Result<ResolvedLaunch, Vec<ValidationIssue>> {
+    // Rapid-MLX bundles are variant switching only: pick one adopted MLX model
+    // and a context size. The llama.cpp machinery (K/V policies, MoE offload,
+    // capability-gated launch policy) does not apply.
+    if preset.backend == crate::inference::InferenceBackend::RapidMlx {
+        return resolve_rapid_bundle(preset, selection);
+    }
     let mut issues =
         crate::presets::validation::validate_llama_launch_policy(preset, Some(capabilities));
     if let Err(error) = crate::inference::launch::validate_preset_backend_config(preset) {
@@ -165,6 +172,81 @@ pub fn materialize_default_projection(
     resolve_preset(preset, None, capabilities)
 }
 
+/// Variant-switching resolution for Rapid-MLX bundles: artifact + context only.
+fn resolve_rapid_bundle(
+    preset: &ModelPreset,
+    selection: Option<&PresetBundleSelection>,
+) -> Result<ResolvedLaunch, Vec<ValidationIssue>> {
+    let mut issues = Vec::new();
+    if let Err(error) = crate::inference::launch::validate_preset_backend_config(preset) {
+        issues.push(issue(
+            "backend",
+            "INVALID_BACKEND_CONFIG",
+            error.to_string(),
+        ));
+    }
+    let Some(bundle) = preset.bundle.as_ref() else {
+        if selection.is_some() {
+            issues.push(issue(
+                "selection",
+                "PRESET_NOT_BUNDLED",
+                "a one-shot selection requires a bundled preset",
+            ));
+        }
+        if !issues.is_empty() {
+            return Err(issues);
+        }
+        return Ok(build_result(preset, preset.clone(), None, Vec::new()));
+    };
+    issues.extend(
+        bundle::validate_bundle_structural(preset)
+            .into_iter()
+            .map(|message| issue("bundle", "INVALID_BUNDLE", message)),
+    );
+    let requested = selection.unwrap_or(&bundle.default_selection);
+    let weights = bundle.artifact(&requested.artifact_id).ok_or_else(|| {
+        vec![issue(
+            "selection",
+            "artifact_not_found",
+            format!(
+                "artifact '{}' is not present in the bundle",
+                requested.artifact_id
+            ),
+        )]
+    })?;
+    if weights.role != bundle::PresetArtifactRole::Weights {
+        issues.push(issue(
+            "selection",
+            "artifact_not_weights",
+            "only weights artifacts may be selected",
+        ));
+    }
+    if weights.local_path.is_none() {
+        issues.push(issue(
+            "selection",
+            "artifact_not_local",
+            format!(
+                "artifact '{}' has no adopted local path",
+                requested.artifact_id
+            ),
+        ));
+    }
+    if !bundle.context_options.is_empty()
+        && !bundle.context_options.contains(&requested.context_size)
+    {
+        issues.push(issue(
+            "selection",
+            "context_not_allowed",
+            "selected context is not in the bundle catalog",
+        ));
+    }
+    if !issues.is_empty() {
+        return Err(issues);
+    }
+    let (effective, changes) = materialize_selection(preset, bundle, requested);
+    Ok(build_result(preset, effective, Some(requested), changes))
+}
+
 fn build_result(
     source: &ModelPreset,
     mut effective: ModelPreset,
@@ -200,6 +282,15 @@ fn materialize_selection(
     {
         if let Some(path) = &weights.local_path {
             effective.model_path = path.clone();
+            // Backend-owned settings must follow the selection: the launch
+            // path reads rapid_mlx first, so leaving it stale would launch
+            // the previously selected variant.
+            if let Some(rapid) = effective.rapid_mlx.as_mut() {
+                rapid.model_path = path.clone();
+                rapid.model_source = Some(RapidMlxModelSource::MlxDirectory {
+                    path: path.clone().into(),
+                });
+            }
         }
         effective.mmproj = weights
             .mmproj_artifact_id
@@ -427,7 +518,10 @@ fn selection_hash(
     effective: &ModelPreset,
     selection: Option<&PresetBundleSelection>,
 ) -> String {
-    digest("sel-v1:", selection_fields(source, effective, selection))
+    digest(
+        &hash_prefix("sel", source),
+        selection_fields(source, effective, selection),
+    )
 }
 
 fn config_hash(
@@ -455,7 +549,7 @@ fn config_hash(
             serde_json::json!(selected.kv_policy.to_wire()),
         ));
     }
-    digest("cfg-v1:", fields)
+    digest(&hash_prefix("cfg", source), fields)
 }
 
 fn selection_fields(
@@ -463,7 +557,8 @@ fn selection_fields(
     effective: &ModelPreset,
     selection: Option<&PresetBundleSelection>,
 ) -> Vec<serde_json::Value> {
-    let mut fields = effective_launch_fields(effective)
+    let portable = source.bundle.is_some() || selection.is_some();
+    let mut fields = launch_fields(effective, portable)
         .into_iter()
         .filter(|field| {
             // A bundle's artifact ID is the portable model identity. Its local
@@ -528,6 +623,13 @@ fn selection_fields(
 /// persisted behavior fields participate in `cfg-v1` instead of silently
 /// creating a consent hash that describes only a subset of argv.
 fn effective_launch_fields(preset: &ModelPreset) -> Vec<serde_json::Value> {
+    launch_fields(preset, false)
+}
+
+/// `rapid_portable` strips the machine-local model location (`model_path`,
+/// `model_source`) from the Rapid-MLX blob, mirroring how `selection_fields`
+/// drops `/model_path` for llama: a bundle artifact id is the portable identity.
+fn launch_fields(preset: &ModelPreset, rapid_portable: bool) -> Vec<serde_json::Value> {
     const EXCLUDED: &[&str] = &[
         "id",
         "name",
@@ -537,6 +639,8 @@ fn effective_launch_fields(preset: &ModelPreset) -> Vec<serde_json::Value> {
         "api_key_configured",
         "clear_api_key",
         "bundle",
+        // Rapid-MLX configuration is re-added below, canonicalized and
+        // secret-free, only for Rapid-MLX presets. Llama presets never carry it.
         "rapid_mlx",
         "hf_repo",
         "cache_type_k",
@@ -557,11 +661,75 @@ fn effective_launch_fields(preset: &ModelPreset) -> Vec<serde_json::Value> {
     let serde_json::Value::Object(fields) = value else {
         return Vec::new();
     };
-    fields
+    let mut out: Vec<serde_json::Value> = fields
         .into_iter()
         .filter(|(name, value)| !EXCLUDED.contains(&name.as_str()) && !value.is_null())
         .map(|(name, value)| triple(&format!("/{name}"), value))
-        .collect()
+        .collect();
+    if let Some(rapid) = rapid_hash_value(preset, rapid_portable) {
+        out.push(triple("/rapid_mlx", rapid));
+    }
+    out
+}
+
+/// Canonical, secret-free serialization of the Rapid-MLX launch configuration.
+/// `None` for every non-Rapid preset, which keeps llama `cfg-v1`/`sel-v1`
+/// hashes byte-identical to what they were before Rapid config was hashed.
+fn rapid_hash_value(preset: &ModelPreset, portable: bool) -> Option<serde_json::Value> {
+    if preset.backend != crate::inference::InferenceBackend::RapidMlx {
+        return None;
+    }
+    let rapid = preset.rapid_mlx.as_ref()?;
+    let serde_json::Value::Object(mut map) = serde_json::to_value(rapid).ok()? else {
+        return None;
+    };
+    // `api_key` is `skip_serializing`, but never rely on that for a consent
+    // hash; `model_source_view` is a computed API view, not launch input.
+    map.remove("api_key");
+    map.remove("model_source_view");
+    if portable {
+        map.remove("model_path");
+        map.remove("model_source");
+    } else if map.get("model_path").is_some_and(|v| v == "") {
+        // Legacy empty fallback and absent are the same launch input.
+        map.remove("model_path");
+    }
+    Some(canonical_json(serde_json::Value::Object(map)))
+}
+
+/// Rebuild a JSON value with object keys in sorted order at every depth so the
+/// digest does not depend on map implementation or insertion order.
+fn canonical_json(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<_> = map.into_iter().collect();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            serde_json::Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key, canonical_json(value)))
+                    .collect(),
+            )
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.into_iter().map(canonical_json).collect())
+        }
+        other => other,
+    }
+}
+
+/// Hash-format prefix. Rapid-MLX presets now hash their Rapid config, so their
+/// digests are a different construction than `v1` and carry a distinct version
+/// tag. Every other preset keeps `v1` unchanged. Hashes are recomputed and
+/// compared per request (never persisted), so this only turns a stale Rapid
+/// preview hash into an ordinary `preview_stale`.
+fn hash_prefix(kind: &str, source: &ModelPreset) -> String {
+    let version = if rapid_hash_value(source, false).is_some() {
+        "v2"
+    } else {
+        "v1"
+    };
+    format!("{kind}-{version}:")
 }
 
 fn triple(path: &str, value: serde_json::Value) -> serde_json::Value {
@@ -807,6 +975,71 @@ mod tests {
             default_selection: selection,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn rapid_bundle_resolves_artifact_and_context_without_llama_policy() {
+        let weights = bundle::PresetModelArtifact {
+            id: "mxfp4".into(),
+            role: PresetArtifactRole::Weights,
+            local_path: Some("/models/hub/models--nightmedia--Qwen3.8-27B-AREX-mxfp4-mlx".into()),
+            quantization: PresetArtifactQuantization::default(),
+            metadata: PresetArtifactMetadata::default(),
+            ..Default::default()
+        };
+        let selection = PresetBundleSelection {
+            artifact_id: "mxfp4".into(),
+            context_size: 33_000,
+            kv_policy: LlamaKvPolicyId::Unknown("int8".into()),
+            performance_id: String::new(),
+            n_cpu_moe: None,
+            intent_source: None,
+        };
+        let bundle_spec = PresetBundleSpec {
+            artifacts: vec![weights],
+            context_options: vec![33_000, 131_000],
+            kv_policy_options: Vec::new(),
+            performance_options: Vec::new(),
+            cpu_moe_options: Vec::new(),
+            curated_selections: vec![selection.clone()],
+            default_selection: selection,
+            ..Default::default()
+        };
+        let mut preset = bundle::create_bundle_preset("Qwen MLX", bundle_spec);
+        preset.backend = crate::inference::InferenceBackend::RapidMlx;
+        preset.rapid_mlx = Some(crate::inference::rapid_mlx::RapidMlxConfig {
+            model_path: "/models/hub/models--nightmedia--Qwen3.8-27B-AREX-mxfp4-mlx".into(),
+            port: 8123,
+            ..Default::default()
+        });
+
+        // Default projection: no llama capability validation, artifact path wins.
+        let caps = snapshot();
+        let resolved =
+            materialize_default_projection(&preset, &caps).expect("rapid bundle resolves");
+        assert_eq!(
+            resolved.preset.model_path,
+            "/models/hub/models--nightmedia--Qwen3.8-27B-AREX-mxfp4-mlx"
+        );
+        assert_eq!(resolved.preset.context_size, 33_000);
+
+        // A one-shot switch to the other context resolves with a recorded change.
+        let mut switch = preset.bundle.as_ref().unwrap().default_selection.clone();
+        switch.context_size = 131_000;
+        let switched =
+            resolve_preset(&preset, Some(&switch), &caps).expect("context switch resolves");
+        assert_eq!(switched.preset.context_size, 131_000);
+        assert!(
+            switched
+                .changes
+                .iter()
+                .any(|change| change.field == "context_size")
+        );
+
+        // An unlisted context is rejected.
+        let mut bad = switch;
+        bad.context_size = 999;
+        assert!(resolve_preset(&preset, Some(&bad), &caps).is_err());
     }
 
     #[test]

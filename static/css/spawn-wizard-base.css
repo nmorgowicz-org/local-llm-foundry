@@ -265,6 +265,11 @@
   flex: 1;
   min-height: 0;
   grid-template-rows: 1fr;
+  /* The All-settings drawer's layout overflow used to leak past the columns'
+     own scroll regions into this step's scroll extent, leaving a large empty
+     (grey) area below the content and scroll-chaining into it. The columns
+     own scrolling; the step never needs visible overflow. */
+  overflow: hidden;
 }
 
 /* Hardware step (step 2) uses the same stretchable right column. */

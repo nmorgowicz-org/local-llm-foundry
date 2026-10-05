@@ -34,12 +34,12 @@
     <link rel="stylesheet" href="/css/tune-panel.css">
     <link rel="stylesheet" href="/css/calibration.css">
     <link rel="stylesheet" href="/css/evidence-drawer.css">
+    <link rel="stylesheet" href="/css/protocol-docs.css">
     <link rel="stylesheet" href="/css/preset-bundle-drawer.css">
     <link rel="stylesheet" href="/css/modal-sizing.css">
 <!-- Self-hosted vendor scripts (no CDN) -->
 <script src="/vendor/js/marked.min.js"></script>
 <script src="/vendor/js/purify.min.js"></script>
-<script src="/js/config/dompurify-init.js"></script>
 <link rel="stylesheet" href="/vendor/css/atom-one-dark.min.css">
 <script src="/vendor/js/highlight.min.js"></script>
     <script nonce="{{ NONCE }}">const APP_VERSION = '{{ VERSION }}'; const APP_PLATFORM = '{{ PLATFORM }}';</script>
@@ -193,6 +193,9 @@
             </div>
             <button id="llama-pill" class="top-nav-pill llama-pill-idle" style="display:none;" type="button" title="Manage the installed local llama.cpp binary and releases">
               <span id="llama-pill-version">b—</span>
+            </button>
+            <button id="rapid-mlx-pill" class="top-nav-pill" style="display:none;" type="button" title="Manage the Rapid-MLX runtime">
+              <span id="rapid-mlx-pill-version">Rapid-MLX</span>
             </button>
             <button id="update-pill" class="top-nav-pill" style="display:none;">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -664,7 +667,7 @@
                       <div class="tune-running-header">
                         <span class="tune-running-pulse" aria-hidden="true"></span>
                         <span class="tune-running-label">Benchmarking</span>
-                        <span class="tune-running-hint" class="tune-running-hint">Sending a test prompt and measuring throughput…</span>
+                        <span class="tune-running-hint">Sending a test prompt and measuring throughput…</span>
                       </div>
                       <div class="tune-progress-track" role="progressbar" aria-label="Benchmark in progress">
                         <div class="tune-progress-fill" id="tune-progress-fill"></div>
@@ -2023,6 +2026,8 @@
                 </div>
             </div>
         </div>
+            </div><!-- /#view-monitor -->
+        </div><!-- /.view-container -->
     </main>
 
 <!-- Connection Lost Modal -->
@@ -2721,6 +2726,7 @@
                                 <div class="pe-field-hint" style="margin-bottom:4px;">Chat templates control how your messages are formatted before the model sees them. The built-in one usually works; a fixed template can repair broken tool-calling or thinking tags.</div>
                                 <input type="text" class="pe-input" id="modal-chat-template-file" placeholder="/path/to/chat_template.jinja" style="margin-bottom:6px;">
                                    <div class="pe-input-row">
+                                       <select class="pe-select" id="preset-chat-template-choice" style="display:none; width:auto; max-width:240px;" aria-label="Community template to use" title="This model family has more than one community template"></select>
                                        <button type="button" class="btn-sm btn-preset" id="preset-recommended-chat-template-btn" title="Install the best-known community template for this model family">Use recommended template</button>
                                        <button type="button" class="btn-sm btn-preset" id="preset-chat-template-manage-btn" title="Current, updates, version history, and community fixes for this template">Manage template…</button>
                                        <button type="button" class="btn-sm btn-preset" id="preset-clear-chat-template-btn" title="Clear override">Clear</button>
@@ -3483,7 +3489,7 @@
                                        </select>
                                    </div>
                                    <div class="pe-field">
-                                        <label class="pe-label" for="modal-rapid-turboquant-mode" title="Reusable prompt storage policy. Compresses retained prefix snapshots only — does not reduce active-generation KV or model weights. K8V4 showed 40–100% slower TTFT in Phase 6 benchmarks; requires re-validation post rapid-mlx v0.11.0.">Reusable Prompt Storage</label>
+                                        <label class="pe-label" for="modal-rapid-turboquant-mode" title="Reusable prompt storage policy. Compresses retained prefix snapshots only — does not reduce active-generation KV or model weights. K8V4 showed 40–100% slower TTFT in Phase 6 benchmarks and is not enabled at launch until it has been re-validated against the installed runtime.">Reusable Prompt Storage</label>
                                         <select class="pe-select" id="modal-rapid-turboquant-mode">
                                             <option value="auto">Auto — runtime default</option>
                                             <option value="">(unset)</option>
@@ -3552,6 +3558,10 @@
                                         <option value="ui_tars">ui_tars</option>
                                     </select>
                                     <div class="pe-field-hint">Explicit overrides are intended for misdetected finetunes.</div>
+                                </div>
+                                <div class="pe-field">
+                                    <button type="button" class="pe-action-btn" data-open-protocol-docs>Validate protocol…</button>
+                                    <div class="pe-field-hint">Compare the detected protocol against the RapidMLX model-families docs.</div>
                                 </div>
                             </div>
                             <div class="pe-row pe-row-rapid-advanced" id="pe-row-rapid-architecture-overrides" style="display:none;">
@@ -3995,6 +4005,8 @@
 
                     <!-- HF repo input -->
                     <div class="model-input-area" id="model-input-hf">
+                        <!-- Curated Rapid-MLX catalog — replaces HF browse when the Rapid-MLX engine is selected -->
+                        <div id="rapid-catalog-panel" style="display:none;"></div>
                         <!-- HF token — shown first so users set it before browsing -->
                         <div class="settings-card wizard-hf-token-card" style="margin-bottom:10px;">
                             <div class="wizard-hf-token-header">
@@ -4246,7 +4258,7 @@
                                          <option value="int8">int8 — recommended (tool calling)</option>
                                          <option value="bf16">bf16 — highest precision</option>
                                      </select>
-                                      <div class="field-hint">This build always launches with int8 active KV, regardless of this selection — Rapid-MLX's <code>--reasoning</code> flag pins it unconditionally. This control is not yet wired to the launch; it is kept visible so a future runtime that respects it doesn't require new UI.</div>
+                                      <div class="field-hint">Rapid-MLX models are hybrid-attention: quantized KV is refused at startup, so they always serve bf16 KV. This dial is hidden for Rapid-MLX and applies to engines that support quantized KV.</div>
                                  </div>
                                  <div class="hardware-field">
                                      <label for="spawn-rapid-cache-mode" title="Auto tracks the measured single-user coding-agent recommendation (8 GiB, 16 entries) even if it changes later. Off disables the retained cache. Custom uses the Retained cache selector below as configured.">Prompt cache mode</label>
@@ -4298,6 +4310,10 @@
                                      <div class="field-hint">Override only when a modified finetune is misdetected.</div>
                                  </div>
                                  <div class="hardware-field">
+                                     <button type="button" class="hw-action-btn" data-open-protocol-docs>Validate protocol…</button>
+                                     <div class="field-hint">Compare the detected tool/reasoning protocol against the RapidMLX model-families docs — useful when auto-detection can't see a modified finetune.</div>
+                                 </div>
+                                 <div class="hardware-field">
                                      <label for="spawn-rapid-prefill-step-size">Prefill step size</label>
                                      <select id="spawn-rapid-prefill-step-size">
                                          <option value="512" selected>512 — qualified text default</option>
@@ -4314,6 +4330,7 @@
                                          <span class="kv-unified-text">Experimental MTP speculation</span>
                                      </label>
                                      <div class="field-hint">Works with sampling (temperature, top-p). Constrained decoding and tool-call grammars still bypass speculation.</div>
+                                     <div class="field-hint" id="spawn-rapid-mtp-eligibility" style="display:none;"></div>
                                  </div>
                                  <div class="hardware-field" id="spawn-rapid-speculative-mode-wrap" style="display:none;">
                                      <label for="spawn-rapid-speculative-source">MTP source</label>
@@ -5340,11 +5357,6 @@
                                 </select>
                             </div>
                             <div class="sampling-field">
-                                <label for="spawn-alias" title="--alias STRING. Model name reported in /v1/models and displayed in API clients. Defaults to the model filename.">Server alias</label>
-                                <input type="text" id="spawn-alias" placeholder="e.g. qwen36-27b">
-                                <div class="field-hint">Name shown in <code>/v1/models</code> and OpenAI-compatible clients. Defaults to the model filename if blank.</div>
-                            </div>
-                            <div class="sampling-field">
                                 <label for="spawn-api-key">Server API key</label>
                                 <input type="password" id="spawn-api-key" placeholder="Optional bearer token for llama-server">
                             </div>
@@ -5396,6 +5408,9 @@
                             <div class="vram-segment seg-free"    id="vseg-free"    style="width:0%"
                                  title="Free headroom"></div>
                         </div>
+
+                        <!-- Plain-language memory explainer (Apple Silicon only) -->
+                        <div class="vram-free-explainer" id="vram-free-explainer" style="display:none;"></div>
 
                          <!-- Legend row -->
                          <div class="vram-legend">
@@ -5538,6 +5553,26 @@
                 <div class="wizard-sidebar">
                     <div class="wizard-sidebar-title">Configuration</div>
                     <div id="spawn-sidebar-config" style="margin-bottom:10px;"></div>
+                    <div class="sampling-field" style="margin-bottom:14px;">
+                        <label for="spawn-alias" title="Model name reported in /v1/models and used by API clients." style="font-size:12px;">Served as (API model name)</label>
+                        <input type="text" id="spawn-alias" style="width:100%;" placeholder="Leave blank to use the model name" aria-describedby="spawn-alias-hint">
+                        <div class="field-hint" id="spawn-alias-hint">Give each preset variant its own name for API clients. This does not change the model being loaded. Leave blank to use the default model name.</div>
+                    </div>
+
+                    <div class="wizard-sidebar-title">Network access</div>
+                    <div class="sampling-field" style="margin-bottom:8px;">
+                        <label for="spawn-guided-bind-host" style="font-size:12px;">Who can reach this server</label>
+                        <select id="spawn-guided-bind-host" style="width:100%;">
+                            <option value="127.0.0.1">This Mac only (127.0.0.1)</option>
+                            <option value="0.0.0.0">Other devices on my network (0.0.0.0)</option>
+                        </select>
+                    </div>
+                    <div class="sampling-field" style="margin-bottom:8px;">
+                        <label for="spawn-guided-api-key" style="font-size:12px;">API key (password for clients)</label>
+                        <input type="password" id="spawn-guided-api-key" style="width:100%;" placeholder="Set one when exposing to the network">
+                        <div class="field-hint" id="spawn-guided-access-hint">Leave the host on “This Mac only” unless another device needs to call this API.</div>
+                    </div>
+
                     <div class="wizard-sidebar-title">What happens next</div>
                     <ul>
                         <li>llama-server starts as a background process.</li>
@@ -6231,15 +6266,47 @@
                   </div>
                   <div class="settings-pane" id="settings-migration">
                       <h3>Local LLM Foundry upgrade</h3>
-                      <p class="settings-help">Your existing data and model folders remain in place until you explicitly approve this migration. The upgrade copies critical application state into the Foundry home and keeps the legacy root as a rollback point.</p>
-                      <div class="settings-card" id="app-home-migration-card">
-                          <div class="settings-help" id="app-home-migration-state">Checking application-home status…</div>
-                          <div class="settings-help" id="app-home-migration-summary"></div>
-                          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;">
-                              <button type="button" class="btn secondary" id="app-home-migration-preview">Preview migration</button>
-                              <button type="button" class="btn primary" id="app-home-migration-queue" disabled>Queue migration for restart</button>
+                      <p class="settings-help">Queue this upgrade to copy critical application state into the Foundry home on the next launch. Models and generated runtimes are not copied. The legacy home is retained for rollback.</p>
+                      <div class="settings-card app-home-migration-card" id="app-home-migration-card">
+                          <div class="app-home-migration-state" id="app-home-migration-state" role="status" aria-live="polite" aria-atomic="true">Checking application-home status…</div>
+                          <p class="settings-help" id="app-home-migration-summary"></p>
+                          <section class="app-home-migration-plan" id="app-home-migration-plan" aria-labelledby="app-home-migration-plan-title" hidden>
+                              <h4 id="app-home-migration-plan-title">Migration preview ready</h4>
+                              <dl class="app-home-migration-facts">
+                                  <dt>Size to copy</dt>
+                                  <dd id="app-home-migration-copy-size"></dd>
+                                  <dt>Total inventoried items</dt>
+                                  <dd id="app-home-migration-inventoried-count"></dd>
+                                  <dt>Retained items</dt>
+                                  <dd id="app-home-migration-retained-count"></dd>
+                              </dl>
+                              <p class="settings-help">The inventory includes items that will not be copied.</p>
+                              <ul class="app-home-migration-notes">
+                                  <li>Critical application state will be copied on the next launch, not now.</li>
+                                  <li>Models and generated runtimes are not copied.</li>
+                                  <li>The legacy home is retained for rollback.</li>
+                              </ul>
+                              <details class="app-home-migration-details" id="app-home-migration-technical">
+                                  <summary>Technical details</summary>
+                                  <p class="settings-help">Plan ID</p>
+                                  <code id="app-home-migration-plan-id"></code>
+                                  <p class="settings-help">Raw plan summary</p>
+                                  <pre id="app-home-migration-technical-summary"></pre>
+                              </details>
+                          </section>
+                          <details class="app-home-migration-details" id="app-home-migration-locations" hidden>
+                              <summary>Location details</summary>
+                              <dl class="app-home-migration-locations">
+                                  <dt>Source (legacy home)</dt>
+                                  <dd><code id="app-home-migration-source"></code></dd>
+                                  <dt>Destination (Foundry home)</dt>
+                                  <dd><code id="app-home-migration-destination"></code></dd>
+                              </dl>
+                          </details>
+                          <div class="app-home-migration-actions">
+                              <button type="button" class="btn secondary" id="app-home-migration-preview" aria-controls="app-home-migration-plan" disabled>Preview migration</button>
+                              <button type="button" class="btn primary" id="app-home-migration-queue" disabled>Queue migration for next launch</button>
                           </div>
-                          <pre id="app-home-migration-plan" style="display:none;max-height:220px;overflow:auto;margin-top:14px;white-space:pre-wrap;"></pre>
                       </div>
                       <div class="settings-card" id="model-root-relocation-card" style="margin-top:14px;">
                           <h4>Model library location</h4>
@@ -6247,14 +6314,32 @@
                           <div class="settings-help" id="model-root-relocation-summary"></div>
                           <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:12px;">
                               <label class="toggle-label"><input type="radio" name="model-root-choice" value="keep_legacy" checked> Keep legacy location</label>
-                              <label class="toggle-label"><input type="radio" name="model-root-choice" value="move_into_foundry"> Copy into Foundry</label>
+                              <label class="toggle-label"><input type="radio" name="model-root-choice" value="move_into_foundry"> Move into Foundry</label>
                           </div>
-                          <p class="settings-help">Keep leaves models, caches, sidecars, and incomplete downloads where they are. Copying is resumable and retains the legacy source as a rollback point.</p>
+                          <p class="settings-help">Keep leaves models, caches, sidecars, and incomplete downloads where they are. Move relocates the whole model folder into the Foundry home. Nothing is copied, so no extra disk space is needed and the legacy model folder is gone afterward. Both locations must be on the same drive.</p>
                           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">
                               <button type="button" class="btn secondary" id="model-root-relocation-preview">Preview model-root choice</button>
                               <button type="button" class="btn primary" id="model-root-relocation-execute" disabled>Save choice</button>
                           </div>
-                          <pre id="model-root-relocation-plan" hidden style="max-height:260px;overflow:auto;margin-top:14px;white-space:pre-wrap;"></pre>
+                        <section class="app-home-migration-plan" id="model-root-relocation-plan" aria-labelledby="model-root-plan-title" hidden>
+                            <h4 id="model-root-plan-title">Model preview ready</h4>
+                            <dl class="app-home-migration-facts">
+                                <dt id="model-root-plan-size-label">Size to move</dt>
+                                <dd id="model-root-plan-size"></dd>
+                                <dt>Total inventoried items</dt>
+                                <dd id="model-root-plan-items"></dd>
+                                <dt>Extra disk space needed</dt>
+                                <dd id="model-root-plan-extra">None</dd>
+                                <dt>External folders kept</dt>
+                                <dd id="model-root-plan-external"></dd>
+                            </dl>
+                            <ul class="app-home-migration-notes" id="model-root-plan-notes"></ul>
+                            <details class="app-home-migration-details">
+                                <summary>Technical details</summary>
+                                <p class="settings-help">Plan ID</p>
+                                <code id="model-root-plan-id"></code>
+                            </details>
+                        </section>
                       </div>
                   </div>
                   <div class="settings-pane" id="settings-chat">
@@ -6742,36 +6827,36 @@
                                     <span>Chat Database</span>
                                 </div>
                                 <div class="db-admin-status" id="db-admin-status">
-                                    <span class="status-dot"></span>
-                                    <span class="status-text">Checking...</span>
+                                    <span class="db-status-dot" id="settings-db-status-dot"></span>
+                                    <span class="db-status-text" id="settings-db-status-text">Checking...</span>
                                 </div>
                             </div>
 
                             <div class="db-admin-stats" id="db-admin-stats">
                                 <div class="db-stat">
                                     <span class="db-stat-label">Conversations</span>
-                                    <span class="db-stat-value" id="db-stat-tabs">-</span>
+                                    <span class="db-stat-value" id="settings-db-stat-tabs">-</span>
                                 </div>
                                 <div class="db-stat">
                                     <span class="db-stat-label">Messages</span>
-                                    <span class="db-stat-value" id="db-stat-messages">-</span>
+                                    <span class="db-stat-value" id="settings-db-stat-messages">-</span>
                                 </div>
                                 <div class="db-stat">
                                     <span class="db-stat-label">Database Size</span>
-                                    <span class="db-stat-value" id="db-stat-size">-</span>
+                                    <span class="db-stat-value" id="settings-db-stat-size">-</span>
                                 </div>
                                 <div class="db-stat">
                                     <span class="db-stat-label">FTS Index</span>
-                                    <span class="db-stat-value" id="db-stat-fts">-</span>
+                                    <span class="db-stat-value" id="settings-db-stat-fts">-</span>
                                 </div>
                             </div>
 
                             <div class="db-admin-actions">
-                                <button type="button" class="btn btn-secondary db-admin-btn" id="db-btn-backup" title="Create database backup">
+                                <button type="button" class="btn btn-secondary db-admin-btn" id="settings-db-btn-backup" title="Create database backup">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
                                     Backup Now
                                 </button>
-                                <button type="button" class="btn btn-secondary db-admin-btn" id="db-btn-check" title="Run integrity check">
+                                <button type="button" class="btn btn-secondary db-admin-btn" id="settings-db-btn-check" title="Run integrity check">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
                                     Verify
                                 </button>
@@ -6785,9 +6870,9 @@
                                 </button>
                             </div>
 
-                            <div class="db-admin-log" id="db-admin-log">
+                            <div class="db-admin-log" id="settings-db-admin-log">
                                 <div class="db-log-header">Activity Log</div>
-                                <div class="db-log-content" id="db-log-content"></div>
+                                <div class="db-log-content" id="settings-db-log-content"></div>
                             </div>
                         </div>
                     </div>
@@ -7683,6 +7768,7 @@
         <div class="llama-version-modal-current" id="llama-version-modal-current">
             <span class="llama-version-current-label">Installed</span>
             <span class="llama-version-current-build" id="llama-version-current-build">—</span>
+            <button id="llama-uninstall-btn" class="runtime-uninstall-btn" type="button" title="Remove the managed llama.cpp binary from this machine (downloaded models are kept)">Uninstall…</button>
         </div>
         <div class="llama-version-modal-body">
             <div class="llama-version-panes">
@@ -7805,6 +7891,7 @@
             <button id="rapid-mlx-upgrade-btn" class="rapid-mlx-action-btn" type="button" style="display:none;">Upgrade</button>
             <button id="rapid-mlx-repair-btn" class="rapid-mlx-action-btn" type="button" style="display:none;">Repair</button>
             <button id="rapid-mlx-rollback-btn" class="rapid-mlx-action-btn rapid-mlx-action-btn-soft" type="button" style="display:none;">Rollback</button>
+            <button id="rapid-mlx-uninstall-btn" class="rapid-mlx-action-btn runtime-uninstall-btn" type="button" title="Remove the Rapid-MLX runtime from this machine (downloaded models are kept)">Uninstall…</button>
         </div>
         <div class="rapid-mlx-modal-body">
             <div class="rapid-mlx-panes">

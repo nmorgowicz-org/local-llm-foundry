@@ -1,10 +1,22 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
   <title id="title">Local LLM Foundry Token Ingot</title>
-  <desc id="desc">Three teal model layers converge into a copper ingot held by a charcoal forge.</desc>
-  <path fill="#000" d="M39 143 95 109l26 15 7 6 7-6 26-15 56 34v58l-89 45-89-45z"/>
-  <path fill="#000" d="m54 137 67-37q7-4 14 0l67 37q6 4 0 10l-67 37q-7 4-14 0l-67-37q-6-6 0-10z"/>
-  <path fill="#000" d="m54 95 67-37q7-4 14 0l67 37q6 4 0 10l-67 37q-7 4-14 0L54 105q-6-6 0-10z"/>
-  <path fill="#000" d="m54 53 67-37q7-4 14 0l67 37q6 4 0 10l-67 37q-7 4-14 0L54 63q-6-6 0-10z"/>
-  <path fill="#000" d="m104 146 24-14 24 14v26l-24 15-24-15z"/>
-  <path fill="#000" d="m111 151 17-10 17 10v17l-17 10-17-10z"/>
+  <desc id="desc">A menu-bar optimized Token Ingot: separated model layers, faceted forge, and a central ingot cutout.</desc>
+  <defs>
+    <mask id="detail" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <path fill="#fff" d="M0 0h256v256H0z"/>
+      <g fill="none" stroke="#000" stroke-width="13" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m50 66 78 43 78-43"/>
+        <path d="m50 108 78 43 78-43"/>
+        <path d="m43 158 85 44 85-44M128 202v37"/>
+      </g>
+      <path fill="#000" d="m101 153 27-16 27 16v29l-27 16-27-16z"/>
+      <path fill="#fff" d="m114 160 14-8 14 8v15l-14 8-14-8z"/>
+    </mask>
+  </defs>
+  <g fill="#000" mask="url(#detail)">
+    <path d="M39 143 95 109l26 15 7 6 7-6 26-15 56 34v58l-89 45-89-45z"/>
+    <path d="m54 137 67-37q7-4 14 0l67 37q6 4 0 10l-67 37q-7 4-14 0l-67-37q-6-6 0-10z"/>
+    <path d="m54 95 67-37q7-4 14 0l67 37q6 4 0 10l-67 37q-7 4-14 0L54 105q-6-6 0-10z"/>
+    <path d="m54 53 67-37q7-4 14 0l67 37q6 4 0 10l-67 37q-7 4-14 0L54 63q-6-6 0-10z"/>
+  </g>
 </svg>

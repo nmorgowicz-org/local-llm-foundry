@@ -70,6 +70,15 @@ export async function _autoResolveHfOrigin() {
   const { source, path, modelBytes } = wizardState.model;
   if (source !== 'local' && source !== 'import') return;
   if (wizardState.model.originRepo) { _refreshHfOriginSection(); return; }
+  // HF cache paths already encode provenance. Resolve both repository containers
+  // and snapshots locally instead of sending their directory names to GGUF search.
+  const cacheComponent = (path || '').split(/[\\/]/).find(part => part.startsWith('models--'));
+  const cacheRepo = cacheComponent?.slice('models--'.length).replace('--', '/');
+  if (cacheRepo && HF_REPO_ID_RE.test(cacheRepo)) {
+    await _confirmHfOrigin(cacheRepo, '', '', path);
+    _refreshHfOriginSection();
+    return;
+  }
   const filename = (path || '').split(/[\\/]/).pop() || '';
   if (!filename || filename.length < 8) return;
 

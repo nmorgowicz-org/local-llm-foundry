@@ -5,7 +5,7 @@ import { sessionState, setupViewState } from '../core/app-state.js';
 import { updateActiveSessionInfo } from './sessions.js';
 import { showToast, showToastWithActions } from './toast.js';
 import { saveSettings } from './settings.js';
-import { hideConnectingState, saveLastSessionData, showConnectingState, switchView, restorePreviousPosition, savePreviousPosition } from './setup-view.js';
+import { hideConnectingState, saveLastSessionData, showConnectingState, switchView, restorePreviousPosition } from './setup-view.js';
 import Router from './router.js';
 import { _showConfirm } from './presets.js';
 import { setTuneConfig, showTunePanel, hideTunePanel } from './tune-panel.js';
@@ -62,7 +62,6 @@ export async function doRestoreSession(sessionId, apiKey = null) {
 function applyCooldown(seconds, button) {
     if (!seconds || seconds <= 0 || !button) return;
     button.disabled = true;
-    const remaining = seconds;
     const label = button.textContent || button.value || '';
     const orig = label;
     const interval = setInterval(() => {
@@ -349,7 +348,7 @@ export async function doKillLlamaInternal() {
             },
             body: JSON.stringify({ confirm: 'kill' }),
         });
-    } catch(e) {
+    } catch(_e) {
         // Ignore errors from kill, just try to continue
     }
 }

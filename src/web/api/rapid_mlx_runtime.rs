@@ -46,8 +46,295 @@ struct RuntimeApiState {
     manager: Result<Arc<RapidMlxRuntimeManager>, String>,
     releases: Arc<tokio::sync::Mutex<ReleaseCache>>,
     jobs: Arc<Mutex<RuntimeJobs>>,
+    model_downloads: Arc<Mutex<ModelDownloads>>,
     changelog_cache: Arc<changelog::ChangelogCacheManager>,
     client: reqwest::Client,
+}
+
+/// Tracks a pre-download of a Hugging Face model repository into the app-scoped
+/// model cache, so the Spawn Wizard (and spawn itself) find the weights already
+/// local instead of silently downloading at launch time. Engine is carried for
+/// provenance (rapid-mlx today, omlx later) — both read the same HF cache.
+#[derive(Debug, Clone, Serialize)]
+struct ModelDownloadJob {
+    repo_id: String,
+    revision: String,
+    engine: String,
+    state: RuntimeJobState,
+    message: String,
+    error: Option<String>,
+    local_path: Option<String>,
+    // Byte-level progress: total from the repo listing, done accumulated from
+    // per-file completions plus intra-file tqdm percentages.
+    bytes_total: u64,
+    bytes_done: u64,
+    current_file: String,
+    stalled: bool,
+    restarts: u32,
+    /// Set by the cancel route; the worker polls it and kills the downloader.
+    #[serde(skip)]
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+}
+
+const MODEL_DOWNLOAD_MAX_RESTARTS: u32 = 3;
+/// No forwarded progress for this long counts as a stall; the downloader is
+/// restarted and resumes (the hub skips files it already finished).
+const MODEL_DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(8 * 60);
+/// Upper bound on waiting for a killed (or EOF'd) downloader to be reaped.
+const MODEL_DOWNLOAD_REAP_TIMEOUT: Duration = Duration::from_secs(10);
+/// Concurrent downloads allowed at once; terminal jobs do not count.
+const MAX_ACTIVE_MODEL_DOWNLOADS: usize = 4;
+const MODEL_DOWNLOAD_SEGMENT_MAX_LEN: usize = 96;
+const MODEL_DOWNLOAD_REVISION_MAX_LEN: usize = 128;
+
+impl ModelDownloadJob {
+    fn is_active(&self) -> bool {
+        matches!(
+            self.state,
+            RuntimeJobState::Queued | RuntimeJobState::Running
+        )
+    }
+}
+
+/// Download registry. `order` records insertion order so eviction is
+/// oldest-first among *terminal* jobs; a running job is never evicted (its
+/// worker and cancel flag would become unreachable from the API).
+#[derive(Default)]
+struct ModelDownloads {
+    entries: BTreeMap<String, ModelDownloadJob>,
+    order: VecDeque<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ModelDownloadAdmission {
+    Registered,
+    AlreadyRunning { job_id: String },
+    AtCapacity,
+}
+
+impl ModelDownloads {
+    fn get(&self, id: &str) -> Option<&ModelDownloadJob> {
+        self.entries.get(id)
+    }
+
+    fn get_mut(&mut self, id: &str) -> Option<&mut ModelDownloadJob> {
+        self.entries.get_mut(id)
+    }
+
+    fn active_count(&self) -> usize {
+        self.entries.values().filter(|job| job.is_active()).count()
+    }
+
+    /// Dedupe, capacity check, eviction and insert as one step, so callers
+    /// holding the registry lock cannot interleave between check and insert.
+    fn register(&mut self, id: String, job: ModelDownloadJob) -> ModelDownloadAdmission {
+        if let Some((existing, _)) = self.entries.iter().find(|(_, existing)| {
+            existing.is_active()
+                && existing.repo_id == job.repo_id
+                && existing.revision == job.revision
+        }) {
+            return ModelDownloadAdmission::AlreadyRunning {
+                job_id: existing.clone(),
+            };
+        }
+        if self.active_count() >= MAX_ACTIVE_MODEL_DOWNLOADS {
+            return ModelDownloadAdmission::AtCapacity;
+        }
+        self.evict_terminal();
+        self.order.push_back(id.clone());
+        self.entries.insert(id, job);
+        ModelDownloadAdmission::Registered
+    }
+
+    /// Make room for one more entry by dropping the oldest terminal jobs.
+    fn evict_terminal(&mut self) {
+        while self.entries.len() >= MAX_RETAINED_JOBS {
+            let Some(position) = self
+                .order
+                .iter()
+                .position(|id| self.entries.get(id).is_none_or(|job| !job.is_active()))
+            else {
+                break;
+            };
+            if let Some(id) = self.order.remove(position) {
+                self.entries.remove(&id);
+            }
+        }
+    }
+}
+
+fn lock_model_downloads(state: &RuntimeApiState) -> std::sync::MutexGuard<'_, ModelDownloads> {
+    state
+        .model_downloads
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// One Hugging Face owner or repo-name segment: `[A-Za-z0-9._-]`, bounded,
+/// never `.`/`..`, never leading `-` (would read as an option downstream).
+fn valid_hub_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment.len() <= MODEL_DOWNLOAD_SEGMENT_MAX_LEN
+        && segment != "."
+        && segment != ".."
+        && !segment.starts_with('-')
+        && segment
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+fn validate_model_download_repo(repo_id: &str) -> bool {
+    repo_id
+        .split_once('/')
+        .is_some_and(|(owner, name)| valid_hub_segment(owner) && valid_hub_segment(name))
+}
+
+/// A branch, tag, `refs/pr/N`, or commit SHA. Slashes are allowed for ref
+/// paths; traversal, empty segments and a leading `-`/`.`/`/` are not.
+fn validate_model_download_revision(revision: &str) -> bool {
+    !revision.is_empty()
+        && revision.len() <= MODEL_DOWNLOAD_REVISION_MAX_LEN
+        && !revision.starts_with(['-', '/', '.'])
+        && !revision.ends_with('/')
+        && !revision.contains("..")
+        && !revision.contains("//")
+        && revision
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'))
+}
+
+#[cfg(unix)]
+fn configure_process_group(command: &mut tokio::process::Command) {
+    use std::os::unix::process::CommandExt;
+    command.as_std_mut().process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_command: &mut tokio::process::Command) {}
+
+/// SIGKILL the whole process group created by `configure_process_group`
+/// (group id == child pid). Call before the child is reaped so the id cannot
+/// have been recycled.
+#[cfg(unix)]
+fn terminate_process_tree(pid: u32) {
+    if let Ok(pid) = i32::try_from(pid)
+        && pid > 1
+    {
+        // SAFETY: kill(2) with a negated, validated child pid and a constant signal.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_process_tree(_pid: u32) {}
+
+/// Kill the child's process tree, then reap it with a bounded wait so a child
+/// stuck in uninterruptible state cannot wedge the caller.
+async fn kill_and_reap(
+    child: &mut tokio::process::Child,
+    pid: Option<u32>,
+) -> Option<std::process::ExitStatus> {
+    if let Some(pid) = pid {
+        terminate_process_tree(pid);
+    }
+    let _ = child.start_kill();
+    tokio::time::timeout(MODEL_DOWNLOAD_REAP_TIMEOUT, child.wait())
+        .await
+        .ok()
+        .and_then(Result::ok)
+}
+
+/// Run a command to completion with a hard deadline. The child gets its own
+/// process group and `kill_on_drop`; on timeout the whole group is killed.
+async fn run_bounded_output(
+    mut command: tokio::process::Command,
+    timeout: Duration,
+) -> std::io::Result<std::process::Output> {
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    configure_process_group(&mut command);
+    let child = command.spawn()?;
+    let pid = child.id();
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(result) => result,
+        Err(_) => {
+            if let Some(pid) = pid {
+                terminate_process_tree(pid);
+            }
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "command timed out",
+            ))
+        }
+    }
+}
+
+/// What one downloader attempt produced, independent of how it was observed.
+struct DownloadAttempt {
+    cancelled: bool,
+    stalled: bool,
+    failure: Option<String>,
+    final_path: Option<String>,
+    exit_code: Option<i32>,
+    stderr_tail: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DownloadDecision {
+    Cancelled,
+    Complete {
+        path: String,
+    },
+    /// Stalled with restarts left: kill, then resume (the hub keeps finished files).
+    Restart,
+    StallExhausted,
+    Failed {
+        error: String,
+    },
+}
+
+/// Pure restart/terminal decision for a finished attempt. `attempt` is 1-based.
+fn decide_download_outcome(outcome: DownloadAttempt, attempt: u32) -> DownloadDecision {
+    if outcome.cancelled {
+        return DownloadDecision::Cancelled;
+    }
+    if outcome.failure.is_none()
+        && let Some(path) = outcome.final_path
+    {
+        return DownloadDecision::Complete { path };
+    }
+    if outcome.stalled {
+        return if attempt <= MODEL_DOWNLOAD_MAX_RESTARTS {
+            DownloadDecision::Restart
+        } else {
+            DownloadDecision::StallExhausted
+        };
+    }
+    let error = outcome.failure.unwrap_or_else(|| {
+        // Exit without a PATH line: pull the error from stderr text.
+        let code = outcome.exit_code.unwrap_or(-1);
+        let detail = outcome
+            .stderr_tail
+            .lines()
+            .rev()
+            .find(|l| {
+                let l = l.to_ascii_lowercase();
+                l.contains("error") || l.contains("exception")
+            })
+            .unwrap_or("")
+            .trim();
+        if detail.is_empty() {
+            format!("Hub downloader exited with status {code}")
+        } else {
+            format!("Hub downloader exited with status {code}: {detail}")
+        }
+    });
+    DownloadDecision::Failed { error }
 }
 
 #[derive(Default)]
@@ -73,6 +360,7 @@ enum RuntimeJobState {
     Running,
     Complete,
     Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -182,6 +470,7 @@ struct PublishedRelease {
     tag: String,
     channel: ManagedReleaseChannel,
     published_at: String,
+    release_notes: Option<String>,
 }
 
 impl Default for PublishedRelease {
@@ -191,6 +480,7 @@ impl Default for PublishedRelease {
             tag: String::new(),
             channel: ManagedReleaseChannel::Stable,
             published_at: String::new(),
+            release_notes: None,
         }
     }
 }
@@ -261,6 +551,8 @@ struct GithubRelease {
     prerelease: bool,
     #[serde(default)]
     published_at: String,
+    #[serde(default)]
+    body: String,
 }
 
 pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
@@ -276,11 +568,14 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         manager,
         releases: Arc::new(tokio::sync::Mutex::new(None)),
         jobs: Arc::new(Mutex::new(RuntimeJobs::default())),
+        model_downloads: Arc::new(Mutex::new(ModelDownloads::default())),
         changelog_cache: Arc::new(changelog::ChangelogCacheManager::new()),
         client,
     };
 
     status_route(ctx.clone(), state.clone())
+        .or(catalog_route(ctx.clone(), state.clone()))
+        .unify()
         .or(releases_route(ctx.clone(), state.clone()))
         .unify()
         .or(changelog_route(ctx.clone(), state.clone()))
@@ -290,6 +585,8 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         .or(doctor_route(ctx.clone(), state.clone()))
         .unify()
         .or(flag_advisor_route(ctx.clone()))
+        .unify()
+        .or(mtp_draft_suggestion_route(ctx.clone()))
         .unify()
         .or(mutation_route(
             ctx.clone(),
@@ -319,6 +616,12 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         .unify()
         .or(job_route(ctx.clone(), state.clone()))
         .unify()
+        .or(model_download_route(ctx.clone(), state.clone()))
+        .unify()
+        .or(model_download_status_route(ctx.clone(), state.clone()))
+        .unify()
+        .or(model_download_cancel_route(ctx.clone(), state.clone()))
+        .unify()
         .or(profile_route(ctx.clone(), state.clone()))
         .unify()
         .or(unified_profile_route(ctx.clone()))
@@ -330,12 +633,538 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         .unify()
         .or(settings_catalog_route(ctx.clone()))
         .unify()
-        .or(command_preview_route(ctx.clone()))
+        .or(command_preview_route(ctx.clone(), state.clone()))
         .unify()
         .or(prefix_cache_guidance_route(ctx.clone()))
         .unify()
         .or(runtime_metadata_route(ctx, state))
         .unify()
+        .boxed()
+}
+
+fn validate_model_download_engine(engine: &str) -> bool {
+    matches!(engine, "rapid-mlx" | "omlx")
+}
+
+/// Shared driver for both model-download routes. Runs `huggingface_hub`
+/// per-file downloads in a Python child, streams progress lines from its
+/// stdout (file boundaries, cumulative bytes, final snapshot path) plus
+/// intra-file tqdm percentages from stderr, detects stalls with a watchdog
+/// and restarts to resume — the hub skips files it already finished.
+///
+/// The work runs in its own task and a supervisor awaits it, so a panic in the
+/// worker marks the job Failed instead of leaving it "Running" forever (which
+/// would also block re-requesting the same repo).
+fn spawn_model_download_worker(
+    state: RuntimeApiState,
+    job_id: String,
+    repo_id: String,
+    revision: String,
+    models_dir: std::path::PathBuf,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) {
+    tokio::spawn(async move {
+        let worker = tokio::spawn(run_model_download(
+            state.clone(),
+            job_id.clone(),
+            repo_id,
+            revision,
+            models_dir,
+            cancel,
+        ));
+        if let Err(error) = worker.await {
+            let mut downloads = lock_model_downloads(&state);
+            if let Some(job) = downloads.get_mut(&job_id)
+                && job.is_active()
+            {
+                job.state = RuntimeJobState::Failed;
+                job.message = "Download failed".into();
+                job.error = Some(format!("Download worker terminated unexpectedly: {error}"));
+                job.stalled = false;
+            }
+        }
+    });
+}
+
+async fn run_model_download(
+    state: RuntimeApiState,
+    job_id: String,
+    repo_id: String,
+    revision: String,
+    models_dir: std::path::PathBuf,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
+    // Raw string on purpose: a `\` line continuation in a normal literal strips the
+    // next line's indentation, which breaks the Python `for` body.
+    let python_code = r#"from huggingface_hub import HfApi, hf_hub_download
+import os, sys
+repo_id, revision, cache = sys.argv[1], sys.argv[2], sys.argv[3]
+# The saved token arrives on stdin so it never appears in the process list.
+token = sys.stdin.readline().strip() or None
+info = HfApi(token=token).model_info(repo_id, revision=revision, files_metadata=True)
+files = [(f.rfilename, f.size or 0) for f in info.siblings if (f.size or 0) > 0]
+print(f'TOTAL {sum(s for _, s in files)}', flush=True)
+last = ''
+for name, size in files:
+    print(f'FILE {name}\t{size}', flush=True)
+    last = hf_hub_download(repo_id=repo_id, filename=name, revision=revision, cache_dir=cache, token=token)
+print('PATH ' + os.path.dirname(last), flush=True)"#;
+
+    // Progress is measured on disk: the hub writes `<blob>.incomplete` files under
+    // models--owner--repo/blobs while downloading, so the directory size is the
+    // true byte count (xet and plain HTTP alike), including files kept from an
+    // earlier attempt when resuming.
+    let blobs_dir = models_dir
+        .join("cache/huggingface/hub")
+        .join(format!("models--{}", repo_id.replace('/', "--")))
+        .join("blobs");
+    let dir_bytes = |dir: &std::path::Path| -> u64 {
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|e| e.metadata().ok())
+                    .filter(|m| m.is_file())
+                    .map(|m| m.len())
+                    .sum()
+            })
+            .unwrap_or(0)
+    };
+
+    let python = if cfg!(windows) {
+        "python.exe"
+    } else {
+        "python3"
+    };
+
+    // Preflight: say exactly what is missing instead of a bare exit status.
+    let mut preflight_command = tokio::process::Command::new(python);
+    preflight_command.args(["-c", "import huggingface_hub"]);
+    let preflight = run_bounded_output(preflight_command, Duration::from_secs(30)).await;
+    let preflight_error = match preflight {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(format!(
+            "Python 3 was not found ({python}). Model downloads use the Hugging Face hub client; install Python 3 and run: pip install huggingface_hub"
+        )),
+        Err(error) => Some(format!(
+            "Could not check for the Hugging Face hub client ({python}): {error}"
+        )),
+        Ok(out) if !out.status.success() => Some(
+            "The Python package huggingface_hub is not installed. Run: pip install huggingface_hub"
+                .to_string(),
+        ),
+        Ok(_) => None,
+    };
+    if let Some(message) = preflight_error {
+        let mut downloads = lock_model_downloads(&state);
+        if let Some(job) = downloads.get_mut(&job_id) {
+            job.state = RuntimeJobState::Failed;
+            job.message = "Download unavailable".into();
+            job.error = Some(message);
+        }
+        return;
+    }
+
+    let mut attempt = 0u32;
+    loop {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            let mut downloads = lock_model_downloads(&state);
+            if let Some(job) = downloads.get_mut(&job_id) {
+                job.state = RuntimeJobState::Cancelled;
+                job.message = "Cancelled".into();
+            }
+            return;
+        }
+        let mut command = tokio::process::Command::new(python);
+        command
+            .args(["-c", python_code, &repo_id, &revision])
+            .arg(models_dir.join("cache/huggingface/hub"))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            // The saved token is piped in so it stays out of argv.
+            .stdin(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        // Own process group: the hub client may fork transfer workers, and a
+        // plain kill of the Python leader would leave those running.
+        configure_process_group(&mut command);
+        let mut child = match command.spawn() {
+            Ok(c) => c,
+            Err(error) => {
+                let mut downloads = lock_model_downloads(&state);
+                if let Some(job) = downloads.get_mut(&job_id) {
+                    job.state = RuntimeJobState::Failed;
+                    job.message = "Download failed".into();
+                    job.error = Some(format!("Could not start the hub downloader: {error}"));
+                }
+                return;
+            }
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            // Best effort: a failure here surfaces as a downloader error.
+            let _ = stdin
+                .write_all(crate::hf::hf_load_token().unwrap_or_default().as_bytes())
+                .await;
+            let _ = stdin.write_all(b"\n").await;
+            drop(stdin);
+        }
+        attempt += 1;
+        let pid = child.id();
+        let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped")).lines();
+        let mut stderr = child.stderr.take().expect("stderr piped");
+        let mut last_progress = tokio::time::Instant::now();
+        let mut last_bytes: u64 = 0;
+        let mut total: u64 = 0;
+        let mut final_path: Option<String> = None;
+        let mut failure: Option<String> = None;
+        let mut stalled = false;
+        let mut cancelled = false;
+        let mut eof = false;
+        let mut err_tail = String::new();
+        let mut err_buf = [0u8; 4096];
+        let mut stderr_open = true;
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tokio::select! {
+                line = stdout.next_line() => {
+                    match line {
+                        Ok(Some(line)) => {
+                            last_progress = tokio::time::Instant::now();
+                            if let Some(rest) = line.strip_prefix("TOTAL ") {
+                                total = rest.trim().parse().unwrap_or(0);
+                            } else if let Some(rest) = line.strip_prefix("FILE ") {
+                                let name = rest.rsplit_once('\t').map(|(n, _)| n).unwrap_or(rest);
+                                let mut downloads = lock_model_downloads(&state);
+                                if let Some(job) = downloads.get_mut(&job_id) {
+                                    job.current_file = name.to_string();
+                                }
+                            } else if let Some(rest) = line.strip_prefix("PATH ") {
+                                final_path = Some(rest.trim().to_string());
+                            }
+                        }
+                        Ok(None) => {
+                            eof = true;
+                            break;
+                        }
+                        Err(error) => {
+                            failure = Some(format!("Downloader stream error: {error}"));
+                            break;
+                        }
+                    }
+                }
+                read = stderr.read(&mut err_buf), if stderr_open => {
+                    match read {
+                        Ok(0) | Err(_) => stderr_open = false,
+                        Ok(n) => {
+                            err_tail.push_str(&String::from_utf8_lossy(&err_buf[..n]));
+                            if err_tail.len() > 2000 {
+                                let cut = err_tail.len() - 2000;
+                                err_tail = err_tail.split_at(err_tail.ceil_char_boundary(cut)).1.to_string();
+                            }
+                        }
+                    }
+                }
+                _ = tick.tick() => {
+                    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        cancelled = true;
+                        break;
+                    }
+                    let bytes = dir_bytes(&blobs_dir);
+                    if bytes != last_bytes {
+                        last_bytes = bytes;
+                        last_progress = tokio::time::Instant::now();
+                    }
+                    {
+                        let mut downloads = lock_model_downloads(&state);
+                        if let Some(job) = downloads.get_mut(&job_id) {
+                            job.bytes_total = total.max(job.bytes_total);
+                            job.bytes_done = if job.bytes_total > 0 { bytes.min(job.bytes_total) } else { bytes };
+                            if last_progress.elapsed() < Duration::from_secs(30) {
+                                job.stalled = false;
+                            }
+                        }
+                    }
+                    if last_progress.elapsed() > MODEL_DOWNLOAD_STALL_TIMEOUT {
+                        stalled = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Every exit other than a clean stdout EOF leaves the downloader alive
+        // (stall, cancel, stream error). Kill its whole process group *before*
+        // waiting: waiting on a live child is what made the restart path
+        // unreachable. Even a clean EOF gets a bounded wait, then a kill.
+        let status = if eof && !stalled && !cancelled && failure.is_none() {
+            match tokio::time::timeout(MODEL_DOWNLOAD_REAP_TIMEOUT, child.wait()).await {
+                Ok(status) => status.ok(),
+                Err(_) => kill_and_reap(&mut child, pid).await,
+            }
+        } else {
+            kill_and_reap(&mut child, pid).await
+        };
+
+        let decision = decide_download_outcome(
+            DownloadAttempt {
+                cancelled,
+                stalled,
+                failure,
+                final_path,
+                exit_code: status.and_then(|s| s.code()),
+                stderr_tail: err_tail,
+            },
+            attempt,
+        );
+
+        let mut restart = false;
+        {
+            let mut downloads = lock_model_downloads(&state);
+            if let Some(job) = downloads.get_mut(&job_id) {
+                match decision {
+                    DownloadDecision::Cancelled => {
+                        job.state = RuntimeJobState::Cancelled;
+                        job.message = "Cancelled".into();
+                        job.stalled = false;
+                    }
+                    DownloadDecision::Complete { path } => {
+                        job.state = RuntimeJobState::Complete;
+                        job.message = "Downloaded".into();
+                        job.error = None;
+                        job.local_path = Some(path);
+                        job.stalled = false;
+                        job.bytes_done = job.bytes_total;
+                    }
+                    DownloadDecision::Restart => {
+                        job.stalled = true;
+                        job.restarts = attempt;
+                        job.message = "Stalled \u{2014} resuming download".into();
+                        restart = true;
+                    }
+                    DownloadDecision::StallExhausted => {
+                        job.stalled = true;
+                        job.restarts = attempt;
+                        job.state = RuntimeJobState::Failed;
+                        job.message = "Download stalled".into();
+                        job.error = Some("No progress for 8 minutes across 4 attempts. Retry when your connection is stable — finished files are kept and the download resumes.".into());
+                    }
+                    DownloadDecision::Failed { error } => {
+                        job.state = RuntimeJobState::Failed;
+                        job.message = "Download failed".into();
+                        job.error = Some(error);
+                    }
+                }
+            }
+        }
+        if !restart {
+            return;
+        }
+    }
+}
+
+/// POST /api/models/downloads — start a background snapshot download of a
+/// Hugging Face model repository into the app-scoped model cache. Engine is
+/// provenance ("rapid-mlx" today, "omlx" later); both read the same HF cache.
+fn model_download_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
+    warp::path!("api" / "models" / "downloads")
+        .and(warp::post())
+        .and(warp::header::optional::<String>("authorization"))
+        .and(super::super::safe_json_body::<serde_json::Value>())
+        .and_then(move |auth: Option<String>, body: serde_json::Value| {
+            let ctx = ctx.clone();
+            let state = state.clone();
+            async move {
+                if !check_api_token(&auth, &ctx.config) {
+                    return Ok::<ApiReply, warp::Rejection>(unauthorized_api_token());
+                }
+                let repo_id = body["repo_id"].as_str().unwrap_or("").trim().to_string();
+                let revision = body["revision"]
+                    .as_str()
+                    .map(|r| r.trim().to_string())
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or_else(|| "main".to_string());
+                let engine = body["engine"]
+                    .as_str()
+                    .map(|e| e.trim().to_string())
+                    .filter(|e| !e.is_empty())
+                    .unwrap_or_else(|| "rapid-mlx".to_string());
+                if !validate_model_download_repo(&repo_id) {
+                    return Ok(Box::new(warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({
+                            "ok": false,
+                            "error": "Invalid repo_id format. Expected: owner/repo using letters, digits, '.', '_' and '-'"
+                        })),
+                        StatusCode::BAD_REQUEST,
+                    )) as ApiReply);
+                }
+                if !validate_model_download_revision(&revision) {
+                    return Ok(json_error(
+                        StatusCode::BAD_REQUEST,
+                        "Invalid revision format. Expected a branch, tag, or commit SHA",
+                    ));
+                }
+                if !validate_model_download_engine(&engine) {
+                    return Ok(Box::new(warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({
+                            "ok": false,
+                            "error": "Unknown engine. Expected 'rapid-mlx' or 'omlx'"
+                        })),
+                        StatusCode::BAD_REQUEST,
+                    )) as ApiReply);
+                }
+
+                let models_dir = super::models::get_effective_models_dir(&ctx.state)
+                    .unwrap_or_else(|| ctx.config.default_models_dir.clone());
+                static MODEL_DL_SEQ: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                let job_id = {
+                    let nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos() as u64)
+                        .unwrap_or(0);
+                    // Nanoseconds plus a process-wide counter: unique without a CSPRNG,
+                    // which is overkill for an opaque job id.
+                    let seq = MODEL_DL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    format!("mdl-{}-{}", nanos, seq)
+                };
+                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let job = ModelDownloadJob {
+                    repo_id: repo_id.clone(),
+                    revision: revision.clone(),
+                    engine: engine.clone(),
+                    state: RuntimeJobState::Running,
+                    message: "Downloading from Hugging Face".into(),
+                    error: None,
+                    local_path: None,
+                    bytes_total: 0,
+                    bytes_done: 0,
+                    current_file: String::new(),
+                    stalled: false,
+                    restarts: 0,
+                    cancel: cancel.clone(),
+                };
+                // Dedupe (one download per repo@revision), capacity check,
+                // terminal-only eviction and insert all happen under a single
+                // lock acquisition. The guard is a statement temporary: it is
+                // released before the worker spawns and never crosses an await.
+                let admission = lock_model_downloads(&state).register(job_id.clone(), job);
+                match admission {
+                    ModelDownloadAdmission::Registered => {}
+                    ModelDownloadAdmission::AlreadyRunning { job_id: existing } => {
+                        return Ok(Box::new(warp::reply::json(&serde_json::json!({
+                            "ok": true,
+                            "already_running": true,
+                            "job_id": existing,
+                            "repo_id": repo_id,
+                        }))) as ApiReply);
+                    }
+                    ModelDownloadAdmission::AtCapacity => {
+                        return Ok(json_error(
+                            StatusCode::TOO_MANY_REQUESTS,
+                            "Too many model downloads are already running. Wait for one to finish or cancel it.",
+                        ));
+                    }
+                }
+
+                spawn_model_download_worker(
+                    state.clone(),
+                    job_id.clone(),
+                    repo_id.clone(),
+                    revision.clone(),
+                    models_dir,
+                    cancel,
+                );
+
+                Ok(Box::new(warp::reply::json(&serde_json::json!({
+                    "ok": true,
+                    "job_id": job_id,
+                    "repo_id": repo_id,
+                    "revision": revision,
+                    "engine": engine,
+                }))) as ApiReply)
+            }
+        })
+        .boxed()
+}
+
+/// POST /api/models/downloads/:jobId/cancel — stop a running download. Finished
+/// files stay in the cache, so a later download of the same repo resumes.
+fn model_download_cancel_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
+    warp::path!("api" / "models" / "downloads" / String / "cancel")
+        .and(warp::post())
+        .and(warp::header::optional::<String>("authorization"))
+        .and_then(move |id: String, auth: Option<String>| {
+            let state = state.clone();
+            let ctx = ctx.clone();
+            async move {
+                if !check_api_token(&auth, &ctx.config) {
+                    return Ok::<ApiReply, warp::Rejection>(unauthorized_api_token());
+                }
+                let downloads = state
+                    .model_downloads
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                Ok(match downloads.get(&id) {
+                    Some(job) => {
+                        let active = matches!(
+                            job.state,
+                            RuntimeJobState::Queued | RuntimeJobState::Running
+                        );
+                        if active {
+                            job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Box::new(warp::reply::json(&serde_json::json!({
+                            "ok": true,
+                            "cancelling": active,
+                        }))) as ApiReply
+                    }
+                    None => Box::new(warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({
+                            "ok": false,
+                            "error": "Unknown download job"
+                        })),
+                        StatusCode::NOT_FOUND,
+                    )) as ApiReply,
+                })
+            }
+        })
+        .boxed()
+}
+
+/// GET /api/models/downloads/:jobId — poll a model download job.
+fn model_download_status_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
+    warp::path!("api" / "models" / "downloads" / String)
+        .and(warp::get())
+        .and(warp::header::optional::<String>("authorization"))
+        .and_then(move |id: String, auth: Option<String>| {
+            let state = state.clone();
+            let ctx = ctx.clone();
+            async move {
+                if !check_api_token(&auth, &ctx.config) {
+                    return Ok::<ApiReply, warp::Rejection>(unauthorized_api_token());
+                }
+                let job = state
+                    .model_downloads
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&id)
+                    .cloned();
+                Ok(match job {
+                    Some(job) => Box::new(warp::reply::json(&serde_json::json!({
+                        "ok": true,
+                        "job": job,
+                    }))) as ApiReply,
+                    None => Box::new(warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({
+                            "ok": false,
+                            "error": "Unknown download job"
+                        })),
+                        StatusCode::NOT_FOUND,
+                    )) as ApiReply,
+                })
+            }
+        })
         .boxed()
 }
 
@@ -550,7 +1379,7 @@ pub struct SettingsValidateRequest {
     pub serve_flags: Option<String>,
 }
 
-fn command_preview_route(ctx: ApiCtx) -> ApiRoute {
+fn command_preview_route(ctx: ApiCtx, runtime: RuntimeApiState) -> ApiRoute {
     let config = ctx.config;
     let state = ctx.state;
     warp::path!("api" / "rapid-mlx" / "command-preview")
@@ -560,13 +1389,17 @@ fn command_preview_route(ctx: ApiCtx) -> ApiRoute {
         .and_then(move |auth: Option<String>, req: CommandPreviewRequest| {
             let config = config.clone();
             let state = state.clone();
+            let runtime = runtime.clone();
             async move {
                 if !check_api_token(&auth, &config) {
                     return Ok(unauthorized_api_token());
                 }
+                // Server-owned resolution only: the request body cannot
+                // choose which executable is probed.
+                let managed_binary = managed_executable(&runtime).await;
                 let models_dir = super::models::get_effective_models_dir(&state)
                     .unwrap_or_else(|| config.default_models_dir.clone());
-                let reply = build_command_preview(req, models_dir).await;
+                let reply = build_command_preview(req, models_dir, managed_binary).await;
                 Ok::<ApiReply, warp::Rejection>(reply)
             }
         })
@@ -600,40 +1433,32 @@ pub struct CommandPreviewResponse {
 async fn build_command_preview(
     req: CommandPreviewRequest,
     models_dir: std::path::PathBuf,
+    managed_binary: Option<std::path::PathBuf>,
 ) -> ApiReply {
     use crate::inference::rapid_mlx::compatibility::ServeCapabilities;
     use crate::inference::rapid_mlx::model_resolver::{self, RapidMlxResolveContext};
     use std::path::PathBuf;
 
     let config = req.config;
-    // A preview that demands the caller already know the binary path is a preview no UI can
-    // call, which is why this endpoint had no consumer. Fall back to the same resolution the
-    // launcher uses (explicit -> managed -> PATH) so the frontend can just post a config.
-    let binary_path = match req.executable_path {
-        Some(path) => {
-            let path = PathBuf::from(path);
-            if !path.exists() {
+    // Caller-supplied paths are deliberately ignored on both channels: an
+    // API-token holder must not be able to aim the probe (`serve --help`)
+    // at an arbitrary file, whether via `executable_path` or via
+    // `managed_runtime_path`. The binary is resolved from server-owned
+    // state (the managed runtime pointer) only.
+    let _ = req.executable_path;
+    let binary_path = {
+        match crate::inference::rapid_mlx::discovery::Discovery::resolve_binary(
+            None,
+            managed_binary.as_deref(),
+        )
+        .await
+        {
+            Ok((path, _source)) => path,
+            Err(e) => {
                 return json_error(
                     StatusCode::BAD_REQUEST,
-                    format!("Executable not found: {}", path.display()),
+                    format!("Could not locate the Rapid-MLX executable: {}", e),
                 );
-            }
-            path
-        }
-        None => {
-            match crate::inference::rapid_mlx::discovery::Discovery::resolve_binary(
-                config.executable_path.as_deref(),
-                config.managed_runtime_path.as_deref(),
-            )
-            .await
-            {
-                Ok((path, _source)) => path,
-                Err(e) => {
-                    return json_error(
-                        StatusCode::BAD_REQUEST,
-                        format!("Could not locate the Rapid-MLX executable: {}", e),
-                    );
-                }
             }
         }
     };
@@ -660,8 +1485,8 @@ async fn build_command_preview(
             } else {
                 "python3"
             }),
-            runtime_version:
-                crate::inference::rapid_mlx::compatibility::LATEST_QUALIFIED_VERSION_TEXT.into(),
+            // Only quoted in error text; see the same field in models.rs.
+            runtime_version: "runtime".into(),
             hf_token: None,
             verified_aliases: Vec::new(),
             execute_conversion: false,
@@ -1302,6 +2127,74 @@ fn releases_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
         .boxed()
 }
 
+/// The curated Rapid-MLX model catalog: rows of the upstream-validated
+/// `rapid-mlx models` listing (alias, measured size, parser pairing, MTP
+/// sidecar, hybrid marker). This list — not raw HF discovery — is the
+/// Rapid-MLX model surface in the spawn wizard.
+fn catalog_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
+    let config = ctx.config;
+    warp::path!("api" / "rapid-mlx" / "catalog")
+        .and(warp::get())
+        .and(warp::header::optional::<String>("authorization"))
+        .and_then(move |auth: Option<String>| {
+            let config = config.clone();
+            let state = state.clone();
+            async move {
+                if !check_api_token(&auth, &config) {
+                    return Ok(unauthorized_api_token());
+                }
+                let managed_path = managed_executable(&state).await;
+                let binary = match Discovery::resolve_binary(None, managed_path.as_deref()).await {
+                    Ok((binary, _source)) => binary,
+                    Err(_) => {
+                        return Ok::<ApiReply, warp::Rejection>(json_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "Rapid-MLX is not installed",
+                        ));
+                    }
+                };
+                let list = tokio::time::timeout(
+                    Duration::from_secs(15),
+                    info_query::fetch_model_list(&binary),
+                )
+                .await;
+                // Tier recommendations are best-effort: an absent or unknown
+                // `recipe` output must not take the catalog down.
+                let recommendations =
+                    tokio::time::timeout(Duration::from_secs(8), info_query::fetch_recipe(&binary))
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or_default();
+                match list {
+                    Ok(Ok(models)) => Ok(Box::new(warp::reply::json(&serde_json::json!({
+                        "ok": true,
+                        "models": models,
+                        "recommendations": recommendations,
+                    }))) as ApiReply),
+                    Ok(Err(message)) => Ok(json_error(
+                        StatusCode::BAD_GATEWAY,
+                        format!("Rapid-MLX catalog query failed: {message}"),
+                    )),
+                    Err(_) => Ok(json_error(
+                        StatusCode::GATEWAY_TIMEOUT,
+                        "Rapid-MLX catalog query timed out",
+                    )),
+                }
+            }
+        })
+        .boxed()
+}
+
+async fn managed_executable(state: &RuntimeApiState) -> Option<std::path::PathBuf> {
+    let manager = manager(state).ok()?;
+    let status = tokio::task::spawn_blocking(move || manager.status())
+        .await
+        .ok()?
+        .ok()?;
+    status.active.map(|active| active.executable_path)
+}
+
 fn development_source_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
     let config = ctx.config.clone();
     let resolve = warp::path("api")
@@ -1800,6 +2693,12 @@ async fn start_job(
     let job_state = state.clone();
     let job_id = id.clone();
     tokio::spawn(async move {
+        let started = Instant::now();
+        eprintln!(
+            "[rapid-mlx] managed runtime {:?} {} started (job {job_id})",
+            operation,
+            version_for_log.as_deref().unwrap_or("unknown version"),
+        );
         update_job(
             &job_state,
             &job_id,
@@ -1827,13 +2726,21 @@ async fn start_job(
             _ => Err(anyhow::anyhow!("Invalid runtime operation state")),
         };
         match result {
-            Ok(result) => update_job(
-                &job_state,
-                &job_id,
-                RuntimeJobState::Complete,
-                "Runtime validated and activated",
-                Some(result),
-            ),
+            Ok(result) => {
+                eprintln!(
+                    "[rapid-mlx] managed runtime {:?} {} completed in {:.1}s",
+                    operation,
+                    version_for_log.as_deref().unwrap_or("unknown version"),
+                    started.elapsed().as_secs_f64(),
+                );
+                update_job(
+                    &job_state,
+                    &job_id,
+                    RuntimeJobState::Complete,
+                    "Runtime validated and activated",
+                    Some(result),
+                );
+            }
             Err(error) => {
                 eprintln!(
                     "[rapid-mlx] managed runtime {:?} {} failed during validation: {error:#}",
@@ -1917,11 +2824,17 @@ fn decode_github_releases(raw: Vec<GithubRelease>) -> Vec<PublishedRelease> {
                 ManagedReleaseChannel::Stable
             };
             RapidMlxRuntimeManager::validate_published_version(&version, channel).ok()?;
+            let body = if item.body.trim().is_empty() {
+                None
+            } else {
+                Some(item.body)
+            };
             Some(PublishedRelease {
                 version,
                 tag: item.tag_name,
                 channel,
                 published_at: item.published_at,
+                release_notes: body,
             })
         })
         .collect()
@@ -2735,8 +3648,121 @@ mod tests {
             manager: Err("unused".into()),
             releases: Arc::new(tokio::sync::Mutex::new(None)),
             jobs: Arc::new(Mutex::new(RuntimeJobs::default())),
+            model_downloads: Arc::new(Mutex::new(ModelDownloads::default())),
             changelog_cache: Arc::new(changelog::ChangelogCacheManager::new()),
             client: reqwest::Client::new(),
+        }
+    }
+    #[tokio::test]
+    async fn preview_resolves_active_managed_runtime_without_client_paths() {
+        use sha2::{Digest, Sha256};
+
+        let temp = tempfile::tempdir().unwrap();
+        let manager = RapidMlxRuntimeManager::new(temp.path()).unwrap();
+        let root = temp.path().join("runtimes/rapid-mlx");
+        let environment = root.join("environments/preview-test");
+        std::fs::create_dir_all(environment.join("bin")).unwrap();
+        let binary = environment.join("bin/rapid-mlx");
+        let contents = b"fixture executable";
+        std::fs::write(&binary, contents).unwrap();
+        std::fs::write(environment.join(".complete"), []).unwrap();
+        std::fs::write(
+            environment.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "environment_id": "preview-test",
+                "version": "0.15.6",
+                "binary_relative_path": "bin/rapid-mlx",
+                "binary_sha256": Sha256::digest(contents).iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+                "runtime_source": "managed",
+                "compatibility_state": "verified",
+                "release_channel": "stable"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("current.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "active_environment_id": "preview-test",
+                "previous_environment_id": null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let binary = binary.canonicalize().unwrap();
+        let mut runtime = test_state();
+        runtime.manager = Ok(Arc::new(manager));
+        // Server-owned state resolves the managed executable...
+        let managed = managed_executable(&runtime).await;
+        assert_eq!(managed.as_deref(), Some(binary.as_path()));
+        let (resolved, source) = Discovery::resolve_binary(None, managed.as_deref())
+            .await
+            .unwrap();
+        assert_eq!(resolved, binary);
+        assert_eq!(
+            source,
+            crate::inference::rapid_mlx::runtime::RuntimeSource::Managed
+        );
+
+        // ...while caller-supplied paths are discarded entirely: resolution
+        // is server-owned (build_command_preview ignores both config fields;
+        // the wire-shape test covers that by posting decoy paths).
+        let override_path = temp.path().join("override");
+        std::fs::write(&override_path, b"decoy").unwrap();
+        let (resolved, source) = Discovery::resolve_binary(None, managed.as_deref())
+            .await
+            .unwrap();
+        assert_eq!(resolved, binary);
+        assert_ne!(resolved, override_path);
+        assert_eq!(
+            source,
+            crate::inference::rapid_mlx::runtime::RuntimeSource::Managed
+        );
+    }
+
+    #[tokio::test]
+    async fn command_preview_accepts_catalog_alias_wire_shapes() {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("rapid-mlx");
+        std::fs::write(&binary, b"not executed: capabilities supplied").unwrap();
+        for field in ["value", "name"] {
+            let mut wire = serde_json::to_value(RapidMlxConfig::default()).unwrap();
+            wire["model_source"] = serde_json::json!({"kind": "alias", field: "qwen3.8-27b-4bit"});
+            // Caller-supplied paths are ignored by the preview (it must not
+            // be able to aim the probe at an arbitrary file); the binary is
+            // injected here exactly as the route resolves it from the
+            // server-owned managed pointer.
+            wire["managed_runtime_path"] = serde_json::json!(temp.path().join("not-used"));
+            wire["capabilities"] = serde_json::json!(
+                super::command_preview_parity_tests::ALL_SERVE_FLAGS
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+            );
+            let models_dir = temp.path().to_path_buf();
+            let managed = Some(binary.clone());
+            let route = warp::any().and_then(move || {
+                let req = serde_json::from_value::<CommandPreviewRequest>(wire.clone()).unwrap();
+                let models_dir = models_dir.clone();
+                let managed = managed.clone();
+                async move {
+                    Ok::<_, warp::Rejection>(build_command_preview(req, models_dir, managed).await)
+                }
+            });
+            let response = warp::test::request().reply(&route).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "field {field}: {:?}",
+                response.body()
+            );
+            let body: serde_json::Value = serde_json::from_slice(response.body()).unwrap();
+            let argv = body["argv"].as_array().unwrap();
+            assert!(
+                argv.windows(2)
+                    .any(|args| args[0] == "serve" && args[1] == "qwen3.8-27b-4bit")
+            );
         }
     }
 
@@ -2823,6 +3849,7 @@ mod tests {
             tag: "v0.10.10".into(),
             channel: ManagedReleaseChannel::Stable,
             published_at: "2026-07-16T00:00:00Z".into(),
+            release_notes: None,
         }];
         assert!(
             select_release_from_metadata(
@@ -3274,7 +4301,7 @@ mod command_preview_parity_tests {
     /// Every flag the settings below can emit. A missing entry makes `build` fail the
     /// capability check rather than silently drop the flag, so this list is part of the
     /// assertion.
-    const ALL_SERVE_FLAGS: &str = "--host --port --served-model-name --timeout --log-level \
+    pub(super) const ALL_SERVE_FLAGS: &str = "--host --port --served-model-name --timeout --log-level \
         --api-key --tool-call-parser --reasoning-parser --enable-auto-tool-choice \
         --enable-prefix-cache --max-cache-blocks --cache-memory-mb \
         --kv-disk-checkpoint-interval \
@@ -3384,4 +4411,107 @@ mod command_preview_parity_tests {
         assert!(!argv.iter().any(|arg| arg == "--timeout"), "{argv:?}");
         assert!(!argv.iter().any(|arg| arg == "--api-key"), "{argv:?}");
     }
+}
+
+/// Fingerprint known Qwen3.5/3.8 tiers to their official upstream MTP draft repos.
+///
+/// Finetune names rarely carry the base family ("Scarlett-Opus-oQ4e-MLX" is a Qwen3.8-27B
+/// finetune), so detection reads the trunk's own config.json — architecture, not marketing.
+/// Fingerprints are from the upstream registries' checkpoints:
+/// Qwen3.8/3.6-27B (hidden 5120, 64 layers, vocab 248320), Qwen3.5-9B (4096/32),
+/// Qwen3.5-4B (2560/32).
+fn official_mtp_draft_for_config(
+    model_type: &str,
+    hidden_size: u64,
+    num_hidden_layers: u64,
+) -> Option<(&'static str, &'static str)> {
+    if model_type != "qwen3_5" {
+        return None;
+    }
+    if hidden_size == 5120 && num_hidden_layers == 64 {
+        Some((
+            "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+            "a bf16 variant (…-MTP-fp16-MLX) also exists",
+        ))
+    } else if hidden_size == 4096 && num_hidden_layers == 32 {
+        Some(("mlx-community/Qwen3.5-9B-MTP-4bit", ""))
+    } else if hidden_size == 2560 && num_hidden_layers == 32 {
+        Some(("mlx-community/Qwen3.5-4B-MTP-4bit", ""))
+    } else {
+        None
+    }
+}
+
+fn mtp_draft_suggestion_route(ctx: ApiCtx) -> ApiRoute {
+    let config = ctx.config;
+    warp::path!("api" / "rapid-mlx" / "mtp" / "draft-suggestion")
+        .and(warp::get())
+        .and(warp::query::<std::collections::HashMap<String, String>>())
+        .and(warp::header::optional::<String>("authorization"))
+        .and_then(move |query: std::collections::HashMap<String, String>, auth: Option<String>| {
+            let config = config.clone();
+            async move {
+                if !check_api_token(&auth, &config) {
+                    return Ok(unauthorized_api_token());
+                }
+                let trunk = query
+                    .get("path")
+                    .map(String::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if trunk.is_empty() || trunk.contains("..") {
+                    return Ok(json_error(
+                        StatusCode::BAD_REQUEST,
+                        "path is required and must not contain '..'",
+                    ));
+                }
+                let trunk_path = std::path::Path::new(&trunk);
+                let config_path = trunk_path.join("config.json");
+                let Ok(config_text) = std::fs::read_to_string(&config_path) else {
+                    return Ok::<ApiReply, warp::Rejection>(Box::new(warp::reply::json(
+                        &serde_json::json!({
+                            "ok": true,
+                            "suggestion": serde_json::Value::Null,
+                            "reason": "no readable config.json at the trunk path"
+                        }),
+                    )));
+                };
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&config_text).unwrap_or(serde_json::Value::Null);
+                let text = if parsed.get("text_config").is_some() {
+                    parsed["text_config"].clone()
+                } else {
+                    parsed.clone()
+                };
+                let model_type = parsed
+                    .get("model_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let hidden_size = text
+                    .get("hidden_size")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let layers = text
+                    .get("num_hidden_layers")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let suggestion =
+                    official_mtp_draft_for_config(&model_type, hidden_size, layers)
+                        .map(|(repo, note)| {
+                            serde_json::json!({
+                                "repo": repo,
+                                "note": note,
+                                "basis": "architecture fingerprint",
+                                "tier": { "model_type": model_type, "hidden_size": hidden_size, "num_hidden_layers": layers }
+                            })
+                        });
+                Ok::<ApiReply, warp::Rejection>(Box::new(warp::reply::json(&serde_json::json!({
+                    "ok": true,
+                    "suggestion": suggestion,
+                }))))
+            }
+        })
+        .boxed()
 }

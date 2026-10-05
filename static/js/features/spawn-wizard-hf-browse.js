@@ -72,7 +72,7 @@ export function initHfBrowseWidgets() {
     hfRenderDiscoverPills({
       container: discoverPillsEl,
       quickpicksContainer: quickpicksEl,
-      onPillClick: (cat, pillEl) => {
+      onPillClick: (cat, _pillEl) => {
         wizardState.hfBrowseAuthor = null;
         if (dom.hfRepoInput) dom.hfRepoInput.value = '';
         const sort = cat.params.query ? hfBrowseState.sort : (cat.params.sort || hfBrowseState.sort);
@@ -244,6 +244,15 @@ queueMicrotask(() => setOnMemoryAvailabilityReady(triggerQuantAdvisor));
 async function loadQuantAdvisor(generation) {
   const paramB = wizardState.model.paramB;
   if (!paramB || paramB <= 0) return;
+
+  // An MLX repo is already one specific quantization: the llama.cpp quant ladder
+  // would show a synthetic "Q5_K_M recommended" answer for a model that has no
+  // such file. Use the MLX sidebar (real size, real estimate) instead.
+  if (wizardState.engine.selected === 'rapid_mlx') {
+    if (wizardState.model.hfRepo) triggerMlxSidebarBody(wizardState.model.hfRepo);
+    else renderMlxSidebarVramBar();
+    return;
+  }
 
   const availVram = effectiveAvailBytes();
   if (!availVram) return; // need VRAM to give useful numbers
@@ -537,7 +546,7 @@ function renderSidebarVramBar(pick) {
     dom.sidebarVramBar.classList.toggle('tight', total / availVram >= 0.88 && total / availVram < 1.0);
     dom.sidebarVramBar.classList.toggle('over', total / availVram >= 1.0);
     if (dom.sidebarVramLegend) dom.sidebarVramLegend.style.display = '';
-  }, { force: true });
+  }, { force: true, slot: 'sidebar-pick' });
 }
 
 
@@ -550,7 +559,7 @@ function renderSidebarVramBar(pick) {
 
 let mlxSidebarDebounce = null;
 
-function triggerMlxSidebarBody(repoId) {
+export function triggerMlxSidebarBody(repoId) {
   if (mlxSidebarDebounce) clearTimeout(mlxSidebarDebounce);
   mlxSidebarDebounce = setTimeout(() => loadMlxSidebarBody(repoId), 300);
 }
@@ -586,6 +595,9 @@ async function loadMlxSidebarBody(repoId) {
   const introspect = introspectResp.status === 'fulfilled' ? introspectResp.value : null;
   const quant = introspect?.data?.config?.quantization;
   const sizeBytes = introspect?.data?.recursive_size_bytes || wizardState.model.modelBytes || 0;
+  // The estimate below needs the weights size. A handoff from the Models tab arrives with
+  // none, so adopt the one this introspection just measured instead of racing the file fetch.
+  if (!(wizardState.model.modelBytes > 0) && sizeBytes > 0) wizardState.model.modelBytes = sizeBytes;
   const quantLabel = quant?.bits ? `${quant.bits}-bit${quant.group_size ? `, group ${quant.group_size}` : ''}` : 'precision not reported';
   // quantLabel/sizeBytes are numeric fields from the qualify/introspect API responses
   // (bits, group_size, byte counts), never raw text.
@@ -633,6 +645,9 @@ async function loadMlxSidebarBody(repoId) {
     }
   }
 
+  // A handoff from the Models tab reaches here before anything has asked for the live
+  // memory snapshot, and the estimate has no budget to compare against without it.
+  await ensureGpuVramFetched();
   renderMlxSidebarVramBar();
 }
 
@@ -697,7 +712,7 @@ function renderMlxSidebarVramBar() {
       dom.sidebarVramBar.classList.toggle('over', total / availVram >= 1.0);
     }
     if (dom.sidebarVramLegend) dom.sidebarVramLegend.style.display = '';
-  }, { force: true });
+  }, { force: true, slot: 'sidebar-mlx' });
 }
 
 // ── HF discover categories: imported from hf-browse.js ────────────────────────
@@ -1153,5 +1168,3 @@ async function fetchHfFiles(repo) {
     },
   });
 }
-
-

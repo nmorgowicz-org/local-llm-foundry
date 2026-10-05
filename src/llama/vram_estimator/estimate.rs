@@ -1446,6 +1446,8 @@ pub struct QuantOption {
     pub fits_vram: bool,
     /// Max context at q8_0 KV (agentic quality).
     pub max_ctx_q8: u64,
+    /// Max context at unquantized f16/bf16 KV (full precision).
+    pub max_ctx_f16: u64,
     /// Max context at q4_0 KV (maximum context).
     pub max_ctx_q4: u64,
     pub quality: QuantQuality,
@@ -1646,6 +1648,7 @@ struct QuantTableCtx<'a> {
     is_unified_memory: bool,
     backend: Backend,
     headroom: f64,
+    usable_vram_bytes: u64,
     is_gemma4_qat: bool,
     min_fit_context_tokens: u64,
     effective_parallel_slots: u32,
@@ -1699,6 +1702,9 @@ impl<'a> QuantTableCtx<'a> {
             is_unified_memory,
             backend,
             headroom,
+            // Same shrunk budget max_context() uses; keeps the fit dot and the ctx
+            // columns from disagreeing on borderline rows (green dot with a dash).
+            usable_vram_bytes: (available_vram_bytes as f64 * (1.0 - headroom)) as u64,
             is_gemma4_qat,
             min_fit_context_tokens,
             effective_parallel_slots,
@@ -1731,7 +1737,7 @@ impl<'a> QuantTableCtx<'a> {
             }
             Backend::LlamaCpp => discrete_overhead_base_bytes(self.arch, 512),
         };
-        let fits = model_bytes + oh + min_kv < self.available_vram_bytes;
+        let fits = model_bytes + oh + min_kv < self.usable_vram_bytes;
 
         let max_q8 = max_context(
             model_bytes,
@@ -1753,6 +1759,22 @@ impl<'a> QuantTableCtx<'a> {
             self.arch,
             "q4_0",
             "q4_0",
+            self.effective_parallel_slots,
+            512,
+            0,
+            self.available_vram_bytes,
+            1024,
+            self.headroom,
+            None, // pre-download advisor: VRAM-limited maxes only
+            self.is_unified_memory,
+            self.backend,
+        );
+        // Unquantized (f16/bf16) KV: the baseline the quantized columns are measured against.
+        let max_f16 = max_context(
+            model_bytes,
+            self.arch,
+            "f16",
+            "f16",
             self.effective_parallel_slots,
             512,
             0,
@@ -1813,6 +1835,7 @@ impl<'a> QuantTableCtx<'a> {
                 model_size_gb: model_gb,
                 fits_vram: fits,
                 max_ctx_q8: max_q8,
+                max_ctx_f16: max_f16,
                 max_ctx_q4: max_q4,
                 quality,
                 is_imatrix,

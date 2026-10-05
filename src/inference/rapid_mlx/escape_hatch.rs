@@ -132,6 +132,99 @@ pub fn validate_escape_flags(flags: &[(String, serde_json::Value)]) -> Result<()
     }
 }
 
+/// Strings that reach argv must not be mistaken for another option, and must not carry
+/// bytes that corrupt the argument list.
+fn safe_argv_string(flag: &str, s: &str) -> Result<(), String> {
+    if s.is_empty() || s.starts_with('-') || s.len() > 256 {
+        return Err(format!(
+            "escape flag --{flag}: value must be non-empty, at most 256 bytes and must not start with '-'"
+        ));
+    }
+    if s.chars().any(|c| c == '\0' || c.is_control()) {
+        return Err(format!(
+            "escape flag --{flag}: value must not contain NUL, newline or other control characters"
+        ));
+    }
+    Ok(())
+}
+
+/// Validate one escape-hatch value against its descriptor and return the argv fragment for
+/// it (empty for a `false` switch). Objects, arrays and null are always rejected.
+pub fn escape_flag_to_args(name: &str, value: &serde_json::Value) -> Result<Vec<String>, String> {
+    use serde_json::Value;
+    let descriptor = ALLOWED_ESCAPE_FLAGS
+        .iter()
+        .find(|d| d.flag == name)
+        .ok_or_else(|| format!("escape flag --{name} is not in the allowlist"))?;
+    let flag = format!("--{name}");
+    match descriptor.value_type {
+        "bool" => match value {
+            Value::Bool(true) => Ok(vec![flag]),
+            Value::Bool(false) => Ok(Vec::new()),
+            _ => Err(format!(
+                "escape flag {flag} is a switch and accepts only true or false"
+            )),
+        },
+        "enum" => {
+            let Value::String(s) = value else {
+                return Err(format!("escape flag {flag} requires a string value"));
+            };
+            let options = descriptor.enum_options.unwrap_or(&[]);
+            if !options.contains(&s.as_str()) {
+                return Err(format!(
+                    "escape flag {flag} must be one of [{}], got {s:?}",
+                    options.join(", ")
+                ));
+            }
+            Ok(vec![flag, s.clone()])
+        }
+        "int" => {
+            let Value::Number(n) = value else {
+                return Err(format!(
+                    "escape flag {flag} requires a non-negative integer"
+                ));
+            };
+            let Some(i) = n.as_u64() else {
+                return Err(format!(
+                    "escape flag {flag} requires a non-negative integer, got {n}"
+                ));
+            };
+            Ok(vec![flag, i.to_string()])
+        }
+        "float" => {
+            let Value::Number(n) = value else {
+                return Err(format!("escape flag {flag} requires a number"));
+            };
+            match n.as_f64() {
+                Some(f) if f.is_finite() && f >= 0.0 => Ok(vec![flag, format!("{f}")]),
+                _ => Err(format!(
+                    "escape flag {flag} requires a finite, non-negative number, got {n}"
+                )),
+            }
+        }
+        "string" => {
+            let Value::String(s) = value else {
+                return Err(format!("escape flag {flag} requires a string value"));
+            };
+            safe_argv_string(name, s)?;
+            Ok(vec![flag, s.clone()])
+        }
+        other => Err(format!(
+            "escape flag {flag} has unsupported descriptor type {other:?}"
+        )),
+    }
+}
+
+/// Validate the names and values of a whole preset's escape flags.
+pub fn validate_escape_flag_values(flags: &[(String, serde_json::Value)]) -> Result<(), String> {
+    validate_escape_flags(flags)
+        .map_err(|invalid| format!("escape flags not in the allowlist: {}", invalid.join(", ")))?;
+    for (name, value) in flags {
+        escape_flag_to_args(name, value)?;
+    }
+    Ok(())
+}
+
 /// Ensure the two process-lifecycle-internal flags are never exposed in the
 /// allowlist. This is a compile-time sanity check.
 #[cfg(test)]

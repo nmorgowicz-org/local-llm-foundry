@@ -104,7 +104,9 @@ pub fn request_from_api_payload(payload: &serde_json::Value) -> Result<LocalLaun
             if config.port == 0 {
                 anyhow::bail!("Rapid-MLX launch requires a non-zero port");
             }
-            config.validate_access(None)?;
+            if let Some(warning) = config.access_warning(None) {
+                eprintln!("[warn] rapid-mlx launch: {warning}");
+            }
             config.validate_speculative_config()?;
             Ok(LocalLaunchRequest::RapidMlx(Box::new(config)))
         }
@@ -112,11 +114,23 @@ pub fn request_from_api_payload(payload: &serde_json::Value) -> Result<LocalLaun
 }
 
 pub fn validate_preset_backend_config(preset: &ModelPreset) -> Result<()> {
-    if preset.bundle.is_some() && preset.backend != InferenceBackend::LlamaCpp {
-        anyhow::bail!(
-            "preset '{}' contains a llama.cpp bundle but is not a llama.cpp preset",
-            preset.name
-        );
+    // Bundles are legal on both backends: llama.cpp uses the full policy
+    // machinery, Rapid-MLX uses them for variant switching (see
+    // `presets::resolver::resolve_rapid_bundle`). What must never happen is a
+    // llama bundle on a rapid preset carrying llama-only flat fields.
+    if let (Some(bundle), true) = (
+        preset.bundle.as_ref(),
+        preset.backend != InferenceBackend::LlamaCpp,
+    ) {
+        let llama_only = !bundle.kv_policy_options.is_empty()
+            || !bundle.performance_options.is_empty()
+            || !bundle.cpu_moe_options.is_empty();
+        if llama_only {
+            anyhow::bail!(
+                "preset '{}' carries a llama.cpp bundle but is not a llama.cpp preset",
+                preset.name
+            );
+        }
     }
     match preset.backend {
         InferenceBackend::LlamaCpp if preset.rapid_mlx.is_some() => anyhow::bail!(
@@ -148,7 +162,9 @@ pub fn validate_preset_backend_config(preset: &ModelPreset) -> Result<()> {
                     preset.name
                 );
             }
-            rapid.validate_access(preset.api_key.as_deref())?;
+            if let Some(warning) = rapid.access_warning(preset.api_key.as_deref()) {
+                eprintln!("[warn] rapid-mlx preset '{}': {warning}", preset.name);
+            }
             rapid.validate_speculative_config()?;
             if let Err(invalid) = crate::inference::rapid_mlx::escape_hatch::validate_escape_flags(
                 &rapid.escape_hatch_flags,
@@ -481,7 +497,9 @@ pub async fn construct_adapter(
         LocalLaunchRequest::RapidMlx(config) => {
             crate::inference::rapid_mlx::ensure_local_platform_supported()?;
             let model_source = config.effective_model_source()?;
-            config.validate_access(None)?;
+            if let Some(warning) = config.access_warning(None) {
+                eprintln!("[warn] rapid-mlx launch: {warning}");
+            }
 
             let (executable_path, source) = Discovery::resolve_binary(
                 config.executable_path.as_deref(),
@@ -723,10 +741,17 @@ mod tests {
 
     #[test]
     fn rapid_mlx_preset_rejects_a_llama_bundle() {
+        // A llama-flavored bundle (K/V policy catalog) on a Rapid-MLX preset is
+        // still rejected; a bare default bundle is legal variant switching.
         let mut preset = valid_rapid_mlx_preset();
-        preset.bundle = Some(crate::presets::bundle::PresetBundleSpec::default());
+        let mut bundle = crate::presets::bundle::PresetBundleSpec::default();
+        bundle.kv_policy_options = vec![crate::presets::bundle::LlamaKvPolicyId::Q8Q8];
+        preset.bundle = Some(bundle);
         let error = validate_preset_backend_config(&preset).unwrap_err();
         assert!(error.to_string().contains("not a llama.cpp preset"));
+        let mut preset = valid_rapid_mlx_preset();
+        preset.bundle = Some(crate::presets::bundle::PresetBundleSpec::default());
+        validate_preset_backend_config(&preset).unwrap();
     }
 
     #[tokio::test]
@@ -850,32 +875,39 @@ mod tests {
     }
 
     #[test]
-    fn rapid_lan_bind_requires_authenticated_access() {
-        let error = request_from_api_payload(&serde_json::json!({
+    fn rapid_lan_bind_never_requires_a_key_but_warns() {
+        // Exposing on 0.0.0.0 without a key is the user's call: the payload is
+        // accepted and the launcher logs a warning instead of refusing.
+        let request = request_from_api_payload(&serde_json::json!({
             "backend": "rapid_mlx",
             "rapid_mlx": {
                 "model_path": "/models/rapid",
                 "host": "0.0.0.0"
             }
         }))
-        .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("LAN exposure requires an API key")
-        );
+        .unwrap();
+        let LocalLaunchRequest::RapidMlx(config) = &request else {
+            panic!("expected rapid config");
+        };
+        let warning = config
+            .access_warning(None)
+            .expect("unauthenticated LAN bind must produce a warning");
+        assert!(warning.contains("without an API key"));
 
-        assert!(
-            request_from_api_payload(&serde_json::json!({
-                "backend": "rapid_mlx",
-                "rapid_mlx": {
-                    "model_path": "/models/rapid",
-                    "host": "0.0.0.0",
-                    "api_key": "protected"
-                }
-            }))
-            .is_ok()
-        );
+        // Keyed LAN binds stay silent.
+        let request = request_from_api_payload(&serde_json::json!({
+            "backend": "rapid_mlx",
+            "rapid_mlx": {
+                "model_path": "/models/rapid",
+                "host": "0.0.0.0",
+                "api_key": "protected"
+            }
+        }))
+        .unwrap();
+        let LocalLaunchRequest::RapidMlx(config) = &request else {
+            panic!("expected rapid config");
+        };
+        assert!(config.access_warning(None).is_none());
     }
 
     #[test]

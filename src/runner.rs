@@ -301,8 +301,11 @@ pub fn run() -> Result<()> {
         let inspection = default_inspection
             .take()
             .expect("default inspection captured above");
-        if inspection.state == RootState::MigrationQueued {
-            let request = match test_roots.as_ref() {
+        let queued_request = if matches!(
+            inspection.state,
+            RootState::MigrationQueued | RootState::Conflict
+        ) {
+            match test_roots.as_ref() {
                 Some(roots) => app_migration::load_migration_request_from_parent(
                     roots
                         .canonical
@@ -311,7 +314,17 @@ pub fn run() -> Result<()> {
                 )?,
                 None => app_migration::load_migration_request()?,
             }
-            .ok_or_else(|| anyhow::anyhow!("migration queue marker is missing"))?;
+        } else {
+            None
+        };
+        // A Conflict with a queued migration request means a previous run
+        // crashed mid-copy: the destination has partial state and no receipt.
+        // The plan/executor resume from the journal instead of aborting
+        // startup forever. A Conflict without a request still falls through
+        // to the conflict error in the state match below.
+        if inspection.state == RootState::MigrationQueued || queued_request.is_some() {
+            let request = queued_request
+                .ok_or_else(|| anyhow::anyhow!("migration queue marker is missing"))?;
             let plan = app_migration::plan_application_home(&request.source, &request.destination)?;
             if plan.plan_id != request.plan_id {
                 return Err(anyhow::anyhow!(
@@ -949,7 +962,7 @@ pub fn run() -> Result<()> {
         match tls_mode {
             TlsMode::None => {
                 println!(
-                    "[info] Llama Monitor running on http://{}:{}",
+                    "[info] Local LLM Foundry running on http://{}:{}",
                     tls_host, tls_port
                 );
                 warp::serve(routes).run(addr).await;
@@ -1002,7 +1015,7 @@ pub fn run() -> Result<()> {
                 };
 
                 println!(
-                    "[info] Llama Monitor running on https://{}:{} (ACME - {})",
+                    "[info] Local LLM Foundry running on https://{}:{} (ACME - {})",
                     tls_host,
                     tls_port,
                     if tls_acme.environment == "staging" {
@@ -1128,7 +1141,7 @@ pub fn run() -> Result<()> {
                 };
 
                 println!(
-                    "[info] Llama Monitor running on https://{}:{} ({})",
+                    "[info] Local LLM Foundry running on https://{}:{} ({})",
                     tls_host, tls_port, tls_mode_label
                 );
 

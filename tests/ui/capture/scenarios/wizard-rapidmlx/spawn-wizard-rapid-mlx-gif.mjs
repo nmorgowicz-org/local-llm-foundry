@@ -7,6 +7,7 @@ import { execFileSync } from 'child_process';
 import { gotoApp } from '../../harness/browser.mjs';
 import { currentArtifactsDir, tagFilename, FRAME_DIR, sleep } from '../../harness/paths.mjs';
 import { cleanupFrames } from '../../harness/shot.mjs';
+import { suppressToasts } from '../../harness/shot.mjs';
 import { recordArtifact } from '../../harness/receipt.mjs';
 
 export default async function(ctx, _options) {
@@ -40,6 +41,21 @@ export default async function(ctx, _options) {
                     runtime: { supported: true, active: { version: '0.10.10' } },
                 }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
             }
+            if (url.pathname === '/api/rapid-mlx/catalog') {
+                return Promise.resolve(new Response(JSON.stringify({
+                    ok: true,
+                    models: [
+                        { name: 'qwen3.8-27b-4bit', display_name: 'qwen3.8-27b-4bit', size_bytes: 16320875724, parser: 'qwen3_coder_xml', template: 'qwen3', hybrid: false, mtp: true, mtp_sidecar: 'rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX@3' },
+                        { name: 'qwen3.6-35b-4bit', display_name: 'qwen3.6-35b-4bit', size_bytes: 21474836480, parser: 'qwen3_coder_xml', template: 'qwen3', hybrid: false, mtp: true, mtp_sidecar: 'rapid-mlx/Qwen3.6-35B-MTP-MLX@3' },
+                        { name: 'gemma4-27b-4bit', display_name: 'gemma4-27b-4bit', size_bytes: 16106127360, parser: null, template: 'gemma4', hybrid: true, mtp: false },
+                        { name: 'llama4-8b-4bit', display_name: 'llama4-8b-4bit', size_bytes: 4294967296, parser: 'llama3_json', template: 'llama4', hybrid: false, mtp: false },
+                    ],
+                    recommendations: [
+                        { rank: 1, label: 'Smart', name: 'qwen3.8-27b-4bit', cached: true, specs: '20.0 GB RAM · 92% capability · ~41 tok/s' },
+                        { rank: 2, label: 'Fast', name: 'qwen3.6-35b-4bit', cached: false, specs: '20.0 GB RAM · 87% capability · ~60 tok/s' },
+                    ],
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+            }
             if (url.pathname === '/api/rapid-mlx/recommend') {
                 return Promise.resolve(new Response(JSON.stringify({
                     recommended_backend: 'rapid_mlx',
@@ -68,6 +84,7 @@ export default async function(ctx, _options) {
         openSpawnWizard();
     });
     await page.waitForSelector('#spawn-wizard-overlay.open', { timeout: 8000 });
+    await suppressToasts(page);
     await page.evaluate(() => {
         const banner = document.getElementById('wizard-binary-prereq');
         if (banner) banner.style.display = 'none';
@@ -107,38 +124,30 @@ export default async function(ctx, _options) {
     await sleep(400);
     await capture(1200); // Dwell on Rapid-MLX engine card selected.
 
-    // ── Step 1: Select HuggingFace model source ───────────────────────────────
+    // The curated catalog lives in the HF model area; pick that source.
     await page.evaluate(() => {
         document.querySelector('.model-source-card[data-source="hf"]')?.click();
     });
     await sleep(300);
-    await capture(700);
 
-    // Inject a Rapid-MLX-compatible HF model state (MLX directory on HF).
-    // Using Qwen3.6-35B-A3B UD MLX 4bit: ~20.2 GB file. On a 64 GB Mac this leaves
-    // plenty of headroom for KV cache and runtime overhead.
-    await page.evaluate(async () => {
-        const { wizardState } = await import('/js/features/spawn-wizard.js');
-        wizardState.model.source   = 'hf';
-        wizardState.model.delivery = 'stream_hf';
-        wizardState.model.hfRepo   = 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit';
-        wizardState.model.hfFile   = '';
-        wizardState.model.paramB   = 35;
-        wizardState.model.modelBytes = 20_200_000_000; // ~20.2 GB
-        wizardState.model.model_source = {
-            kind: 'hf_mlx_directory',
-            hf_repo: wizardState.model.hfRepo,
-        };
-        wizardState.engine.selected = 'rapid_mlx';
-        wizardState.vram.available = 64 * 1024 * 1024 * 1024;
+    // ── Curated model picker replaces HF browse for Rapid-MLX ─────────────────
+    await page.waitForFunction(
+        () => document.querySelectorAll('#rapid-catalog-panel .rapid-catalog-row').length >= 3,
+        { timeout: 8000 }
+    ).catch(() => console.log('[CAPTURE] catalog rows wait timed out; continuing.'));
+    await page.evaluate(() => {
+        document.getElementById('rapid-catalog-panel')?.scrollIntoView({ behavior: 'instant', block: 'start' });
     });
-
-    await page.$eval('#spawn-hf-repo', el => {
-        el.value = 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit';
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-    }).catch(() => {});
     await sleep(400);
-    await capture(1000);
+    await capture(1600); // Dwell on pinned recommendations + curated list.
+
+    // One click on the pinned Smart pick selects alias, measured size, and the
+    // paired MTP sidecar.
+    await page.evaluate(() => {
+        document.querySelector('#rapid-catalog-panel .rapid-catalog-row--recommended')?.click();
+    });
+    await sleep(600);
+    await capture(1400);
 
     // ── Step 0 → Step 1: Rapid-MLX Hardware ──────────────────────────────────
     await page.evaluate(() => document.getElementById('wizard-next-btn')?.click());
@@ -164,17 +173,14 @@ export default async function(ctx, _options) {
     await capture(600);
 
     // ── Step 2: Rapid-MLX hardware panel — initial state ─────────────────────
-    // Scroll to the KV cache dtype control at the top of the advanced fields.
+    // Quantized KV is unlaunchable for Rapid-MLX (hybrid ArraysCache models
+    // refuse it at startup), so the dtype dial is hidden; dwell on the panel.
     await page.evaluate(() => {
-        const el = document.getElementById('spawn-kv-cache-dtype');
-        if (el) el.scrollIntoView({ behavior: 'instant', block: 'center' });
-        else {
-            const body = document.querySelector('.wizard-body');
-            if (body) body.scrollTop = 300;
-        }
+        const body = document.querySelector('.wizard-body');
+        if (body) body.scrollTop = 300;
     });
     await sleep(300);
-    await capture(2000); // Dwell on KV dtype, retained cache, parsers.
+    await capture(2000);
 
     // ── Step 2: Rapid-MLX hardware panel — retained cache selector ───────────
     await page.evaluate(() => {
@@ -255,8 +261,8 @@ export default async function(ctx, _options) {
     });
     await sleep(200);
 
-    // ── Same step (Hardware & memory): summary (reasoning ON → "INT4 → INT8") ─
-    // Enable reasoning mode so the review summary shows "INT4 → INT8 (reasoning profile)".
+    // ── Same step (Hardware & memory): summary ────────────────────────────────
+    // Enable reasoning mode so the review summary reflects the reasoning profile.
     // Option A collapse merged the former Summary step into this one's DOM,
     // further down the page — no navigation needed to reach it.
     await page.evaluate(() => {
@@ -276,7 +282,7 @@ export default async function(ctx, _options) {
         }
     });
     await sleep(300);
-    await capture(2500); // Hold on the summary list (Rapid-MLX config, KV cache dtype).
+    await capture(2500); // Hold on the summary list (Rapid-MLX config).
 
     // ── Step 1 → Step 2: Launch (preset settings + spawn) ────────────────────
     await page.evaluate(() => document.getElementById('wizard-next-btn')?.click());

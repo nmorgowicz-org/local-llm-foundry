@@ -28,15 +28,6 @@ const CADENCE_OPTIONS = [
     { value: '5000', label: 'Low Power 5s', interval: 5000 },
 ];
 
-const PRESSURE_SAMPLE_MS = 1000;
-const PRESSURE_DRIFT_MS = 350;
-const PRESSURE_CONSECUTIVE_LIMIT = 4;
-
-let cadenceInitialized = false;
-let pressureTimer = null;
-let pressureExpectedAt = 0;
-let pressureConsecutive = 0;
-let pressureSuggestionShown = false;
 
 /**
  * Returns the recommended polling interval based on current network conditions.
@@ -139,38 +130,6 @@ function updateCadenceMenu() {
     menu.querySelectorAll('[data-cadence-value]').forEach(button => {
         button.classList.toggle('is-active', button.dataset.cadenceValue === value);
     });
-}
-
-function positionCadenceMenu() {
-    const chip = document.getElementById('nav-cadence-chip');
-    const menu = document.getElementById('nav-cadence-menu');
-    if (!chip || !menu) return;
-
-    const rect = chip.getBoundingClientRect();
-    const width = menu.offsetWidth || 190;
-    const left = Math.max(8, Math.min(window.innerWidth - width - 8, rect.right - width));
-    menu.style.top = `${rect.bottom + 8}px`;
-    menu.style.left = `${left}px`;
-}
-
-function closeCadenceMenu() {
-    const chip = document.getElementById('nav-cadence-chip');
-    const menu = document.getElementById('nav-cadence-menu');
-    if (!chip || !menu) return;
-    chip.setAttribute('aria-expanded', 'false');
-    menu.setAttribute('aria-hidden', 'true');
-}
-
-function toggleCadenceMenu() {
-    const chip = document.getElementById('nav-cadence-chip');
-    const menu = document.getElementById('nav-cadence-menu');
-    if (!chip || !menu) return;
-
-    const opening = menu.getAttribute('aria-hidden') !== 'false';
-    chip.setAttribute('aria-expanded', String(opening));
-    menu.setAttribute('aria-hidden', String(!opening));
-    updateCadenceMenu();
-    if (opening) positionCadenceMenu();
 }
 
 function getNetworkInfo() {
@@ -327,99 +286,7 @@ function stopNetworkMonitoring() {
 }
 
 
-// ── Cadence controls ──────────────────────────────────────────────────────────
-
-function initCadenceControls() {
-    if (cadenceInitialized) return;
-    cadenceInitialized = true;
-
-    const chip = document.getElementById('nav-cadence-chip');
-    const menu = document.getElementById('nav-cadence-menu');
-    const select = document.getElementById('settings-ws-push-interval');
-
-    chip?.addEventListener('click', event => {
-        event.stopPropagation();
-        toggleCadenceMenu();
-    });
-
-    menu?.addEventListener('click', event => {
-        const button = event.target.closest('[data-cadence-value]');
-        if (!button) return;
-        applyMonitoringCadence(button.dataset.cadenceValue || '500', 'nav');
-        closeCadenceMenu();
-    });
-
-    document.addEventListener('click', event => {
-        if (!menu || menu.getAttribute('aria-hidden') === 'true') return;
-        if (menu.contains(event.target) || chip?.contains(event.target)) return;
-        closeCadenceMenu();
-    });
-
-    window.addEventListener('resize', () => {
-        if (menu?.getAttribute('aria-hidden') === 'false') positionCadenceMenu();
-    });
-
-    window.addEventListener('monitoring-cadence-request', event => {
-        applyMonitoringCadence(event.detail?.value || '500', event.detail?.source || 'request');
-    });
-
-    window.addEventListener('settings-applied', updateCadenceChip);
-    window.addEventListener('monitoring-cadence-changed', updateCadenceChip);
-    select?.addEventListener('change', () => setTimeout(updateCadenceChip, 0));
-
-    setInterval(updateCadenceChip, 1000);
-    updateCadenceChip();
-    updateCadenceMenu();
-}
-
 // ── Browser pressure detection ────────────────────────────────────────────────
-
-function shouldSuggestPressureCadence() {
-    if (pressureSuggestionShown || document.hidden || !hasActiveEndpoint()) return false;
-    const currentMs = getEffectiveCadenceMs();
-    return currentMs < 2000;
-}
-
-function suggestPressureCadence(driftMs) {
-    if (!shouldSuggestPressureCadence()) return;
-    pressureSuggestionShown = true;
-    showToastWithActions(
-        'Dashboard updates may be stressing this browser',
-        'warning',
-        `UI timers are running about ${Math.round(driftMs)}ms late. Battery Saver cadence reduces dashboard and GPU telemetry refresh pressure.`,
-        [{
-            id: 'battery-saver',
-            label: 'Use 2s',
-            primary: true,
-            handler: () => applyMonitoringCadence('2000', 'browser-pressure'),
-        }],
-        { duration: 12000 }
-    );
-}
-
-function sampleBrowserPressure() {
-    const now = performance.now();
-    if (pressureExpectedAt > 0) {
-        const drift = now - pressureExpectedAt;
-        if (drift > PRESSURE_DRIFT_MS && shouldSuggestPressureCadence()) {
-            pressureConsecutive += 1;
-            if (pressureConsecutive >= PRESSURE_CONSECUTIVE_LIMIT) {
-                suggestPressureCadence(drift);
-            }
-        } else {
-            pressureConsecutive = Math.max(0, pressureConsecutive - 1);
-        }
-    }
-
-    pressureExpectedAt = now + PRESSURE_SAMPLE_MS;
-    pressureTimer = window.setTimeout(sampleBrowserPressure, PRESSURE_SAMPLE_MS);
-}
-
-function startBrowserPressureMonitoring() {
-    if (pressureTimer) return;
-    pressureExpectedAt = performance.now() + PRESSURE_SAMPLE_MS;
-    pressureTimer = window.setTimeout(sampleBrowserPressure, PRESSURE_SAMPLE_MS);
-}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 

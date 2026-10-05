@@ -263,7 +263,7 @@ function renderEmptyState(query) {
     title.textContent = 'No results found';
     const body = document.createElement('div');
     body.className = 'command-palette-empty-body';
-    body.textContent = `No conversations or messages matched "${escapeHtml(query)}".`;
+    body.textContent = `No conversations or messages matched "${query}".`;
     el.appendChild(title);
     el.appendChild(body);
     _results.appendChild(el);
@@ -485,11 +485,6 @@ function formatTimestamp(timestampMs) {
     }
 }
 
-function escapeHtml(s) {
-    const div = document.createElement('div');
-    div.textContent = s;
-    return div.innerHTML;
-}
 
 function getTabById(tabId) {
     return chat.tabs.find(tab => tab.id === tabId) || null;

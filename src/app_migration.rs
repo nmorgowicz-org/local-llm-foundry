@@ -63,6 +63,8 @@ pub enum ResourceClass {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryKind {
+    /// A regular file, or an opaque zero-byte symlink leaf in an inventoried,
+    /// never-copied ModelRetained/Recreatable resource.
     File,
     Directory,
 }
@@ -396,7 +398,21 @@ pub fn execute_application_home(plan: &AppHomeMigrationPlan) -> Result<AppHomeMi
         let receipt: AppHomeMigrationReceipt =
             serde_json::from_reader(receipt_file).context("migration receipt is unreadable")?;
         if receipt.plan_id == plan.plan_id {
-            return Ok(receipt);
+            let all_present = receipt.copied_entries.iter().all(|relative| {
+                let destination = plan.destination.join(relative);
+                destination.is_file() || destination.is_dir()
+            });
+            if all_present {
+                return Ok(receipt);
+            }
+            // A receipt whose destination is missing recorded entries (for
+            // example after a manual partial deletion) is not proof of a
+            // completed migration. Trusting it would leave the canonical root
+            // silently empty while the queue marker says otherwise.
+            bail!(
+                "migration receipt is stale: {} is missing recorded entries; remove the receipt file and regenerate the migration preview",
+                migration_receipt_path(plan).display()
+            );
         }
     }
     let current_plan = plan_application_home(&plan.source, &plan.destination)
@@ -404,7 +420,25 @@ pub fn execute_application_home(plan: &AppHomeMigrationPlan) -> Result<AppHomeMi
     if current_plan.plan_id != plan.plan_id {
         bail!("migration preview is stale; generate a new preview");
     }
-    if plan.destination.exists()
+    if plan.destination == plan.source {
+        bail!("migration source and destination are identical");
+    }
+    // Load the journal before deciding whether the destination may be
+    // non-empty: an interrupted run resumes in place, so its destination is
+    // legitimately partial.
+    let journal_path = migration_journal_path(plan);
+    let resuming = fs::File::open(&journal_path)
+        .ok()
+        .and_then(|file| serde_json::from_reader::<_, AppHomeMigrationJournal>(file).ok())
+        .is_some_and(|journal| {
+            journal.plan_id == plan.plan_id
+                && matches!(
+                    journal.state,
+                    MigrationJournalState::Copying | MigrationJournalState::Failed
+                )
+        });
+    if !resuming
+        && plan.destination.exists()
         && (!plan.destination.is_dir() || fs::read_dir(&plan.destination)?.next().is_some())
     {
         bail!(
@@ -413,12 +447,8 @@ pub fn execute_application_home(plan: &AppHomeMigrationPlan) -> Result<AppHomeMi
         );
     }
     let _lock = acquire_migration_lock(plan)?;
-    if plan.destination == plan.source {
-        bail!("migration source and destination are identical");
-    }
     ensure_free_space(&plan.destination, plan.required_copy_bytes)?;
     fs::create_dir_all(&plan.destination)?;
-    let journal_path = migration_journal_path(plan);
     let mut journal = load_or_create_journal(plan, &journal_path)?;
     journal.state = MigrationJournalState::Copying;
     write_json_atomic(&journal_path, &journal)?;
@@ -555,12 +585,32 @@ pub fn execute_application_home_rollback(plan: &AppHomeRollbackPlan) -> Result<(
     if plan.destination == plan.source || !plan.destination.is_dir() {
         bail!("rollback destination is invalid");
     }
+    // The model tree is MOVED (never copied) into the canonical root, so a
+    // populated models directory there is the only copy of the user's models.
+    // Removing the root would destroy it with no recovery path.
+    if contains_models(&plan.destination) {
+        bail!(
+            "refusing rollback: {} contains a populated models directory that has no other copy; move the model tree out of Foundry first",
+            plan.destination.display()
+        );
+    }
     fs::remove_dir_all(&plan.destination).with_context(|| {
         format!(
             "could not remove migrated root {}",
             plan.destination.display()
         )
     })?;
+    // The receipt proved the migration completed; with the migrated root gone
+    // it is stale. Leaving it would let later inspections report
+    // RollbackAvailable and let a re-migration early-return succeed without
+    // copying anything.
+    let _ = fs::remove_file(&plan.receipt_path);
+    let journal_path = plan
+        .destination
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!(".{PRODUCT_SLUG}-migration-journal.json"));
+    let _ = fs::remove_file(journal_path);
     Ok(())
 }
 
@@ -638,6 +688,15 @@ pub fn execute_application_home_cleanup(plan: &AppHomeCleanupPlan) -> Result<()>
     }
     if !plan.legacy_root.is_dir() || plan.legacy_root == plan.canonical_root {
         bail!("cleanup legacy root is invalid");
+    }
+    // App-home migration deliberately leaves the model tree at the legacy
+    // root for an explicit follow-up decision. Cleanup must never fire while
+    // that tree (the only copy of the models) is still there.
+    if contains_models(&plan.legacy_root) {
+        bail!(
+            "refusing cleanup: legacy root {} still contains a populated models directory; decide the model root first",
+            plan.legacy_root.display()
+        );
     }
     fs::remove_dir_all(&plan.legacy_root)
         .with_context(|| format!("could not clean legacy root {}", plan.legacy_root.display()))?;
@@ -756,14 +815,8 @@ pub fn plan_application_home(source: &Path, destination: &Path) -> Result<AppHom
     if source == destination {
         bail!("source and destination application roots must differ");
     }
-    if destination.exists()
-        && (!destination.is_dir() || fs::read_dir(destination)?.next().is_some())
-    {
-        bail!(
-            "destination exists and is not an empty directory: {}",
-            destination.display()
-        );
-    }
+    // Structure identity first: the resume decision below needs the plan id to
+    // match the interrupted run's journal.
     let mut entries = Vec::new();
     let mut retained_entries = Vec::new();
     collect_entries(source, source, &mut entries, &mut retained_entries)?;
@@ -780,14 +833,60 @@ pub fn plan_application_home(source: &Path, destination: &Path) -> Result<AppHom
         .map(|entry| entry.bytes)
         .sum();
     let total_seen_bytes = entries.iter().map(|entry| entry.bytes).sum();
+    // Identity is structural: which paths exist, their class and kind. Sizes
+    // and modified times of live files (sessions.json, SQLite sidecars) change
+    // while the app runs, and execution copies current contents anyway, so
+    // hashing them only made every preview go stale before it could be queued.
+    let structure: Vec<_> = entries
+        .iter()
+        // SQLite deletes its WAL/SHM sidecars on clean shutdown, and the
+        // executor never copies them (the online backup is consistent), so
+        // their presence must not change the plan identity.
+        .filter(|entry| {
+            entry.relative_path != Path::new("chat.db-wal")
+                && entry.relative_path != Path::new("chat.db-shm")
+        })
+        .map(|entry| (&entry.relative_path, entry.class, entry.kind))
+        .collect();
     let digest = Sha256::digest(serde_json::to_vec(&(
-        1u32,
+        2u32,
         source,
         destination,
-        &entries,
+        structure,
         &retained_entries,
     ))?);
-    let plan_id = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    let plan_id: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    // An interrupted migration leaves a partially filled destination. That is
+    // resumable — but only when a journal from the exact same plan says so;
+    // any other non-empty destination is still a hard error.
+    let resumable = fs::File::open(migration_journal_path(&AppHomeMigrationPlan {
+        schema_version: 1,
+        plan_id: plan_id.clone(),
+        source: source.to_path_buf(),
+        destination: destination.to_path_buf(),
+        entries: Vec::new(),
+        retained_entries: Vec::new(),
+        required_copy_bytes: 0,
+        total_seen_bytes: 0,
+    }))
+    .ok()
+    .and_then(|file| serde_json::from_reader::<_, AppHomeMigrationJournal>(file).ok())
+    .is_some_and(|journal| {
+        journal.plan_id == plan_id
+            && matches!(
+                journal.state,
+                MigrationJournalState::Copying | MigrationJournalState::Failed
+            )
+    });
+    if !resumable
+        && destination.exists()
+        && (!destination.is_dir() || fs::read_dir(destination)?.next().is_some())
+    {
+        bail!(
+            "destination exists and is not an empty directory: {}",
+            destination.display()
+        );
+    }
     Ok(AppHomeMigrationPlan {
         schema_version: 1,
         plan_id,
@@ -800,6 +899,17 @@ pub fn plan_application_home(source: &Path, destination: &Path) -> Result<AppHom
     })
 }
 
+/// True when `root/models` exists and holds anything. Model trees are moved
+/// (never copied) between roots, so a destructive operation on either root
+/// must refuse while the only copy of user models lives inside it.
+fn contains_models(root: &Path) -> bool {
+    let models = root.join("models");
+    models.is_dir()
+        && fs::read_dir(&models)
+            .map(|entries| entries.count() > 0)
+            .unwrap_or(true)
+}
+
 fn validate_root(root: &Path, label: &str) -> Result<()> {
     let metadata = fs::symlink_metadata(root)
         .with_context(|| format!("{label} root is not readable: {}", root.display()))?;
@@ -809,14 +919,29 @@ fn validate_root(root: &Path, label: &str) -> Result<()> {
     Ok(())
 }
 
+fn inventory_io_error(error: std::io::Error, operation: &str, path: &Path) -> anyhow::Error {
+    // Public error codes depend on the top-level message. Keep the original
+    // OS message there; operation/path context is only in the logged chain.
+    let message = error.to_string();
+    anyhow::Error::new(error)
+        .context(format!(
+            "migration inventory {operation}: {}",
+            path.display()
+        ))
+        .context(message)
+}
+
 fn collect_entries(
     root: &Path,
     current: &Path,
     entries: &mut Vec<AppHomeMigrationEntry>,
     retained_entries: &mut Vec<PathBuf>,
 ) -> Result<()> {
-    for item in fs::read_dir(current)? {
-        let item = item?;
+    for item in fs::read_dir(current)
+        .map_err(|error| inventory_io_error(error, "read directory", current))?
+    {
+        let item =
+            item.map_err(|error| inventory_io_error(error, "read directory entry", current))?;
         let path = item.path();
         let relative = path
             .strip_prefix(root)
@@ -830,12 +955,23 @@ fn collect_entries(
         }) {
             bail!("migration inventory produced an unsafe relative path");
         }
-        let metadata = fs::symlink_metadata(&path)?;
-        if metadata.file_type().is_symlink() {
-            bail!("migration refuses symlinked resource: {}", path.display());
-        }
         let class = classify_resource(&relative);
-        let kind = if metadata.is_dir() {
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| inventory_io_error(error, "inspect entry", &path))?;
+        let kind = if metadata.file_type().is_symlink() {
+            if !matches!(
+                class,
+                ResourceClass::ModelRetained | ResourceClass::Recreatable
+            ) {
+                bail!("migration refuses symlinked resource: {}", path.display());
+            }
+            // Keep the existing File/Directory API: retained links are opaque
+            // file leaves with zero bytes and the link's own modification time.
+            // Never inspect their targets (which may not exist). Class guards
+            // exclude them from copying/verification, and symlink_metadata
+            // ensures they cannot be counted as files or recursed into below.
+            EntryKind::File
+        } else if metadata.is_dir() {
             EntryKind::Directory
         } else if metadata.is_file() {
             EntryKind::File
@@ -873,18 +1009,19 @@ fn collect_entries(
 }
 
 fn classify_resource(relative: &Path) -> ResourceClass {
-    let first = relative
-        .components()
-        .next()
-        .and_then(|component| match component {
-            std::path::Component::Normal(name) => name.to_str(),
-            _ => None,
-        });
+    let components: Vec<_> = relative.components().collect();
+    let first = components.first().and_then(|component| match component {
+        std::path::Component::Normal(name) => name.to_str(),
+        _ => None,
+    });
     match first {
         Some("models") => ResourceClass::ModelRetained,
         Some("logs" | "bin" | "binaries" | "runtimes" | "model-cache" | ".staging") => {
             ResourceClass::Recreatable
         }
+        // Rapid-MLX runtime resources are generated and recreatable.
+        // Template overlays contain symlinks to source templates.
+        Some("rapid-mlx") => ResourceClass::Recreatable,
         Some("encryption-key" | "api-token" | "db-admin-token" | "chat.db" | "certs") => {
             ResourceClass::Critical
         }
@@ -1075,6 +1212,331 @@ mod tests {
         let _ = fs::remove_dir_all(source.parent().unwrap());
     }
 
+    // --- Regression tests for the destructive-operation guards. Each covers a
+    // bug that could destroy the only copy of user data or strand startup. ---
+
+    fn migrated_fixture(
+        _name: &str,
+    ) -> (tempfile::TempDir, PathBuf, PathBuf, AppHomeMigrationPlan) {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("legacy");
+        let destination = root.path().join("canonical");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("presets.json"), b"{}").unwrap();
+        fs::write(source.join("auth-config.json"), b"{}").unwrap();
+        // Note: no chat.db — its copy path requires a real SQLite database.
+        let plan = plan_application_home(&source, &destination).unwrap();
+        execute_application_home(&plan).unwrap();
+        (root, source, destination, plan)
+    }
+
+    #[test]
+    fn rollback_refuses_to_delete_migrated_models() {
+        let (_root, source, destination, _plan) = migrated_fixture("rollback-models");
+        // Simulate the model-root move: the only copy of the models now lives
+        // inside the canonical root.
+        fs::create_dir_all(destination.join("models")).unwrap();
+        fs::write(destination.join("models/model.gguf"), b"weights").unwrap();
+        let plan = plan_application_home_rollback(&destination, &source).unwrap();
+        let error = execute_application_home_rollback(&plan).unwrap_err();
+        assert!(error.to_string().contains("models"));
+        assert!(destination.join("models/model.gguf").is_file());
+        let _ = fs::remove_dir_all(source.parent().unwrap());
+    }
+
+    #[test]
+    fn rollback_removes_receipt_so_remigration_copies_again() {
+        let (_root, source, destination, _plan) = migrated_fixture("rollback-receipt");
+        let plan = plan_application_home_rollback(&destination, &source).unwrap();
+        execute_application_home_rollback(&plan).unwrap();
+        assert!(!destination.exists());
+        // The stale receipt must be gone: no RollbackAvailable without it.
+        assert!(!has_completed_receipt(&destination, &source));
+        // And a fresh migration re-plans and re-copies from scratch instead of
+        // early-returning an empty destination.
+        let fresh = plan_application_home(&source, &destination).unwrap();
+        execute_application_home(&fresh).unwrap();
+        assert!(destination.join("presets.json").is_file());
+        let _ = fs::remove_dir_all(source.parent().unwrap());
+    }
+
+    #[test]
+    fn cleanup_refuses_while_legacy_models_remain() {
+        let (_root, source, destination, _plan) = migrated_fixture("cleanup-models");
+        fs::create_dir_all(source.join("models")).unwrap();
+        fs::write(source.join("models/model.gguf"), b"weights").unwrap();
+        let plan = plan_application_home_cleanup(&destination, &source).unwrap();
+        let error = execute_application_home_cleanup(&plan).unwrap_err();
+        assert!(error.to_string().contains("models"));
+        assert!(source.join("models/model.gguf").is_file());
+        let _ = fs::remove_dir_all(source.parent().unwrap());
+    }
+
+    #[test]
+    fn incomplete_destination_invalidates_receipt() {
+        let (_root, source, destination, plan) = migrated_fixture("stale-receipt");
+        // A receipt whose recorded entries are missing (manual partial
+        // deletion) must not satisfy the execute early-return.
+        fs::remove_file(destination.join("presets.json")).unwrap();
+        let error = execute_application_home(&plan).unwrap_err();
+        assert!(error.to_string().contains("stale"));
+        let _ = fs::remove_dir_all(source.parent().unwrap());
+    }
+
+    #[test]
+    fn interrupted_migration_resumes_from_journal() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("legacy");
+        let destination = root.path().join("canonical");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("presets.json"), b"{}").unwrap();
+        fs::write(source.join("auth-config.json"), b"{}").unwrap();
+        let plan = plan_application_home(&source, &destination).unwrap();
+        // Simulate a crash mid-copy: no receipt yet, a partially filled
+        // destination, and a Copying journal recording the finished entry.
+        fs::create_dir_all(&destination).unwrap();
+        fs::copy(
+            source.join("presets.json"),
+            destination.join("presets.json"),
+        )
+        .unwrap();
+        let journal = AppHomeMigrationJournal {
+            schema_version: 1,
+            plan_id: plan.plan_id.clone(),
+            state: MigrationJournalState::Copying,
+            completed_entries: vec![PathBuf::from("presets.json")],
+            last_error: None,
+        };
+        let journal_path = migration_journal_path(&plan);
+        write_json_atomic(&journal_path, &journal).unwrap();
+        assert!(!destination.join("auth-config.json").exists());
+        // Both planning and execution must accept the partial destination and
+        // finish the remaining entries.
+        let resumed = plan_application_home(&source, &destination).unwrap();
+        assert_eq!(resumed.plan_id, plan.plan_id);
+        execute_application_home(&resumed).unwrap();
+        assert!(destination.join("auth-config.json").is_file());
+    }
+
+    // Symlink fixtures are Unix-only, like the escape test above; Windows
+    // symlink creation requires privileges unavailable on many test hosts.
+    #[cfg(unix)]
+    #[derive(Debug, PartialEq, Eq)]
+    struct PreviewSnapshotEntry {
+        relative_path: PathBuf,
+        file_type: fs::FileType,
+        bytes: u64,
+        modified: std::time::SystemTime,
+        link_target: Option<PathBuf>,
+    }
+
+    #[cfg(unix)]
+    fn preview_snapshot(root: &Path) -> Vec<PreviewSnapshotEntry> {
+        fn visit(root: &Path, path: &Path, entries: &mut Vec<PreviewSnapshotEntry>) {
+            let metadata = fs::symlink_metadata(path).unwrap();
+            entries.push(PreviewSnapshotEntry {
+                relative_path: path.strip_prefix(root).unwrap().to_path_buf(),
+                file_type: metadata.file_type(),
+                bytes: metadata.len(),
+                modified: metadata.modified().unwrap(),
+                link_target: if metadata.file_type().is_symlink() {
+                    Some(fs::read_link(path).unwrap())
+                } else {
+                    None
+                },
+            });
+            if metadata.is_dir() {
+                for item in fs::read_dir(path).unwrap() {
+                    visit(root, &item.unwrap().path(), entries);
+                }
+            }
+        }
+        let mut entries = Vec::new();
+        visit(root, root, &mut entries);
+        entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        entries
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_preview_retains_symlink_leaves_without_writes() {
+        use std::os::unix::fs::symlink;
+
+        for (relative, class) in [
+            (
+                "rapid-mlx/template-overlays/model/model.safetensors",
+                ResourceClass::Recreatable,
+            ),
+            ("models/mlx/model.safetensors", ResourceClass::ModelRetained),
+            ("models", ResourceClass::ModelRetained),
+            ("runtimes", ResourceClass::Recreatable),
+        ] {
+            for target_kind in ["file", "dangling", "directory"] {
+                // Unix socket paths are length-limited; do not inherit a
+                // potentially long TMPDIR for the directory-target sentinel.
+                let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+                let source = sandbox.path().join("legacy");
+                let destination = sandbox.path().join("canonical");
+                fs::create_dir(&source).unwrap();
+                fs::write(source.join("presets.json"), b"{}").unwrap();
+                let target = sandbox.path().join("external-target");
+                match target_kind {
+                    "file" => fs::write(&target, b"external target contents").unwrap(),
+                    "directory" => {
+                        fs::create_dir(&target).unwrap();
+                        fs::write(target.join("must-not-be-inventoried"), b"external").unwrap();
+                        // Traversing this directory would encounter a forbidden
+                        // special entry, even though its parent is retained.
+                        std::os::unix::net::UnixListener::bind(target.join("socket")).unwrap();
+                    }
+                    "dangling" => {}
+                    _ => unreachable!(),
+                }
+                let link = source.join(relative);
+                fs::create_dir_all(link.parent().unwrap()).unwrap();
+                symlink(&target, &link).unwrap();
+                let before = preview_snapshot(sandbox.path());
+
+                let plan = plan_application_home(&source, &destination).unwrap();
+                let entry = plan
+                    .entries
+                    .iter()
+                    .find(|entry| entry.relative_path == Path::new(relative))
+                    .unwrap();
+                assert_eq!(entry.class, class);
+                assert_eq!(entry.kind, EntryKind::File);
+                assert_eq!(entry.bytes, 0);
+                assert_eq!(
+                    entry.modified_unix_seconds,
+                    fs::symlink_metadata(&link)
+                        .unwrap()
+                        .modified()
+                        .unwrap()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs()
+                );
+                assert!(plan.retained_entries.contains(&PathBuf::from(relative)));
+                assert!(!plan.entries.iter().any(|entry| {
+                    entry.relative_path != Path::new(relative)
+                        && entry.relative_path.starts_with(relative)
+                }));
+                assert_eq!(plan.required_copy_bytes, 2);
+                assert_eq!(plan.total_seen_bytes, 2);
+                assert_eq!(
+                    plan_application_home(&source, &destination)
+                        .unwrap()
+                        .plan_id,
+                    plan.plan_id
+                );
+                // This includes both roots, external targets, links, and the
+                // parent where queue/lock/journal/receipt files would appear.
+                assert_eq!(preview_snapshot(sandbox.path()), before);
+                assert!(!destination.exists());
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_preview_rejects_critical_and_unknown_symlinks_without_writes() {
+        use std::os::unix::fs::symlink;
+
+        for relative in [
+            "api-token",
+            "certs/server.pem",
+            "presets.json",
+            "custom/link",
+        ] {
+            for dangling in [false, true] {
+                let sandbox = tempfile::tempdir().unwrap();
+                let source = sandbox.path().join("legacy");
+                let destination = sandbox.path().join("canonical");
+                let link = source.join(relative);
+                fs::create_dir_all(link.parent().unwrap()).unwrap();
+                let target = sandbox.path().join("external-target");
+                if !dangling {
+                    fs::write(&target, b"external").unwrap();
+                }
+                symlink(&target, &link).unwrap();
+                let before = preview_snapshot(sandbox.path());
+
+                let error = plan_application_home(&source, &destination).unwrap_err();
+                assert!(error.to_string().contains("symlinked resource"));
+                assert_eq!(public_error_code(&error), MigrationErrorCode::UnsafeEntry);
+                assert_eq!(preview_snapshot(sandbox.path()), before);
+                assert!(!destination.exists());
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_preview_rejects_special_entries_in_every_resource_class() {
+        for relative in [
+            "certs/socket",
+            "custom/socket",
+            "models/socket",
+            "rapid-mlx/socket",
+        ] {
+            // Keep socket paths short even when the host has a long TMPDIR.
+            let sandbox = tempfile::tempdir_in("/tmp").unwrap();
+            let source = sandbox.path().join("legacy");
+            let destination = sandbox.path().join("canonical");
+            let socket = source.join(relative);
+            fs::create_dir_all(socket.parent().unwrap()).unwrap();
+            let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            let before = preview_snapshot(sandbox.path());
+
+            let error = plan_application_home(&source, &destination).unwrap_err();
+            assert!(error.to_string().contains("special filesystem entry"));
+            assert_eq!(public_error_code(&error), MigrationErrorCode::UnsafeEntry);
+            assert_eq!(preview_snapshot(sandbox.path()), before);
+            assert!(!destination.exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn application_execution_never_copies_retained_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let sandbox = tempfile::tempdir().unwrap();
+        let source = sandbox.path().join("legacy");
+        let destination = sandbox.path().join("canonical");
+        fs::create_dir_all(source.join("rapid-mlx/template-overlays")).unwrap();
+        fs::create_dir_all(source.join("models")).unwrap();
+        fs::write(source.join("presets.json"), b"{}").unwrap();
+        let external = sandbox.path().join("external");
+        fs::create_dir(&external).unwrap();
+        fs::write(external.join("model.safetensors"), b"model").unwrap();
+        let links = [
+            (
+                "rapid-mlx/template-overlays/dangling",
+                sandbox.path().join("missing"),
+            ),
+            ("models/linked-directory", external.clone()),
+            ("models/linked-file", external.join("model.safetensors")),
+        ];
+        for (relative, target) in &links {
+            symlink(target, source.join(relative)).unwrap();
+        }
+        let source_before = preview_snapshot(&source);
+        let external_before = preview_snapshot(&external);
+
+        let plan = plan_application_home(&source, &destination).unwrap();
+        let receipt = execute_application_home(&plan).unwrap();
+        assert_eq!(receipt.copied_entries, vec![PathBuf::from("presets.json")]);
+        assert_eq!(fs::read(destination.join("presets.json")).unwrap(), b"{}");
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+        for (relative, _) in &links {
+            assert!(receipt.retained_entries.contains(&PathBuf::from(relative)));
+            assert!(fs::symlink_metadata(destination.join(relative)).is_err());
+        }
+        assert_eq!(preview_snapshot(&source), source_before);
+        assert_eq!(preview_snapshot(&external), external_before);
+    }
+
     #[test]
     fn application_execution_is_restartable_and_copy_first() {
         let (source, destination) = fixture("execute");
@@ -1139,14 +1601,48 @@ mod tests {
     }
 
     #[test]
-    fn application_execution_rejects_changed_source_after_preview() {
+    fn application_execution_rejects_structural_change_after_preview() {
         let (source, destination) = fixture("stale");
         fs::write(source.join("presets.json"), b"original").unwrap();
         let plan = plan_application_home(&source, &destination).unwrap();
-        fs::write(source.join("presets.json"), b"changed").unwrap();
+        fs::write(source.join("new-critical-state.json"), b"{}").unwrap();
         let error = execute_application_home(&plan).unwrap_err();
         assert!(error.to_string().contains("stale"));
         assert!(!destination.exists() || fs::read_dir(&destination).unwrap().next().is_none());
+        let _ = fs::remove_dir_all(source.parent().unwrap());
+    }
+
+    #[test]
+    fn live_file_writes_after_preview_do_not_invalidate_plan_and_copy_current_contents() {
+        let (source, destination) = fixture("live-writes");
+        fs::write(source.join("presets.json"), b"original").unwrap();
+        fs::write(source.join("sessions.json"), b"[]").unwrap();
+        let plan = plan_application_home(&source, &destination).unwrap();
+        // The running app rewrites its own state between preview and restart.
+        fs::write(source.join("sessions.json"), b"[{\"id\":1},{\"id\":2}]").unwrap();
+        let current = plan_application_home(&source, &destination).unwrap();
+        assert_eq!(current.plan_id, plan.plan_id);
+        execute_application_home(&current).unwrap();
+        assert_eq!(
+            fs::read(destination.join("sessions.json")).unwrap(),
+            b"[{\"id\":1},{\"id\":2}]"
+        );
+        let _ = fs::remove_file(migration_journal_path(&plan));
+        let _ = fs::remove_file(migration_receipt_path(&plan));
+        let _ = fs::remove_dir_all(source.parent().unwrap());
+    }
+
+    #[test]
+    fn sqlite_sidecars_vanishing_on_clean_shutdown_do_not_invalidate_plan() {
+        let (source, destination) = fixture("sidecars");
+        fs::write(source.join("presets.json"), b"{}").unwrap();
+        fs::write(source.join("chat.db-wal"), b"wal").unwrap();
+        fs::write(source.join("chat.db-shm"), b"shm").unwrap();
+        let before = plan_application_home(&source, &destination).unwrap();
+        fs::remove_file(source.join("chat.db-wal")).unwrap();
+        fs::remove_file(source.join("chat.db-shm")).unwrap();
+        let after = plan_application_home(&source, &destination).unwrap();
+        assert_eq!(before.plan_id, after.plan_id);
         let _ = fs::remove_dir_all(source.parent().unwrap());
     }
 
@@ -1164,6 +1660,48 @@ mod tests {
             public_error_code(&unsafe_entry),
             MigrationErrorCode::UnsafeEntry
         );
+    }
+
+    #[test]
+    fn inventory_filesystem_context_preserves_public_error_classification() {
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::NotFound,
+        ] {
+            let original = std::io::Error::from(kind);
+            let message = original.to_string();
+            let expected_code = public_error_code(&anyhow::Error::new(original));
+            // Path keywords must not affect the stable public error code.
+            let path = Path::new("/private/destination/queue/stale");
+            let error = inventory_io_error(std::io::Error::from(kind), "read directory", path);
+            assert_eq!(error.to_string(), message);
+            assert_eq!(public_error_code(&error), expected_code);
+            assert_eq!(error.downcast_ref::<std::io::Error>().unwrap().kind(), kind);
+            let chain = format!("{error:#}");
+            assert!(chain.contains("migration inventory read directory"));
+            assert!(chain.contains(&path.display().to_string()));
+            assert!(chain.contains(&message));
+        }
+    }
+
+    #[test]
+    fn inventory_directory_error_identifies_operation_and_path_without_writes() {
+        let (source, destination) = fixture("inventory-directory-error");
+        let not_directory = source.join("presets.json");
+        fs::write(&not_directory, b"{}").unwrap();
+        let mut entries = Vec::new();
+        let mut retained_entries = Vec::new();
+        let error = collect_entries(&source, &not_directory, &mut entries, &mut retained_entries)
+            .unwrap_err();
+        let chain = format!("{error:#}");
+        assert!(chain.contains("migration inventory read directory"));
+        assert!(chain.contains(&not_directory.display().to_string()));
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
+        assert!(entries.is_empty());
+        assert!(retained_entries.is_empty());
+        assert_eq!(fs::read(&not_directory).unwrap(), b"{}");
+        assert!(fs::read_dir(&destination).unwrap().next().is_none());
+        let _ = fs::remove_dir_all(source.parent().unwrap());
     }
 
     #[test]

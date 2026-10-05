@@ -69,7 +69,7 @@ for a piece of wizard behavior, use this table first; only fall back to grepping
 `spawn-wizard.js` itself for shared state, step-navigation, or orchestration glue.
 
 | Module | Owns |
-|--------|------|
+| -------- | ------ |
 | `spawn-wizard.js` | Shell: `wizardState`, `dom`, step navigation/orchestration, shared sizing helpers (`effectiveAvailBytes`, `getModelBytes`, `getSizingArch`, `isUnifiedMemory`), re-exports the Playwright test contract from the modules that now own it |
 | `spawn-wizard-format.js` | Shared formatting helpers (`formatCtx`, `formatGB`, `kvBpe`) used across other wizard modules |
 | `spawn-wizard-model-card.js` | HF markdown README viewer panel (also used by `models.js`'s HF search panel) |
@@ -147,6 +147,34 @@ action or status state only needs to change one file; each call site's own code 
 limited to rendering its status line and wiring the resolved path into its own payload
 field, so there's no lifecycle-logic duplication left to drift.
 
+### Template updates
+
+Upstream authors ship new template versions often, so no community template is pinned to a
+version or commit. Each entry in `chat-template-registry.js` tracks its repository's moving
+`main`, and every install records the exact commit it fetched (Version history can roll back).
+
+Two modules own what happens when upstream moves, so every surface behaves the same:
+
+- `template-autoupdater.js` checks every installed template against upstream at most once per
+  12 hours (not on every tab focus). For a template that changed it shows one toast with
+  **Update** (or **Update all**) and **Review** buttons, and registers one persistent
+  notification-bell entry per template with the same actions. An update the user has already
+  been told about is not announced again; archiving a bell entry sticks until a newer upstream
+  version appears.
+- `chat-template-update.js` is the one place that applies an update. It reinstalls the template
+  in place under the same file name, so presets that point at it pick up the new content, and
+  the previous content stays in Version history. It then emits `chatTemplateUpdated`, which the
+  autoupdater (resolves the bell entry, forgets the pending status) and the wizard (redraws its
+  status line) both listen for.
+
+The Manage template modal shows **Update** beside **Check for updates** when its check finds a
+newer version, and the wizard's status line shows "Update available (v21.3 → v22.5)" with an
+**Update** button when the background check has found one. **Review** opens Manage template,
+where the version history and upstream commits can be read first.
+
+`-no_json` files from the retired no-JSON transform are not checked or updated; the templates
+they were derived from no longer need it.
+
 ### Runtime coverage — both llama.cpp and Rapid-MLX
 
 The chat-template file (`chatTemplatePath` / `chat_template_file`) is consumed by both
@@ -172,7 +200,7 @@ implemented and verified 2026-08-06) collapsed the wizard from six steps down to
 Each new step folds in the old steps it absorbed:
 
 | Step | Purpose | Absorbs (old numbering) |
-|------|---------|--------------------------|
+| ------ | --------- | -------------------------- |
 | 0. Model | Profile + use-case selection, engine selection, model source input, model-specific options | old Step 0 (Profile), old Step 1 (Model) |
 | 1. Hardware | Context, offload, batching, speculative decoding, VRAM, Rapid-MLX controls, plus the full pre-launch review summary | old Step 2 (Hardware & Memory), old Step 4 (Review) |
 | 2. Launch | Network, security, and advanced launch flags; spawn submission and start-up monitoring; preset save/load | old Step 3 (Settings), old Step 5 (Start Server) |
@@ -191,6 +219,33 @@ The two visible intents map as follows: `agentic` → `interactive_coding_agent`
 
 Engine selection, model source input, and model-specific options also live on this step. See
 [Engine selection](#engine-selection) below.
+
+#### Rapid-MLX model selection is curated-only
+
+Rapid-MLX only behaves predictably for models upstream hand-validates (tool
+parser pairing, MTP sidecars, measured sizes), so when the Rapid-MLX engine is
+selected the model step swaps Hugging Face discovery for the curated catalog
+(`GET /api/rapid-mlx/catalog`). Upstream's per-machine tier recommendations
+("Smart"/"Fast") are pinned on top, chat models are searchable below, and
+selecting a row fills the alias, measured size, and paired speculative sidecar
+in one step.
+
+Catalog selections use the typed source `{"kind":"alias","value":"<model-name>"}`
+for both command preview and launch. Saved sources using the older `name` field
+are accepted and serialized back with `value`.
+
+The picker includes conversational LLMs, including vision-capable chat models.
+Dedicated audio pipelines (TTS/transcription), image generation, and video
+generation are excluded from both the searchable list and pinned recommendations.
+Upstream pipeline labels such as `[audio:stt]`, `[audio:tts]`, `[image:gen]`,
+and `[video:gen]` are normalized before filtering.
+
+![Curated Rapid-MLX model picker](../screenshots/rapidmlx-local--spawn-wizard-rapid-catalog-picker.png)
+
+![One-click catalog selection](../screenshots/rapidmlx-local--spawn-wizard-rapid-catalog-selected.png) Models outside the catalog still launch when they resolve locally
+or on Hugging Face, and the review step flags them as unvalidated. Quantized
+KV options are hidden for Rapid-MLX: every catalog model is hybrid-attention
+and rapid-mlx refuses quantized KV at startup, so they always serve bf16.
 
 ### Step 1: Hardware
 
@@ -220,6 +275,7 @@ registry — not the DOM's own layout — is the source of truth for two indepen
 The legacy `applyProfileVisibility()` Quick-tier disable loop and profile persistence path are
 retired. Guided keeps applicable controls reachable through the canonical drawer; `profile` remains
 `balanced` only as a backward-compatible payload field and never overwrites explicit edits.
+
 - **`spawn-wizard-ia.js`**'s `createWizardIA()` factory relocates non-quick controls into
   collapsible, tier-labelled `<details>` groups (grouped under supersections, e.g. "Advanced
   tuning"), open by default at-or-above their own tier and collapsed below it. Each loader gets
@@ -314,6 +370,23 @@ llama.cpp rows identify requested and estimator-effective values; Rapid-MLX rows
 requested values and runtime-effective command-preview evidence. Preset save/load options
 are available here.
 
+In Guided mode, the right-hand Configuration pane includes **Served as (API
+model name)**. Use it to give each preset variant a distinct name in
+`/v1/models` and API clients, such as `qwen3.8-27b-4bit-205k`. This changes
+only the client-facing name, not the catalog alias or model artifact being
+loaded. Leave it blank to use the backend's default model name.
+
+The field is the same control used in Power-user mode. Edits update the launch
+summary and command preview, and **Save as Preset** stores the name with that
+variant. Reopening a saved preset restores its name for both backends.
+
+![Guided launch naming for a preset variant](../screenshots/rapidmlx-local--spawn-wizard-launch-full-config.png)
+
+The Full config review expands to its content height; scroll the wizard page to
+read all settings. The Ready to launch card keeps its natural height, with an
+internal scrollbar only when its content exceeds 340px. Neither card shrinks
+to fit the remaining viewport space.
+
 ## Engine selection
 
 The wizard supports two inference backends:
@@ -390,6 +463,8 @@ When Rapid-MLX is selected, the wizard adapts the Model and Hardware step UI:
   - Label changes to "Select local MLX model".
   - Description: "Browse to a validated MLX model directory."
   - Browse button switches to directory mode instead of GGUF-only.
+  - HF cache repository folders (`models--owner--repo`) and their snapshot paths retain
+    their encoded HF source locally, without requiring an online filename search.
 - HF source card:
   - Description: "Enter a Rapid-MLX-compatible Hugging Face repository ID."
   - For Rapid-MLX, entering a repo ID is sufficient (no GGUF file picker).
@@ -397,11 +472,46 @@ When Rapid-MLX is selected, the wizard adapts the Model and Hardware step UI:
   - Hidden when Rapid-MLX is selected (Rapid-MLX does not support the import path).
 - Hardware step:
   - llama.cpp-specific controls (GPU layers, KV cache types, MoE offload, mlock,
-    threads, speculative decoding, MTP, mmproj) are hidden.
+    threads, speculative decoding, MTP, mmproj) are hidden. This includes the
+    Guided view's always-open fields — GPU layers, KV unified, and the
+    q8_0/f16/q4_0 KV cache precision pair — which are dead inputs under
+    Rapid-MLX; the engine's own `spawn-kv-cache-dtype` control (int8, pinned by
+    the reasoning profile) stays in the Cache & Performance group. Context size
+    remains for both engines.
   - A Rapid-MLX-specific panel (rapid-hardware-panel) is shown for backend-specific
     configuration, keeping its settings isolated from llama.cpp flags.
+  - Model protocol: a "Validate protocol…" action (wizard All settings drawer and the
+    preset editor's Model protocol row) opens an in-app reference modal mirroring the
+    RapidMLX model-families documentation (for example Qwen 3.8: tool parser
+    `qwen3_coder_xml`, reasoning parser `qwen3`, hybrid flag) with a deep link to the
+    live docs page, for cases where auto-detection cannot see a modified finetune.
+  - Tool integration: "Automatic tool choice" turns itself on when the model's live
+    profile reports a tool-call parser, and stays off otherwise.
+  - Experimental MTP speculation: the toggle carries a live eligibility hint derived
+    from the runtime profile — embedded prediction heads (no sidecar needed) versus
+    "no embedded MTP heads detected" (a matching local sidecar is required, or keep
+    speculation off).
+  - Official upstream MTP drafts: for trunk tiers where upstream publishes a standalone
+    MTP drafter (Qwen 3.8-27B, 3.6-27B/35B-A3B, 3.5-4B/9B), the sidecar list offers a
+    one-click "Preflight" of that draft — pinning its revision and provenance without a
+    local build. Launch still requires an immutable local copy, which the managed
+    sidecar builder can produce from the preflighted source.
+    Detection is name-independent: when the trunk name carries no family hint, the
+    backend fingerprints the trunk's own config.json (architecture and tier — e.g.
+    `qwen3_5`, hidden 5120, 64 layers → Qwen3.8-27B) and suggests the matching
+    upstream draft, so a finetune like `Scarlett-Opus-oQ4e-MLX` resolves correctly.
 
 ![Rapid-MLX hardware panel](../screenshots/rapidmlx-local--spawn-wizard-rapid-mlx-fit.png)
+
+- Models-modal downloads:
+  - The Download tab's "Download to models folder" button downloads an MLX repo
+    snapshot through `POST /api/models/downloads` (engine-neutral, so oMLX can reuse it)
+    with live progress on the button (`Downloading 42% (12.1 GB / 28.7 GB)`), a toast
+    when a stalled download resumes automatically, a `Cancel` button while it runs
+    (then `Resume download`), a `Retry download` button after a failure, and a completion toast, then offers "Open in Spawn Wizard". The wizard
+    handoff hydrates the repo's file size and parameter count immediately, so the
+    sidebar VRAM budget is populated on arrival rather than showing dashes.
+
 - Launch guard:
   - Model-step validation:
     - Blocks if Rapid-MLX is selected but not Apple Silicon.
@@ -486,6 +596,9 @@ Behavior per backend:
 - Rapid-MLX:
   - Uses Rapid-MLX-specific memory modeling based on the selected model.
   - Incorporates workload_scenario for memory policy (KV dtype, retained cache, TurboQuant).
+  - The hardware step's context size is sent as the explicit planning context, so
+    active KV is sized for the context the user picked — the scenario's planning
+    target only fills the gap when no context has been chosen.
   - Reflects backend-specific overhead and any Rapid-MLX-native memory considerations.
 
 The VRAM bar and side panel always use the same visual layout regardless of engine,
@@ -528,6 +641,15 @@ experience:
   catalog which provides HF qualification and identity information for models. This
   allows the wizard to show author roles, quantizer verification status, and
   community-qualified model information.
+
+### MLX variant grouping
+
+Same-author MLX conversions of one model fold into a single group even when one repo carries an
+extra edition tag (`…-AREX-mxfp4-mlx`, `…-qx64-hi-mlx`, and the bf16 base `…-MindMeld`). Each
+row leads with a pill for the quantization the author wrote in the repo name (`mxfp4`, `qx64-hi`;
+a repo with no marker is `bf16` or `base`, judged from its size per parameter), followed by the
+edition tag. The full repo id is the tooltip and accessible name. Selecting a row moves the
+highlight in the Models-tab quant advisor.
 
 ## CommunitySourceCatalog integration
 

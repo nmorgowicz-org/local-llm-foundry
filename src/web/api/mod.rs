@@ -27,6 +27,7 @@ mod preset_routes;
 mod rapid_mlx_repair;
 mod rapid_mlx_runtime;
 mod remote_agent;
+mod runtime_uninstall;
 mod self_update;
 mod sensor_bridge;
 mod sessions;
@@ -83,6 +84,7 @@ pub fn api_routes(
 
     let metrics_routes = metrics::routes(ctx.clone());
     let tls_routes = tls::routes(ctx.clone());
+    let runtime_uninstall_routes = runtime_uninstall::routes(ctx.clone());
     let llama_binary_routes = llama_binary::routes(ctx.clone());
 
     let models_routes = models::routes(ctx.clone());
@@ -114,6 +116,7 @@ pub fn api_routes(
         .or(metrics_routes)
         .or(tls_routes)
         .or(llama_binary_routes)
+        .or(runtime_uninstall_routes)
         .or(spawn_wizard_routes)
         .or(vram_routes)
         .or(benchmark_routes)

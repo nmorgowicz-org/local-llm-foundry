@@ -1,7 +1,7 @@
 // ── Performance Baseline ──────────────────────────────────────────────────────
 
 import { test, expect } from '@playwright/test';
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { join, dirname } from 'path';
 
@@ -12,8 +12,20 @@ function readBaseline() {
   return JSON.parse(readFileSync(BASELINE_FILE, 'utf8'));
 }
 
+// Wall-clock numbers depend on the machine as much as on the app: a busy laptop or a shared
+// CI runner can double them. The JS module count is deterministic and stays a hard gate. The
+// time limits are only there to catch a hang or an order-of-magnitude regression, so they are
+// deliberately generous, scale with PERF_BUDGET_SCALE for slow runners, and the measured values
+// are attached to the test report so a trend is still visible.
+// Imported lazily by bootstrap.js from requestIdleCallback; part of the normal cold-load closure.
+const DEFERRED_MODULE = '/js/features/updates.js';
+
+const BUDGET_SCALE = Number(process.env.PERF_BUDGET_SCALE) > 0 ? Number(process.env.PERF_BUDGET_SCALE) : 1;
+const MODULES_READY_BUDGET_MS = 20_000 * BUDGET_SCALE;
+const DASHBOARD_UPDATE_BUDGET_MS = 2_000 * BUDGET_SCALE;
+
 test.describe('performance baseline', () => {
-  test('cold load network and timing', async ({ page }) => {
+  test('cold load network and timing', async ({ page }, testInfo) => {
     const requests = [];
     page.on('request', req => {
       const url = req.url();
@@ -26,6 +38,15 @@ test.describe('performance baseline', () => {
     await page.goto('/');
     await page.waitForSelector('html.modules-ready');
     const modulesReadyTime = Date.now() - startTime;
+
+    // bootstrap.js imports the update checker from requestIdleCallback (3s timeout) after
+    // modules-ready. Count the cold-load closure only once that deferred module has been
+    // requested, so the count does not depend on whether the idle callback beat this check.
+    // tests/ui/update-baseline.mjs waits on the same condition.
+    await expect.poll(
+      () => requests.some(r => r.url.endsWith(DEFERRED_MODULE)),
+      { message: `deferred module ${DEFERRED_MODULE} was never requested`, timeout: 10_000 },
+    ).toBe(true);
 
     const jsRequests = requests.filter(r => r.url.endsWith('.js'));
     const cssRequests = requests.filter(r => r.url.endsWith('.css'));
@@ -44,10 +65,15 @@ test.describe('performance baseline', () => {
       `JS module count regressed: ${jsRequests.length} > ${baseline.count}. ` +
       `Run \`cd tests/ui && npm run update-baseline\` after verifying the new modules are intentional.`,
     ).toBeLessThanOrEqual(baseline.count);
-    expect(modulesReadyTime).toBeLessThan(5000); // should be under 5s locally
+    testInfo.annotations.push({ type: 'modules-ready-ms', description: String(modulesReadyTime) });
+    expect(
+      modulesReadyTime,
+      `modules-ready took ${modulesReadyTime}ms (budget ${MODULES_READY_BUDGET_MS}ms). ` +
+      'That is far outside normal; set PERF_BUDGET_SCALE for a known-slow runner.',
+    ).toBeLessThan(MODULES_READY_BUDGET_MS);
   });
 
-  test('dashboard update path timing', async ({ page }) => {
+  test('dashboard update path timing', async ({ page }, testInfo) => {
     await page.goto('/');
     await page.waitForSelector('html.modules-ready');
 
@@ -60,6 +86,7 @@ test.describe('performance baseline', () => {
     });
 
     console.log(`Dashboard update time: ${Math.round(updateMs)}ms`);
-    expect(updateMs).toBeLessThan(500); // should be under 500ms
+    testInfo.annotations.push({ type: 'dashboard-update-ms', description: String(Math.round(updateMs)) });
+    expect(updateMs).toBeLessThan(DASHBOARD_UPDATE_BUDGET_MS);
   });
 });

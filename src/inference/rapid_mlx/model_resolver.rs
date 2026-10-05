@@ -263,6 +263,8 @@ enum KnownRapidMlxModelSource {
         revision: String,
     },
     Alias {
+        // Accept catalog sources saved by builds that used `name`; emit `value`.
+        #[serde(alias = "name")]
         value: String,
     },
     AuthoritativeSafetensors {
@@ -512,6 +514,25 @@ pub struct ConversionCommandPlan {
     pub program: PathBuf,
     pub args: Vec<OsString>,
     pub env: BTreeMap<OsString, OsString>,
+}
+
+/// Extract the HuggingFace repo id encoded in a hub cache path component.
+///
+/// The hub layout is `…/hub/models--owner--repo[/snapshots/<commit>/…]`. Both the
+/// container and anything below it carry the repo identity, so a model picked from
+/// the cache can be resolved without an online filename search. Returns `None`
+/// when no `models--` component (or a malformed one) is present.
+pub fn hf_cache_repo_id(path: &Path) -> Option<String> {
+    let component = path
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .find(|c| c.starts_with("models--"))?;
+    let encoded = component.strip_prefix("models--")?;
+    let (owner, repo) = encoded.split_once("--")?;
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
 }
 
 pub fn source_from_legacy_model_path(value: &str) -> Result<RapidMlxModelSource> {
@@ -859,32 +880,52 @@ fn reject_app_staging_directory(path: &Path, models_dir: &Path) -> Result<()> {
 /// trust_remote_code to load. A repo is considered safe (data-only) when it
 /// only contains safetensors/weights and standard config files. Custom-code
 /// repos are those that declare transformers main_class / auto_map entries or
-/// include model loading scripts (main.py, modeling_*.py) that rapid-mlx
-/// would need to execute.
+/// include model loading scripts (main.py, modeling_*.py,
+/// tokenization_*.py, processing_*.py) that rapid-mlx would need to execute.
+///
+/// Detection fails closed: an unreadable or unparseable config.json is treated
+/// as requiring trust_remote_code, because a config we cannot inspect gives no
+/// basis for calling the repo data-only.
 fn needs_trust_remote_code(model_dir: &Path) -> Result<bool> {
     // Check config.json for transformers main_class or auto_map indicators
     let config_path = model_dir.join("config.json");
     if config_path.is_file() {
         let content = match fs::read_to_string(&config_path) {
             Ok(c) => c,
-            Err(_) => return Ok(false), // safe default: assume data-only on read error
+            Err(_) => return Ok(true), // fail closed: unreadable config is uninspectable
         };
         let value: serde_json::Value = match serde_json::from_str(&content) {
             Ok(v) => v,
-            Err(_) => return Ok(false), // safe default: assume data-only on parse error
+            Err(_) => return Ok(true), // fail closed: unparseable config is uninspectable
         };
         // main_class indicates a custom model class must be imported
         if value.get("main_class").and_then(|v| v.as_str()).is_some() {
             return Ok(true);
         }
-        // auto_map with non-standard classes indicates custom code loading
+        // Any auto_map entry indicates custom code loading. Values may be a
+        // plain class string or an array like ["tokenization_x.Tok", null].
+        // Exact transformers-internal module paths ("transformers.models.…")
+        // are the only exemption; a substring match would let
+        // "evil.transformers.models.X" through.
         if let Some(auto_map) = value.get("auto_map").and_then(|v| v.as_object()) {
             for (_, class_value) in auto_map {
-                if let Some(class_str) = class_value.as_str()
-                    && !class_str.starts_with("Auto")
-                    && !class_str.contains("transformers.models")
-                    && !class_str.contains("transformers_modules")
-                {
+                let is_standard = match class_value {
+                    serde_json::Value::String(class_str) => {
+                        class_str.starts_with("Auto")
+                            || class_str.starts_with("transformers.models.")
+                    }
+                    serde_json::Value::Array(items) => items.iter().all(|item| match item {
+                        serde_json::Value::String(class_str) => {
+                            class_str.starts_with("Auto")
+                                || class_str.starts_with("transformers.models.")
+                        }
+                        serde_json::Value::Null => true,
+                        _ => false,
+                    }),
+                    serde_json::Value::Null => true,
+                    _ => false,
+                };
+                if !is_standard {
                     return Ok(true);
                 }
             }
@@ -898,6 +939,9 @@ fn needs_trust_remote_code(model_dir: &Path) -> Result<bool> {
             if name == "main.py"
                 || (name.starts_with("modeling_") && name.ends_with(".py"))
                 || (name.starts_with("configuration_") && name.ends_with(".py"))
+                || (name.starts_with("tokenization_") && name.ends_with(".py"))
+                || (name.starts_with("processing_") && name.ends_with(".py"))
+                || (name.starts_with("image_processing_") && name.ends_with(".py"))
             {
                 return Ok(true);
             }
@@ -1868,8 +1912,61 @@ fn create_file_symlink(src: &Path, dest: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    fn test_overlay_root(path: &Path) {
+    #[test]
+    fn catalog_alias_source_round_trips_with_canonical_value() {
+        for field in ["value", "name"] {
+            let wire = serde_json::json!({"kind": "alias", field: "qwen3.8-27b-4bit"});
+            let source: RapidMlxModelSource = serde_json::from_value(wire).unwrap();
+            assert_eq!(
+                source,
+                RapidMlxModelSource::Alias {
+                    value: "qwen3.8-27b-4bit".into()
+                },
+                "catalog field {field}"
+            );
+            assert_eq!(
+                serde_json::to_value(source).unwrap(),
+                serde_json::json!({"kind": "alias", "value": "qwen3.8-27b-4bit"})
+            );
+        }
+    }
+
+    #[test]
+    fn hf_cache_repo_id_extracts_owner_and_repo() {
+        let hub = Path::new("/models/cache/huggingface/hub");
+        assert_eq!(
+            hf_cache_repo_id(&hub.join("models--nightmedia--Qwen3.8-27B-MindMeld-AREX-mxfp4-mlx")),
+            Some("nightmedia/Qwen3.8-27B-MindMeld-AREX-mxfp4-mlx".to_string())
+        );
+        assert_eq!(
+            hf_cache_repo_id(
+                &hub.join("models--owner--repo")
+                    .join("snapshots")
+                    .join("abc123")
+            ),
+            Some("owner/repo".to_string())
+        );
+        assert_eq!(
+            hf_cache_repo_id(Path::new("/models/mlx/native/some-model")),
+            None
+        );
+        assert_eq!(
+            hf_cache_repo_id(&hub.join("models--broken")),
+            None,
+            "container without a -- separator is not a repo"
+        );
+    }
+
+    /// `init_template_overlay_root` writes a process-global, so tests that set it
+    /// must hold this lock for their whole body: another test's root (a tempdir
+    /// that has already been deleted) otherwise wins the race and the overlay
+    /// lands in the void. Returns the guard; keep it in scope for the test.
+    static OVERLAY_ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn test_overlay_root(path: &Path) -> std::sync::MutexGuard<'static, ()> {
+        let guard = OVERLAY_ROOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         init_template_overlay_root(path);
+        guard
     }
 
     #[test]
@@ -2362,10 +2459,50 @@ mod tests {
     }
 
     #[test]
-    fn needs_trust_remote_code_config_parse_error_safe() {
+    fn needs_trust_remote_code_config_parse_error_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("config.json"), b"not json").unwrap();
-        assert!(!needs_trust_remote_code(dir.path()).unwrap());
+        assert!(needs_trust_remote_code(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn needs_trust_remote_code_auto_map_array_entry_detected() {
+        // transformers auto_map values may be arrays, e.g.
+        // ["tokenization_custom.Tokenizer", null]. They are custom code.
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.json"),
+            r#"{"auto_map":{"AutoTokenizer":["tokenization_custom.Tokenizer",null]}}"#,
+        )
+        .unwrap();
+        assert!(needs_trust_remote_code(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn needs_trust_remote_code_lookalike_module_prefix_detected() {
+        // A substring exemption would let "evil.transformers.models.X" pass;
+        // only an exact "transformers.models." prefix is standard.
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.json"),
+            r#"{"auto_map":{"AutoModel":"evil.transformers.models.X.Fake"}}"#,
+        )
+        .unwrap();
+        assert!(needs_trust_remote_code(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn needs_trust_remote_code_tokenization_py_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("tokenization_custom.py"), b"x").unwrap();
+        assert!(needs_trust_remote_code(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn needs_trust_remote_code_processing_py_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("processing_custom.py"), b"x").unwrap();
+        assert!(needs_trust_remote_code(dir.path()).unwrap());
     }
 
     #[test]
@@ -2430,7 +2567,7 @@ mod tests {
     fn template_overlay_creates_symlinks_and_template() {
         // Create a fake model directory with some files
         let model_dir = tempfile::tempdir().unwrap();
-        test_overlay_root(model_dir.path());
+        let _overlay_guard = test_overlay_root(model_dir.path());
         fs::write(model_dir.path().join("config.json"), b"{}").unwrap();
         fs::write(model_dir.path().join("tokenizer.json"), b"{}").unwrap();
         fs::write(model_dir.path().join("model.safetensors"), b"weights").unwrap();
@@ -2473,7 +2610,11 @@ mod tests {
     #[test]
     fn template_overlay_does_not_mutate_original_model_dir() {
         let model_dir = tempfile::tempdir().unwrap();
-        test_overlay_root(model_dir.path());
+        // Production points the overlay root at the app config dir, never at a
+        // model directory — the overlay base itself (`rapid-mlx/template-overlays`)
+        // is created on demand and must not count as model-dir mutation.
+        let config_dir = tempfile::tempdir().unwrap();
+        let _overlay_guard = test_overlay_root(config_dir.path());
         fs::write(model_dir.path().join("config.json"), b"{}").unwrap();
 
         let template_dir = tempfile::tempdir().unwrap();
@@ -2493,8 +2634,22 @@ mod tests {
         // Count files in original dir after
         let files_after: Vec<_> = fs::read_dir(model_dir.path()).unwrap().collect();
 
-        // Original dir should have exactly the same files (no chat_template.jinja added)
-        assert_eq!(files_before.len(), files_after.len());
+        // Original dir should have exactly the same files (no chat_template.jinja
+        // added, no overlay base created inside it).
+        let names_before: Vec<_> = files_before
+            .iter()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        let names_after: Vec<_> = files_after
+            .iter()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(
+            names_before, names_after,
+            "create_template_overlay mutated the original model directory"
+        );
         assert!(!model_dir.path().join("chat_template.jinja").exists());
     }
 
@@ -2502,7 +2657,7 @@ mod tests {
     fn template_overlay_path_is_deterministic() {
         // Same model dir should always produce the same overlay path
         let model_dir = tempfile::tempdir().unwrap();
-        test_overlay_root(model_dir.path());
+        let _overlay_guard = test_overlay_root(model_dir.path());
         let model_path = model_dir.path().to_string_lossy().into_owned();
         let template_dir = tempfile::tempdir().unwrap();
         fs::write(template_dir.path().join("template.jinja"), b"template").unwrap();

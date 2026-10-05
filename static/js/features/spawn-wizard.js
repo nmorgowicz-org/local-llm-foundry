@@ -1,5 +1,4 @@
 console.log('[WIZARD] MODULE LOADED');
-/* global DOMPurify */
 // Set by spawn-wizard-hf-browse.js so this module can re-trigger the quant
 // advisor once memory/VRAM data arrives, without a circular import. Declared
 // before any imports since spawn-wizard-hf-browse.js calls
@@ -10,27 +9,19 @@ export function setOnMemoryAvailabilityReady(fn) {
   onMemoryAvailabilityReady = fn;
 }
 
-import { buildArchitectureLabel, isMoEEligible } from './setup-view.js';
+import { buildArchitectureLabel } from './setup-view.js';
 import { getPlatformInfo } from '../core/platform-info.js';
-import { readLastStatus } from './template-autoupdater.js';
+import './template-autoupdater.js';
 import { RAPID_MLX_DEFAULT_SPECULATIVE_TOKENS } from './rapid-mlx-prefill.js';
 import {
   bindRapidMlxAdvancedControls,
-  syncRapidSpeculativeFields,
-  applyReasoningModeLock,
   applyRapidMlxDefaults,
-  renderRapidExclusionWarnings,
   scheduleRapidMlxProfileFetch,
   refreshRapidMlxSidecars,
 } from './spawn-wizard-rapid-mlx.js';
 import {
-  kvBpe,
-  formatCtx,
   formatParams,
-  formatGB,
-  formatVramTotal,
   formatBytes,
-  formatSpeed,
 } from './spawn-wizard-format.js';
 import { openCardPanel, _closeCardPanel } from './spawn-wizard-model-card.js';
 export { openCardPanel };
@@ -57,7 +48,6 @@ import {
   resetOriginState,
   startOriginResolve,
   setOriginResolverPromise,
-  awaitOriginResolve,
   _autoResolveHfOrigin,
   _refreshHfOriginSection,
   _attachOriginTags,
@@ -73,6 +63,7 @@ import {
   bindQuantizerEditor,
   loadCommunityPicks,
   triggerQuantAdvisor,
+  triggerMlxSidebarBody,
   triggerHfFileFetch,
   _applyScopeDefaultForEngine,
 } from './spawn-wizard-hf-browse.js';
@@ -488,16 +479,15 @@ function _initViewMode() {
 import { openDeferredFileBrowser, openModelFileBrowser } from './file-browser-launcher.js';
 import { showToast, showToastWithActions, resolveNotification } from './toast.js';
 import Router, { routeForCurrentView } from './router.js';
-import { scheduleEstimate, cancelEstimate, buildEstimateBody, rapidEstimatePolicyFromWizardHardware } from './vram-estimate.js';
-import { openEvidenceDrawer, openEstimateEvidenceDrawer, evidenceFromCommandPreview } from './evidence-drawer.js';
-import { setTuneConfig, showTunePanel } from './tune-panel.js';
+import './vram-estimate.js';
+import './evidence-drawer.js';
+import './tune-panel.js';
 import { renderSuggestionCards } from './tuning-cards.js';
-import { setHeaderMode } from './attach-detach.js';
+import './attach-detach.js';
 import { lastCapabilities, lastSystemMetrics } from '../core/app-state.js';
 let llamaBinaryCapabilitiesPromise = null;
 let llamaBinaryCapabilities = null;
 import {
-  hfStartDownload,
   hfShowDownloadPanel,
   hfHideDownloadPanel,
 } from './hf-browse.js';
@@ -715,7 +705,6 @@ export const wizardState = {
     prefillBatchSize: '',
     completionBatchSize: '',
       retainedCacheMib: 8192,
-    cacheMode: 'custom',
     workloadScenario: 'interactive_coding_agent',
     reasoningMode: null,         // llama.cpp thinking/reasoning select
     rapidReasoningMode: 'on',    // Rapid-MLX checkbox (defaults to on)
@@ -738,6 +727,9 @@ export const wizardState = {
     speculativeTrustSidecar: null,
     speculativeTrustDepth: null,
     autoToolChoice: false,
+    // Set the first time the user explicitly toggles auto tool choice; until then
+    // the model profile may auto-enable it.
+    autoToolChoiceTouched: false,
     // Phase 7: Web UI (D26/A44)
     // Phase 7: Sampling mode (D27)
     samplingMode: 'auto',
@@ -775,7 +767,7 @@ const PENDING_RESTORE_TIMEOUT_MS = 5 * 60 * 1000;
 // user their whole configuration.
 export function snapshotPendingRestore() {
   wizardState._pendingRestore = {
-    hardware: JSON.parse(JSON.stringify(wizardState.hardware)),
+    hardware: structuredClone(wizardState.hardware),
     savedAt: Date.now(),
   };
 }
@@ -945,6 +937,7 @@ export function openSpawnWizard(opts = {}) {
     if (t.presence_penalty != null) wizardState.hardware.presencePenalty = t.presence_penalty;
     if (t.max_tokens != null)    wizardState.hardware.maxTokens     = t.max_tokens;
     if (t.seed != null)          wizardState.hardware.seed          = t.seed;
+    if (t.alias != null)         wizardState.hardware.alias        = t.alias;
     if (t.backend === 'rapid_mlx' && t.rapid_mlx) {
       const rapid = t.rapid_mlx;
       const source = rapid.model_source || null;
@@ -1008,6 +1001,46 @@ export function openSpawnWizard(opts = {}) {
 
   renderEngineSelection();
   refreshEngineRecommendation();
+
+  // A Rapid-MLX HF handoff arrives with only a repo id, so the sidebar VRAM
+  // budget would stay at dashes until the user re-typed the repo. Fetch the
+  // file listing the same way the in-wizard search path does and hydrate the
+  // model size plus a name-derived parameter count.
+  if (opts.templatePreset?.backend === 'rapid_mlx' && wizardState.model.hfRepo
+      && !(wizardState.model.modelBytes > 0)) {
+    const repoId = wizardState.model.hfRepo;
+    (async () => {
+      try {
+        const headers = window.authHeaders ? window.authHeaders() : {};
+        const resp = await fetch('/api/hf/files', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify({ repo_id: repoId, format: 'mlx' }),
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (Array.isArray(data.files) && data.files.length > 0) {
+          const total = data.files.reduce((sum, f) => sum + (f.size || f.bytes || 0), 0);
+          if (total > 0 && !(wizardState.model.modelBytes > 0)) {
+            wizardState.model.modelBytes = total;
+            scheduleVramUpdate();
+          }
+        }
+      } catch { /* non-fatal: safe defaults retained */ }
+    })();
+    // Sidebar body (sibling variants) is gated on a parameter count; derive a
+    // coarse one from the repo name (e.g. "...-27B-...") when none is known.
+    if (!(wizardState.model.paramB > 0)) {
+      const m = repoId.match(/(\d+(?:\.\d+)?)\s*[bB](?![a-zA-Z0-9])/);
+      if (m) {
+        wizardState.model.paramB = parseFloat(m[1]);
+        scheduleVramUpdate();
+      }
+    }
+    scheduleRapidMlxProfileFetch(repoId);
+    // Replace the llama.cpp quant ladder with the MLX sidebar and its real estimate.
+    triggerMlxSidebarBody(repoId);
+  }
 
   _initViewMode();
   setupWizardEscape();
@@ -1132,6 +1165,7 @@ function resetWizardState() {
   wizardState.hardware.speculativeTokens = RAPID_MLX_DEFAULT_SPECULATIVE_TOKENS;
   wizardState.hardware.speculativeDisableAutoK = false;
   wizardState.hardware.autoToolChoice = false;
+  wizardState.hardware.autoToolChoiceTouched = false;
   wizardState.hardware.workloadScenario = 'interactive_coding_agent';
   wizardState.hardware.samplingMode = 'auto';
   if (dom.kvUnifiedSelect) dom.kvUnifiedSelect.value = '';
@@ -1485,6 +1519,7 @@ function cacheDom() {
   dom.vramPanel       = document.getElementById('vram-panel');
   dom.vramPanelTotal  = document.getElementById('vram-panel-total');
   dom.vramBar         = document.getElementById('vram-bar');
+  dom.vramFreeExplainer = document.getElementById('vram-free-explainer');
   dom.vSegWeights  = document.getElementById('vseg-weights');
   dom.vSegKv       = document.getElementById('vseg-kv');
   dom.vSegMmproj   = document.getElementById('vseg-mmproj');
@@ -1935,7 +1970,6 @@ function bindEvents() {
   });
   dom.specTypeSelect?.addEventListener('change', () => {
     const v = dom.specTypeSelect.value;
-    const isNgram = v && (v.includes('ngram') || v === 'ngram');
     const isDraftMtp = v && v.includes('draft-mtp');
     const isDraftModel = v === 'draft-model';
 
@@ -2196,11 +2230,6 @@ function _updateKvProvenanceChips() {
       chip.textContent = 'you';
     }
   }
-}
-
-function _ensureKvUserSet() {
-  wizardState.hardware.kvDtypeUserSet = true;
-  _updateKvProvenanceChips();
 }
 
 export async function refreshHfTokenState() {
@@ -2917,6 +2946,7 @@ export function selectWizardEngine(engine, explicit) {
   }
   renderEngineSelection();
   _applyScopeDefaultForEngine(engine);
+  _updateRapidCatalogVisibility();
   clearValidationError();
   refreshStepGuardrails();
   _checkBinaryPrereq();
@@ -2925,6 +2955,33 @@ export function selectWizardEngine(engine, explicit) {
   if (engine === 'rapid_mlx') {
     const modelId = wizardState.model.hfRepo || wizardState.model.path || '';
     scheduleRapidMlxProfileFetch(modelId);
+  }
+}
+
+// Rapid-MLX only behaves predictably for upstream-validated models, so in
+// Rapid-MLX mode the curated catalog replaces the HF browse controls.
+let _rapidCatalogMounted = false;
+function _updateRapidCatalogVisibility() {
+  const rapid = wizardState.engine.selected === 'rapid_mlx';
+  const hfArea = document.getElementById('model-input-hf');
+  const panel = document.getElementById('rapid-catalog-panel');
+  if (!hfArea || !panel) return;
+  hfArea.classList.toggle('rapid-catalog-mode', rapid);
+  // Quantized KV is unlaunchable for Rapid-MLX (hybrid ArraysCache models refuse
+  // it at startup — measured on the stock text-only recipe model), so the dial
+  // is hidden entirely in Rapid-MLX mode instead of showing dead options.
+  const kvField = document.getElementById('spawn-kv-cache-dtype')?.closest('.hardware-field');
+  if (kvField) kvField.style.display = rapid ? 'none' : '';
+  if (!rapid) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = '';
+  if (!_rapidCatalogMounted) {
+    _rapidCatalogMounted = true;
+    import('./spawn-wizard-rapid-catalog.js')
+      .then(m => m.mountRapidCatalogPicker(panel, { visible: true }))
+      .catch(() => { panel.style.display = 'none'; });
   }
 }
 

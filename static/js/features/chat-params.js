@@ -3,6 +3,7 @@
 // and compaction settings.
 
 import { chat, lastLlamaMetrics, monitorState, settingsState, wsData } from '../core/app-state.js';
+import { setHtml } from '../core/set-html.js';
 import {
     activeChatTab,
     getDefaultRoleBoundaryText,
@@ -139,7 +140,7 @@ function duplicateTabSettings(sourceId) {
     const target = activeChatTab();
     if (!source || !target || source.id === target.id) return;
     target.system_prompt = source.system_prompt;
-    target.model_params = JSON.parse(JSON.stringify(source.model_params));
+    target.model_params = structuredClone(source.model_params);
     target.updated_at = Date.now();
     scheduleChatPersist();
     syncParamPanelToTab();
@@ -222,13 +223,6 @@ function calcKeepTailForCapacity(conversational, capacity) {
     return Math.max(1, Math.min(Math.max(keep, minRecentTurns), conversational.length - 1));
 }
 
-function buildTranscript(messages) {
-    return messages
-        .filter(m => !m.compaction_marker && m.role !== 'system')
-        .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
-        .join('\n\n');
-}
-
 function extractRollingMemory(msg) {
     if (!msg?.content) return '';
     return msg.content.replace(/^\[Context compacted[^\]]*\]\s*/i, '').trim();
@@ -292,7 +286,7 @@ export async function compactChatTab(tab, keepTail = null, summarize = true) {
             placeholderEl = document.createElement('div');
             placeholderEl.className = 'chat-message chat-compact-marker compact-marker-summarizing';
             placeholderEl.dataset.compactState = 'loading';
-            placeholderEl.innerHTML = `
+            setHtml(placeholderEl, `
               <div class="compact-marker-content">
                 <div class="compact-marker-rule compact-marker-rule-left"></div>
                 <div class="compact-marker-pill">
@@ -300,7 +294,7 @@ export async function compactChatTab(tab, keepTail = null, summarize = true) {
                   <span class="compact-marker-label">Summarizing conversation…</span>
                 </div>
                 <div class="compact-marker-rule compact-marker-rule-right"></div>
-              </div>`;
+              </div>`);
             chatMsgs.appendChild(placeholderEl);
             chatMsgs.scrollTop = chatMsgs.scrollHeight;
         }
@@ -423,8 +417,8 @@ function showCompactConfirmation(tab, isAuto = false) {
 
    const overlay = document.createElement('div');
     overlay.className = 'compact-confirm-overlay';
-    // eslint-disable-next-line no-unsanitized/property -- all values from local tab state (numeric counts, boolean flags, domain enum); no user-controlled network data
-    overlay.innerHTML = `
+
+    setHtml(overlay, `
         <div class="compact-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="compact-confirm-title">
             <div class="compact-confirm-header">
                 <div class="compact-confirm-icon">
@@ -549,7 +543,7 @@ function showCompactConfirmation(tab, isAuto = false) {
                 </button>
             </div>
         </div>
-    `;
+    `);
 
     document.body.appendChild(overlay);
     requestAnimationFrame(() => overlay.classList.add('visible'));
@@ -608,20 +602,20 @@ function showCompactConfirmation(tab, isAuto = false) {
             if (status) status.remove();
             if (previewContent) {
                 previewContent.style.display = 'block';
-                // eslint-disable-next-line no-unsanitized/property -- LLM output rendered via marked in trusted local context
-                previewContent.innerHTML = cachedSummary
+
+                setHtml(previewContent, cachedSummary
                     ? renderMd(cachedSummary)
-                    : '<p class="compact-preview-fallback">Summary generation failed — compact will still proceed with a basic marker.</p>';
+                    : '<p class="compact-preview-fallback">Summary generation failed — compact will still proceed with a basic marker.</p>');
             }
             if (previewActions) previewActions.style.display = 'flex';
             okBtn.disabled = false;
-            okBtn.innerHTML = `
+            setHtml(okBtn, `
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/>
                     <line x1="15" y1="9" x2="21" y2="3"/><line x1="3" y1="21" x2="9" y2="15"/>
                 </svg>
                 Compact Now
-            `;
+            `);
         }).catch(() => {
             const skeleton = overlay.querySelector('.compact-preview-skeleton');
             const status = overlay.querySelector('.compact-preview-status');
@@ -629,16 +623,16 @@ function showCompactConfirmation(tab, isAuto = false) {
             if (status) status.remove();
             if (previewContent) {
                 previewContent.style.display = 'block';
-                previewContent.innerHTML = '<p class="compact-preview-fallback">Summary preview failed — compact will still proceed with a basic marker.</p>';
+                setHtml(previewContent, '<p class="compact-preview-fallback">Summary preview failed — compact will still proceed with a basic marker.</p>');
             }
             okBtn.disabled = false;
-            okBtn.innerHTML = `
+            setHtml(okBtn, `
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/>
                     <line x1="15" y1="9" x2="21" y2="3"/><line x1="3" y1="21" x2="9" y2="15"/>
                 </svg>
                 Compact Now
-            `;
+            `);
         });
 
         // Edit mode
@@ -659,8 +653,8 @@ function showCompactConfirmation(tab, isAuto = false) {
             saveBtn.addEventListener('click', () => {
                 if (previewEditor && previewContent) {
                     cachedSummary = previewEditor.value.trim() || cachedSummary;
-                    // eslint-disable-next-line no-unsanitized/property -- LLM output rendered via marked in trusted local context
-                    previewContent.innerHTML = renderMd(cachedSummary);
+
+                    setHtml(previewContent, renderMd(cachedSummary));
                     previewEditor.style.display = 'none';
                     previewContent.style.display = 'block';
                 }
@@ -1015,7 +1009,6 @@ function applyChatStyle(style) {
 
 export { applyChatStyle };
 
-const CHAT_STYLES = ['rounded', 'compact', 'minimal', 'bubbly', 'paper', 'terminal', 'slate'];
 const CHAT_STYLE_LABELS = { rounded: 'Rounded', compact: 'Compact', minimal: 'Minimal', bubbly: 'Bubbly', paper: 'Paper', terminal: 'Terminal', slate: 'Slate' };
 
 function toggleStylePanel() {
@@ -1221,7 +1214,7 @@ export function initChatParams() {
     });
 
     // Bind chat header buttons
-    document.getElementById('btn-behavior')?.addEventListener('click', (e) => {
+    document.getElementById('btn-behavior')?.addEventListener('click', (_e) => {
     const btn = document.getElementById('btn-behavior');
     const panel = document.getElementById('chat-behavior-panel');
     const wasOpen = panel.classList.contains('open');
@@ -1239,7 +1232,7 @@ export function initChatParams() {
         }
     }, 0);
 });
-    document.getElementById('btn-model-params')?.addEventListener('click', (e) => {
+    document.getElementById('btn-model-params')?.addEventListener('click', (_e) => {
     const btn = document.getElementById('btn-model-params');
     const panel = document.getElementById('chat-params-panel');
     const wasOpen = panel.classList.contains('open');
@@ -1257,7 +1250,7 @@ export function initChatParams() {
         }
     }, 0);
 });
-    document.getElementById('btn-chat-style')?.addEventListener('click', (e) => {
+    document.getElementById('btn-chat-style')?.addEventListener('click', (_e) => {
     const btn = document.getElementById('btn-chat-style');
     toggleStylePanel();
     setTimeout(() => {
@@ -1382,12 +1375,12 @@ const MAX_ROWS = 10;
 function initChatResizeHandle() {
     const handle = document.getElementById('chat-resize-handle');
     if (!handle) return;
-    
+
     inputRowEl = document.getElementById('chat-input-row');
     textareaEl = document.getElementById('chat-input');
-    
+
     if (!inputRowEl || !textareaEl) return;
-    
+
     handle.addEventListener('mousedown', startResize);
     document.addEventListener('mousemove', doResize);
     document.addEventListener('mouseup', stopResize);
@@ -1429,7 +1422,6 @@ function stopResize() {
 
 function updateResizeHandleUI() {
     const handle = document.getElementById('chat-resize-handle');
-    const hint = handle?.querySelector('.resize-hint');
     if (handle && textareaEl) {
         const height = textareaEl.getBoundingClientRect().height;
         const max = 200;
@@ -1449,7 +1441,6 @@ export function resetChatInputHeight() {
 
 // ── Persona Menu Bindings ───────────────────────────────────────────────────
 
-let personaMenuEl = null;
 let personaMenuListEl = null;
 
 export function registerPersonaMenuBindings() {
@@ -1458,12 +1449,11 @@ export function registerPersonaMenuBindings() {
     const list = document.getElementById('chat-persona-menu-list');
     const name = document.getElementById('chat-persona-menu-name');
     const editBtn = document.getElementById('chat-persona-edit-prompt');
-    
-    personaMenuEl = menu;
+
     personaMenuListEl = list;
-    
+
     if (!btn || !menu || !list || !name) return;
-    
+
     btn.addEventListener('click', (e) => {
         e.stopPropagation();
         const isVisible = !menu.classList.toggle('hidden');
@@ -1471,7 +1461,7 @@ export function registerPersonaMenuBindings() {
             loadPersonaMenuItems();
         }
     });
-    
+
     editBtn?.addEventListener('click', (e) => {
         e.stopPropagation();
         menu.classList.add('hidden');
@@ -1480,7 +1470,7 @@ export function registerPersonaMenuBindings() {
         const activeId = activeChatTab()?.active_template_id || null;
         openTemplateManager(activeId);
     });
-    
+
     document.addEventListener('click', (e) => {
         if (!menu.contains(e.target)) {
             menu.classList.add('hidden');
@@ -1490,57 +1480,57 @@ export function registerPersonaMenuBindings() {
 
 async function loadPersonaMenuItems() {
     if (!personaMenuListEl) return;
-    
+
     personaMenuListEl.scrollTop = 0;
-    personaMenuListEl.innerHTML = '<div class="chat-persona-menu-loading">Loading personas...</div>';
-    
+    setHtml(personaMenuListEl, '<div class="chat-persona-menu-loading">Loading personas...</div>');
+
     try {
         const personas = await loadTemplates();
-        
+
         if (personas.length === 0) {
-            personaMenuListEl.innerHTML = '<div class="chat-persona-menu-loading">No personas found</div>';
+            setHtml(personaMenuListEl, '<div class="chat-persona-menu-loading">No personas found</div>');
             return;
         }
-        
-        personaMenuListEl.innerHTML = '';
-        
+
+        setHtml(personaMenuListEl, '');
+
         const tab = activeChatTab();
         const activeTemplateId = tab?.active_template_id || null;
-        
+
         // Separate into active, user (non-active), and built-in
         const activePersona = activeTemplateId ? personas.find(p => p.id === activeTemplateId) : null;
         const userPersonas = personas.filter(p => !p._isDefault && p.id !== activeTemplateId);
         const builtInPersonas = personas.filter(p => p._isDefault);
-        
+
         // Show active persona at the top if exists
         if (activePersona) {
             const activeSection = document.createElement('div');
             activeSection.className = 'chat-persona-menu-section';
             activeSection.textContent = 'Active Persona';
             personaMenuListEl.appendChild(activeSection);
-            
+
             personaMenuListEl.appendChild(createPersonaItem(activePersona, true));
         }
-        
+
         // Show user personas (edited or new)
         if (userPersonas.length > 0) {
             const userSection = document.createElement('div');
             userSection.className = 'chat-persona-menu-section';
             userSection.textContent = 'Your Personas';
             personaMenuListEl.appendChild(userSection);
-            
+
             userPersonas.forEach(persona => {
                 personaMenuListEl.appendChild(createPersonaItem(persona, false));
             });
         }
-        
+
         // Show built-in personas
         if (builtInPersonas.length > 0) {
             const builtInSection = document.createElement('div');
             builtInSection.className = 'chat-persona-menu-section';
             builtInSection.textContent = 'Built-in Personas';
             personaMenuListEl.appendChild(builtInSection);
-            
+
             builtInPersonas.forEach(persona => {
                 personaMenuListEl.appendChild(createPersonaItem(persona, false));
             });
@@ -1557,18 +1547,18 @@ function createPersonaItem(persona, isActive) {
     const item = document.createElement('div');
     item.className = 'chat-persona-menu-item';
     if (isActive) item.classList.add('active');
-    
+
     const icon = document.createElement('span');
     icon.className = 'chat-persona-menu-item-icon';
     icon.textContent = persona._isDefault ? '🎭' : '✨';
-    
+
     const content = document.createElement('div');
     content.className = 'chat-persona-menu-item-content';
-    
+
     const nameEl = document.createElement('div');
     nameEl.className = 'chat-persona-menu-item-name';
     nameEl.textContent = persona.name;
-    
+
     // Add badge for built-in templates
     if (persona._isDefault && !isActive) {
         const badge = document.createElement('span');
@@ -1576,9 +1566,9 @@ function createPersonaItem(persona, isActive) {
         badge.textContent = 'Built-in';
         nameEl.appendChild(badge);
     }
-    
+
     content.appendChild(nameEl);
-    
+
     // Show description or first 60 chars of prompt as meta text
     const metaText = persona.description || (persona.prompt ? persona.prompt.substring(0, 60) + '...' : '');
     if (metaText) {
@@ -1587,22 +1577,22 @@ function createPersonaItem(persona, isActive) {
         meta.textContent = metaText;
         content.appendChild(meta);
     }
-    
+
     // Add edit button
     const editBtn = document.createElement('button');
     editBtn.className = 'chat-persona-menu-item-edit';
     editBtn.title = 'Edit persona';
-    editBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+    setHtml(editBtn, `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`);
     editBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         document.getElementById('chat-persona-menu').classList.add('hidden');
         openTemplateManager(persona.id);
     });
-    
+
     item.appendChild(icon);
     item.appendChild(content);
     item.appendChild(editBtn);
-    
+
     // Click to select (only on the item, not the edit button)
     item.addEventListener('click', () => {
         window.currentPersona = persona;
@@ -1617,7 +1607,7 @@ function createPersonaItem(persona, isActive) {
             syncPersonaPanel();
         }
     });
-    
+
     return item;
 }
 
@@ -1916,8 +1906,8 @@ function populateCtxBreakdown(data) {
     const systemTotal = Object.values(data.systemTokens || {}).reduce((sum, val) => sum + (Number(val) || 0), 0);
     const systemShare = usedTotal > 0 ? (systemTotal / usedTotal) * 100 : 0;
 
-    // eslint-disable-next-line no-unsanitized/property -- labels are escaped; counts and percentages are numeric
-    bar.innerHTML = segments.map(seg => {
+
+    setHtml(bar, segments.map(seg => {
         const pct = Math.max(0, Math.round((seg.tokens / denominator) * 100));
         const height = Math.max(28, Math.round((seg.tokens / denominator) * 240));
         const label = escapeHtml(seg.label);
@@ -1927,10 +1917,10 @@ function populateCtxBreakdown(data) {
             <span class="debug-ctx-label">${label}</span>
             <span class="debug-ctx-tokens">${formatDebugTokens(seg.tokens)} tok</span>
         </button>`;
-    }).join('');
+    }).join(''));
 
-    // eslint-disable-next-line no-unsanitized/property -- labels are escaped; token counts are numeric
-    legend.innerHTML = segments.map(seg =>
+
+    setHtml(legend, segments.map(seg =>
         `<button type="button" class="debug-ctx-legend-item${seg.key === debugSelectedSliceKey ? ' active' : ''}" data-debug-slice="${escapeHtml(seg.key)}">
             <span class="debug-ctx-legend-swatch" style="background:${seg.color}"></span>
             <span class="debug-ctx-legend-copy">
@@ -1938,10 +1928,10 @@ function populateCtxBreakdown(data) {
                 <span>${formatDebugTokens(seg.tokens)} tok</span>
             </span>
         </button>`
-    ).join('');
+    ).join(''));
 
-    // eslint-disable-next-line no-unsanitized/property -- labels are escaped; metric values are derived numbers
-    summary.innerHTML = `
+
+    setHtml(summary, `
         <div class="debug-ctx-summary-card" data-tone="${pressure.tone}">
             <span class="debug-ctx-summary-label">Pressure</span>
             <strong>${pressure.label}</strong>
@@ -1957,7 +1947,7 @@ function populateCtxBreakdown(data) {
             <strong>${formatDebugShare(historyShare)} history / ${formatDebugShare(systemShare)} system</strong>
             <p>Conversation history and system scaffolding are balanced across the captured request.</p>
         </div>
-    `;
+    `);
 
     if (badge) {
         badge.textContent = pressure.label;
@@ -1992,10 +1982,10 @@ function populateTiming(data) {
         cells.push({ label: 'Max Tokens', value: data.modelParams.max_tokens, unit: '' });
     }
 
-    // eslint-disable-next-line no-unsanitized/property -- debug data uses hardcoded labels and numeric timing values only
-    grid.innerHTML = cells.map(c =>
+
+    setHtml(grid, cells.map(c =>
         `<div class="debug-timing-cell"><div class="debug-timing-cell-label">${c.label}</div><div class="debug-timing-cell-value">${c.value}<span class="debug-timing-cell-unit">${c.unit}</span></div></div>`
-    ).join('');
+    ).join(''));
 }
 
 function populateParams(data) {
@@ -2012,10 +2002,10 @@ function populateParams(data) {
         ['Max Tokens', params.max_tokens ?? '—'],
     ];
 
-    // eslint-disable-next-line no-unsanitized/property -- debug data uses hardcoded param names and numeric values only
-    grid.innerHTML = entries.map(([label, value]) =>
+
+    setHtml(grid, entries.map(([label, value]) =>
         `<div class="debug-params-cell"><span class="debug-params-cell-label">${label}</span><span class="debug-params-cell-value">${value}</span></div>`
-    ).join('');
+    ).join(''));
 }
 
 function buildConversationInspector(data) {
@@ -2062,13 +2052,13 @@ function populateDebugInspector(data) {
 
     if (debugInspectorView === 'final') {
         titleEl.textContent = 'Final Prompt';
-        // eslint-disable-next-line no-unsanitized/property -- chip values are formatted locally and escaped where needed
-        metaEl.innerHTML = `
+
+        setHtml(metaEl, `
             <span class="debug-inspector-chip">system ${formatDebugTokens(data.totalSystemTokens || 0)} tok</span>
             <span class="debug-inspector-chip">conversation ${formatDebugTokens(data.historyTokens || 0)} tok</span>
             <span class="debug-inspector-chip">sent ${escapeHtml(formatDebugTimestamp(data.sentAt))}</span>
-        `;
-        bodyEl.innerHTML = `
+        `);
+        setHtml(bodyEl, `
             <div class="debug-inspector-subsection">
                 <span class="debug-inspector-subtitle">Final System Message</span>
                 <pre class="debug-inspector-pre">${escapeHtml(data.finalSystemPrompt || '')}</pre>
@@ -2077,35 +2067,35 @@ function populateDebugInspector(data) {
                 <span class="debug-inspector-subtitle">Last User Message</span>
                 <pre class="debug-inspector-pre">${escapeHtml(data.finalUserPrompt || '(none)')}</pre>
             </div>
-        `;
+        `);
         return;
     }
 
     titleEl.textContent = selected?.label || 'Prompt Slice';
-    // eslint-disable-next-line no-unsanitized/property -- chip values are formatted locally and escaped where needed
-    metaEl.innerHTML = selected ? `
+
+    setHtml(metaEl, selected ? `
         <span class="debug-inspector-chip">${escapeHtml(selected.kind === 'system' ? 'system slice' : selected.kind)}</span>
         <span class="debug-inspector-chip">${formatDebugTokens(selected.tokens)} tok</span>
         <span class="debug-inspector-chip">${selected.kind === 'remaining' ? 'unused capacity' : escapeHtml(formatDebugTimestamp(data.sentAt))}</span>
-    ` : '';
+    ` : '');
 
     if (!selected) {
-        bodyEl.innerHTML = '<div class="debug-inspector-note">No prompt slices were captured for this request.</div>';
+        setHtml(bodyEl, '<div class="debug-inspector-note">No prompt slices were captured for this request.</div>');
         return;
     }
 
     if (selected.kind === 'remaining') {
-        bodyEl.innerHTML = '<div class="debug-inspector-note">Remaining capacity is not text that was sent. It represents unused headroom in the current context window.</div>';
+        setHtml(bodyEl, '<div class="debug-inspector-note">Remaining capacity is not text that was sent. It represents unused headroom in the current context window.</div>');
         return;
     }
 
     if (selected.kind === 'history') {
-        // eslint-disable-next-line no-unsanitized/property -- conversation preview content is escaped before assembly
-        bodyEl.innerHTML = buildConversationInspector(data);
+
+        setHtml(bodyEl, buildConversationInspector(data));
         return;
     }
 
-    bodyEl.innerHTML = `<pre class="debug-inspector-pre">${escapeHtml(selected.content || '')}</pre>`;
+    setHtml(bodyEl, `<pre class="debug-inspector-pre">${escapeHtml(selected.content || '')}</pre>`);
 }
 
 function populatePayloadJson(data) {

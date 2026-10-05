@@ -213,14 +213,7 @@ export async function renderSummary() {
 
   // Pre-fill preset name input if empty
    if (dom.presetNameInput && !dom.presetNameInput.value.trim()) {
-     const m = wizardState.model;
-     const ctx = wizardState.hardware.contextSize || 0;
-     const modelFile = (m.path || m.hfRepo || '').split(/[/\\]/).pop() || '';
-     const base = (modelFile || '').replace(/\.gguf$/i, '').trim();
-     const name = base && ctx
-       ? base + '-' + formatCtx(ctx).toLowerCase()
-       : base || 'My Preset';
-     dom.presetNameInput.value = name;
+     dom.presetNameInput.value = suggestedPresetName();
    }
 
   const m = wizardState.model, hw = wizardState.hardware;
@@ -398,6 +391,21 @@ export async function renderSummary() {
       warns.push("q4_0 KV not recommended for agentic workflows — reduces tool-call coherence. Prefer q8_0 or q6_K when VRAM allows.");
     }
 
+    // Curated-catalog coverage: non-catalog models still launch if they resolve
+    // (local snapshot or HF repo), but upstream guarantees nothing about them.
+    if (wizardState.engine.selected === 'rapid_mlx') {
+      const alias = wizardState.model.hfRepo || wizardState.model.path || '';
+      // The marker must belong to the model under review, not just exist:
+      // a stale entry from a previous catalog selection (never cleared when
+      // switching to a custom model or reopening the wizard) would
+      // wrongly suppress this warning.
+      const catalogEntry = wizardState.model.rapidCatalogEntry;
+      const catalogMatches = !!catalogEntry && catalogEntry.name === wizardState.model.hfRepo;
+      if (alias && !catalogMatches) {
+        warns.push('This model is not in the Rapid-MLX validated catalog. It may still launch if it resolves locally or on Hugging Face, but parser pairing and speculative decoding are not guaranteed.');
+      }
+    }
+
     // Binding/host visibility warnings
     if (wizardState.access.bindHost === '0.0.0.0' && !wizardState.access.apiKey) {
       warns.push('LAN-visible endpoint without a server API key. Set one unless you intentionally want an open local-network server.');
@@ -452,6 +460,37 @@ export async function renderSummary() {
 }
 
 // ── Sampling field sync (Review step) ────────────────────────────────────────
+
+
+// Suggested preset name: prefer the HF repo id, decoding a hub-cache container
+// (`…/models--owner--repo`) into `owner/repo`; GGUF paths use the bare filename.
+// The context suffix keeps multiple launches of one model distinguishable.
+// Human-readable model name for rails and cards: decodes a hub-cache container
+// (`…/models--owner--repo`) into `owner/repo`; otherwise the bare filename.
+export function wizardModelDisplayName() {
+  const m = wizardState.model;
+  const raw = m.hfRepo || m.path || '';
+  if (m.source === 'hf') return m.hfRepo || '(none)';
+  const container = raw.split(/[/\\]/).find((c) => c.startsWith('models--'));
+  if (container) return container.slice('models--'.length).replace('--', '/');
+  return raw ? (raw.split(/[/\\]/).pop() || raw) : '(none)';
+}
+
+export function suggestedPresetName() {
+  const m = wizardState.model;
+  const ctx = wizardState.hardware.contextSize || 0;
+  const raw = m.hfRepo || m.path || '';
+  const container = raw.split(/[/\\]/).find((c) => c.startsWith('models--'));
+  let base;
+  if (container) {
+    base = container.slice('models--'.length).replace('--', '/');
+  } else {
+    base = (raw.split(/[/\\]/).pop() || '').replace(/\.gguf$/i, '').trim();
+  }
+  return base && ctx
+    ? base + '-' + formatCtx(ctx).toLowerCase()
+    : base || 'My Preset';
+}
 
 function _syncSamplingFields() {
   const h = wizardState.hardware;
@@ -783,28 +822,6 @@ export function buildPresetPayload() {
   };
 }
 
-// ── Health check ──────────────────────────────────────────────────────────────
-
-async function runHealthCheck() {
-  if (!dom.healthCheckBtn) return;
-  const btn = dom.healthCheckBtn, orig = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Running…';
-  try {
-    const headers = window.authHeaders ? { ...window.authHeaders(), 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
-    const resp = await fetch('/api/benchmark', { method: 'POST', headers });
-    if (!resp.ok) { showToast('Health check failed: ' + await resp.text().catch(()=>''), 'error'); return; }
-    const data = await resp.json();
-    const verdict = (data.verdict || '').toLowerCase();
-    const details = [
-      data.prompt_tokens_per_second ? `Prompt: ${data.prompt_tokens_per_second.toFixed(1)} t/s` : '',
-      data.gen_tokens_per_second ? `Gen: ${data.gen_tokens_per_second.toFixed(1)} t/s` : '',
-      data.time_to_first_token_ms ? `TTFT: ${data.time_to_first_token_ms.toFixed(0)} ms` : '',
-    ].filter(Boolean).join(' · ');
-    showToast(`Health: ${verdict || 'complete'}`, verdict === 'good' ? 'success' : verdict === 'poor' ? 'error' : 'warning', details || (data.hints?.[0] ?? ''));
-  } catch (err) { showToast('Health check error', 'error', err.message || String(err)); }
-  finally { btn.disabled = false; btn.textContent = orig; }
-}
-
 // ── Preset parameters review (step 5) ─────────────────────────────────────────
 
 export function _renderPresetParamsStep() {
@@ -813,14 +830,7 @@ export function _renderPresetParamsStep() {
 
  // Pre-fill preset name from model filename if empty
    if (dom.presetNameInput && !dom.presetNameInput.value.trim()) {
-     const m = wizardState.model;
-     const ctx = wizardState.hardware.contextSize || 0;
-     const modelFile = (m.path || m.hfRepo || '').split(/[/\\]/).pop() || '';
-     const base = (modelFile || '').replace(/\.gguf$/i, '').trim();
-     const name = base && ctx
-       ? base + '-' + formatCtx(ctx).toLowerCase()
-       : base || 'My Preset';
-     dom.presetNameInput.value = name;
+     dom.presetNameInput.value = suggestedPresetName();
    }
   if (dom.savedPresetName) dom.savedPresetName.style.display = 'none';
 

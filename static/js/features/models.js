@@ -2,6 +2,7 @@
 // Models modal: open, close, load, refresh, delete, and HF download tab.
 
 import { sessionState } from '../core/app-state.js';
+import { setHtml } from '../core/set-html.js';
 import { escapeHtml } from '../core/format.js';
 import { getPlatformInfo } from '../core/platform-info.js';
 import { resolveNotification, showToast, showToastWithActions } from './toast.js';
@@ -10,24 +11,22 @@ import { _showConfirm, openPresetMtpRepairForModel } from './presets.js';
 import { openCardPanel, openSpawnWizard } from './spawn-wizard.js';
 import { buildEstimateBody } from './vram-estimate.js';
 import {
-    hfSearch,
-    hfListFiles,
-    hfStartCompanionDownload,
-    hfStartDownload,
-    hfPollDownload,
-    hfCancelDownload,
-    hfShowDownloadPanel,
-    hfHideDownloadPanel,
-    hfRenderDiscoverPills,
-    hfLoadQuickPicks,
-    getRecommendedMmproj,
-    hfCreateScopeSelector,
-    hfCreateSortSelector,
-    ensureCommunitySourceCatalog,
-    _resetCommunitySourceCatalog,
-    resolveAuthorRole,
-    HF_SCOPE,
-    HF_SORT,
+  hfSearch,
+  hfListFiles,
+  hfStartCompanionDownload,
+  hfStartDownload,
+  hfCancelDownload,
+  hfShowDownloadPanel,
+  hfHideDownloadPanel,
+  hfRenderDiscoverPills,
+  hfLoadQuickPicks,
+  getRecommendedMmproj,
+  hfCreateScopeSelector,
+  hfCreateSortSelector,
+  ensureCommunitySourceCatalog,
+  _resetCommunitySourceCatalog,
+  resolveAuthorRole,
+  HF_SORT,
 } from './hf-browse.js';
 
 const PREFS_KEY = 'llama-monitor-models-prefs';
@@ -136,7 +135,6 @@ let cachedVram = 0;
 // True when the GPU pool is unified memory (Apple Silicon / Metal) — selects the Metal
 // overhead model in the backend estimator instead of the discrete-GPU one.
 let cachedUnified = false;
-let cachedRamTotal = 0;
 
 // Library preferences
 let prefs = loadPrefs();
@@ -207,7 +205,7 @@ async function loadModels({ refresh = false } = {}) {
     const needsFetch = refresh || !inventoryCache;
     if (needsFetch) {
         if (summary) summary.textContent = 'Loading...';
-        grid.innerHTML = '<div class="mm-loading">Scanning...</div>';
+        setHtml(grid, '<div class="mm-loading">Scanning...</div>');
     }
 
     try {
@@ -266,13 +264,13 @@ async function loadModels({ refresh = false } = {}) {
         }
 
         if (!count) {
-            grid.innerHTML = '<div class="mm-empty">No models found in this directory. You can download one from the Download tab.</div>';
+            setHtml(grid, '<div class="mm-empty">No models found in this directory. You can download one from the Download tab.</div>');
             grid.className = 'mm-model-grid';
             return;
         }
 
         if (!result.length) {
-            grid.innerHTML = '<div class="mm-empty">No models match the current filters or search.</div>';
+            setHtml(grid, '<div class="mm-empty">No models match the current filters or search.</div>');
             grid.className = 'mm-model-grid';
             return;
         }
@@ -288,7 +286,7 @@ async function loadModels({ refresh = false } = {}) {
         // grid by one request rather than blocking it.
         await ensureCommunitySourceCatalog();
 
-        grid.innerHTML = '';
+        setHtml(grid, '');
         result.forEach(m => {
             grid.appendChild(buildModelCard(m));
         });
@@ -297,7 +295,7 @@ async function loadModels({ refresh = false } = {}) {
         const errDiv = document.createElement('div');
         errDiv.className = 'mm-empty';
         errDiv.textContent = 'Error: ' + err.message;
-        grid.innerHTML = '';
+        setHtml(grid, '');
         grid.appendChild(errDiv);
     }
 }
@@ -789,7 +787,7 @@ function buildModelCard(m) {
                 switchBtn.type = 'button';
                 switchBtn.className = 'mm-action-btn mm-action-btn--switch';
                 switchBtn.title = `Switch to preset: ${relatedPresets[0].name}`;
-                switchBtn.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4l4 4"/><path d="M17 8v12m0 0l4-4m-4 4l-4-4"/></svg> Switch';
+                setHtml(switchBtn, '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4l4 4"/><path d="M17 8v12m0 0l4-4m-4 4l-4-4"/></svg> Switch');
                 switchBtn.addEventListener('click', () => doSwitchToPreset(relatedPresets[0].id));
                 actions.appendChild(switchBtn);
 
@@ -813,7 +811,7 @@ function buildModelCard(m) {
                 switchBtn.type = 'button';
                 switchBtn.className = 'mm-action-btn mm-action-btn--switch';
                 switchBtn.title = 'Switch to selected preset';
-                switchBtn.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4l4 4"/><path d="M17 8v12m0 0l4-4m-4 4l-4-4"/></svg> Switch';
+                setHtml(switchBtn, '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4l4 4"/><path d="M17 8v12m0 0l4-4m-4 4l-4-4"/></svg> Switch');
                 switchBtn.addEventListener('click', () => doSwitchToPreset(switchSelect.value));
 
                 switchWrap.appendChild(switchSelect);
@@ -826,7 +824,7 @@ function buildModelCard(m) {
                 loadBtn.type = 'button';
                 loadBtn.className = 'mm-action-btn mm-action-btn--switch';
                 loadBtn.title = 'Load this model using current server settings (port, GPU layers, etc.)';
-                loadBtn.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4l4 4"/><path d="M17 8v12m0 0l4-4m-4 4l-4-4"/></svg> Quick Load';
+                setHtml(loadBtn, '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 16V4m0 0L3 8m4-4l4 4"/><path d="M17 8v12m0 0l4-4m-4 4l-4-4"/></svg> Quick Load');
                 loadBtn.addEventListener('click', () => doQuickLoad(m));
                 actions.appendChild(loadBtn);
             } else {
@@ -894,7 +892,7 @@ function buildModelCard(m) {
     copyBtn.type = 'button';
     copyBtn.className = 'mm-action-btn mm-action-copy';
     copyBtn.title = 'Copy path';
-    copyBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy Path';
+    setHtml(copyBtn, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Copy Path');
     // Typed HF sources retain a stable repo id while `path` points at a resolved
     // cache snapshot. Copy the source users can reuse in configuration.
     const pathToCopy = inventoryModelSourceValue(m) || m.path || '';
@@ -978,7 +976,7 @@ function buildModelCard(m) {
                 ? 'Delete this model from library'
                 : 'Delete this model directory from library';
         deleteBtn.setAttribute('aria-label', deleteBtn.title);
-        deleteBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>';
+        setHtml(deleteBtn, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>');
         deleteBtn.addEventListener('click', () => (isPartialFile
             ? deletePartialModel(m.path, m.filename || name)
             : isManagedCache
@@ -1894,7 +1892,7 @@ function ensureLibraryToolbar() {
     _toolbarInitialized = true;
     const container = document.getElementById('mm-library-toolbar');
     if (!container) return;
-    container.innerHTML = '';
+    setHtml(container, '');
 
     // Search input
     const wrap = document.createElement('div');
@@ -1902,7 +1900,7 @@ function ensureLibraryToolbar() {
 
     const searchIcon = document.createElement('span');
     searchIcon.className = 'mm-lib-search-icon';
-    searchIcon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
+    setHtml(searchIcon, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>');
 
     const input = document.createElement('input');
     input.type = 'text';
@@ -1949,9 +1947,8 @@ function ensureLibraryToolbar() {
     filtersBtn.className = 'mm-lib-btn mm-lib-btn--labeled';
     filtersBtn.id = 'mm-lib-filters-toggle';
     filtersBtn.title = 'Filter models by type, quantization, or tag';
-    filtersBtn.innerHTML =
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>'
-        + '<span>Filter</span>';
+    setHtml(filtersBtn, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>'
+        + '<span>Filter</span>');
 
     const filtersPanel = document.createElement('div');
     filtersPanel.className = 'mm-lib-filters-panel';
@@ -2010,18 +2007,18 @@ function ensureLibraryToolbar() {
     viewBtn.className = 'mm-lib-btn mm-lib-btn--labeled';
     viewBtn.id = 'mm-lib-view-toggle';
     viewBtn.title = prefs.viewMode === 'cards' ? 'Switch to list view' : 'Switch to cards view';
-    // eslint-disable-next-line no-unsanitized/property -- static SVG, no user data
-    viewBtn.innerHTML = prefs.viewMode === 'cards'
+
+    setHtml(viewBtn, prefs.viewMode === 'cards'
         ? ICON_LIST_VIEW + '<span>List</span>'
-        : ICON_CARDS_VIEW + '<span>Cards</span>';
+        : ICON_CARDS_VIEW + '<span>Cards</span>');
 
     viewBtn.addEventListener('click', () => {
         prefs.viewMode = prefs.viewMode === 'cards' ? 'list' : 'cards';
         viewBtn.title = prefs.viewMode === 'cards' ? 'Switch to list view' : 'Switch to cards view';
-        // eslint-disable-next-line no-unsanitized/property -- static SVG, no user data
-        viewBtn.innerHTML = prefs.viewMode === 'cards'
+
+        setHtml(viewBtn, prefs.viewMode === 'cards'
             ? ICON_LIST_VIEW + '<span>List</span>'
-            : ICON_CARDS_VIEW + '<span>Cards</span>';
+            : ICON_CARDS_VIEW + '<span>Cards</span>');
         savePrefs();
         loadModels();
     });
@@ -2036,9 +2033,8 @@ function ensureLibraryToolbar() {
     addBtn.className = 'mm-lib-btn mm-lib-btn--labeled';
     addBtn.id = 'mm-lib-add-local';
     addBtn.title = 'Import an MLX or Transformers model directory from elsewhere on this machine';
-    addBtn.innerHTML =
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>'
-        + '<span>Add local</span>';
+    setHtml(addBtn, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>'
+        + '<span>Add local</span>');
     addBtn.addEventListener('click', () => { importLocalModelDirectory(); });
     right.appendChild(addBtn);
 
@@ -2065,7 +2061,7 @@ function rebuildLibraryFilters(models) {
     if (spanEl) spanEl.textContent = 'Filter' + (hasActiveFilters ? ' •' : '');
 
     // Clear previous filter rows
-    filtersPanel.innerHTML = '';
+    setHtml(filtersPanel, '');
 
     // Type filters
     const typeRow = document.createElement('div');
@@ -2987,7 +2983,6 @@ async function initHfDownloadTab() {
 
     // Fetch hardware info
     await fetchGpuVram();
-    await fetchSystemRam();
 
     // Helpers to build search params while preserving active filters
     const buildSearchParams = () => {
@@ -3204,7 +3199,10 @@ async function onHfModelSelected(model, filelistContainer, downloadPanel) {
     hfState.mmprojPath = '';
     hfState.mmprojRepoId = '';
     hfState.mmprojBytes = 0;
-    hfState.availableFiles = [];
+    hfState.availableFiles = modelFormat === 'mlx' && Array.isArray(model.siblings)
+        ? model.siblings.filter(s => s.size > 0).map(s => ({ label: s.label, size: s.size }))
+        : [];
+    hfState.mlxSiblings = modelFormat === 'mlx' && Array.isArray(model.siblings) ? model.siblings : [];
     hfHideDownloadPanel(downloadPanel);
     hideQuantAdvisor();
     hideMmprojSection();
@@ -3213,7 +3211,7 @@ async function onHfModelSelected(model, filelistContainer, downloadPanel) {
     hideHardwareInfoCard();
 
     // Hide file list container (GGUF only)
-    filelistContainer.innerHTML = '';
+    setHtml(filelistContainer, '');
     filelistContainer.classList.remove('visible');
 
     // Show selected model info
@@ -3281,7 +3279,8 @@ async function onHfModelSelected(model, filelistContainer, downloadPanel) {
             const fileEl = document.getElementById('mm-hf-dlp-file-name');
             if (fileEl) fileEl.textContent = repoId;
 
-            // Enable download button (opens spawn wizard for MLX models)
+            // Enable download button (downloads the MLX repo snapshot into the
+            // models cache via the Rapid-MLX resolver, then offers the wizard)
             const btn = document.getElementById('mm-hf-dlp-download-btn');
             if (btn) {
                 btn.disabled = false;
@@ -3290,17 +3289,121 @@ async function onHfModelSelected(model, filelistContainer, downloadPanel) {
                     // Replace button to remove existing listeners
                     const newBtn = btn.cloneNode(true);
                     btn.parentNode.replaceChild(newBtn, btn);
-                    newBtn.addEventListener('click', () => {
-                        // Open spawn wizard pre-loaded with this MLX repo + Rapid-MLX backend
-                        if (typeof openSpawnWizard === 'function') {
-                            openSpawnWizard({
-                                templatePreset: {
-                                    backend: 'rapid_mlx',
-                                    rapid_mlx: { model_source: { kind: 'hugging_face_repo', repo_id: repoId } }
-                                }
+                    newBtn.addEventListener('click', async () => {
+                        if (newBtn.dataset.dlBusy === '1') return;
+                        if (newBtn.dataset.dlDone === '1') {
+                            // Weights are local now; the wizard configures and launches.
+                            if (typeof openSpawnWizard === 'function') {
+                                openSpawnWizard({
+                                    templatePreset: {
+                                        backend: 'rapid_mlx',
+                                        rapid_mlx: { model_source: { kind: 'hugging_face_repo', repo_id: repoId } }
+                                    }
+                                });
+                            }
+                            return;
+                        }
+                        newBtn.dataset.dlBusy = '1';
+                        newBtn.disabled = true;
+                        newBtn.textContent = 'Starting download\u2026';
+                        const fmtGb = (b) => (b / (1024 ** 3)).toFixed(1) + ' GB';
+                        try {
+                            const headers = window.authHeaders
+                                ? { ...window.authHeaders(), 'Content-Type': 'application/json' }
+                                : { 'Content-Type': 'application/json' };
+                            const resp = await fetch('/api/models/downloads', {
+                                method: 'POST',
+                                headers,
+                                body: JSON.stringify({ repo_id: repoId, engine: 'rapid-mlx' }),
                             });
-                        } else {
-                            showToast('MLX models require Rapid-MLX — open Spawn Wizard to configure.', 'info');
+                            const data = await resp.json().catch(() => ({}));
+                            if (!resp.ok || !data.ok) {
+                                showToast(data.error || 'Download failed to start.', 'error');
+                                newBtn.dataset.dlBusy = '';
+                                newBtn.disabled = false;
+                                newBtn.textContent = 'Download to models folder';
+                                return;
+                            }
+                            showToast('Download started: ' + repoId, 'info');
+                            newBtn.textContent = 'Downloading\u2026';
+                            const jobId = data.job_id;
+                            let stalledToasted = false;
+                            // Cancel control sits beside the main button while a job runs.
+                            let cancelBtn = newBtn.parentNode.querySelector('.mm-dl-cancel-btn');
+                            if (!cancelBtn) {
+                                cancelBtn = document.createElement('button');
+                                cancelBtn.type = 'button';
+                                cancelBtn.className = 'btn-wizard-tertiary mm-dl-cancel-btn';
+                                cancelBtn.textContent = 'Cancel';
+                                cancelBtn.style.marginLeft = '8px';
+                                newBtn.insertAdjacentElement('afterend', cancelBtn);
+                            }
+                            cancelBtn.style.display = '';
+                            cancelBtn.disabled = false;
+                            cancelBtn.onclick = async () => {
+                                cancelBtn.disabled = true;
+                                try {
+                                    await fetch(`/api/models/downloads/${encodeURIComponent(jobId)}/cancel`, {
+                                        method: 'POST',
+                                        headers: window.authHeaders ? window.authHeaders() : {},
+                                    });
+                                } catch { /* the next poll reports the real state */ }
+                            };
+                            const hideCancel = () => { cancelBtn.style.display = 'none'; };
+                            const poll = async () => {
+                                try {
+                                    const r = await fetch(`/api/models/downloads/${encodeURIComponent(jobId)}`, { headers: window.authHeaders ? window.authHeaders() : {} });
+                                    const d = await r.json().catch(() => ({}));
+                                    const job = d.job || {};
+                                    if (job.bytes_total > 0 && job.state === 'running') {
+                                        const pct = Math.min(100, Math.round((job.bytes_done / job.bytes_total) * 100));
+                                        newBtn.textContent = `Downloading ${pct}% (${fmtGb(job.bytes_done)} / ${fmtGb(job.bytes_total)})`;
+                                        if (job.stalled && !stalledToasted) {
+                                            stalledToasted = true;
+                                            showToast(`Download of ${repoId} stalled \u2014 resuming automatically (finished files are kept).`, 'warning');
+                                        }
+                                        if (!job.stalled) stalledToasted = false;
+                                    } else if (job.state === 'running') {
+                                        newBtn.textContent = 'Downloading\u2026';
+                                    }
+                                    if (job.state === 'cancelled') {
+                                        hideCancel();
+                                        showToast('Download cancelled. Finished files are kept; start again to resume.', 'info');
+                                        newBtn.dataset.dlBusy = '';
+                                        newBtn.disabled = false;
+                                        newBtn.textContent = 'Resume download';
+                                        return;
+                                    }
+                                    if (job.state === 'complete') {
+                                        hideCancel();
+                                        showToast('Downloaded: ' + repoId, 'success');
+                                        invalidateModelInventory();
+                                        loadModels({ refresh: true });
+                                        newBtn.dataset.dlBusy = '';
+                                        newBtn.disabled = false;
+                                        newBtn.textContent = 'Open in Spawn Wizard';
+                                        newBtn.dataset.dlDone = '1';
+                                        return;
+                                    }
+                                    if (job.state === 'failed') {
+                                        hideCancel();
+                                        showToast('Download failed: ' + (job.error || 'unknown error'), 'error');
+                                        newBtn.dataset.dlBusy = '';
+                                        newBtn.disabled = false;
+                                        newBtn.textContent = 'Retry download';
+                                        return;
+                                    }
+                                    setTimeout(poll, 2000);
+                                } catch {
+                                    setTimeout(poll, 4000);
+                                }
+                            };
+                            poll();
+                        } catch (err) {
+                            showToast('Download request failed: ' + (err.message || err), 'error');
+                            newBtn.dataset.dlBusy = '';
+                            newBtn.disabled = false;
+                            newBtn.textContent = 'Download to models folder';
                         }
                     });
                 }
@@ -3367,7 +3470,7 @@ async function onHfFileSelected(file, repoId, downloadPanel) {
                 repoId,
                 filePath: modelFilePath,
                 panelEl: downloadPanel,
-                onComplete: (downloadId, localPath) => {
+                onComplete: (downloadId, _localPath) => {
                     hfState.currentDownloadIds.add(downloadId);
                     // Refresh library tab
                     invalidateModelInventory();
@@ -3466,6 +3569,20 @@ async function loadQuantAdvisor() {
     const paramB = hfState.paramB;
     if (!paramB || paramB <= 0) return;
 
+    // GGUF repos get the advisor from the parameter count (or the repo's file list). An MLX
+    // repo ships one fixed quantization, so the comparison is only meaningful across the
+    // sibling conversions of the same model; with fewer than two there is nothing to rank.
+    const isMlx = hfState.modelFormat === 'mlx';
+    const mlxFiles = isMlx
+        ? (hfState.mlxSiblings || [])
+            .filter(s => s.size > 0)
+            .map(s => ({ name: s.label, size_bytes: s.size }))
+        : [];
+    if (isMlx && mlxFiles.length < 2) {
+        hideQuantAdvisor();
+        return;
+    }
+
     // Unified memory handling: use current_safe_availability_bytes instead of total
     let availVram = cachedVram || 0;
     if (cachedUnified) {
@@ -3483,7 +3600,6 @@ async function loadQuantAdvisor() {
 
         // Item 9/14: pass backend/unified-memory/concurrency so the comparison
         // reflects what will actually launch, not a generic llama.cpp/8k guess.
-        const isMlx = hfState.modelFormat === 'mlx';
         const body = {
             param_b: paramB,
             model_name: hfState.selectedRepoId || '',
@@ -3493,6 +3609,8 @@ async function loadQuantAdvisor() {
             use_case: 'general',
             parallel_slots: 1,
         };
+        // MLX: rank the sibling conversions by their real repo sizes.
+        if (isMlx) body.available_files = mlxFiles;
 
         const resp = await fetch('/api/vram/quant-compare', { method: 'POST', headers, body: JSON.stringify(body) });
         if (!resp.ok) return;
@@ -3506,6 +3624,7 @@ async function loadQuantAdvisor() {
 }
 
 function renderQuantAdvisor(quants, availVram) {
+    const isMlxTable = hfState.modelFormat === 'mlx';
     const panel = document.getElementById('mm-quant-advisor');
     const tableEl = document.getElementById('mm-quant-advisor-table');
     const subtitleEl = document.getElementById('mm-quant-advisor-subtitle');
@@ -3541,12 +3660,31 @@ function renderQuantAdvisor(quants, availVram) {
     if (annotateCtx) subtitle += ` \u00b7 Context target: ${formatCtx(desiredCtx)}`;
     if (subtitleEl) subtitleEl.textContent = subtitle;
 
+    // MLX: the row for the variant the user picked, so picking another visibly moves the focus.
+    const selectedMlxLabel = isMlxTable
+        ? ((hfState.mlxSiblings || []).find(s => s.repoId === hfState.selectedRepoId)?.label || '')
+        : '';
+    // A variant whose weights alone exceed free memory has no context to report; say so rather
+    // than leaving a bare dash that reads like missing data.
+    const setNoCtx = (td, q) => {
+        td.classList.add('qa-ctx-na');
+        if (isMlxTable && !q.fits_vram) {
+            td.textContent = 'won\u2019t fit';
+            td.title = `${q.model_size_gb.toFixed(1)} GB of weights plus overhead exceeds the ${availGb} GB currently free`;
+        } else {
+            td.textContent = '\u2014';
+        }
+    };
+
     const table = document.createElement('table');
     table.className = 'qa-table';
 
     const thead = table.createTHead();
     const hrow = thead.insertRow();
-    ['', 'Quant', 'Size', 'Max ctx (q8_0 KV)', 'Max ctx (q4_0 KV)', 'Quality'].forEach(h => {
+    const headers = isMlxTable
+        ? ['', 'Quant', 'Size', 'Max ctx (bf16 KV)', 'Max ctx (int8 KV)', 'Quality']
+        : ['', 'Quant', 'Size', 'Max ctx (q8_0 KV)', 'Max ctx (q4_0 KV)', 'Quality'];
+    headers.forEach(h => {
         const th = document.createElement('th');
         th.textContent = h;
         hrow.appendChild(th);
@@ -3591,10 +3729,26 @@ function renderQuantAdvisor(quants, availVram) {
             nameTd.appendChild(im);
         }
 
+        if (selectedMlxLabel && q.label === selectedMlxLabel) tr.classList.add('qa-row-selected');
+
         // Size
         const sizeTd = tr.insertCell();
         sizeTd.textContent = q.model_size_gb.toFixed(1) + ' GB';
         sizeTd.style.color = 'var(--color-text-muted)';
+
+        // Max ctx at unquantized bf16 KV (MLX only): the baseline int8 is compared against.
+        if (isMlxTable) {
+            const ctxF16Td = tr.insertCell();
+            ctxF16Td.className = 'qa-ctx';
+            if (q.max_ctx_f16 > 0) {
+                ctxF16Td.textContent = formatCtx(q.max_ctx_f16);
+                const underF16 = annotateCtx && q.max_ctx_f16 < desiredCtx;
+                ctxF16Td.classList.add(underF16 ? 'qa-ctx-under' : 'qa-ctx-q8');
+                if (underF16) ctxF16Td.title = `Max ${formatCtx(q.max_ctx_f16)} \u2014 below your ${formatCtx(desiredCtx)} target`;
+            } else {
+                setNoCtx(ctxF16Td, q);
+            }
+        }
 
         // Max ctx q8_0 \u2014 warn if below context target
         const ctxQ8Td = tr.insertCell();
@@ -3605,17 +3759,19 @@ function renderQuantAdvisor(quants, availVram) {
             ctxQ8Td.classList.add(underTarget ? 'qa-ctx-under' : 'qa-ctx-q8');
             if (underTarget) ctxQ8Td.title = `Max ${formatCtx(q.max_ctx_q8)} \u2014 below your ${formatCtx(desiredCtx)} target`;
         } else {
-            ctxQ8Td.textContent = '\u2014'; ctxQ8Td.classList.add('qa-ctx-na');
+            setNoCtx(ctxQ8Td, q);
         }
 
-        // Max ctx q4_0
-        const ctxQ4Td = tr.insertCell();
-        ctxQ4Td.className = 'qa-ctx';
-        if (q.max_ctx_q4 > 0) {
-            ctxQ4Td.textContent = formatCtx(q.max_ctx_q4);
-            ctxQ4Td.classList.add('qa-ctx-q4');
-        } else {
-            ctxQ4Td.textContent = '\u2014'; ctxQ4Td.classList.add('qa-ctx-na');
+        // Max ctx q4_0 (llama.cpp only: Rapid-MLX thinking mode pins the KV cache to int8)
+        if (!isMlxTable) {
+            const ctxQ4Td = tr.insertCell();
+            ctxQ4Td.className = 'qa-ctx';
+            if (q.max_ctx_q4 > 0) {
+                ctxQ4Td.textContent = formatCtx(q.max_ctx_q4);
+                ctxQ4Td.classList.add('qa-ctx-q4');
+            } else {
+                ctxQ4Td.textContent = '\u2014'; ctxQ4Td.classList.add('qa-ctx-na');
+            }
         }
 
         // Quality badge
@@ -3627,7 +3783,7 @@ function renderQuantAdvisor(quants, availVram) {
         qualTd.appendChild(qualBadge);
     }
 
-    tableEl.innerHTML = '';
+    setHtml(tableEl, '');
     tableEl.appendChild(table);
     panel.style.display = '';
 }
@@ -3682,18 +3838,6 @@ async function fetchGpuVram(retriesLeft = 30, background = false) {
         }
     } catch {
         /* ignore */
-    }
-}
-
-async function fetchSystemRam() {
-    try {
-        const headers = window.authHeaders ? window.authHeaders() : {};
-        const resp = await fetch('/metrics/system', { headers });
-        if (!resp.ok) return;
-        const d = await resp.json();
-        cachedRamTotal = (d.ram_total_gb || 0) * 1024 * 1024 * 1024;
-    } catch {
-        // ignore
     }
 }
 
@@ -3975,7 +4119,7 @@ async function detectMmprojCompanion(repoId) {
         const recommendedMmproj = getRecommendedMmproj(mmprojFiles);
 
         // Render mmproj options
-        content.innerHTML = '';
+        setHtml(content, '');
 
         // Checkbox to enable mmproj
         const checkLabel = document.createElement('label');
@@ -4103,7 +4247,7 @@ function initDiskTab() {
 async function scanDiskCache() {
     const rows = document.getElementById('mm-disk-rows');
     const scanBtn = document.getElementById('mm-disk-scan');
-    if (rows) rows.innerHTML = '<div class="mm-loading">Walking the shared cache…</div>';
+    if (rows) setHtml(rows, '<div class="mm-loading">Walking the shared cache…</div>');
     if (scanBtn) scanBtn.disabled = true;
     try {
         const resp = await fetch('/api/models/external-cache', {
@@ -4114,7 +4258,7 @@ async function scanDiskCache() {
         if (!data.present) {
             diskAudit = null;
             if (rows) {
-                rows.innerHTML = '<div class="mm-import-empty-state">No shared Hugging Face cache on this machine. Everything the app can see is already in the library.</div>';
+                setHtml(rows, '<div class="mm-import-empty-state">No shared Hugging Face cache on this machine. Everything the app can see is already in the library.</div>');
             }
             setDiskTotals('Nothing outside the library.');
             return;
@@ -4124,7 +4268,7 @@ async function scanDiskCache() {
         renderDiskTotals();
         renderDiskRows();
     } catch (error) {
-        if (rows) rows.innerHTML = `<div class="mm-import-empty-state">${escapeHtml(error.message || String(error))}</div>`;
+        if (rows) setHtml(rows, `<div class="mm-import-empty-state">${escapeHtml(error.message || String(error))}</div>`);
     } finally {
         if (scanBtn) scanBtn.disabled = false;
     }
@@ -4150,14 +4294,14 @@ function renderDiskTotals() {
     if (totals) {
         // The duplicate line is the actionable one: those bytes exist twice on this
         // machine, so reclaiming them costs nothing.
-        // eslint-disable-next-line no-unsanitized/property -- only formatBytes numerics and escapeHtml'd text
-        totals.innerHTML = [
+
+        setHtml(totals, [
             `<strong>${formatBytes(diskAudit.total_bytes)}</strong> in ${diskAudit.repos.length} repos`,
             parts.length ? `<span class="mm-disk-breakdown">${escapeHtml(parts.join(' · '))}</span>` : '',
             duplicateBytes ? `<span class="mm-disk-dupe">${formatBytes(duplicateBytes)} already in your library</span>` : '',
             diskAudit.unaccounted_bytes ? `<span class="mm-disk-note">${formatBytes(diskAudit.unaccounted_bytes)} not in a model repo, not listed below</span>` : '',
             diskAudit.truncated ? '<span class="mm-disk-note">Listing was truncated; some repos are not shown.</span>' : '',
-        ].filter(Boolean).join('<br>');
+        ].filter(Boolean).join('<br>'));
     }
     const count = document.getElementById('mm-disk-tab-count');
     if (count) count.textContent = String(diskAudit.repos.length);
@@ -4177,12 +4321,12 @@ function renderDiskRows() {
     const allowed = diskKindFilter();
     const visible = diskAudit.repos.filter(repo => allowed.has(repo.kind));
     if (!visible.length) {
-        rows.innerHTML = '<div class="mm-import-empty-state">No repos match the selected kinds.</div>';
+        setHtml(rows, '<div class="mm-import-empty-state">No repos match the selected kinds.</div>');
         renderDiskSelection();
         return;
     }
-    // eslint-disable-next-line no-unsanitized/property -- every interpolated repo field goes through escapeHtml
-    rows.innerHTML = visible.map(repo => {
+
+    setHtml(rows, visible.map(repo => {
         const badges = [];
         badges.push(`<span class="mm-disk-badge mm-disk-badge--${escapeHtml(repo.kind)}">${escapeHtml(DISK_KIND_LABELS[repo.kind] || repo.kind)}</span>`);
         // Where the verdict came from, always shown: "the config says so" and "the
@@ -4208,7 +4352,7 @@ function renderDiskRows() {
             <span class="mm-disk-meta">${escapeHtml(meta.join(' · '))}</span>
             ${warn}
         </label>`;
-    }).join('');
+    }).join(''));
     renderDiskSelection();
 }
 
@@ -4377,12 +4521,6 @@ function formatParams(paramB) {
 function formatCtx(n) {
     if (n >= 1024) return Math.round(n / 1024) + 'k';
     return String(n);
-}
-
-function formatVramTotal(bytes) {
-    const gb = bytes / (1024 ** 3);
-    if (gb >= 100) return Math.round(gb) + ' GB';
-    return gb.toFixed(1) + ' GB';
 }
 
 function formatGB(bytes) {

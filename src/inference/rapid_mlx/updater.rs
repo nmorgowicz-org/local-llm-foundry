@@ -1,4 +1,5 @@
 use crate::config::harden_file_permissions;
+use crate::inference::process_tree::{configure_process_group, terminate_and_reap};
 use crate::inference::rapid_mlx::capabilities::run_update_validation_probe;
 use crate::inference::rapid_mlx::compatibility::{
     CompatibilityProfile, CompatibilityState, MINIMUM_VERIFIED_VERSION,
@@ -12,6 +13,7 @@ use rand::TryRng;
 use rand::rngs::SysRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::future::Future;
@@ -413,6 +415,21 @@ pub struct RapidMlxRuntimeManager {
     fail_retention_cleanup: bool,
 }
 
+/// One mutation gate per managed root for the whole process. Route modules
+/// construct their own `RapidMlxRuntimeManager` instances; sharing the gate
+/// by root is what makes install/upgrade/uninstall mutually exclusive.
+fn mutation_gate_for_root(root: &Path) -> Arc<Semaphore> {
+    static GATES: std::sync::LazyLock<std::sync::Mutex<HashMap<PathBuf, Arc<Semaphore>>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+    let mut guards = GATES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guards
+        .entry(root.to_path_buf())
+        .or_insert_with(|| Arc::new(Semaphore::new(1)))
+        .clone()
+}
+
 impl RapidMlxRuntimeManager {
     pub fn new(config_root: &Path) -> Result<Self> {
         Self::with_uv(config_root, PathBuf::from("uv"))
@@ -420,11 +437,12 @@ impl RapidMlxRuntimeManager {
 
     pub fn with_uv(config_root: &Path, uv_program: PathBuf) -> Result<Self> {
         let root = prepare_managed_root(config_root)?;
+        let mutation_gate = mutation_gate_for_root(&root);
         Ok(Self {
             root,
             uv_program,
             command_timeout: DEFAULT_COMMAND_TIMEOUT,
-            mutation_gate: Arc::new(Semaphore::new(1)),
+            mutation_gate,
             runtime_probe: Arc::new(CompatibilityProbe),
             platform_supported: local_mutations_supported(),
             #[cfg(test)]
@@ -508,6 +526,62 @@ impl RapidMlxRuntimeManager {
         }
         entries.sort_by(|left, right| left.environment_id.cmp(&right.environment_id));
         Ok(entries)
+    }
+
+    /// Remove every managed environment and the active pointer. Model caches
+    /// live outside this root and are untouched. Fails while another runtime
+    /// mutation (install/upgrade/rollback) holds the gate.
+    pub fn uninstall_all(&self) -> Result<()> {
+        let _permit = self
+            .mutation_gate
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| anyhow!("Another Rapid-MLX runtime mutation is in progress"))?;
+        // Drop the pointer first so a crash mid-delete cannot leave the app
+        // pointing at a half-removed environment.
+        let pointer_path = self.root.join(POINTER_FILE);
+        if pointer_path.exists() {
+            fs::remove_file(&pointer_path).context("Cannot remove the Rapid-MLX pointer file")?;
+        }
+        if self.root.exists() {
+            fs::remove_dir_all(&self.root)
+                .context("Cannot remove the managed Rapid-MLX runtime root")?;
+        }
+        // Recreate the skeleton so this manager (and later installs) stay
+        // usable. The API layer is responsible for refusing to uninstall while
+        // a Rapid-MLX server is running.
+        let config_root = self
+            .root
+            .ancestors()
+            .nth(Path::new(MANAGED_RELATIVE_ROOT).components().count())
+            .ok_or_else(|| anyhow!("Managed runtime root has no config directory"))?;
+        prepare_managed_root(config_root)
+            .context("Could not re-prepare the managed Rapid-MLX runtime root after removal")?;
+        Ok(())
+    }
+
+    /// Best-effort recursive byte size of the managed runtime root.
+    pub fn storage_bytes(&self) -> u64 {
+        fn walk(dir: &Path, acc: &mut u64) {
+            let Ok(entries) = fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                match entry.file_type() {
+                    Ok(t) if t.is_dir() => walk(&path, acc),
+                    Ok(_) => {
+                        if let Ok(meta) = entry.metadata() {
+                            *acc += meta.len();
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+        let mut total = 0;
+        walk(&self.root, &mut total);
+        total
     }
 
     pub fn active_git_source(&self) -> Result<Option<ManagedGitSourceSelection>> {
@@ -769,8 +843,15 @@ impl RapidMlxRuntimeManager {
                 .with_context(|| {
                     format!("Staged Rapid-MLX environment validation failed: {environment_id}")
                 })?;
+            // Pre-commit failure: if the current pointer cannot be read, the
+            // activation cannot proceed, so remove the staged environment
+            // instead of leaving partial state behind.
+            let staged_environment = environment.clone();
             let old = self
                 .load_pointer()
+                .inspect_err(|_error| {
+                    let _ = fs::remove_dir_all(&staged_environment);
+                })
                 .context("Could not read current managed Rapid-MLX pointer")?;
             // A previous interrupted cleanup or an older updater can leave
             // current.json pointing at an environment that no longer exists.
@@ -887,10 +968,28 @@ impl RapidMlxRuntimeManager {
             }
         }
         configure_process_group(&mut command);
+        eprintln!(
+            "[rapid-mlx] running `uv tool install {requirement}` (uv: {}, timeout {}s)",
+            self.uv_program.display(),
+            self.command_timeout.as_secs()
+        );
+        let started = std::time::Instant::now();
         let output = run_bounded_command(command, self.command_timeout)
             .await
-            .map_err(|error| anyhow!("Managed Rapid-MLX installation failed: {error}"))?;
+            .map_err(|error| {
+                anyhow!(
+                    "Managed Rapid-MLX installation failed after {:.0}s: {error}",
+                    started.elapsed().as_secs_f64()
+                )
+            })?;
+        eprintln!(
+            "[rapid-mlx] uv finished in {:.1}s with {}",
+            started.elapsed().as_secs_f64(),
+            output.status
+        );
         if !output.status.success() {
+            // Terminal only: the API reply stays a fixed, path-free message.
+            eprintln!("[rapid-mlx] uv stderr (tail):\n{}", output.stderr_tail);
             bail!(
                 "Managed Rapid-MLX installation failed with status {}",
                 output.status
@@ -1199,7 +1298,10 @@ fn parse_managed_version(version: &str) -> Result<ParsedManagedVersion> {
     let patch = parse_version_number(bytes, &mut cursor)?;
     let numbers = (major, minor, patch);
     if numbers < MINIMUM_VERIFIED_VERSION {
-        bail!("Rapid-MLX version 0.10.9 or newer is required");
+        bail!(
+            "Rapid-MLX version {} or newer is required",
+            crate::inference::rapid_mlx::compatibility::minimum_version_text()
+        );
     }
     let suffix = &version[cursor..];
     let suffix = suffix.strip_prefix('-').unwrap_or(suffix);
@@ -1401,7 +1503,100 @@ fn sha256_file(path: &Path) -> Result<String> {
         .collect())
 }
 
+/// Leftover temp files older than this are considered abandoned by a crashed
+/// writer and are swept before the next write.
+const STALE_TEMP_AGE: Duration = Duration::from_secs(60 * 60);
+
+static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `.{file_name}.tmp-{pid}-{nanos}-{counter}` - unique per process and call.
+fn unique_temp_name(file_name: &str) -> String {
+    let counter = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    format!(
+        ".{file_name}.tmp-{}-{nanos:x}-{counter}",
+        std::process::id()
+    )
+}
+
+/// Remove abandoned temp files left by earlier writers of `file_name`. Only
+/// regular files whose name is exactly the legacy `.{file_name}.tmp` or begins
+/// with the unique `.{file_name}.tmp-` prefix and whose mtime is older than
+/// `max_age` are removed. Symlinks and anything else are never touched.
+fn sweep_stale_temp_files(dir: &Path, file_name: &str, max_age: Duration) {
+    let legacy = format!(".{file_name}.tmp");
+    let prefix = format!(".{file_name}.tmp-");
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name != legacy && !name.starts_with(&prefix) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            continue;
+        }
+        let stale = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= max_age);
+        if stale {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
+fn create_unique_temp(root: &Path, file_name: &str) -> Result<(PathBuf, fs::File)> {
+    let mut last_error = None;
+    for _ in 0..8 {
+        let temp = root.join(unique_temp_name(file_name));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temp) {
+            Ok(file) => return Ok((temp, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_error = Some(error);
+            }
+            Err(error) => {
+                return Err(anyhow::Error::new(error)
+                    .context("Managed runtime temporary file could not be created"));
+            }
+        }
+    }
+    Err(anyhow::Error::new(last_error.expect("loop ran"))
+        .context("Managed runtime temporary file could not be created"))
+}
+
+fn sync_directory_best_effort(dir: &Path) {
+    #[cfg(unix)]
+    if let Ok(handle) = fs::File::open(dir) {
+        let _ = handle.sync_all();
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
 fn atomic_json_write<T: Serialize>(path: &Path, value: &T, harden: bool) -> Result<()> {
+    use std::io::Write;
+
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("Managed runtime file has no parent"))?;
@@ -1414,16 +1609,24 @@ fn atomic_json_write<T: Serialize>(path: &Path, value: &T, harden: bool) -> Resu
         .file_name()
         .and_then(OsStr::to_str)
         .ok_or_else(|| anyhow!("Managed runtime filename is invalid"))?;
-    let temp = root.join(format!(".{file_name}.tmp"));
-    if fs::symlink_metadata(&temp).is_ok() {
-        bail!("Managed runtime temporary file already exists");
-    }
+    sweep_stale_temp_files(&root, file_name, STALE_TEMP_AGE);
     let bytes = serde_json::to_vec_pretty(value)?;
-    fs::write(&temp, bytes)?;
-    if harden {
-        harden_file_permissions(&temp);
+    let (temp, mut file) = create_unique_temp(&root, file_name)?;
+    let written = (|| -> Result<()> {
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        if harden {
+            harden_file_permissions(&temp);
+        }
+        fs::rename(&temp, path)?;
+        Ok(())
+    })();
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temp);
+        return Err(error);
     }
-    fs::rename(&temp, path)?;
+    sync_directory_best_effort(&root);
     if harden {
         harden_file_permissions(path);
     }
@@ -1433,33 +1636,7 @@ fn atomic_json_write<T: Serialize>(path: &Path, value: &T, harden: bool) -> Resu
 #[derive(Debug)]
 struct BoundedCommandOutput {
     status: ExitStatus,
-}
-
-#[cfg(unix)]
-fn configure_process_group(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    command.as_std_mut().process_group(0);
-}
-
-#[cfg(windows)]
-fn configure_process_group(_command: &mut Command) {}
-
-#[cfg(unix)]
-fn terminate_process_tree(pid: u32) {
-    // The child is placed in a dedicated process group whose ID is its PID.
-    // SAFETY: kill is called with a validated child PID and the constant SIGKILL.
-    unsafe {
-        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-    }
-}
-
-#[cfg(windows)]
-fn terminate_process_tree(_pid: u32) {}
-
-async fn terminate_and_reap(child: &mut tokio::process::Child, pid: u32) {
-    terminate_process_tree(pid);
-    let _ = child.start_kill();
-    let _ = child.wait().await;
+    stderr_tail: String,
 }
 
 async fn run_bounded_command(command: Command, timeout: Duration) -> Result<BoundedCommandOutput> {
@@ -1486,11 +1663,11 @@ async fn run_bounded_command_inner(
     let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(2);
     let stdout_tx = output_tx.clone();
     tokio::spawn(async move {
-        let _ = stdout_tx.send(read_bounded(stdout).await).await;
+        let _ = stdout_tx.send((false, read_bounded(stdout).await)).await;
     });
     let stderr_tx = output_tx.clone();
     tokio::spawn(async move {
-        let _ = stderr_tx.send(read_bounded(stderr).await).await;
+        let _ = stderr_tx.send((true, read_bounded(stderr).await)).await;
     });
     drop(output_tx);
 
@@ -1507,6 +1684,7 @@ async fn run_bounded_command_inner(
     tokio::pin!(deadline);
     let mut status = None;
     let mut completed_readers = 0;
+    let mut stderr_bytes: Vec<u8> = Vec::new();
     loop {
         tokio::select! {
             _ = &mut deadline => {
@@ -1515,8 +1693,13 @@ async fn run_bounded_command_inner(
             }
             result = output_rx.recv(), if completed_readers < 2 => {
                 match result {
-                    Some(Ok(())) => completed_readers += 1,
-                    Some(Err(error)) => {
+                    Some((is_stderr, Ok(bytes))) => {
+                        completed_readers += 1;
+                        if is_stderr {
+                            stderr_bytes = bytes;
+                        }
+                    }
+                    Some((_, Err(error))) => {
                         terminate_and_reap(&mut child, pid).await;
                         return Err(error);
                     }
@@ -1533,12 +1716,15 @@ async fn run_bounded_command_inner(
         if completed_readers == 2
             && let Some(status) = status
         {
-            return Ok(BoundedCommandOutput { status });
+            return Ok(BoundedCommandOutput {
+                status,
+                stderr_tail: output_tail(&stderr_bytes),
+            });
         }
     }
 }
 
-async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(reader: R) -> Result<()> {
+async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(reader: R) -> Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(8192);
     reader
         .take((MAX_COMMAND_OUTPUT_BYTES + 1) as u64)
@@ -1547,7 +1733,15 @@ async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(reader: R) -> Result<()> 
     if bytes.len() > MAX_COMMAND_OUTPUT_BYTES {
         bail!("uv output exceeded its safety limit");
     }
-    Ok(())
+    Ok(bytes)
+}
+
+/// The last couple of kilobytes of a process's output, for logs. uv writes its failure reason
+/// to stderr, and without this a failed install said only "failed with status 1".
+fn output_tail(bytes: &[u8]) -> String {
+    const TAIL_BYTES: usize = 2048;
+    let start = bytes.len().saturating_sub(TAIL_BYTES);
+    String::from_utf8_lossy(&bytes[start..]).trim().to_string()
 }
 
 /// Capture the resolved dependency receipt from a newly installed managed environment.
@@ -1845,17 +2039,40 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn pointer_write_failure_is_precommit_and_cleans_stage() {
+    async fn legacy_stale_temp_file_does_not_block_pointer_write() {
+        // Regression: a crash used to leave a fixed `.<file>.tmp` behind,
+        // which permanently blocked every pointer write (and therefore every
+        // install, upgrade, repair and rollback). Temp files are now unique
+        // per call, so a stale legacy temp file must be ignored, not fatal.
         let (_temp, manager, _probe) = fixture_manager();
         manager.install("0.10.9").await.unwrap();
         let pointer_before = fs::read(manager.root.join(POINTER_FILE)).unwrap();
         fs::write(manager.root.join(".current.json.tmp"), b"occupied").unwrap();
-        let error = manager.upgrade("0.10.10").await.unwrap_err();
-        assert!(format!("{error:#}").contains("temporary file"), "{error:#}");
-        assert_eq!(
+        let result = manager.upgrade("0.10.10").await.unwrap();
+        assert_eq!(result.active.version, "0.10.10");
+        let current: ActivePointer =
+            serde_json::from_slice(&fs::read(manager.root.join(POINTER_FILE)).unwrap()).unwrap();
+        assert_eq!(current.active_environment_id, result.active.environment_id);
+        assert_ne!(
             fs::read(manager.root.join(POINTER_FILE)).unwrap(),
             pointer_before
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pointer_write_failure_is_precommit_and_cleans_stage() {
+        // An unusable pointer must fail the upgrade before anything is
+        // committed: the pointer stays as-is and no staged environment is
+        // left behind.
+        let (_temp, manager, _probe) = fixture_manager();
+        manager.install("0.10.9").await.unwrap();
+        let pointer_path = manager.root.join(POINTER_FILE);
+        let pointer_before = fs::read(&pointer_path).unwrap();
+        fs::write(&pointer_path, b"not json").unwrap();
+        let error = manager.upgrade("0.10.10").await.unwrap_err();
+        assert!(format!("{error:#}").contains("pointer"), "{error:#}");
+        fs::write(&pointer_path, &pointer_before).unwrap();
         assert_eq!(
             fs::read_dir(manager.root.join(ENVIRONMENTS_DIR))
                 .unwrap()
@@ -2078,6 +2295,39 @@ mod tests {
         assert!(error.to_string().contains("already in progress"));
         drop(held);
         assert!(manager.install("0.10.10").await.is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uninstall_removes_managed_root_and_refuses_during_mutation() {
+        let (_temp, manager, _probe) = fixture_manager();
+
+        // A populated root (fake environment + pointer) is removed wholesale.
+        let env_dir = manager.root.join(ENVIRONMENTS_DIR).join("0.99.9-testdead");
+        fs::create_dir_all(&env_dir).unwrap();
+        fs::write(env_dir.join("marker"), "x").unwrap();
+        fs::write(manager.root.join(POINTER_FILE), "{}").unwrap();
+        assert!(manager.storage_bytes() > 0);
+
+        let held = manager.mutation_gate.clone().try_acquire_owned().unwrap();
+        let err = manager.uninstall_all().unwrap_err();
+        assert!(
+            format!("{err:#}").contains("mutation is in progress"),
+            "{err:#}"
+        );
+        drop(held);
+
+        manager.uninstall_all().unwrap();
+        // The managed root is emptied and its skeleton re-created so the
+        // manager (and later installs) stay usable; nothing may remain.
+        assert_eq!(manager.storage_bytes(), 0);
+        assert!(!manager.root.join(POINTER_FILE).exists());
+        assert_eq!(
+            fs::read_dir(manager.root.join(ENVIRONMENTS_DIR))
+                .map(|entries| entries.count())
+                .unwrap_or(0),
+            0
+        );
     }
 
     #[cfg(unix)]

@@ -18,7 +18,6 @@ const TOOL_ICONS = {
 };
 
 export async function loadThirdPartyModels() {
-  const listWrap = document.getElementById('import-model-list-wrap');
   const listLoading = document.getElementById('import-model-list-loading');
   const listEmpty = document.getElementById('import-model-list-empty');
   const listEl = document.getElementById('import-model-list');

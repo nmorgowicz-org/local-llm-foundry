@@ -777,6 +777,42 @@ fn restore_promoted_directory(
     Ok(())
 }
 
+/// Retention sweep for timestamped rollback backups. Every llama.cpp update
+/// leaves `bin-previous-{tag}-{pid}-{stamp}` beside the bin dir; without a
+/// sweep they accumulate indefinitely (~65 MB each). Keeps the newest
+/// `keep` backups, removes the rest and any stale `bin-failed-*` directories.
+/// Best-effort: failures are logged, never fatal.
+fn sweep_old_bin_backups(dest_parent: &std::path::Path, dest_name: &str, keep: usize) {
+    let entries = match std::fs::read_dir(dest_parent) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    let prefix_previous = format!("{dest_name}-previous-");
+    let prefix_failed = format!("{dest_name}-failed-");
+    let mut backups: Vec<(std::path::PathBuf, std::time::SystemTime)> = entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with(&prefix_previous) || name.starts_with(&prefix_failed)
+        })
+        .filter_map(|entry| {
+            let modified = entry.metadata().and_then(|m| m.modified()).ok()?;
+            Some((entry.path(), modified))
+        })
+        .collect();
+    backups.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
+    for (path, _) in backups.into_iter().skip(keep) {
+        if let Err(error) = std::fs::remove_dir_all(&path) {
+            eprintln!(
+                "[warn] llama-binary/update: failed to remove old backup {}: {}",
+                path.display(),
+                error
+            );
+        }
+    }
+}
+
 /// POST /api/llama-binary/update — downloads latest release and overwrites llama-server binary
 fn api_llama_binary_update(
     state: AppState,
@@ -797,7 +833,7 @@ fn api_llama_binary_update(
                 // Allow updating while running: keep the current server alive while
                 // network/download/preflight work happens, then stop only for the
                 // final install window.
-                let previous_config = llama_update_restart_config(&state);
+                let mut previous_config = llama_update_restart_config(&state);
                 let restart_applicable = previous_config.is_some();
 
                 let dest_path = managed_llama_server_path(&cfg);
@@ -1027,6 +1063,29 @@ fn api_llama_binary_update(
                     }
                 }
 
+                // Any failure from here on happens with the server already
+                // stopped, so every error path below must restart it with the
+                // previous config before returning.
+                macro_rules! fail_update {
+                    ($json:expr) => {{
+                        if let Some(rc) = previous_config.take() {
+                            state.push_log(
+                                "[monitor] llama-binary/update: update failed; restarting llama-server with previous config"
+                                    .into(),
+                            );
+                            if let Err(e) = start_server(Arc::new(state.clone()), rc, &cfg).await {
+                                state.push_log(format!(
+                                    "[monitor] llama-binary/update: restart after failed update also failed: {}",
+                                    e
+                                ));
+                            }
+                        }
+                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
+                            warp::reply::json(&$json),
+                        ));
+                    }};
+                }
+
                 // Health check on the temp binary BEFORE writing anything to dest_dir.
                 // This ensures the live binary is never overwritten with a bad one.
                 // Capture stderr to diagnose failures (Gatekeeper, missing dylib, etc.).
@@ -1035,14 +1094,12 @@ fn api_llama_binary_update(
                         "[monitor] llama-binary/update: new binary failed health check (llama-server --help): {}. Not installing.",
                         detail
                     ));
-                    return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                        warp::reply::json(&serde_json::json!({
-                            "ok": false,
-                            "error": "New llama-server binary failed basic health check. \
-                                downloaded file may be corrupted or incompatible. \
-                                Try updating again or install manually."
-                        })),
-                    ));
+                    fail_update!(serde_json::json!({
+                        "ok": false,
+                        "error": "New llama-server binary failed basic health check. \
+                            downloaded file may be corrupted or incompatible. \
+                            Try updating again or install manually."
+                    }));
                 }
 
                 // Log update intent.
@@ -1113,32 +1170,26 @@ fn api_llama_binary_update(
                         let _ = std::fs::remove_dir_all(&staging_dir);
                     }
                     if let Err(e) = std::fs::create_dir_all(&staging_dir) {
-                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                            warp::reply::json(&serde_json::json!({
-                                "ok": false,
-                                "error": format!("Failed create staging bin dir {}: {}", staging_dir.display(), e)
-                            })),
-                        ));
+                        fail_update!(serde_json::json!({
+                            "ok": false,
+                            "error": format!("Failed create staging bin dir {}: {}", staging_dir.display(), e)
+                        }));
                     }
 
                     if let Err(e) = copy_all_files(tmp_dir.path(), &staging_dir) {
-                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                            warp::reply::json(&serde_json::json!({
-                                "ok": false,
-                                "error": format!("Failed copy release files to staging dir {}: {}", staging_dir.display(), e)
-                            })),
-                        ));
+                        fail_update!(serde_json::json!({
+                            "ok": false,
+                            "error": format!("Failed copy release files to staging dir {}: {}", staging_dir.display(), e)
+                        }));
                     }
 
                     let staged_binary = match configured_binary_path(&staging_dir, binary_name, &dest_path) {
                         Ok(path) => path,
                         Err(e) => {
-                            return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                                warp::reply::json(&serde_json::json!({
-                                    "ok": false,
-                                    "error": format!("Failed prepare staged binary name: {}", e)
-                                })),
-                            ));
+                            fail_update!(serde_json::json!({
+                                "ok": false,
+                                "error": format!("Failed prepare staged binary name: {}", e)
+                            }));
                         }
                     };
 
@@ -1152,12 +1203,10 @@ fn api_llama_binary_update(
                             "[monitor] llama-binary/update: staged binary failed health check (llama-server --help): {}. Not installing.",
                             detail
                         ));
-                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                            warp::reply::json(&serde_json::json!({
-                                "ok": false,
-                                "error": format!("Staged llama-server binary failed basic health check: {}", detail)
-                            })),
-                        ));
+                        fail_update!(serde_json::json!({
+                            "ok": false,
+                            "error": format!("Staged llama-server binary failed basic health check: {}", detail)
+                        }));
                     }
 
                     if dest_dir.exists() {
@@ -1166,12 +1215,10 @@ fn api_llama_binary_update(
                         }
                         if let Err(e) = std::fs::rename(dest_dir, &backup_dir) {
                             let _ = std::fs::remove_dir_all(&staging_dir);
-                            return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                                warp::reply::json(&serde_json::json!({
-                                    "ok": false,
-                                    "error": format!("Failed move current bin dir to backup {}: {}", backup_dir.display(), e)
-                                })),
-                            ));
+                            fail_update!(serde_json::json!({
+                                "ok": false,
+                                "error": format!("Failed move current bin dir to backup {}: {}", backup_dir.display(), e)
+                            }));
                         }
                     }
 
@@ -1179,12 +1226,10 @@ fn api_llama_binary_update(
                         if backup_dir.exists() && !dest_dir.exists() {
                             let _ = std::fs::rename(&backup_dir, dest_dir);
                         }
-                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                            warp::reply::json(&serde_json::json!({
-                                "ok": false,
-                                "error": format!("Failed promote staged llama.cpp bin dir {} to {}: {}", staging_dir.display(), dest_dir.display(), e)
-                            })),
-                        ));
+                        fail_update!(serde_json::json!({
+                            "ok": false,
+                            "error": format!("Failed promote staged llama.cpp bin dir {} to {}: {}", staging_dir.display(), dest_dir.display(), e)
+                        }));
                     }
 
                     if let Err(detail) = check_llama_server_binary(&dest_path).await {
@@ -1206,42 +1251,34 @@ fn api_llama_binary_update(
                             "[monitor] llama-binary/update: {}",
                             error
                         ));
-                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                            warp::reply::json(&serde_json::json!({
-                                "ok": false,
-                                "error": error
-                            })),
-                        ));
+                        fail_update!(serde_json::json!({
+                            "ok": false,
+                            "error": error
+                        }));
                     }
                 }
 
                 #[cfg(not(target_os = "macos"))]
                 {
                     if let Err(e) = std::fs::create_dir_all(dest_dir) {
-                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                            warp::reply::json(&serde_json::json!({
-                                "ok": false,
-                                "error": format!("Failed create bin dir {}: {}", dest_dir.display(), e)
-                            })),
-                        ));
+                        fail_update!(serde_json::json!({
+                            "ok": false,
+                            "error": format!("Failed create bin dir {}: {}", dest_dir.display(), e)
+                        }));
                     }
 
                     if let Err(e) = copy_all_files(tmp_dir.path(), dest_dir) {
-                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                            warp::reply::json(&serde_json::json!({
-                                "ok": false,
-                                "error": format!("Failed copy release files to {}: {}", dest_dir.display(), e)
-                            })),
-                        ));
+                        fail_update!(serde_json::json!({
+                            "ok": false,
+                            "error": format!("Failed copy release files to {}: {}", dest_dir.display(), e)
+                        }));
                     }
 
                     if let Err(e) = configured_binary_path(dest_dir, binary_name, &dest_path) {
-                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                            warp::reply::json(&serde_json::json!({
-                                "ok": false,
-                                "error": format!("Failed prepare installed binary name: {}", e)
-                            })),
-                        ));
+                        fail_update!(serde_json::json!({
+                            "ok": false,
+                            "error": format!("Failed prepare installed binary name: {}", e)
+                        }));
                     }
 
                     if let Err(e) = cleanup_old_binaries(dest_dir).await {
@@ -1253,13 +1290,15 @@ fn api_llama_binary_update(
                             "[monitor] llama-binary/update: installed binary failed health check (llama-server --help): {}.",
                             detail
                         ));
-                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                            warp::reply::json(&serde_json::json!({
-                                "ok": false,
-                                "error": format!("Installed llama-server binary failed health check: {}", detail)
-                            })),
-                        ));
+                        fail_update!(serde_json::json!({
+                            "ok": false,
+                            "error": format!("Installed llama-server binary failed health check: {}", detail)
+                        }));
                     }
+                }
+
+                if let (Some(parent), Some(name)) = (dest_dir.parent(), dest_dir.file_name()) {
+                    sweep_old_bin_backups(parent, &name.to_string_lossy(), 2);
                 }
 
                 state.push_log(format!(

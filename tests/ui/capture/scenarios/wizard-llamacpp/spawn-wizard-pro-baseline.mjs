@@ -63,6 +63,7 @@ export default async function({ page, baseUrl }) {
     if (item.textContent === 'Model & compatibility') item.click();
   }));
   await sleep(150);
+  // INTENT: Pro rail Model & compatibility surface with shared canonical state.
   await captureShot(page, 'spawn-wizard-pro-model-compatibility.png', {
     fullPage: true,
     runtimeTag: 'llamacpp-local',
@@ -73,6 +74,7 @@ export default async function({ page, baseUrl }) {
     if (item.textContent === 'Generation & reasoning') item.click();
   }));
   await sleep(150);
+  // INTENT: Pro rail Generation & reasoning surface with shared canonical state.
   await captureShot(page, 'spawn-wizard-pro-generation-reasoning.png', {
     fullPage: true,
     runtimeTag: 'llamacpp-local',

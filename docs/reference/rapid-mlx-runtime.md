@@ -22,6 +22,11 @@ The managed runtime is designed with these goals:
 - No leakage of internal filesystem paths into API responses.
 - Capability-driven compatibility checks instead of hard-coded version allowlists.
 
+The wizard's launch-command preview resolves the active managed environment
+server-side when no managed path is supplied. Explicit executable overrides
+remain authoritative; otherwise discovery uses the managed runtime before PATH.
+The browser does not need to know the installed environment's filesystem path.
+
 ### Capability evidence
 
 Every launch re-runs bounded version, help, dependency, and optional-extra probes for
@@ -72,31 +77,20 @@ restart warm-start operation and is not offered as a memory-saving control.
 See [cache benchmark results](cache-benchmark-results.md) for the measured
 limits, runtime versions, and receipt locations.
 
-## Reasoning profile and KV cache dtype
+## KV cache dtype: bf16, always
 
-The installed `rapid-mlx serve --help` states this as upstream runtime behaviour, not
-a llama-monitor policy choice:
+Rapid-MLX cannot quantize the KV cache for hybrid GatedDeltaNet models: their
+cache is an `ArraysCache`, and rapid-mlx refuses quantized KV at startup
+("the loaded model is incompatible: ArraysCache") — measured on the stock
+text-only recipe model, not just multimodal finetunes. Every model in the
+curated catalog is hybrid, so **every Rapid-MLX launch serves bf16 KV**, and
+quantized-KV options are hidden for the Rapid-MLX engine rather than shown as
+dead dials. The VRAM estimator prices bf16 whenever the model is multimodal or
+hybrid and reports `kv_quant_supported: false` in the estimate response (see
+[vram-estimator.md](vram-estimator.md)).
 
-> "Reasoning profile: pins `--kv-cache-dtype` to int8 regardless of the dtype flag"
-
-Llama Monitor always launches with the reasoning profile on — the launched
-`reasoning_mode` setting is unconditionally `"on"` (`src/web/api/rapid_mlx_runtime.rs:749`;
-a stored legacy `off` is converted to `--no-thinking` rather than disabling the profile).
-This means the **effective active-KV dtype is `int8` for every Rapid-MLX launch**, not
-only for models the user thinks of as "reasoning models" — `reasoning_mode` sets the KV
-policy, it does not mean "show thinking."
-
-Because of this, `#spawn-kv-cache-dtype` in the wizard and preset editor is a read-only
-"Effective: int8 (reasoning profile)" readout in Guided. In Pro it remains selectable
-as a requested value, but any selection is immediately annotated with the requested→effective
-diff already computed by `build_requested_vs_effective()`
-(`src/web/api/rapid_mlx_runtime.rs:758`) — it must never look like a live knob when the
-runtime is going to override it. The VRAM estimator models this correctly
-(`reasoning_mode_overrides_kv_to_int8`, `rapid_mlx_runtime.rs:734`); the UI's job is to
-say the same thing the estimator already computes, not to re-derive it.
-
-An int8-vs-int4 KV comparison on this backend is not measurable with the current
-benchmark harness — this is a runtime-behaviour finding, not a missing test.
+The reasoning profile still forces the reasoning on/off preference at launch;
+it no longer has any KV-dtype effect to describe.
 
 ## TurboQuant and PFlash
 
@@ -104,8 +98,8 @@ Both are wired end-to-end in the launch config but deliberately withheld at laun
 neither is "in progress" or blocked on frontend work.
 
 **TurboQuant** cannot be combined with standard KV-cache quantization by design, and
-since the reasoning profile above pins standard KV to int8 on every launch, TurboQuant
-and the shipped default configuration are mutually exclusive by construction. The
+since every Rapid-MLX launch serves bf16 KV (see above), TurboQuant and the shipped
+default configuration are mutually exclusive by construction. The
 effective-policy mapper converts a requested `V4`/`K8V4` to `Off`
 (`rapid_mlx_runtime.rs:725-731`), and the launch-config builder passes
 `.turboquant_mode(None)` (`src/inference/rapid_mlx/mod.rs:1187`) — the requested value is
@@ -133,7 +127,8 @@ without a source-level fix upstream.
 
 ## Context-fit scenario axes
 
-With KV dtype pinned to int8, TurboQuant force-Off, and PFlash steered to off, the
+With KV dtype at bf16 (the only launchable value for hybrid models), TurboQuant
+force-Off, and PFlash steered to off, the
 levers that actually move Rapid-MLX unified-memory occupancy are context length
 (`n_ctx`, the dominant term at fixed int8 KV), concurrency (`max_num_seqs` ×
 `max_concurrent_requests`, which multiply active KV), the retained prompt-cache budget
@@ -299,19 +294,20 @@ Install is a single bounded transaction. From `updater.rs`:
    - Ensure `uv-cache/` and `uv-python/` exist and are app-owned.
 
 4. uv install:
+
 - Runs (recommended default):
   - `uv tool install 'rapid-mlx[guided,vision]==<version>'`
-   - Environment:
-     - `env_clear()` then restore only:
-       - `PATH`
-       - `SSL_CERT_FILE`
-       - `SSL_CERT_DIR`
-     - Sets:
-       - `UV_TOOL_DIR` → `environments/<id>/tool`
-       - `UV_TOOL_BIN_DIR` → `environments/<id>/bin`
-       - `UV_CACHE_DIR` → `uv-cache`
-       - `UV_PYTHON_INSTALL_DIR` → `uv-python`
-       - `UV_NO_CONFIG=1`, `UV_NO_PROGRESS=1`, `NO_COLOR=1`
+  - Environment:
+    - `env_clear()` then restore only:
+      - `PATH`
+      - `SSL_CERT_FILE`
+      - `SSL_CERT_DIR`
+    - Sets:
+      - `UV_TOOL_DIR` → `environments/<id>/tool`
+      - `UV_TOOL_BIN_DIR` → `environments/<id>/bin`
+      - `UV_CACHE_DIR` → `uv-cache`
+      - `UV_PYTHON_INSTALL_DIR` → `uv-python`
+      - `UV_NO_CONFIG=1`, `UV_NO_PROGRESS=1`, `NO_COLOR=1`
 - Flags:
   - `--no-config --link-mode copy --no-progress --no-color`
 
@@ -332,7 +328,7 @@ deserialize as an empty core-only profile and therefore never imply vision
 support; the resolved dependency receipt and capability probe provide the
 installed/effective evidence.
 
-5. Binary resolution and integrity:
+1. Binary resolution and integrity:
    - On Unix:
      - Expected: `tool/rapid-mlx/bin/rapid-mlx`
    - Confirms file exists, then:
@@ -340,7 +336,7 @@ installed/effective evidence.
      - Probes the binary for its version and serve capabilities via
        `probe_published_managed_release`.
 
-6. Manifest:
+2. Manifest:
    - Writes `manifest.json` (atomic, with file hardening) containing:
      - `schema_version`
      - `environment_id`
@@ -352,14 +348,14 @@ installed/effective evidence.
      - `compatibility_state: "verified"`
    - Creates `.complete` (empty file, must be zero-length).
 
-7. Activation:
+3. Activation:
    - Re-validates the environment (paths, symlink safety, hashes, manifest).
    - Atomically writes `current.json`:
      - New `active_environment_id` = this environment.
      - `previous_environment_id` = previous active (for rollback).
    - The response is constructed before `current.json` is written.
 
-8. Cleanup:
+4. Cleanup:
    - After activation, removes any complete environments that are neither
      active nor previous.
    - Retention cleanup errors never override a successful activation.
@@ -451,7 +447,10 @@ Rapid-MLX uses a capability-driven, versioned release model.
 
 Policy:
 
-- Minimum allowed stable version: `0.10.9` (hard-coded floor).
+- Minimum allowed stable version: `0.10.9`. This is a floor for the serve flags the app
+  depends on, not a target. Upstream releases almost daily, so no "latest qualified" or
+  rollback version is recorded anywhere; every runtime at or above the floor is judged by the
+  live capability probe.
 - Stable releases:
   - Default channel.
   - Any exact published stable release ≥ floor can activate,
@@ -503,7 +502,14 @@ Timeouts:
 All long-running mutations are executed as background jobs via the API. Clients:
 
 - Receive a `job_id` on submission.
-- Poll `/api/rapid-mlx/runtime/jobs/:id` for state and messages.
+- Poll `/api/rapid-mlx/runtime/jobs/:id` for state and messages. The route returns the job
+  snapshot itself, and `complete` is the success state (`queued`, `running`, `complete`, `failed`).
+
+The Settings manager shows the job's message and elapsed time while it runs, then refreshes the
+header, the nav version pill, and the release list when the job ends. The server logs each
+job's start, the `uv tool install` command and its timeout, the elapsed time and exit status, and
+the tail of uv's stderr on failure. API replies stay fixed, path-free messages; the detail is
+terminal-only.
 
 ## Diagnostics and redaction
 
@@ -567,3 +573,11 @@ This guarantees that logs, UI, and HTTP responses do not reveal:
     - Rollback: `ROLLBACK_RAPID_MLX_RUNTIME`
 - On non-Apple-Silicon platforms:
   - Mutations respond with `400` and a clear platform-restriction message.
+
+## Uninstall
+
+The manage dialog's Uninstall action removes every managed environment and the
+active pointer; downloaded models are kept. The same contract covers the
+llama.cpp binary (`DELETE /api/llama-binary/uninstall`).
+
+![Runtime uninstall confirm](../screenshots/rapidmlx-local--runtime-uninstall-confirm.png)

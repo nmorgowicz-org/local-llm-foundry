@@ -13,6 +13,7 @@ import {
   updateAdvisor, fetchGpuVram, fetchMetalGpuLimit, scheduleVramUpdate,
 } from './spawn-wizard.js';
 import { _platformInfo } from './spawn-wizard-binary-prereq.js';
+import { setHtml } from '../core/set-html.js';
 import {
   CTX_TARGETS, updateCtxModelMaxHint, updateCtxQuickPickActive, updateCtxTrainWarning,
 } from './spawn-wizard-context-fit.js';
@@ -75,6 +76,20 @@ export function updateVramDisplay() {
   const availVram = effectiveAvailBytes();
   if (!dom.vramPanel) return;
 
+  // Explain must respond even before an estimate arrives (or when one fails) —
+  // a dead button reads as a broken pane. Without data, say so instead of
+  // opening an empty drawer.
+  const explain = document.getElementById('wizard-vram-explain');
+  if (explain) {
+    explain.onclick = () => {
+      if (lastEstimateForExplain) {
+        openEstimateEvidenceDrawer(lastEstimateForExplain, 'Setup memory estimate', explain);
+      } else {
+        showToast('No memory estimate yet — pick a model first, then try again.', 'warning');
+      }
+    };
+  }
+
   const hw = wizardState.hardware;
   const arch = getSizingArch();
   const modelBytes = getModelBytes();
@@ -86,6 +101,11 @@ export function updateVramDisplay() {
       ? 0
       : Math.max(0, cachedRamTotal - cachedRamUsed);
     wizardState.vram.isUnifiedMemory = isUnifiedMemory();
+
+  // The current-context rail summary must respond to context changes even when
+  // scenario cards can't render (no model bytes yet, panel absent, MLX path) —
+  // it reads wizard state directly and costs nothing.
+  updateContextRailSummary();
 
   // Always render scenario cards so the UI doesn't go blank when the backend is unavailable.
   // renderScenarioCards will degrade gracefully if individual estimates fail.
@@ -106,6 +126,7 @@ export function updateVramDisplay() {
       updateCtxTrainWarning();
     }
 
+    lastEstimateForExplain = est;
     const total = est.total_bytes;
     const headroom = est.headroom_bytes || 0;
     const free = headroom; // backend headroom_bytes = available - total
@@ -120,11 +141,8 @@ export function updateVramDisplay() {
     const kv = hasKVSplit ? 0 : (est.kv_cache_bytes || 0); // unified KV when no split
     const mmproj = est.mmproj_bytes || 0;
     const mtp = est.mtp_bytes || 0;
-    const linearState = est.linear_attn_state_bytes || 0;
     const tqTransient = est.turboquant_transient_peak_bytes || 0;
     const oh = est.overhead_bytes || 0;
-    const ramBytes = est.ram_bytes || 0;
-    const recommendation = est.recommendation || 'risk';
     // Phase 6 Part B: prefix cache budget display (informational, not consumed until active).
     // Show when budget exists (backend returns > 0 when configured_ceiling_bytes > 0).
     const prefixCacheBudget = est.mlx_prefix_cache_bytes || 0;
@@ -138,20 +156,34 @@ export function updateVramDisplay() {
         : '';
     const note = (est.note || '') + evidenceSuffix;
 
-    const explain = document.getElementById('wizard-vram-explain');
-    if (explain) explain.onclick = () => openEstimateEvidenceDrawer(est, 'Setup memory estimate', explain);
-
     updateMlockWarning(availVram, free);
+
+    // Plain-language explainer: on unified memory the scarce resource is what
+    // macOS hasn't already given to apps, not the hardware total. Say so.
+    const explainer = dom.vramFreeExplainer;
+    if (explainer) {
+      if (isUnifiedMemory() && cachedRamTotal > 0 && availVram > 0) {
+        const usedBySystem = Math.max(0, cachedRamTotal - availVram);
+        const usedGib = (usedBySystem / (1024 ** 3)).toFixed(0);
+        explainer.textContent = free >= 0
+          ? `macOS and your running apps are already using ~${usedGib} GB of ${formatVramTotal(cachedRamTotal)}. Only ${formatVramTotal(availVram)} is free to load models — quitting apps raises this.`
+          : `Over by ${formatGB(-free)}: macOS and your running apps already use ~${usedGib} GB of ${formatVramTotal(cachedRamTotal)}, leaving ${formatVramTotal(availVram)} for models. Reduce context or the retained cache below, or quit apps to free more.`;
+        explainer.style.display = '';
+      } else {
+        explainer.style.display = 'none';
+      }
+    }
 
     // Update total label — leads with the model's estimated usage (what the bar
     // graph actually represents) rather than just the ceiling, since the ceiling
     // alone gives no sense of how much of it this model will consume.
     if (dom.vramPanelTotal) {
       if (availVram > 0) {
-        const usedOfTotal = `${formatGB(total)} / ${formatVramTotal(availVram)}`;
+        const usedOfTotal = `${formatGB(total)} estimated / ${formatVramTotal(availVram)} free`;
         if (isUnifiedMemory() && cachedRamTotal > 0) {
+          const capGb = (metalCap(cachedRamTotal) / (1024 ** 3)).toFixed(0);
           dom.vramPanelTotal.textContent =
-            usedOfTotal + ' (Metal cap of ' + formatVramTotal(cachedRamTotal) + ' total)';
+            usedOfTotal + ` — ${formatVramTotal(cachedRamTotal)} machine (GPU cap ${capGb} GB)`;
         } else {
           dom.vramPanelTotal.textContent = usedOfTotal;
         }
@@ -226,7 +258,7 @@ export function updateVramDisplay() {
     // Phase 6 Part B: show prefix cache budget legend when budget exists.
     if (prefixCacheBudget > 0) {
       if (dom.vLegPrefixCacheItem) dom.vLegPrefixCacheItem.style.display = '';
-      if (dom.vLegPrefixCacheLabel) dom.vLegPrefixCacheLabel.textContent = `Rapid retained cache ${formatGB(prefixCacheBudget)}`;
+      if (dom.vLegPrefixCacheLabel) dom.vLegPrefixCacheLabel.textContent = `Retained prefix cache ${formatGB(prefixCacheBudget)} (reserved on launch — lower it in Rapid-MLX settings)`;
     } else {
       if (dom.vLegPrefixCacheItem) dom.vLegPrefixCacheItem.style.display = 'none';
     }
@@ -437,6 +469,9 @@ function updateContextRailSummary() {
 // already-empty container and both calls go on to append their own set of
 // cards — doubling the grid. This token makes a stale call's append a no-op.
 let scenarioCardsRenderToken = 0;
+// Most recent successful /api/vram-estimate response, for the Explain button —
+// it must work even when a later estimate attempt fails or is still in flight.
+let lastEstimateForExplain = null;
 
 async function renderScenarioCards(modelBytes, arch, availVram) {
   if (!dom.vramScenarios || !availVram || !modelBytes) return;
@@ -447,7 +482,7 @@ async function renderScenarioCards(modelBytes, arch, availVram) {
   return renderLlamaCppScenarioCards(modelBytes, arch, availVram, token);
 }
 
-async function renderLlamaCppScenarioCards(modelBytes, arch, availVram, token) {
+async function renderLlamaCppScenarioCards(_modelBytes, _arch, availVram, token) {
   const hw = wizardState.hardware;
   const uc = wizardState.useCase;
   const nCtxTrain = wizardState.model.nCtxTrain || 0;
@@ -486,7 +521,7 @@ async function renderLlamaCppScenarioCards(modelBytes, arch, availVram, token) {
     },
   ];
 
-  dom.vramScenarios.innerHTML = '';
+  setHtml(dom.vramScenarios, '');
   const activeQuant = hw.cacheTypeK === '' ? 'f16' : (hw.cacheTypeK || 'q8_0');
 
   // For each scenario, ask the backend if current context fits with that KV quant.
@@ -526,7 +561,7 @@ async function renderLlamaCppScenarioCards(modelBytes, arch, availVram, token) {
   );
 
   if (token !== scenarioCardsRenderToken) return;
-  dom.vramScenarios.innerHTML = '';
+  setHtml(dom.vramScenarios, '');
 
   for (let i = 0; i < scenarios.length; i++) {
     const s = scenarios[i];
@@ -563,8 +598,8 @@ async function renderLlamaCppScenarioCards(modelBytes, arch, availVram, token) {
     const limitNote = cappedByModel && selectable ? '<span class="vsc-limit-note">model max</span>' : '';
 
     // All values are internal constants — no user input reaches this template.
-    // eslint-disable-next-line no-unsanitized/property
-    card.innerHTML = `
+
+    setHtml(card, `
       <div class="vsc-mode-name">${s.mode}</div>
       <div class="vsc-mode-detail">${s.detail}</div>
       <div class="vsc-ctx-row">
@@ -578,7 +613,7 @@ async function renderLlamaCppScenarioCards(modelBytes, arch, availVram, token) {
       ${s.warnAgentic ? '<span class="vsc-warn">⚠ Not ideal for tool-heavy agents</span>' : ''}
       ${over ? '<span class="vsc-warn">⚠ may not fit current context</span>' : ''}
       <span class="vsc-footnote">KV cache: ${s.kk}/${s.kv}</span>
-    `;
+    `);
 
     if (selectable) {
       const applyScenario = () => {
@@ -645,7 +680,7 @@ const MLX_SCENARIOS = [
   },
 ];
 
-async function renderMlxScenarioCards(modelBytes, arch, availVram, token) {
+async function renderMlxScenarioCards(modelBytes, _arch, availVram, token) {
   const hw = wizardState.hardware;
   const currentCtx = hw.contextSize || 8192;
   const activeMaxNumSeqs = hw.parallelSlots || 1;
@@ -690,7 +725,7 @@ async function renderMlxScenarioCards(modelBytes, arch, availVram, token) {
   );
 
   if (token !== scenarioCardsRenderToken) return;
-  dom.vramScenarios.innerHTML = '';
+  setHtml(dom.vramScenarios, '');
 
   // Fixed facts, rendered once — not per-card, since none of them vary across these cards.
   const facts = document.createElement('div');
@@ -725,15 +760,15 @@ async function renderMlxScenarioCards(modelBytes, arch, availVram, token) {
     if (over) desc = 'At your current context, this may not fit VRAM. Lower context or reduce concurrency.';
     else if (isTight) desc = `${s.detail} Fits, but leaves little headroom.`;
 
-    // eslint-disable-next-line no-unsanitized/property
-    card.innerHTML = `
+
+    setHtml(card, `
       <div class="vsc-mode-name">${s.mode}</div>
       <div class="vsc-mode-detail">max_num_seqs: ${s.maxNumSeqs} · retained: ${s.retainedCacheMib > 0 ? formatGB(s.retainedCacheMib * 1024 * 1024) : '0'}</div>
       <div class="vsc-desc">${desc}</div>
       ${s.rec ? '<span class="vsc-rec-badge">★ Recommended</span>' : ''}
       ${isActive ? '<span class="vsc-active-badge">✓ Active</span>' : ''}
       ${over ? '<span class="vsc-warn">⚠ may not fit current context</span>' : ''}
-    `;
+    `);
 
     if (selectable) {
       const applyScenario = () => {

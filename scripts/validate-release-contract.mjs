@@ -24,19 +24,9 @@ const canonical = [
     'local-llm-foundry-windows-x86_64.zip',
     'local-llm-foundry-macos-aarch64.tar.gz',
 ];
-const legacy = canonical.map((name) => name.replaceAll('local-llm-foundry', 'llama-monitor'));
 
 function fail(message) {
     throw new Error(message);
-}
-
-// True once policyVersion is 2.1.0 or later (legacy llama-monitor-* assets retired).
-function dropsLegacyAssets(policyVersion) {
-    const parts = policyVersion.split('.').map((n) => parseInt(n, 10));
-    const [major, minor, patch] = [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0];
-    if (major !== 2) return major > 2;
-    if (minor !== 1) return minor > 1;
-    return patch >= 0;
 }
 
 function sha256(file) {
@@ -58,8 +48,7 @@ function archiveEntries(file) {
 }
 
 function validateAssets(root, releaseVersion) {
-    const policyVersion = releaseVersion.replace(/^v/, '');
-    const names = dropsLegacyAssets(policyVersion) ? canonical : [...canonical, ...legacy];
+    const names = canonical;
     const checksumsPath = path.join(root, 'checksums.json');
     if (!fs.existsSync(checksumsPath)) fail('checksums.json is missing');
     const checksums = JSON.parse(fs.readFileSync(checksumsPath, 'utf8'));
@@ -73,7 +62,6 @@ function validateAssets(root, releaseVersion) {
     }
     const windowsChecks = [
         ['local-llm-foundry-windows-x86_64.zip', ['local-llm-foundry.exe', 'sensor_bridge.exe', 'WebView2Loader.dll']],
-        ['llama-monitor-windows-x86_64.zip', ['llama-monitor.exe', 'sensor_bridge.exe', 'WebView2Loader.dll']],
     ];
     for (const [name, required] of windowsChecks) {
         if (!names.includes(name)) continue;
@@ -82,7 +70,6 @@ function validateAssets(root, releaseVersion) {
     }
     for (const [name, payload] of [
         ['local-llm-foundry-macos-aarch64.tar.gz', 'local-llm-foundry-macos-aarch64'],
-        ['llama-monitor-macos-aarch64.tar.gz', 'llama-monitor-macos-aarch64'],
     ]) {
         if (!names.includes(name)) continue;
         if (!archiveEntries(path.join(root, name)).includes(payload)) fail(`${name} has the wrong payload filename`);
@@ -92,17 +79,38 @@ function validateAssets(root, releaseVersion) {
 
 function selfTest() {
     const fixture = JSON.parse(fs.readFileSync(path.join(repo, 'scripts/fixtures/release-contract/bridge-fixture.json'), 'utf8'));
-    if (fixture.legacy_parser_assets.some((name) => !legacy.includes(name))) fail('frozen legacy parser fixture drifted');
     if (fixture.canonical_assets.some((name) => !canonical.includes(name))) fail('canonical asset fixture drifted');
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'foundry-release-contract-'));
-    for (const name of [...canonical, ...legacy]) fs.writeFileSync(path.join(temp, name), `${name}\n`);
-    const checksums = { version: '2.0.0', checksums: {} };
-    for (const name of [...canonical, ...legacy]) checksums.checksums[name] = sha256(path.join(temp, name));
-    fs.writeFileSync(path.join(temp, 'checksums.json'), `${JSON.stringify(checksums)}\n`);
-    // The fixture validates names/checksum coverage; archive contents are tested
-    // by the real release directory path above and by the committed entry lists.
-    if (Object.keys(checksums.checksums).length !== 8) fail('bridge fixture did not produce eight assets');
-    console.log('PASS: frozen 1.x parser and positive/negative checksum fixtures');
+    try {
+        const payload = path.join(temp, 'payload');
+        fs.mkdirSync(payload);
+        for (const name of ['local-llm-foundry.exe', 'sensor_bridge.exe', 'WebView2Loader.dll', 'local-llm-foundry-macos-aarch64']) {
+            fs.writeFileSync(path.join(payload, name), `${name}\n`);
+        }
+        const zip = spawnSync('zip', ['-j', path.join(temp, canonical[2]), ...['local-llm-foundry.exe', 'sensor_bridge.exe', 'WebView2Loader.dll'].map((name) => path.join(payload, name))]);
+        const tar = spawnSync('tar', ['-czf', path.join(temp, canonical[3]), '-C', payload, 'local-llm-foundry-macos-aarch64']);
+        if (zip.status !== 0 || tar.status !== 0) fail('could not assemble release fixture archives');
+        for (const name of canonical.slice(0, 2)) fs.writeFileSync(path.join(temp, name), `${name}\n`);
+        const checksums = { version: '2.1.2', checksums: {} };
+        for (const name of canonical) checksums.checksums[name] = sha256(path.join(temp, name));
+        const save = () => fs.writeFileSync(path.join(temp, 'checksums.json'), `${JSON.stringify(checksums)}\n`);
+        save();
+        validateAssets(temp, checksums.version);
+        checksums.checksums['llama-monitor-linux-x86_64'] = 'retired';
+        save();
+        let rejected = false;
+        try { validateAssets(temp, checksums.version); } catch { rejected = true; }
+        if (!rejected) fail('legacy asset unexpectedly accepted');
+        delete checksums.checksums['llama-monitor-linux-x86_64'];
+        checksums.checksums[canonical[0]] = 'bad checksum';
+        save();
+        rejected = false;
+        try { validateAssets(temp, checksums.version); } catch { rejected = true; }
+        if (!rejected) fail('invalid checksum unexpectedly accepted');
+        console.log('PASS: canonical archive/checksum fixtures and legacy rejection');
+    } finally {
+        fs.rmSync(temp, { recursive: true, force: true });
+    }
 }
 
 try {

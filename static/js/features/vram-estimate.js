@@ -5,7 +5,7 @@
 // canonical builder with matching parameters so all surfaces display identical
 // MemoryBreakdown values for the same model/context/backend.
 
-import { showToast } from './toast.js';
+import './toast.js';
 import {
   RAPID_MLX_DEFAULT_SPECULATIVE_TOKENS,
   RAPID_MLX_TEXT_PREFILL_STEP_SIZE,
@@ -15,6 +15,7 @@ import {
 let debounce = null;
 let currentRequestId = 0;
 
+const slotRequestIds = new Map();
 // Extract the persisted Rapid settings which materially change an estimate.
 // Keeping this at the canonical request boundary prevents the wizard, preset
 // editor, and welcome cards from quietly using different defaults.
@@ -215,13 +216,21 @@ function buildEstimateBodyFromWizardState(state) {
     is_unified_memory: state.vram?.isUnifiedMemory || false,
     mmproj_path: m.mmprojPath || '',
     mmproj_bytes: m.mmprojBytes || 0,
-    hf_repo_id: m.originRepo || null,
+    // A typed or handed-off Rapid-MLX repo has no originRepo (that is set from a local
+    // model's provenance), so fall back to the repo the user actually chose. Without it
+    // fetchEstimate bails before calling the server and the memory estimate stays blank.
+    hf_repo_id: m.originRepo
+      || (backend === 'rapid_mlx' && !modelPath ? (m.hfRepo || null) : null),
     hf_file_path: m.hfFile || null,
     model_size_bytes: m.modelBytes || null,
     // Rapid execution policy fields (when wizard populates them).
     ...rapidEstimatePolicyFromWizardHardware(hw),
     // Explicit planning fields are intentionally separate from the profile ID.
-    rapid_planning_context_tokens: hw.rapidPlanningContextTokens || null,
+    // The context the user picks on the hardware step IS the planning context:
+    // without it the backend fills planning tokens from the workload scenario
+    // (e.g. 128k for the agent scenario) and the context input stops affecting
+    // the active-KV estimate entirely.
+    rapid_planning_context_tokens: hw.rapidPlanningContextTokens || hw.contextSize || null,
     rapid_retained_cache_tokens: hw.rapidRetainedCacheTokens || null,
     client_type: hw.clientType || null,
   });
@@ -231,18 +240,24 @@ function buildEstimateBodyFromWizardState(state) {
 export function scheduleEstimate(
   wizardState,
   onEstimate,
-  { debounceMs = 120, force = false } = {},
+  { debounceMs = 120, force = false, slot = '' } = {},
 ) {
   if (debounce && !force) {
     clearTimeout(debounce);
   }
 
-  const reqId = ++currentRequestId;
+  // Staleness is judged per slot. With one global counter, any other surface asking for an
+  // estimate a moment later (the main VRAM panel, for instance) made this caller's response
+  // look stale and silently dropped it, leaving that surface blank. Callers that render into
+  // their own element pass a slot; callers without one keep sharing the default slot.
+  const reqId = slot ? (slotRequestIds.get(slot) || 0) + 1 : ++currentRequestId;
+  if (slot) slotRequestIds.set(slot, reqId);
 
   const doWork = async () => {
     const body = buildEstimateBodyFromWizardState(wizardState);
     const est = await fetchEstimate(body);
-    if (reqId === currentRequestId) {
+    const latest = slot ? slotRequestIds.get(slot) : currentRequestId;
+    if (reqId === latest) {
       onEstimate(est);
     }
   };

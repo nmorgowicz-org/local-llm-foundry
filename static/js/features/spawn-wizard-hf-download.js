@@ -107,7 +107,7 @@ export function bindHfDownloadPanel() {
 }
 
 // Called by hfStartDownload onComplete when download finishes.
-function onHfDownloadComplete(downloadId, localPath) {
+function onHfDownloadComplete(_downloadId, localPath) {
   const effectivePath = localPath;
   if (!effectivePath) return;
 

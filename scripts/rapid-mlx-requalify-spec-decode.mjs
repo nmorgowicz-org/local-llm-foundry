@@ -383,15 +383,13 @@ function installedVersion(bin) {
 // report with an argument error that looks like the report's fault.
 function resolveMonitorBin() {
   if (process.env.LLAMA_MONITOR_BIN) return process.env.LLAMA_MONITOR_BIN;
-  const built = ['release', 'debug'].flatMap((profile) =>
-    ['local-llm-foundry', 'llama-monitor']
-      .map((name) => resolve('target', profile, name))
-  )
+  const built = ['release', 'debug']
+    .map((profile) => resolve('target', profile, 'local-llm-foundry'))
     .filter((candidate) => existsSync(candidate))
     .map((candidate) => ({ candidate, mtime: statSync(candidate).mtimeMs }))
     .sort((left, right) => right.mtime - left.mtime);
   if (built.length) return built[0].candidate;
-  for (const name of ['local-llm-foundry', 'llama-monitor']) {
+  for (const name of ['local-llm-foundry']) {
     const which = spawnSync('command', ['-v', name], { encoding: 'utf8', shell: true });
     const found = (which.stdout ?? '').trim();
     if (found) return found;
@@ -407,7 +405,7 @@ function resolveMonitorBin() {
 function ingestReport(path) {
   const bin = resolveMonitorBin();
   if (!bin) {
-    process.stderr.write('\nNo llama-monitor binary found to record the verdict with.\n');
+    process.stderr.write('\nNo local-llm-foundry binary found to record the verdict with.\n');
     return false;
   }
   process.stderr.write(`\nRecording the verdict via ${bin}\n`);
@@ -727,7 +725,7 @@ if (options.ingest) {
 } else {
   process.stderr.write(
     '\n--no-ingest: verdict not recorded. To record it later:\n'
-    + `  llama-monitor --ingest-spec-decode-report ${reportPath}\n`,
+    + `  local-llm-foundry --ingest-spec-decode-report ${reportPath}\n`,
   );
 }
 if (report.promotes_capability) {

@@ -422,57 +422,6 @@ function showWarningModal(overlay) {
     });
 }
 
-// ── LHM Status Check ──────────────────────────────────────────────────────────
-
-async function checkLHMAndPrompt() {
-    if (navigator.platform.indexOf('Win') === -1) return;
-
-    let isDisabled = false;
-    try {
-        const statusResp = await fetch('/api/lhm/status');
-        if (statusResp.ok) {
-            const statusData = await statusResp.json();
-            isDisabled = statusData.disabled;
-        }
-    } catch (err) { /* Config doesn't exist or error */ }
-
-    let lhmAvailable = false;
-    try {
-        const checkResp = await fetch('/api/lhm/check');
-        if (checkResp.ok) {
-            const checkData = await checkResp.json();
-            lhmAvailable = checkData.available || false;
-        }
-    } catch (err) { /* API not available */ }
-
-    const sysRowsEl = document.getElementById('system-rows');
-    if (sysRowsEl) {
-        const isWindows = navigator.platform.indexOf('Win') !== -1;
-
-        let tempColumn = '';
-        if (isWindows) {
-            if (lhmAvailable) {
-                tempColumn = '<td class="value temp" id="lhm-temp-col">—</td>';
-            } else if (isDisabled) {
-                tempColumn = '<td class="value temp" id="lhm-temp-col"><button class="btn-lhm-inline need-attention" data-lhm-action="show" title="Install LibreHardwareMonitor for CPU temp monitoring">&#9971;</button></td>';
-            } else {
-                tempColumn = '<td class="value temp" id="lhm-temp-col"><button class="btn-lhm-inline" data-lhm-action="show" title="Install LibreHardwareMonitor for CPU temp monitoring">&#9971;</button></td>';
-            }
-        } else {
-            tempColumn = '<td class="value temp">—</td>';
-        }
-
-        const currentRow = sysRowsEl.querySelector('tr');
-        if (currentRow) {
-            const existingCells = currentRow.querySelectorAll('td');
-            if (existingCells.length >= 2) {
-                // eslint-disable-next-line no-unsanitized/property -- tempColumn is built entirely from hardcoded HTML strings with no external data
-                existingCells[1].outerHTML = tempColumn;
-            }
-        }
-    }
-}
-
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export function initLHM() {

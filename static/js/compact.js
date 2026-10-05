@@ -281,7 +281,7 @@ ws.onmessage = function(e) {
     let d;
     try {
         d = JSON.parse(e.data);
-    } catch(err) { return; }
+    } catch(_err) { return; }
 
     updateStatus(d.server_running);
 

@@ -89,13 +89,45 @@ fn safetensors_dtype_bytes(dtype: &str) -> f64 {
 /// Compute total weight bytes from a search result's `safetensors.parameters` map
 /// (present when the request includes `expand[]=safetensors`). Avoids the need
 /// for a separate per-repo HF tree-API call for the common case.
+///
+/// Returns `None` for repos holding packed integer weights (`U32`/`I32`, as MLX
+/// quantized repos do): the map counts *elements*, and each 32-bit word packs several
+/// low-bit weights, so elements × 4 bytes overstates the size about 7× for 4-bit. The
+/// caller then falls back to the exact file sizes from the tree API.
 fn safetensors_total_bytes(item: &serde_json::Value) -> Option<u64> {
     let params = item.get("safetensors")?.get("parameters")?.as_object()?;
+    if params
+        .keys()
+        .any(|d| matches!(d.to_ascii_uppercase().as_str(), "U32" | "I32"))
+    {
+        return None;
+    }
     let mut total = 0.0_f64;
     for (dtype, count) in params {
         total += count.as_u64()? as f64 * safetensors_dtype_bytes(dtype);
     }
     (total > 0.0).then_some(total as u64)
+}
+
+#[cfg(test)]
+mod safetensors_size_tests {
+    use super::safetensors_total_bytes;
+    use serde_json::json;
+
+    #[test]
+    fn bf16_repo_is_sized_from_parameters() {
+        let item = json!({"safetensors": {"parameters": {"BF16": 1000}}});
+        assert_eq!(safetensors_total_bytes(&item), Some(2000));
+    }
+
+    #[test]
+    fn packed_mlx_weights_defer_to_exact_file_sizes() {
+        // nightmedia/Qwen3.8-27B-MindMeld-AREX-mxfp4-mlx: 26.9B packed U32 elements
+        // is a ~15 GB repo, not 107 GB.
+        let item =
+            json!({"safetensors": {"parameters": {"U32": 26893352960u64, "BF16": 463375600u64}}});
+        assert_eq!(safetensors_total_bytes(&item), None);
+    }
 }
 
 // ── Search sort options ───────────────────────────────────────────────────────
@@ -1131,7 +1163,10 @@ async fn hf_search_single(
         }
         match params.format {
             HfModelFormat::Gguf => p.append_pair("apps", "llama.cpp"),
-            HfModelFormat::Mlx => p.append_pair("apps", "mlx-lm"),
+            // `apps=mlx-lm` only matches repos whose library metadata says so, which
+            // silently drops recent MLX uploads tagged `transformers` or `any-to-any`.
+            // The `mlx` tag is what the Hub itself uses for MLX repositories.
+            HfModelFormat::Mlx => p.append_pair("filter", "mlx"),
             HfModelFormat::Both => unreachable!(), // handled in hf_search_both
         };
         if matches!(params.format, HfModelFormat::Mlx) {
@@ -1220,7 +1255,8 @@ async fn hf_search_both(
         if let Some(ref cursor) = params.cursor {
             p.append_pair("cursor", cursor);
         }
-        p.append_pair("apps", "llama.cpp,mlx-lm");
+        // No `apps` filter: the Hub cannot OR `llama.cpp` with `mlx`, and `apps=mlx-lm`
+        // hides recent MLX repos. Results are narrowed by tag after the request.
         p.append_pair("expand[]", "safetensors");
     }
 
@@ -1258,6 +1294,15 @@ async fn hf_search_both(
 
     let mut models: Vec<SimpleModelInfo> = items
         .into_iter()
+        .filter(|item| {
+            item.get("tags")
+                .and_then(|t| t.as_array())
+                .is_some_and(|tags| {
+                    tags.iter()
+                        .filter_map(|t| t.as_str())
+                        .any(|t| t.eq_ignore_ascii_case("mlx") || t.eq_ignore_ascii_case("gguf"))
+                })
+        })
         .filter_map(|item| parse_model_item(item, &HfModelFormat::Both))
         .collect();
 
@@ -3589,7 +3634,7 @@ async fn fetch_mlx_relation_derivatives(repo_id: &str) -> Result<Vec<SimpleModel
     {
         let mut p = url.query_pairs_mut();
         p.append_pair("filter", &format!("base_model:quantized:{base_model}"));
-        p.append_pair("apps", "mlx-lm");
+        p.append_pair("filter", "mlx");
         p.append_pair("limit", "50");
         p.append_pair("expand[]", "safetensors");
     }

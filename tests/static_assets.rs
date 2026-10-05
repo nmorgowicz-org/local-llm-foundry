@@ -66,3 +66,37 @@ fn production_svg_has_no_raster_or_executable_content() {
     }
     assert!(svg.contains("Token Ingot"));
 }
+
+#[test]
+fn tray_template_preserves_layer_and_ingot_cutouts() {
+    let decoder = png::Decoder::new(std::io::Cursor::new(
+        static_assets::TOKEN_INGOT_TRAY_TEMPLATE_44_PNG,
+    ));
+    let mut reader = decoder.read_info().expect("tray template is a PNG");
+    let mut buffer = vec![0; reader.output_buffer_size().unwrap()];
+    let output = reader.next_frame(&mut buffer).unwrap();
+    assert_eq!((output.width, output.height), (44, 44));
+    assert_eq!(output.color_type, png::ColorType::Rgba);
+    let alpha = |x: usize, y: usize| buffer[(y * 44 + x) * 4 + 3];
+    // These holes, not RGB shading, are what survives macOS template tinting.
+    for (x, y) in [(0, 0), (22, 18), (22, 25), (18, 28), (22, 38)] {
+        assert_eq!(alpha(x, y), 0, "missing template cutout at {x},{y}");
+    }
+    for (x, y) in [(22, 8), (22, 28), (10, 33)] {
+        assert_eq!(alpha(x, y), 255, "missing solid face at {x},{y}");
+    }
+}
+
+#[tokio::test]
+async fn tray_template_is_registered_as_png_bytes() {
+    let response = warp::test::request()
+        .path("/brand/token-ingot-tray-template-44.png")
+        .reply(&static_routes())
+        .await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["content-type"], "image/png");
+    assert_eq!(
+        response.body(),
+        static_assets::TOKEN_INGOT_TRAY_TEMPLATE_44_PNG
+    );
+}

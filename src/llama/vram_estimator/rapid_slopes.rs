@@ -24,13 +24,25 @@ pub fn rapid_active_kv_bytes_per_token(arch: &ModelArch, dtype: KvCacheDtype) ->
         // base_bf16 = 132400 / (16*4) = 2062.5
         // base_int8 = 103300 / (16*4) = 1614.1
         // base_int4 = 86100  / (16*4) = 1345.3
+        //
+        // The bases embed the calibration geometry (head_dim 256). Re-verified
+        // 2026-10-04 against rapid-mlx 0.15.5 on a 16-attn/4-kv/head_dim-256
+        // checkpoint: a single 185,576-token prefill peaked at ~127 B/token
+        // bf16 — the ~2× factor over the naive K+V analytic (65,536) is real
+        // runtime allocation, not measurement error. Models with a different
+        // head_dim scale linearly from the calibrated geometry.
         let effective = arch.n_attn_layers.max(1) as f64 * arch.n_kv_heads.max(1) as f64;
         let base = match dtype {
             KvCacheDtype::Bf16 => 2062.5,
             KvCacheDtype::Int8 => 1614.1,
             KvCacheDtype::Int4 => 1345.3,
         };
-        base * effective
+        let head_dim_scale = if arch.head_dim > 0 {
+            arch.head_dim as f64 / 256.0
+        } else {
+            1.0
+        };
+        base * effective * head_dim_scale
     } else if arch.has_local_attn() {
         // Sliding window: only global layers grow at long context.
         // base_bf16 = 45900 / (5*2) = 4590.0
@@ -720,6 +732,25 @@ mod tests {
             (slope - expected).abs() < 1.0,
             "Sliding window slope {slope} should use n_global_attn_layers={}",
             arch.n_global_attn_layers
+        );
+    }
+
+    #[test]
+    fn hybrid_slope_scales_with_head_dim() {
+        let mut arch = qwen36_27b_arch();
+        assert!(
+            arch.head_dim == 256,
+            "calibration fixture must carry head_dim 256"
+        );
+        let calibrated = rapid_active_kv_bytes_per_token(&arch, KvCacheDtype::Bf16);
+        // A same-family model with a doubled head width pays double per token.
+        arch.head_dim = 512;
+        let doubled = rapid_active_kv_bytes_per_token(&arch, KvCacheDtype::Bf16);
+        assert!((doubled - calibrated * 2.0).abs() < 1.0);
+        // Unknown head width falls back to the calibrated geometry.
+        arch.head_dim = 0;
+        assert!(
+            (rapid_active_kv_bytes_per_token(&arch, KvCacheDtype::Bf16) - calibrated).abs() < 1.0
         );
     }
 }

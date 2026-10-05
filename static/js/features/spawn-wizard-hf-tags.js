@@ -427,7 +427,7 @@ export function resetTagsRowOrigin() { _tagsRowOrigin = ''; }
 export async function _refreshHwTagsRow() {
   const row = document.getElementById('hw-tags-row');
   if (!row) return;
-  const { originRepo, path, cardUrl, family } = wizardState.model;
+  const { originRepo, path, family } = wizardState.model;
   if (!originRepo) { row.style.display = 'none'; return; }
   row.style.display = '';
   if (_tagsRowOrigin === originRepo) return; // already populated for this repo
@@ -710,7 +710,7 @@ export function _openHwTagPicker(btn, modelPath, originRepo) {
   }, 0);
 }
 
-function _appendTagPill(container, label, tagKey, currentTags, modelPath, originRepo, popup) {
+function _appendTagPill(container, label, tagKey, currentTags, modelPath, _originRepo, _popup) {
   const has = currentTags.includes(tagKey);
   const pill = document.createElement('span');
   pill.className = 'mm-tag-pill' + (has ? ' mm-tag-pill--active' : '');

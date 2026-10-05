@@ -19,6 +19,8 @@ pub static TOKEN_INGOT_MASKABLE_192_PNG: &[u8] =
     include_bytes!("../../static/brand/token-ingot-maskable-192.png");
 pub static TOKEN_INGOT_MASKABLE_512_PNG: &[u8] =
     include_bytes!("../../static/brand/token-ingot-maskable-512.png");
+pub static TOKEN_INGOT_TRAY_TEMPLATE_44_PNG: &[u8] =
+    include_bytes!("../../static/brand/token-ingot-tray-template-44.png");
 pub static TOKEN_INGOT_ICO: &[u8] = include_bytes!("../../static/brand/token-ingot.ico");
 pub const COMPACT_HTML: &str = include_str!("../../static/compact.html");
 pub const CSS_AGENT_MODAL: &str = include_str!("../../static/css/agent-modal.css");
@@ -40,6 +42,7 @@ pub const CSS_MODAL_PREMIUM: &str = include_str!("../../static/css/modal-premium
 pub const CSS_MODAL_SIZING: &str = include_str!("../../static/css/modal-sizing.css");
 pub const CSS_PRESET_BUNDLE_DRAWER: &str =
     include_str!("../../static/css/preset-bundle-drawer.css");
+pub const CSS_PROTOCOL_DOCS: &str = include_str!("../../static/css/protocol-docs.css");
 pub const CSS_SETTINGS_MODAL: &str = include_str!("../../static/css/settings-modal.css");
 pub const CSS_SETUP_VIEW: &str = include_str!("../../static/css/setup-view.css");
 pub const CSS_SPAWN_WIZARD_BASE: &str = include_str!("../../static/css/spawn-wizard-base.css");
@@ -70,13 +73,13 @@ pub const INDEX_HTML: &str = include_str!("../../static/index.html");
 pub const BOOTSTRAP_JS: &str = include_str!("../../static/js/bootstrap.js");
 pub const COMPACT_JS: &str = include_str!("../../static/js/compact.js");
 pub const COMPAT_GLOBALS_JS: &str = include_str!("../../static/js/compat/globals.js");
-pub const CONFIG_DOMPURIFY_INIT_JS: &str = include_str!("../../static/js/config/dompurify-init.js");
 pub const CORE_APP_STATE_JS: &str = include_str!("../../static/js/core/app-state.js");
 pub const CORE_FORMAT_JS: &str = include_str!("../../static/js/core/format.js");
 pub const CORE_IDENTITY_JS: &str = include_str!("../../static/js/core/identity.js");
 pub const CORE_PLATFORM_INFO_JS: &str = include_str!("../../static/js/core/platform-info.js");
 pub const CORE_RAPID_MLX_SIDECARS_JS: &str =
     include_str!("../../static/js/core/rapid-mlx-sidecars.js");
+pub const CORE_SET_HTML_JS: &str = include_str!("../../static/js/core/set-html.js");
 pub const CORE_TOOLTIP_JS: &str = include_str!("../../static/js/core/tooltip.js");
 pub const FEATURES_ANIMATE_JS: &str = include_str!("../../static/js/features/animate.js");
 pub const FEATURES_APP_HOME_MIGRATION_JS: &str =
@@ -106,6 +109,8 @@ pub const FEATURES_CHAT_TEMPLATE_PANEL_JS: &str =
     include_str!("../../static/js/features/chat-template-panel.js");
 pub const FEATURES_CHAT_TEMPLATE_REGISTRY_JS: &str =
     include_str!("../../static/js/features/chat-template-registry.js");
+pub const FEATURES_CHAT_TEMPLATE_UPDATE_JS: &str =
+    include_str!("../../static/js/features/chat-template-update.js");
 pub const FEATURES_CHAT_TEMPLATES_JS: &str =
     include_str!("../../static/js/features/chat-templates.js");
 pub const FEATURES_CHAT_TRANSPORT_JS: &str =
@@ -142,10 +147,14 @@ pub const FEATURES_RAPID_MLX_CARDS_JS: &str =
     include_str!("../../static/js/features/rapid-mlx-cards.js");
 pub const FEATURES_RAPID_MLX_PREFILL_JS: &str =
     include_str!("../../static/js/features/rapid-mlx-prefill.js");
+pub const FEATURES_RAPID_MLX_PROTOCOL_DOCS_JS: &str =
+    include_str!("../../static/js/features/rapid-mlx-protocol-docs.js");
 pub const FEATURES_RAPID_MLX_UPDATER_JS: &str =
     include_str!("../../static/js/features/rapid-mlx-updater.js");
 pub const FEATURES_REMOTE_AGENT_JS: &str = include_str!("../../static/js/features/remote-agent.js");
 pub const FEATURES_ROUTER_JS: &str = include_str!("../../static/js/features/router.js");
+pub const FEATURES_RUNTIME_UNINSTALL_JS: &str =
+    include_str!("../../static/js/features/runtime-uninstall.js");
 pub const FEATURES_SENSOR_BRIDGE_JS: &str =
     include_str!("../../static/js/features/sensor-bridge.js");
 pub const FEATURES_SESSIONS_JS: &str = include_str!("../../static/js/features/sessions.js");
@@ -190,6 +199,8 @@ pub const FEATURES_SPAWN_WIZARD_MODEL_CARD_JS: &str =
     include_str!("../../static/js/features/spawn-wizard-model-card.js");
 pub const FEATURES_SPAWN_WIZARD_MTP_DRAFT_JS: &str =
     include_str!("../../static/js/features/spawn-wizard-mtp-draft.js");
+pub const FEATURES_SPAWN_WIZARD_RAPID_CATALOG_JS: &str =
+    include_str!("../../static/js/features/spawn-wizard-rapid-catalog.js");
 pub const FEATURES_SPAWN_WIZARD_RAPID_MLX_JS: &str =
     include_str!("../../static/js/features/spawn-wizard-rapid-mlx.js");
 pub const FEATURES_SPAWN_WIZARD_REVIEW_STEP_JS: &str =

@@ -31,12 +31,6 @@ function normalizePath(path) {
     return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 
-function joinModelPath(root, relative) {
-    if (!root) return '';
-    const separator = root.includes('\\') ? '\\' : '/';
-    return root.replace(/[\\/]+$/, '') + separator + relative.replace(/\//g, separator);
-}
-
 function modelForPath(path) {
     const wanted = normalizePath(path);
     return fbModelInventory?.find(model => normalizePath(model.path) === wanted) || null;
@@ -68,6 +62,34 @@ async function loadModelBrowserData() {
         });
     }
     await fbModelInventoryPromise;
+}
+
+// Rapid-MLX downloads land in the app HF cache, not mlx/native. When the picker opens
+// on an empty starting folder, show the app cache instead so a model the user just
+// downloaded is visible without hunting through the location tabs.
+async function maybeFallbackToManagedHfCache(path) {
+    const target = fbModelLocations.managed_hf_cache;
+    if (!isModelBrowser()
+        || fbContext.engine !== 'rapid_mlx'
+        || fbInitialFallbackTried
+        || !target
+        || normalizePath(path) !== normalizePath(fbInitialPath)
+        || normalizePath(path) === normalizePath(target)) {
+        return false;
+    }
+    fbInitialFallbackTried = true;
+    try {
+        const response = await fetch('/api/browse?' + new URLSearchParams({ path: target }), {
+            headers: window.authHeaders ? window.authHeaders() : {},
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        if (!Array.isArray(data.entries) || !data.entries.some(entry => entry.is_dir)) return false;
+        await fileBrowserGo(target);
+        return true;
+    } catch (_) {
+        return false;
+    }
 }
 
 async function maybeFallbackToLegacyRoot(path) {
@@ -305,6 +327,7 @@ export async function fileBrowserGo(path) {
         document.getElementById('fb-path-input').value = data.path;
         if (data.entries.length === 0) {
             if (await maybeFallbackToLegacyRoot(path)) return;
+            if (await maybeFallbackToManagedHfCache(path)) return;
             entriesEl.innerHTML = '<div class="fb-empty">Empty directory</div>';
             return;
         }

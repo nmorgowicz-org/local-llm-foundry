@@ -27,7 +27,6 @@ const PREDEFINED_SECTIONS = [
     { id: 'tone', name: 'Tone', icon: '🎭', placeholder: 'e.g. "Noir atmosphere. Wry humor. Short punchy sentences. No melodrama."' },
 ];
 
-let sidebarResizing = false;
 let sidebarState = {
     expanded: settingsState.context_notes_sidebar_expanded === true
         || localStorage.getItem('llama_monitor_sidebar_expanded') === 'true',
@@ -205,11 +204,11 @@ function renderNotesList() {
                         ${escapeHtml(sectionDef.name)}
                     </div>
                     <div class="sidebar-section-actions">
-                        <button class="sidebar-add-note-btn" data-section="${escapeHtml(sectionDef.name)}" title="Add note to ${sectionDef.name}">${isComposing ? 'Writing…' : '+ Add Note'}</button>
+                        <button class="sidebar-add-note-btn" data-section="${escapeHtml(sectionDef.name)}" title="Add note to ${escapeHtml(sectionDef.name)}">${isComposing ? 'Writing…' : '+ Add Note'}</button>
                     </div>
                 </div>
                 <div class="sidebar-section-notes">
-                    ${hasNotes ? sectionNotes.map((note, i) => {
+                    ${hasNotes ? sectionNotes.map((note, _i) => {
                         const originalIndex = notes.indexOf(note);
                         const isEditing = sidebarState.editingNoteIndex === originalIndex;
                         return `
@@ -260,7 +259,7 @@ function renderNotesList() {
         const draft = sidebarState.composerDrafts[sectionName] || '';
         const sectionWrapper = document.createElement('div');
         sectionWrapper.className = 'sidebar-section-wrapper';
-        sectionWrapper.dataset.section = escapeHtml(sectionName);
+        sectionWrapper.dataset.section = sectionName;
         // eslint-disable-next-line no-unsanitized/property
         sectionWrapper.innerHTML = `
             <div class="sidebar-section-header">
@@ -269,11 +268,11 @@ function renderNotesList() {
                     ${escapeHtml(sectionName)}
                 </div>
                 <div class="sidebar-section-actions">
-                    <button class="sidebar-add-note-btn" data-section="${escapeHtml(sectionName)}" title="Add note to ${sectionName}">${isComposing ? 'Writing…' : '+ Add Note'}</button>
+                    <button class="sidebar-add-note-btn" data-section="${escapeHtml(sectionName)}" title="Add note to ${escapeHtml(sectionName)}">${isComposing ? 'Writing…' : '+ Add Note'}</button>
                 </div>
             </div>
             <div class="sidebar-section-notes">
-                ${sectionNotes.length ? sectionNotes.map((note, i) => {
+                ${sectionNotes.length ? sectionNotes.map((note, _i) => {
                     const originalIndex = notes.indexOf(note);
                     const isEditing = sidebarState.editingNoteIndex === originalIndex;
                     return `
@@ -408,25 +407,6 @@ function setupNoteHandlers() {
     });
 }
 
-function formatNoteTime(timestamp) {
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diffMs = now - date;
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-
-    // Use local-time day boundaries so "Xd ago" matches calendar days.
-    const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
-    const dateStart = new Date(date); dateStart.setHours(0, 0, 0, 0);
-    const dayDiff = Math.floor((todayStart - dateStart) / 86400000);
-
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (dayDiff < 7) return `${dayDiff}d ago`;
-    return date.toLocaleDateString();
-}
-
 // ── Note CRUD Operations ─────────────────────────────────────────────────────
 
 function addNoteForSection(section) {
@@ -548,7 +528,7 @@ function saveEditingNote(index) {
     });
 }
 
-function cancelEditingNote(index) {
+function cancelEditingNote(_index) {
     sidebarState.editingNoteIndex = null;
     renderNotesList();
 }
@@ -592,7 +572,6 @@ function setupResizeHandle() {
     if (!messages || !handle) return;
 
     handle.addEventListener('mousedown', (e) => {
-        sidebarResizing = true;
         handle.classList.add('active');
         e.preventDefault();
         document.body.style.cursor = 'col-resize';
@@ -609,7 +588,6 @@ function setupResizeHandle() {
         };
 
         const onMouseUp = () => {
-            sidebarResizing = false;
             handle.classList.remove('active');
             document.body.style.cursor = '';
             document.body.style.userSelect = '';
@@ -891,7 +869,7 @@ function updateAnalysisPanelUI() {
         </div>
         <div class="sidebar-analysis-cards" id="sidebar-analysis-cards">
             ${visible.map(result => {
-                const status = result.status || 'new';
+                const status = ['new', 'current', 'stale'].includes(result.status) ? result.status : 'new';
                 const existingNote = existingNotes.find(n => n.section === result.section);
                 const statusLabel = status === 'stale' ? '⚠ Stale' : status === 'current' ? '✓ Current' : '+ New';
                 const statusClass = `sidebar-analysis-status-${status}`;

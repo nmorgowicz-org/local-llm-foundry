@@ -290,6 +290,50 @@ fn quant_comparison_table_marks_one_recommended() {
     assert_eq!(rec.len(), 1, "Expected exactly one recommended quant");
 }
 
+#[test]
+fn quant_comparison_table_fit_dot_never_disagrees_with_ctx_columns() {
+    // Regression: the fit check used the raw availability while max_context() shrank
+    // it by the headroom fraction. A borderline quant could get a green dot with a
+    // zero context (rendered as a dash), then flip to "won't fit" once free memory
+    // drifted. A row that fits must always have room for at least the minimum ctx.
+    let arch = ModelArch {
+        n_layers: 32,
+        n_kv_heads: 8,
+        head_dim: 128,
+        ..Default::default()
+    };
+    let use_cases = [UseCase::General, UseCase::Roleplay, UseCase::Agentic];
+    for use_case in use_cases {
+        for backend in [Backend::LlamaCpp, Backend::RapidMlx] {
+            for unified in [false, true] {
+                for avail_gib in [24u64, 28, 30, 32, 48, 64, 96, 128] {
+                    let opts = quant_comparison_table(
+                        27.0,
+                        &arch,
+                        "Qwen3.6-27B.gguf",
+                        avail_gib * 1024 * 1024 * 1024,
+                        use_case,
+                        None,
+                        1,
+                        unified,
+                        backend,
+                    );
+                    for o in &opts {
+                        assert!(
+                            !o.fits_vram || o.max_ctx_q8 > 0,
+                            "{} fits_vram with max_ctx_q8=0 (avail {} GiB, {:?}, unified {})",
+                            o.label,
+                            avail_gib,
+                            backend,
+                            unified
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ── Ground-truth architecture lookup tests ────────────────────────────────
 // Validated against actual HuggingFace model cards (unsloth/, meta-llama/, etc.)
 

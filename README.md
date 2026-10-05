@@ -5,9 +5,9 @@ dashboard for models, live GPU/system telemetry, chat, a hardware-aware setup
 wizard, and managed llama.cpp builds on macOS, Linux, and Windows. Rapid-MLX is
 also supported as a first-class Apple Silicon backend.
 
-This is a compatibility-preserving rebrand of Llama Monitor. The `llama-monitor`
-executable, legacy roots, API routes, browser storage, and release aliases
-remain supported through 2.x. See the [2.0 upgrade guide](docs/reference/upgrade-2-0.md).
+This is a compatibility-preserving rebrand of Llama Monitor. Legacy roots,
+API routes, and browser storage remain supported through 2.x. The executable
+and release assets use `local-llm-foundry`; see the [2.0 upgrade guide](docs/reference/upgrade-2-0.md).
 
 One dashboard for local AI models on macOS, Linux, and Windows. Performance metrics, GPU and system telemetry, active sessions, chat, and a hardware-aware setup wizard.
 
@@ -70,10 +70,19 @@ an evidence-backed launch configuration:
 Rapid-MLX is now a first-class inference backend for Apple Silicon. Local LLM Foundry manages its runtime in an isolated environment—no manual Python setup required.
 
 - Engine selection: choose llama.cpp or Rapid-MLX in the Setup wizard; the wizard recommends Rapid-MLX when using MLX-native models.
-- Managed runtime: Local LLM Foundry installs, updates, repairs, and rolls back the Rapid-MLX runtime automatically.
+- Curated model picker: Rapid-MLX only behaves predictably for models upstream
+  hand-validates, so its wizard path lists the upstream-validated catalog —
+  with Rapid-MLX's own "Smart"/"Fast" picks for your Mac pinned on top and the
+  paired speculative-decoding sidecar filled in automatically.
+- Managed runtime: Local LLM Foundry installs, updates, repairs, and rolls back
+  the Rapid-MLX runtime automatically; the nav pill turns amber when a newer
+  release exists, and both runtimes (Rapid-MLX and the llama.cpp binary) can be
+  uninstalled from their manage dialogs — downloaded models are always kept.
 - Live telemetry: the dashboard surfaces Rapid-MLX-specific metrics (throughput, context, model info) alongside llama.cpp, with the same UX.
 
 ![Rapid-MLX dashboard](docs/screenshots/dashboard-rapid-mlx--rapidmlx-local--dark.png)
+
+![Curated Rapid-MLX model picker](docs/screenshots/rapidmlx-local--spawn-wizard-rapid-catalog-picker.png)
 
 ### Live Monitoring Cockpit
 
@@ -106,6 +115,7 @@ Ask questions about your conversation in a dedicated sliding panel. It searches 
 ![History Q&A](docs/screenshots/chat-history-qa--neutral--panel.png)
 
 ### Guided Generation & Prompt Tooling
+
 A per-tab notes sidebar, AI-generated suggestions, quick guide flows, and director/surprise tools help you steer replies without rebuilding the prompt stack.
 
 - Director mode: type one directive and get four distinct continuation options.
@@ -141,8 +151,12 @@ An integrated setup wizard for discovering, downloading, configuring, and launch
 - **VRAM-aware tuning**: live breakdown bar with auto-size and quant-compare
 - **llama.cpp binary management**: browse release notes and auto-download,
   install, update, or roll back supported llama.cpp builds
+- **Rapid-MLX flow**: curated catalog picker, one-click model selection, and
+  hardware tuning without llama.cpp jargon
 
-![Setup wizard flow](docs/screenshots/llamacpp-local--spawn-wizard-flow.gif)
+![Setup wizard flow (llama.cpp)](docs/screenshots/llamacpp-local--spawn-wizard-flow.gif)
+
+![Rapid-MLX wizard flow](docs/screenshots/rapidmlx-local--spawn-wizard-flow.gif)
 
 **Details**:
 [Setup wizard](docs/reference/setup-wizard.md) ·
@@ -158,7 +172,7 @@ An integrated setup wizard for discovering, downloading, configuring, and launch
 ## Supported Hardware
 
 | Vendor | Tool | Detection |
-|--------|------|-----------|
+| -------- | ------ | ----------- |
 | AMD | `rocm-smi` | Auto-detected |
 | NVIDIA | `nvidia-smi` | Auto-detected |
 | Apple Silicon | `mactop` | Auto-detected |
