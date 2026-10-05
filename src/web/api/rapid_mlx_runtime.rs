@@ -385,7 +385,7 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         .unify()
         .or(settings_catalog_route(ctx.clone()))
         .unify()
-        .or(command_preview_route(ctx.clone()))
+        .or(command_preview_route(ctx.clone(), state.clone()))
         .unify()
         .or(prefix_cache_guidance_route(ctx.clone()))
         .unify()
@@ -1108,26 +1108,30 @@ pub struct SettingsValidateRequest {
     pub serve_flags: Option<String>,
 }
 
-fn command_preview_route(ctx: ApiCtx) -> ApiRoute {
+fn command_preview_route(ctx: ApiCtx, runtime: RuntimeApiState) -> ApiRoute {
     let config = ctx.config;
     let state = ctx.state;
     warp::path!("api" / "rapid-mlx" / "command-preview")
         .and(warp::post())
         .and(warp::header::optional::<String>("authorization"))
         .and(super::super::safe_json_body::<CommandPreviewRequest>())
-        .and_then(move |auth: Option<String>, req: CommandPreviewRequest| {
-            let config = config.clone();
-            let state = state.clone();
-            async move {
-                if !check_api_token(&auth, &config) {
-                    return Ok(unauthorized_api_token());
+        .and_then(
+            move |auth: Option<String>, mut req: CommandPreviewRequest| {
+                let config = config.clone();
+                let state = state.clone();
+                let runtime = runtime.clone();
+                async move {
+                    if !check_api_token(&auth, &config) {
+                        return Ok(unauthorized_api_token());
+                    }
+                    resolve_preview_managed_path(&mut req.config, &runtime).await;
+                    let models_dir = super::models::get_effective_models_dir(&state)
+                        .unwrap_or_else(|| config.default_models_dir.clone());
+                    let reply = build_command_preview(req, models_dir).await;
+                    Ok::<ApiReply, warp::Rejection>(reply)
                 }
-                let models_dir = super::models::get_effective_models_dir(&state)
-                    .unwrap_or_else(|| config.default_models_dir.clone());
-                let reply = build_command_preview(req, models_dir).await;
-                Ok::<ApiReply, warp::Rejection>(reply)
-            }
-        })
+            },
+        )
         .boxed()
 }
 
@@ -1926,6 +1930,13 @@ async fn managed_executable(state: &RuntimeApiState) -> Option<std::path::PathBu
         .ok()?
         .ok()?;
     status.active.map(|active| active.executable_path)
+}
+async fn resolve_preview_managed_path(config: &mut RapidMlxConfig, runtime: &RuntimeApiState) {
+    // Browser requests do not know the managed environment path.
+    // Resolve the active pointer just as catalog/status do, preserving overrides.
+    if config.managed_runtime_path.is_none() {
+        config.managed_runtime_path = managed_executable(runtime).await;
+    }
 }
 
 fn development_source_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
@@ -3385,6 +3396,71 @@ mod tests {
             changelog_cache: Arc::new(changelog::ChangelogCacheManager::new()),
             client: reqwest::Client::new(),
         }
+    }
+    #[tokio::test]
+    async fn preview_resolves_active_managed_runtime_without_client_paths() {
+        use sha2::{Digest, Sha256};
+
+        let temp = tempfile::tempdir().unwrap();
+        let manager = RapidMlxRuntimeManager::new(temp.path()).unwrap();
+        let root = temp.path().join("runtimes/rapid-mlx");
+        let environment = root.join("environments/preview-test");
+        std::fs::create_dir_all(environment.join("bin")).unwrap();
+        let binary = environment.join("bin/rapid-mlx");
+        let contents = b"fixture executable";
+        std::fs::write(&binary, contents).unwrap();
+        std::fs::write(environment.join(".complete"), []).unwrap();
+        std::fs::write(
+            environment.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "environment_id": "preview-test",
+                "version": "0.15.6",
+                "binary_relative_path": "bin/rapid-mlx",
+                "binary_sha256": Sha256::digest(contents).iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+                "runtime_source": "managed",
+                "compatibility_state": "verified",
+                "release_channel": "stable"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("current.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "active_environment_id": "preview-test",
+                "previous_environment_id": null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let binary = binary.canonicalize().unwrap();
+        let mut runtime = test_state();
+        runtime.manager = Ok(Arc::new(manager));
+        let mut config = RapidMlxConfig::default();
+        resolve_preview_managed_path(&mut config, &runtime).await;
+        assert_eq!(
+            config.managed_runtime_path.as_deref(),
+            Some(binary.as_path())
+        );
+        let (resolved, source) = Discovery::resolve_binary(
+            config.executable_path.as_deref(),
+            config.managed_runtime_path.as_deref(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved, binary);
+        assert_eq!(
+            source,
+            crate::inference::rapid_mlx::runtime::RuntimeSource::Managed
+        );
+
+        // Caller-supplied paths retain the existing override semantics.
+        let override_path = temp.path().join("override");
+        config.managed_runtime_path = Some(override_path.clone());
+        resolve_preview_managed_path(&mut config, &runtime).await;
+        assert_eq!(config.managed_runtime_path, Some(override_path));
     }
 
     fn queued_job(id: &str) -> RuntimeJobSnapshot {

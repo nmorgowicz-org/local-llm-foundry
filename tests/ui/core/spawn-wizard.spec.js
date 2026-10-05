@@ -11,6 +11,44 @@ import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 test.describe('Spawn Wizard - Phases 3, 4, and Rapid-MLX Phase 6', () => {
+  test('@in-memory-test curated catalog excludes dedicated media pipelines from list and recommendations', async ({ page }) => {
+    await page.route('**/api/**', route => route.abort());
+    await page.goto('/');
+    const result = await page.evaluate(async () => {
+      const { filterChatModels, loadRapidCatalog, renderRapidCatalogPicker } = await import('/js/features/spawn-wizard-rapid-catalog.js');
+      const models = [
+        { name: 'chat', parser: 'hermes' },
+        { name: 'vision-chat', template: 'qwen-vl' },
+        { name: 'tts', parser: 'audio:tts', template: 'qwen' },
+        { name: 'transcription', parser: 'audio:stt' },
+        { name: 'image', parser: 'image:gen' },
+        { name: 'video', template: 'video:gen' },
+        { name: 'upper-media', parser: ' AUDIO:TTS ' },
+        { name: 'unknown', parser: '—', template: '(none)' },
+      ];
+      const originalFetch = window.fetch;
+      try {
+        window.fetch = async () => new Response(JSON.stringify({
+          models,
+          recommendations: [{ name: 'tts', label: 'Fast' }, { name: 'chat', label: 'Smart' }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        await loadRapidCatalog(true);
+        const container = document.createElement('div');
+        renderRapidCatalogPicker(container);
+        return {
+          names: filterChatModels(models).map(model => model.name),
+          rows: [...container.querySelectorAll('.rapid-catalog-name')].map(row => row.textContent),
+          tiers: [...container.querySelectorAll('.rapid-catalog-tier')].map(row => row.textContent),
+        };
+      } finally {
+        window.fetch = originalFetch;
+      }
+    });
+    expect(result.names).toEqual(['chat', 'vision-chat']);
+    expect(result.rows).toEqual(['chat', 'vision-chat']);
+    expect(result.tiers).toEqual(['Smart']);
+  });
+
   test('@in-memory-test calibration candidates apply through canonical wizard controls', async ({ page }) => {
     await page.goto('/');
     const result = await page.evaluate(async () => {

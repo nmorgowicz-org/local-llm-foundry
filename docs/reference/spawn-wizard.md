@@ -230,6 +230,10 @@ selected the model step swaps Hugging Face discovery for the curated catalog
 selecting a row fills the alias, measured size, and paired speculative sidecar
 in one step.
 
+The picker includes conversational LLMs, including vision-capable chat models.
+Dedicated audio pipelines (TTS/transcription), image generation, and video
+generation are excluded from both the searchable list and pinned recommendations.
+
 ![Curated Rapid-MLX model picker](../screenshots/rapidmlx-local--spawn-wizard-rapid-catalog-picker.png)
 
 ![One-click catalog selection](../screenshots/rapidmlx-local--spawn-wizard-rapid-catalog-selected.png) Models outside the catalog still launch when they resolve locally
@@ -359,6 +363,11 @@ monitoring. The expandable **Full config** review is the canonical launch summar
 llama.cpp rows identify requested and estimator-effective values; Rapid-MLX rows identify
 requested values and runtime-effective command-preview evidence. Preset save/load options
 are available here.
+
+The Full config review expands to its content height; scroll the wizard page to
+read all settings. The Ready to launch card keeps its natural height, with an
+internal scrollbar only when its content exceeds 340px. Neither card shrinks
+to fit the remaining viewport space.
 
 ## Engine selection
 

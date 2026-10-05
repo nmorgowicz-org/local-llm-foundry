@@ -22,6 +22,11 @@ The managed runtime is designed with these goals:
 - No leakage of internal filesystem paths into API responses.
 - Capability-driven compatibility checks instead of hard-coded version allowlists.
 
+The wizard's launch-command preview resolves the active managed environment
+server-side when no managed path is supplied. Explicit executable overrides
+remain authoritative; otherwise discovery uses the managed runtime before PATH.
+The browser does not need to know the installed environment's filesystem path.
+
 ### Capability evidence
 
 Every launch re-runs bounded version, help, dependency, and optional-extra probes for

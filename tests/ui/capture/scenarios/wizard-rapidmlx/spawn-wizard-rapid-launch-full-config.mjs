@@ -2,12 +2,13 @@
 // Captures requested settings plus the runtime-effective command-preview lane.
 import { loadAppDocument } from '../../harness/browser.mjs';
 import { sleep } from '../../harness/paths.mjs';
-import { captureShot } from '../../harness/shot.mjs';
+import { captureShot, suppressToasts } from '../../harness/shot.mjs';
 
 export default async function (ctx) {
   const { page, baseUrl } = ctx;
   await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
   await loadAppDocument(page, baseUrl);
+  await suppressToasts(page);
   await page.evaluate(async () => {
     const { openSpawnWizard, wizardState, selectWizardEngine, showStep } = await import('/js/features/spawn-wizard.js');
     openSpawnWizard();
@@ -20,6 +21,18 @@ export default async function (ctx) {
   });
   await page.waitForSelector('#wizard-step-2.active', { timeout: 10000 });
   await sleep(700);
+  const layout = await page.evaluate(() => {
+    const drawer = document.getElementById('spawn-full-config-drawer');
+    const card = document.getElementById('spawn-config-card');
+    return {
+      drawerClipped: drawer.scrollHeight > drawer.clientHeight + 2,
+      cardHeight: card.getBoundingClientRect().height,
+      cardShrink: getComputedStyle(card).flexShrink,
+    };
+  });
+  if (layout.drawerClipped || layout.cardHeight < 100 || layout.cardShrink !== '0') {
+    throw new Error(`Launch review cards collapsed: ${JSON.stringify(layout)}`);
+  }
   await page.evaluate(() => document.getElementById('spawn-full-config-drawer')?.scrollIntoView({ behavior: 'instant', block: 'start' }));
  // INTENT: Rapid launch review shows requested and runtime-effective values.
  await captureShot(page, 'spawn-wizard-launch-full-config.png', {

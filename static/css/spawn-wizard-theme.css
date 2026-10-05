@@ -4926,6 +4926,8 @@
   background: color-mix(in srgb, var(--color-surface, #17202b) 88%, transparent);
   overflow: hidden;
 }
+/* Same flex-column crush hazard as .spawn-config-card above. */
+.spawn-full-config-drawer { flex-shrink: 0; }
 .spawn-full-config-summary {
   display: flex;
   align-items: center;
@@ -5047,6 +5049,10 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+  /* wizard-main is a flex column; a scroll-container flex item loses its
+     min-height:auto floor, so without this the card is crushed to a sliver
+     whenever the step's content overflows. The page must scroll instead. */
+  flex-shrink: 0;
 }
 .spawn-config-card::-webkit-scrollbar { width: 5px; }
 .spawn-config-card::-webkit-scrollbar-track { background: transparent; }

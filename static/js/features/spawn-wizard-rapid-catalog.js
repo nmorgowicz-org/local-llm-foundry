@@ -8,7 +8,7 @@
 // engine is selected this picker replaces the HF browse UI entirely.
 //
 // Upstream's per-machine tier recommendations (`rapid-mlx recipe`) are pinned
-// on top; image-generation rows are filtered out of the spawn catalog.
+// on top; dedicated audio/image/video pipelines are excluded from this LLM picker.
 
 import { wizardState } from './spawn-wizard.js';
 
@@ -17,9 +17,13 @@ let _catalogGeneration = 0;
 let _filterTimer = null;
 
 function isChatModel(entry) {
-  // Chat models carry a tool parser and/or template pairing; image-generation
-  // and other non-serving rows don't.
-  return Boolean(entry.parser || entry.template);
+  // Upstream also uses the parser/template columns for pipeline labels such
+  // as audio:tts, image:gen and video:gen. Those are not chat pairings.
+  const pairings = [entry.parser, entry.template]
+    .filter(value => typeof value === 'string')
+    .map(value => value.trim().toLowerCase());
+  if (pairings.some(value => /^(audio|image|video)(:|$)/.test(value))) return false;
+  return pairings.some(value => value && !['—', '-', 'none', '(none)', 'n/a'].includes(value));
 }
 
 export function filterChatModels(models) {
