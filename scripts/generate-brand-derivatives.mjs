@@ -10,6 +10,7 @@ const { chromium } = playwright;
 
 const repo = process.cwd();
 const source = fs.readFileSync(path.join(repo, 'assets/brand/token-ingot.svg'), 'utf8');
+const trayTemplate = fs.readFileSync(path.join(repo, 'assets/brand/token-ingot-macos-template.svg'), 'utf8');
 const staticBrand = path.join(repo, 'static/brand');
 const exportsRoot = path.join(repo, 'assets/brand/exports');
 fs.mkdirSync(staticBrand, { recursive: true });
@@ -21,8 +22,8 @@ function write(file, data) {
     fs.writeFileSync(target, data);
 }
 
-async function render(page, file, width, height, padding = 0) {
-    const encoded = Buffer.from(source).toString('base64');
+async function render(page, file, width, height, padding = 0, artwork = source) {
+    const encoded = Buffer.from(artwork).toString('base64');
     const scale = padding ? 1 - padding * 2 : 1;
     await page.setViewportSize({ width, height });
     // Flex-centers the (square) mark within an arbitrary WxH canvas. The
@@ -159,14 +160,26 @@ function createIcns() {
 }
 
 async function main() {
-    for (const [file, fill] of [['assets/brand/token-ingot-one-color-black.svg', '#000'], ['assets/brand/token-ingot-one-color-white.svg', '#fff'], ['assets/brand/token-ingot-macos-template.svg', '#000']]) {
+    for (const [file, fill] of [['assets/brand/token-ingot-one-color-black.svg', '#000'], ['assets/brand/token-ingot-one-color-white.svg', '#fff']]) {
         write(file, source.replaceAll(/fill="#[0-9a-f]+"/gi, `fill="${fill}"`));
     }
     const browser = await chromium.launch({ headless: true });
     const page = await browser.newPage({ deviceScaleFactor: 1 });
+    // The template is intentionally hand-tuned: recoloring the master flattens
+    // its overlapping layers into a silhouette when macOS uses only alpha.
+    for (const size of [16, 20, 22, 24, 32, 44, 64, 128, 180, 192, 256, 512, 1024]) {
+        const file = `assets/brand/exports/tray/macos/token-ingot-${size}.png`;
+        await render(page, file, size, size, 0, trayTemplate);
+        if (size === 44) copy(file, ['static/brand/token-ingot-tray-template-44.png']);
+    }
+    if (process.argv.includes('--tray-only')) {
+        await browser.close();
+        console.log('Generated menu-bar template derivatives.');
+        return;
+    }
     for (const size of [16, 20, 22, 24, 32, 64, 128, 180, 192, 256, 512, 1024]) {
         await render(page, `static/brand/token-ingot-${size}.png`, size, size);
-        copy(`static/brand/token-ingot-${size}.png`, [`assets/brand/exports/tray/macos/token-ingot-${size}.png`, `assets/brand/exports/tray/windows/token-ingot-${size}.png`, `assets/brand/exports/tray/linux/token-ingot-${size}.png`]);
+        copy(`static/brand/token-ingot-${size}.png`, [`assets/brand/exports/tray/windows/token-ingot-${size}.png`, `assets/brand/exports/tray/linux/token-ingot-${size}.png`]);
     }
     for (const size of [192, 512]) await render(page, `static/brand/token-ingot-maskable-${size}.png`, size, size, 0.18);
     await render(page, 'assets/brand/exports/social/token-ingot-1200x630.png', 1200, 630, 0.25);

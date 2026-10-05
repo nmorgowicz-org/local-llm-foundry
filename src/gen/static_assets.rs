@@ -19,6 +19,8 @@ pub static TOKEN_INGOT_MASKABLE_192_PNG: &[u8] =
     include_bytes!("../../static/brand/token-ingot-maskable-192.png");
 pub static TOKEN_INGOT_MASKABLE_512_PNG: &[u8] =
     include_bytes!("../../static/brand/token-ingot-maskable-512.png");
+pub static TOKEN_INGOT_TRAY_TEMPLATE_44_PNG: &[u8] =
+    include_bytes!("../../static/brand/token-ingot-tray-template-44.png");
 pub static TOKEN_INGOT_ICO: &[u8] = include_bytes!("../../static/brand/token-ingot.ico");
 pub const COMPACT_HTML: &str = include_str!("../../static/compact.html");
 pub const CSS_AGENT_MODAL: &str = include_str!("../../static/css/agent-modal.css");

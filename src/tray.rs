@@ -110,6 +110,11 @@ type TrayMetrics = (
 );
 
 fn create_tray_icon() -> Icon {
+    // macOS tints only alpha, so use separated layers rather than flattening
+    // the overlapping color mark. tray-icon caps 44px at 22pt for Retina.
+    #[cfg(target_os = "macos")]
+    let png_bytes = crate::web::static_assets::TOKEN_INGOT_TRAY_TEMPLATE_44_PNG;
+    #[cfg(not(target_os = "macos"))]
     let png_bytes = crate::web::static_assets::TOKEN_INGOT_22_PNG;
     let decoded = (|| {
         let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
