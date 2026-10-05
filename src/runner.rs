@@ -949,7 +949,7 @@ pub fn run() -> Result<()> {
         match tls_mode {
             TlsMode::None => {
                 println!(
-                    "[info] Llama Monitor running on http://{}:{}",
+                    "[info] Local LLM Foundry running on http://{}:{}",
                     tls_host, tls_port
                 );
                 warp::serve(routes).run(addr).await;
@@ -1002,7 +1002,7 @@ pub fn run() -> Result<()> {
                 };
 
                 println!(
-                    "[info] Llama Monitor running on https://{}:{} (ACME - {})",
+                    "[info] Local LLM Foundry running on https://{}:{} (ACME - {})",
                     tls_host,
                     tls_port,
                     if tls_acme.environment == "staging" {
@@ -1128,7 +1128,7 @@ pub fn run() -> Result<()> {
                 };
 
                 println!(
-                    "[info] Llama Monitor running on https://{}:{} ({})",
+                    "[info] Local LLM Foundry running on https://{}:{} ({})",
                     tls_host, tls_port, tls_mode_label
                 );
 

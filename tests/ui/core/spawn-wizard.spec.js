@@ -765,7 +765,7 @@ test.describe('Spawn Wizard - Phases 3, 4, and Rapid-MLX Phase 6', () => {
         await page.waitForLoadState('networkidle');
 
         // First request: start a download.
-        const [first] = await Promise.all([
+        await Promise.all([
             page.waitForResponse(r => r.url().includes('/api/hf/download')),
             page.evaluate(async () => {
                 const headers = window.authHeaders ? window.authHeaders() : {};
