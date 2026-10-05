@@ -777,6 +777,42 @@ fn restore_promoted_directory(
     Ok(())
 }
 
+/// Retention sweep for timestamped rollback backups. Every llama.cpp update
+/// leaves `bin-previous-{tag}-{pid}-{stamp}` beside the bin dir; without a
+/// sweep they accumulate indefinitely (~65 MB each). Keeps the newest
+/// `keep` backups, removes the rest and any stale `bin-failed-*` directories.
+/// Best-effort: failures are logged, never fatal.
+fn sweep_old_bin_backups(dest_parent: &std::path::Path, dest_name: &str, keep: usize) {
+    let entries = match std::fs::read_dir(dest_parent) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    let prefix_previous = format!("{dest_name}-previous-");
+    let prefix_failed = format!("{dest_name}-failed-");
+    let mut backups: Vec<(std::path::PathBuf, std::time::SystemTime)> = entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with(&prefix_previous) || name.starts_with(&prefix_failed)
+        })
+        .filter_map(|entry| {
+            let modified = entry.metadata().and_then(|m| m.modified()).ok()?;
+            Some((entry.path(), modified))
+        })
+        .collect();
+    backups.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
+    for (path, _) in backups.into_iter().skip(keep) {
+        if let Err(error) = std::fs::remove_dir_all(&path) {
+            eprintln!(
+                "[warn] llama-binary/update: failed to remove old backup {}: {}",
+                path.display(),
+                error
+            );
+        }
+    }
+}
+
 /// POST /api/llama-binary/update — downloads latest release and overwrites llama-server binary
 fn api_llama_binary_update(
     state: AppState,
@@ -1260,6 +1296,10 @@ fn api_llama_binary_update(
                             })),
                         ));
                     }
+                }
+
+                if let (Some(parent), Some(name)) = (dest_dir.parent(), dest_dir.file_name()) {
+                    sweep_old_bin_backups(parent, &name.to_string_lossy(), 2);
                 }
 
                 state.push_log(format!(
