@@ -701,13 +701,15 @@ async fn run_model_download(
     let python_code = r#"from huggingface_hub import HfApi, hf_hub_download
 import os, sys
 repo_id, revision, cache = sys.argv[1], sys.argv[2], sys.argv[3]
-info = HfApi().model_info(repo_id, revision=revision, files_metadata=True)
+# The saved token arrives on stdin so it never appears in the process list.
+token = sys.stdin.readline().strip() or None
+info = HfApi(token=token).model_info(repo_id, revision=revision, files_metadata=True)
 files = [(f.rfilename, f.size or 0) for f in info.siblings if (f.size or 0) > 0]
 print(f'TOTAL {sum(s for _, s in files)}', flush=True)
 last = ''
 for name, size in files:
     print(f'FILE {name}\t{size}', flush=True)
-    last = hf_hub_download(repo_id=repo_id, filename=name, revision=revision, cache_dir=cache)
+    last = hf_hub_download(repo_id=repo_id, filename=name, revision=revision, cache_dir=cache, token=token)
 print('PATH ' + os.path.dirname(last), flush=True)"#;
 
     // Progress is measured on disk: the hub writes `<blob>.incomplete` files under
@@ -780,7 +782,8 @@ print('PATH ' + os.path.dirname(last), flush=True)"#;
             .arg(models_dir.join("cache/huggingface/hub"))
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .stdin(std::process::Stdio::null())
+            // The saved token is piped in so it stays out of argv.
+            .stdin(std::process::Stdio::piped())
             .kill_on_drop(true);
         // Own process group: the hub client may fork transfer workers, and a
         // plain kill of the Python leader would leave those running.
@@ -797,6 +800,15 @@ print('PATH ' + os.path.dirname(last), flush=True)"#;
                 return;
             }
         };
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            // Best effort: a failure here surfaces as a downloader error.
+            let _ = stdin
+                .write_all(crate::hf::hf_load_token().unwrap_or_default().as_bytes())
+                .await;
+            let _ = stdin.write_all(b"\n").await;
+            drop(stdin);
+        }
         attempt += 1;
         let pid = child.id();
         let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped")).lines();
@@ -1374,23 +1386,23 @@ fn command_preview_route(ctx: ApiCtx, runtime: RuntimeApiState) -> ApiRoute {
         .and(warp::post())
         .and(warp::header::optional::<String>("authorization"))
         .and(super::super::safe_json_body::<CommandPreviewRequest>())
-        .and_then(
-            move |auth: Option<String>, mut req: CommandPreviewRequest| {
-                let config = config.clone();
-                let state = state.clone();
-                let runtime = runtime.clone();
-                async move {
-                    if !check_api_token(&auth, &config) {
-                        return Ok(unauthorized_api_token());
-                    }
-                    resolve_preview_managed_path(&mut req.config, &runtime).await;
-                    let models_dir = super::models::get_effective_models_dir(&state)
-                        .unwrap_or_else(|| config.default_models_dir.clone());
-                    let reply = build_command_preview(req, models_dir).await;
-                    Ok::<ApiReply, warp::Rejection>(reply)
+        .and_then(move |auth: Option<String>, req: CommandPreviewRequest| {
+            let config = config.clone();
+            let state = state.clone();
+            let runtime = runtime.clone();
+            async move {
+                if !check_api_token(&auth, &config) {
+                    return Ok(unauthorized_api_token());
                 }
-            },
-        )
+                // Server-owned resolution only: the request body cannot
+                // choose which executable is probed.
+                let managed_binary = managed_executable(&runtime).await;
+                let models_dir = super::models::get_effective_models_dir(&state)
+                    .unwrap_or_else(|| config.default_models_dir.clone());
+                let reply = build_command_preview(req, models_dir, managed_binary).await;
+                Ok::<ApiReply, warp::Rejection>(reply)
+            }
+        })
         .boxed()
 }
 
@@ -1421,22 +1433,23 @@ pub struct CommandPreviewResponse {
 async fn build_command_preview(
     req: CommandPreviewRequest,
     models_dir: std::path::PathBuf,
+    managed_binary: Option<std::path::PathBuf>,
 ) -> ApiReply {
     use crate::inference::rapid_mlx::compatibility::ServeCapabilities;
     use crate::inference::rapid_mlx::model_resolver::{self, RapidMlxResolveContext};
     use std::path::PathBuf;
 
     let config = req.config;
-    // The caller-supplied `executable_path` is deliberately ignored: honoring it
-    // would let any API-token holder execute an arbitrary binary on the host
-    // (`<path> serve --help`). The preview uses the same resolution the launcher
-    // uses (explicit config -> managed -> PATH), so the frontend just posts a
-    // config and cannot aim the probe at an arbitrary file.
+    // Caller-supplied paths are deliberately ignored on both channels: an
+    // API-token holder must not be able to aim the probe (`serve --help`)
+    // at an arbitrary file, whether via `executable_path` or via
+    // `managed_runtime_path`. The binary is resolved from server-owned
+    // state (the managed runtime pointer) only.
     let _ = req.executable_path;
     let binary_path = {
         match crate::inference::rapid_mlx::discovery::Discovery::resolve_binary(
-            config.executable_path.as_deref(),
-            config.managed_runtime_path.as_deref(),
+            None,
+            managed_binary.as_deref(),
         )
         .await
         {
@@ -2180,13 +2193,6 @@ async fn managed_executable(state: &RuntimeApiState) -> Option<std::path::PathBu
         .ok()?
         .ok()?;
     status.active.map(|active| active.executable_path)
-}
-async fn resolve_preview_managed_path(config: &mut RapidMlxConfig, runtime: &RuntimeApiState) {
-    // Browser requests do not know the managed environment path.
-    // Resolve the active pointer just as catalog/status do, preserving overrides.
-    if config.managed_runtime_path.is_none() {
-        config.managed_runtime_path = managed_executable(runtime).await;
-    }
 }
 
 fn development_source_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
@@ -3688,29 +3694,32 @@ mod tests {
         let binary = binary.canonicalize().unwrap();
         let mut runtime = test_state();
         runtime.manager = Ok(Arc::new(manager));
-        let mut config = RapidMlxConfig::default();
-        resolve_preview_managed_path(&mut config, &runtime).await;
-        assert_eq!(
-            config.managed_runtime_path.as_deref(),
-            Some(binary.as_path())
-        );
-        let (resolved, source) = Discovery::resolve_binary(
-            config.executable_path.as_deref(),
-            config.managed_runtime_path.as_deref(),
-        )
-        .await
-        .unwrap();
+        // Server-owned state resolves the managed executable...
+        let managed = managed_executable(&runtime).await;
+        assert_eq!(managed.as_deref(), Some(binary.as_path()));
+        let (resolved, source) = Discovery::resolve_binary(None, managed.as_deref())
+            .await
+            .unwrap();
         assert_eq!(resolved, binary);
         assert_eq!(
             source,
             crate::inference::rapid_mlx::runtime::RuntimeSource::Managed
         );
 
-        // Caller-supplied paths retain the existing override semantics.
+        // ...while caller-supplied paths are discarded entirely: resolution
+        // is server-owned (build_command_preview ignores both config fields;
+        // the wire-shape test covers that by posting decoy paths).
         let override_path = temp.path().join("override");
-        config.managed_runtime_path = Some(override_path.clone());
-        resolve_preview_managed_path(&mut config, &runtime).await;
-        assert_eq!(config.managed_runtime_path, Some(override_path));
+        std::fs::write(&override_path, b"decoy").unwrap();
+        let (resolved, source) = Discovery::resolve_binary(None, managed.as_deref())
+            .await
+            .unwrap();
+        assert_eq!(resolved, binary);
+        assert_ne!(resolved, override_path);
+        assert_eq!(
+            source,
+            crate::inference::rapid_mlx::runtime::RuntimeSource::Managed
+        );
     }
 
     #[tokio::test]
@@ -3721,21 +3730,24 @@ mod tests {
         for field in ["value", "name"] {
             let mut wire = serde_json::to_value(RapidMlxConfig::default()).unwrap();
             wire["model_source"] = serde_json::json!({"kind": "alias", field: "qwen3.8-27b-4bit"});
-            // The caller-supplied executable_path is deliberately ignored by
-            // the preview (it must not be able to aim the probe at an
-            // arbitrary file); the managed runtime path is the honored route.
-            wire["managed_runtime_path"] = serde_json::json!(binary);
+            // Caller-supplied paths are ignored by the preview (it must not
+            // be able to aim the probe at an arbitrary file); the binary is
+            // injected here exactly as the route resolves it from the
+            // server-owned managed pointer.
+            wire["managed_runtime_path"] = serde_json::json!(temp.path().join("not-used"));
             wire["capabilities"] = serde_json::json!(
                 super::command_preview_parity_tests::ALL_SERVE_FLAGS
                     .split_whitespace()
                     .collect::<Vec<_>>()
             );
             let models_dir = temp.path().to_path_buf();
+            let managed = Some(binary.clone());
             let route = warp::any().and_then(move || {
                 let req = serde_json::from_value::<CommandPreviewRequest>(wire.clone()).unwrap();
                 let models_dir = models_dir.clone();
+                let managed = managed.clone();
                 async move {
-                    Ok::<_, warp::Rejection>(build_command_preview(req, models_dir).await)
+                    Ok::<_, warp::Rejection>(build_command_preview(req, models_dir, managed).await)
                 }
             });
             let response = warp::test::request().reply(&route).await;

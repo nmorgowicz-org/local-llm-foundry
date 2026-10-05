@@ -143,6 +143,9 @@ fn rapid_uninstall_route(ctx: ApiCtx) -> ApiRoute {
                         "A server is running; stop it before uninstalling the runtime",
                     ));
                 }
+                // A fresh manager is fine here: the mutation gate is shared
+                // process-wide per runtime root, so this uninstall still
+                // cannot race a concurrent install/upgrade.
                 let manager = match RapidMlxRuntimeManager::new(&config.config_dir) {
                     Ok(manager) => manager,
                     Err(message) => {

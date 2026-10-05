@@ -161,7 +161,18 @@ function applyCatalogSelection(entry) {
   wizardState.model.modelBytes = entry.size_bytes || 0;
   wizardState.model.rapidCatalogEntry = entry;
   if (entry.mtp && entry.mtp_sidecar) {
-    wizardState.model.rapidMlxSpeculative = { repo_id: entry.mtp_sidecar.split('@')[0] };
+    const sidecarRepo = entry.mtp_sidecar.split('@')[0];
+    // Feed the fields the launch builder actually reads (shared hardware
+    // state plus the settings controls) instead of a write-only field.
+    // Speculation itself stays opt-in: only the source/model are pre-filled.
+    const h = wizardState.hardware;
+    h.speculativeSource = 'external';
+    h.speculativeModel = sidecarRepo;
+    h.speculativeModelAutoSelected = true;
+    import('./spawn-wizard-rapid-mlx.js').then(m => {
+      m.syncRapidSpeculativeFields?.();
+      m.refreshRapidMlxSidecars?.();
+    }).catch(() => {});
   }
   updateSelectedModelDisplayIfAvailable();
   autoInstallChatTemplateIfAvailable();

@@ -395,7 +395,13 @@ export async function renderSummary() {
     // (local snapshot or HF repo), but upstream guarantees nothing about them.
     if (wizardState.engine.selected === 'rapid_mlx') {
       const alias = wizardState.model.hfRepo || wizardState.model.path || '';
-      if (alias && !wizardState.model.rapidCatalogEntry) {
+      // The marker must belong to the model under review, not just exist:
+      // a stale entry from a previous catalog selection (never cleared when
+      // switching to a custom model or reopening the wizard) would
+      // wrongly suppress this warning.
+      const catalogEntry = wizardState.model.rapidCatalogEntry;
+      const catalogMatches = !!catalogEntry && catalogEntry.name === wizardState.model.hfRepo;
+      if (alias && !catalogMatches) {
         warns.push('This model is not in the Rapid-MLX validated catalog. It may still launch if it resolves locally or on Hugging Face, but parser pairing and speculative decoding are not guaranteed.');
       }
     }

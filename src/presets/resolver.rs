@@ -5,6 +5,7 @@
 //! binary, or performs network I/O.
 
 use crate::inference::llama_cpp_capabilities::CapabilitySnapshot;
+use crate::inference::rapid_mlx::model_resolver::RapidMlxModelSource;
 use crate::llama::vram_estimator::VramBreakdown;
 use crate::presets::validation::ValidationIssue;
 use crate::presets::{ModelPreset, bundle};
@@ -281,6 +282,15 @@ fn materialize_selection(
     {
         if let Some(path) = &weights.local_path {
             effective.model_path = path.clone();
+            // Backend-owned settings must follow the selection: the launch
+            // path reads rapid_mlx first, so leaving it stale would launch
+            // the previously selected variant.
+            if let Some(rapid) = effective.rapid_mlx.as_mut() {
+                rapid.model_path = path.clone();
+                rapid.model_source = Some(RapidMlxModelSource::MlxDirectory {
+                    path: path.clone().into(),
+                });
+            }
         }
         effective.mmproj = weights
             .mmproj_artifact_id

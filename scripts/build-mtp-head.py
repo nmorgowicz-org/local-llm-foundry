@@ -301,7 +301,7 @@ def main() -> int:
         SPLITTER_DRIVER,
         args.bf16_source,
         str(staging),
-        args.revision or "None",
+        args.revision or "",
         str(args.bits) if args.bits is not None else "None",
         str(args.group_size) if args.group_size is not None else "None",
     ]

@@ -13,6 +13,7 @@ use rand::TryRng;
 use rand::rngs::SysRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::future::Future;
@@ -414,6 +415,21 @@ pub struct RapidMlxRuntimeManager {
     fail_retention_cleanup: bool,
 }
 
+/// One mutation gate per managed root for the whole process. Route modules
+/// construct their own `RapidMlxRuntimeManager` instances; sharing the gate
+/// by root is what makes install/upgrade/uninstall mutually exclusive.
+fn mutation_gate_for_root(root: &Path) -> Arc<Semaphore> {
+    static GATES: std::sync::LazyLock<std::sync::Mutex<HashMap<PathBuf, Arc<Semaphore>>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+    let mut guards = GATES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guards
+        .entry(root.to_path_buf())
+        .or_insert_with(|| Arc::new(Semaphore::new(1)))
+        .clone()
+}
+
 impl RapidMlxRuntimeManager {
     pub fn new(config_root: &Path) -> Result<Self> {
         Self::with_uv(config_root, PathBuf::from("uv"))
@@ -421,11 +437,12 @@ impl RapidMlxRuntimeManager {
 
     pub fn with_uv(config_root: &Path, uv_program: PathBuf) -> Result<Self> {
         let root = prepare_managed_root(config_root)?;
+        let mutation_gate = mutation_gate_for_root(&root);
         Ok(Self {
             root,
             uv_program,
             command_timeout: DEFAULT_COMMAND_TIMEOUT,
-            mutation_gate: Arc::new(Semaphore::new(1)),
+            mutation_gate,
             runtime_probe: Arc::new(CompatibilityProbe),
             platform_supported: local_mutations_supported(),
             #[cfg(test)]

@@ -301,7 +301,10 @@ pub fn run() -> Result<()> {
         let inspection = default_inspection
             .take()
             .expect("default inspection captured above");
-        let queued_request = if inspection.state == RootState::MigrationQueued {
+        let queued_request = if matches!(
+            inspection.state,
+            RootState::MigrationQueued | RootState::Conflict
+        ) {
             match test_roots.as_ref() {
                 Some(roots) => app_migration::load_migration_request_from_parent(
                     roots

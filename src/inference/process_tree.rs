@@ -89,12 +89,13 @@ pub fn signal_child_group(child: &mut Child, graceful: bool) -> bool {
 /// Kill the whole process tree and reap the direct child.
 ///
 /// `pid` is accepted for call-site compatibility; the live handle's own id is
-/// preferred and the group is only signalled while the child is un-reaped.
+/// preferred. The group is signalled regardless of whether the direct child
+/// was already reaped: a descendant (for example a python process spawned by
+/// `uv` that still holds stdout/stderr open) can outlive the leader and must
+/// not survive the cleanup. Signalling a nonexistent group is harmless.
 pub async fn terminate_and_reap(child: &mut Child, pid: u32) {
     let live_pid = child.id().unwrap_or(pid);
-    if child_unreaped(child) {
-        signal_process_group(live_pid, false);
-    }
+    signal_process_group(live_pid, false);
     let _ = child.start_kill();
     let _ = child.wait().await;
 }
@@ -124,6 +125,15 @@ pub async fn graceful_stop_and_reap(child: &mut Child, grace: Duration) -> bool 
         return true;
     };
     if !signal_child_group(child, true) {
+        // The leader was already reaped, but descendants may still live in
+        // the group (e.g. a python child holding stdout). Kill anything
+        // remaining before declaring success.
+        if process_group_exists(pid) {
+            signal_process_group(pid, false);
+            while process_group_exists(pid) {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
         let _ = child.wait().await;
         return true;
     }

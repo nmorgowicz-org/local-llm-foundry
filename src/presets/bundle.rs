@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use super::ModelPreset;
+use crate::inference::rapid_mlx::model_resolver::RapidMlxModelSource;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bounded open-string enum serde helpers
@@ -839,6 +840,12 @@ pub fn materialize_default_projection(preset: &mut ModelPreset) {
             && let Some(path) = &weights.local_path
         {
             preset.model_path = path.clone();
+            if let Some(rapid) = preset.rapid_mlx.as_mut() {
+                rapid.model_path = path.clone();
+                rapid.model_source = Some(RapidMlxModelSource::MlxDirectory {
+                    path: path.clone().into(),
+                });
+            }
         }
         preset.context_size = sel.context_size;
 
