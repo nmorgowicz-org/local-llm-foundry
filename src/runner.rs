@@ -301,8 +301,8 @@ pub fn run() -> Result<()> {
         let inspection = default_inspection
             .take()
             .expect("default inspection captured above");
-        if inspection.state == RootState::MigrationQueued {
-            let request = match test_roots.as_ref() {
+        let queued_request = if inspection.state == RootState::MigrationQueued {
+            match test_roots.as_ref() {
                 Some(roots) => app_migration::load_migration_request_from_parent(
                     roots
                         .canonical
@@ -311,7 +311,17 @@ pub fn run() -> Result<()> {
                 )?,
                 None => app_migration::load_migration_request()?,
             }
-            .ok_or_else(|| anyhow::anyhow!("migration queue marker is missing"))?;
+        } else {
+            None
+        };
+        // A Conflict with a queued migration request means a previous run
+        // crashed mid-copy: the destination has partial state and no receipt.
+        // The plan/executor resume from the journal instead of aborting
+        // startup forever. A Conflict without a request still falls through
+        // to the conflict error in the state match below.
+        if inspection.state == RootState::MigrationQueued || queued_request.is_some() {
+            let request = queued_request
+                .ok_or_else(|| anyhow::anyhow!("migration queue marker is missing"))?;
             let plan = app_migration::plan_application_home(&request.source, &request.destination)?;
             if plan.plan_id != request.plan_id {
                 return Err(anyhow::anyhow!(

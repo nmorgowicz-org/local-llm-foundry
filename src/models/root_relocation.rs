@@ -426,6 +426,28 @@ fn validate_destination(source: &Path, destination: &Path) -> Result<()> {
     {
         bail!("model relocation roots must not overlap");
     }
+    // The move is a single rename with no copy fallback, so a cross-device
+    // destination can only fail after the journal exists — which blocks every
+    // other choice with no cancel path. Detect it while still planning.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let source_device = fs::metadata(&canonical_source)?.dev();
+        let destination_parent = resolved_destination
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("model destination has no parent"))?;
+        let destination_device = fs::metadata(destination_parent)?.dev();
+        if source_device != destination_device {
+            bail!(
+                "model relocation source and destination are on different filesystems; a move would have no copy fallback"
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = &canonical_source;
+        let _ = &resolved_destination;
+    }
     Ok(())
 }
 

@@ -398,7 +398,21 @@ pub fn execute_application_home(plan: &AppHomeMigrationPlan) -> Result<AppHomeMi
         let receipt: AppHomeMigrationReceipt =
             serde_json::from_reader(receipt_file).context("migration receipt is unreadable")?;
         if receipt.plan_id == plan.plan_id {
-            return Ok(receipt);
+            let all_present = receipt.copied_entries.iter().all(|relative| {
+                let destination = plan.destination.join(relative);
+                destination.is_file() || destination.is_dir()
+            });
+            if all_present {
+                return Ok(receipt);
+            }
+            // A receipt whose destination is missing recorded entries (for
+            // example after a manual partial deletion) is not proof of a
+            // completed migration. Trusting it would leave the canonical root
+            // silently empty while the queue marker says otherwise.
+            bail!(
+                "migration receipt is stale: {} is missing recorded entries; remove the receipt file and regenerate the migration preview",
+                migration_receipt_path(plan).display()
+            );
         }
     }
     let current_plan = plan_application_home(&plan.source, &plan.destination)
@@ -406,7 +420,25 @@ pub fn execute_application_home(plan: &AppHomeMigrationPlan) -> Result<AppHomeMi
     if current_plan.plan_id != plan.plan_id {
         bail!("migration preview is stale; generate a new preview");
     }
-    if plan.destination.exists()
+    if plan.destination == plan.source {
+        bail!("migration source and destination are identical");
+    }
+    // Load the journal before deciding whether the destination may be
+    // non-empty: an interrupted run resumes in place, so its destination is
+    // legitimately partial.
+    let journal_path = migration_journal_path(plan);
+    let resuming = fs::File::open(&journal_path)
+        .ok()
+        .and_then(|file| serde_json::from_reader::<_, AppHomeMigrationJournal>(file).ok())
+        .is_some_and(|journal| {
+            journal.plan_id == plan.plan_id
+                && matches!(
+                    journal.state,
+                    MigrationJournalState::Copying | MigrationJournalState::Failed
+                )
+        });
+    if !resuming
+        && plan.destination.exists()
         && (!plan.destination.is_dir() || fs::read_dir(&plan.destination)?.next().is_some())
     {
         bail!(
@@ -415,12 +447,8 @@ pub fn execute_application_home(plan: &AppHomeMigrationPlan) -> Result<AppHomeMi
         );
     }
     let _lock = acquire_migration_lock(plan)?;
-    if plan.destination == plan.source {
-        bail!("migration source and destination are identical");
-    }
     ensure_free_space(&plan.destination, plan.required_copy_bytes)?;
     fs::create_dir_all(&plan.destination)?;
-    let journal_path = migration_journal_path(plan);
     let mut journal = load_or_create_journal(plan, &journal_path)?;
     journal.state = MigrationJournalState::Copying;
     write_json_atomic(&journal_path, &journal)?;
@@ -557,12 +585,32 @@ pub fn execute_application_home_rollback(plan: &AppHomeRollbackPlan) -> Result<(
     if plan.destination == plan.source || !plan.destination.is_dir() {
         bail!("rollback destination is invalid");
     }
+    // The model tree is MOVED (never copied) into the canonical root, so a
+    // populated models directory there is the only copy of the user's models.
+    // Removing the root would destroy it with no recovery path.
+    if contains_models(&plan.destination) {
+        bail!(
+            "refusing rollback: {} contains a populated models directory that has no other copy; move the model tree out of Foundry first",
+            plan.destination.display()
+        );
+    }
     fs::remove_dir_all(&plan.destination).with_context(|| {
         format!(
             "could not remove migrated root {}",
             plan.destination.display()
         )
     })?;
+    // The receipt proved the migration completed; with the migrated root gone
+    // it is stale. Leaving it would let later inspections report
+    // RollbackAvailable and let a re-migration early-return succeed without
+    // copying anything.
+    let _ = fs::remove_file(&plan.receipt_path);
+    let journal_path = plan
+        .destination
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!(".{PRODUCT_SLUG}-migration-journal.json"));
+    let _ = fs::remove_file(journal_path);
     Ok(())
 }
 
@@ -640,6 +688,15 @@ pub fn execute_application_home_cleanup(plan: &AppHomeCleanupPlan) -> Result<()>
     }
     if !plan.legacy_root.is_dir() || plan.legacy_root == plan.canonical_root {
         bail!("cleanup legacy root is invalid");
+    }
+    // App-home migration deliberately leaves the model tree at the legacy
+    // root for an explicit follow-up decision. Cleanup must never fire while
+    // that tree (the only copy of the models) is still there.
+    if contains_models(&plan.legacy_root) {
+        bail!(
+            "refusing cleanup: legacy root {} still contains a populated models directory; decide the model root first",
+            plan.legacy_root.display()
+        );
     }
     fs::remove_dir_all(&plan.legacy_root)
         .with_context(|| format!("could not clean legacy root {}", plan.legacy_root.display()))?;
@@ -758,14 +815,8 @@ pub fn plan_application_home(source: &Path, destination: &Path) -> Result<AppHom
     if source == destination {
         bail!("source and destination application roots must differ");
     }
-    if destination.exists()
-        && (!destination.is_dir() || fs::read_dir(destination)?.next().is_some())
-    {
-        bail!(
-            "destination exists and is not an empty directory: {}",
-            destination.display()
-        );
-    }
+    // Structure identity first: the resume decision below needs the plan id to
+    // match the interrupted run's journal.
     let mut entries = Vec::new();
     let mut retained_entries = Vec::new();
     collect_entries(source, source, &mut entries, &mut retained_entries)?;
@@ -804,7 +855,38 @@ pub fn plan_application_home(source: &Path, destination: &Path) -> Result<AppHom
         structure,
         &retained_entries,
     ))?);
-    let plan_id = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    let plan_id: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    // An interrupted migration leaves a partially filled destination. That is
+    // resumable — but only when a journal from the exact same plan says so;
+    // any other non-empty destination is still a hard error.
+    let resumable = fs::File::open(migration_journal_path(&AppHomeMigrationPlan {
+        schema_version: 1,
+        plan_id: plan_id.clone(),
+        source: source.to_path_buf(),
+        destination: destination.to_path_buf(),
+        entries: Vec::new(),
+        retained_entries: Vec::new(),
+        required_copy_bytes: 0,
+        total_seen_bytes: 0,
+    }))
+    .ok()
+    .and_then(|file| serde_json::from_reader::<_, AppHomeMigrationJournal>(file).ok())
+    .is_some_and(|journal| {
+        journal.plan_id == plan_id
+            && matches!(
+                journal.state,
+                MigrationJournalState::Copying | MigrationJournalState::Failed
+            )
+    });
+    if !resumable
+        && destination.exists()
+        && (!destination.is_dir() || fs::read_dir(destination)?.next().is_some())
+    {
+        bail!(
+            "destination exists and is not an empty directory: {}",
+            destination.display()
+        );
+    }
     Ok(AppHomeMigrationPlan {
         schema_version: 1,
         plan_id,
@@ -815,6 +897,17 @@ pub fn plan_application_home(source: &Path, destination: &Path) -> Result<AppHom
         required_copy_bytes,
         total_seen_bytes,
     })
+}
+
+/// True when `root/models` exists and holds anything. Model trees are moved
+/// (never copied) between roots, so a destructive operation on either root
+/// must refuse while the only copy of user models lives inside it.
+fn contains_models(root: &Path) -> bool {
+    let models = root.join("models");
+    models.is_dir()
+        && fs::read_dir(&models)
+            .map(|entries| entries.count() > 0)
+            .unwrap_or(true)
 }
 
 fn validate_root(root: &Path, label: &str) -> Result<()> {
@@ -1117,6 +1210,112 @@ mod tests {
         let error = plan_application_home(&source, &destination).unwrap_err();
         assert!(error.to_string().contains("symlink"));
         let _ = fs::remove_dir_all(source.parent().unwrap());
+    }
+
+    // --- Regression tests for the destructive-operation guards. Each covers a
+    // bug that could destroy the only copy of user data or strand startup. ---
+
+    fn migrated_fixture(
+        _name: &str,
+    ) -> (tempfile::TempDir, PathBuf, PathBuf, AppHomeMigrationPlan) {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("legacy");
+        let destination = root.path().join("canonical");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("presets.json"), b"{}").unwrap();
+        fs::write(source.join("auth-config.json"), b"{}").unwrap();
+        // Note: no chat.db — its copy path requires a real SQLite database.
+        let plan = plan_application_home(&source, &destination).unwrap();
+        execute_application_home(&plan).unwrap();
+        (root, source, destination, plan)
+    }
+
+    #[test]
+    fn rollback_refuses_to_delete_migrated_models() {
+        let (_root, source, destination, _plan) = migrated_fixture("rollback-models");
+        // Simulate the model-root move: the only copy of the models now lives
+        // inside the canonical root.
+        fs::create_dir_all(destination.join("models")).unwrap();
+        fs::write(destination.join("models/model.gguf"), b"weights").unwrap();
+        let plan = plan_application_home_rollback(&destination, &source).unwrap();
+        let error = execute_application_home_rollback(&plan).unwrap_err();
+        assert!(error.to_string().contains("models"));
+        assert!(destination.join("models/model.gguf").is_file());
+        let _ = fs::remove_dir_all(source.parent().unwrap());
+    }
+
+    #[test]
+    fn rollback_removes_receipt_so_remigration_copies_again() {
+        let (_root, source, destination, _plan) = migrated_fixture("rollback-receipt");
+        let plan = plan_application_home_rollback(&destination, &source).unwrap();
+        execute_application_home_rollback(&plan).unwrap();
+        assert!(!destination.exists());
+        // The stale receipt must be gone: no RollbackAvailable without it.
+        assert!(!has_completed_receipt(&destination, &source));
+        // And a fresh migration re-plans and re-copies from scratch instead of
+        // early-returning an empty destination.
+        let fresh = plan_application_home(&source, &destination).unwrap();
+        execute_application_home(&fresh).unwrap();
+        assert!(destination.join("presets.json").is_file());
+        let _ = fs::remove_dir_all(source.parent().unwrap());
+    }
+
+    #[test]
+    fn cleanup_refuses_while_legacy_models_remain() {
+        let (_root, source, destination, _plan) = migrated_fixture("cleanup-models");
+        fs::create_dir_all(source.join("models")).unwrap();
+        fs::write(source.join("models/model.gguf"), b"weights").unwrap();
+        let plan = plan_application_home_cleanup(&destination, &source).unwrap();
+        let error = execute_application_home_cleanup(&plan).unwrap_err();
+        assert!(error.to_string().contains("models"));
+        assert!(source.join("models/model.gguf").is_file());
+        let _ = fs::remove_dir_all(source.parent().unwrap());
+    }
+
+    #[test]
+    fn incomplete_destination_invalidates_receipt() {
+        let (_root, source, destination, plan) = migrated_fixture("stale-receipt");
+        // A receipt whose recorded entries are missing (manual partial
+        // deletion) must not satisfy the execute early-return.
+        fs::remove_file(destination.join("presets.json")).unwrap();
+        let error = execute_application_home(&plan).unwrap_err();
+        assert!(error.to_string().contains("stale"));
+        let _ = fs::remove_dir_all(source.parent().unwrap());
+    }
+
+    #[test]
+    fn interrupted_migration_resumes_from_journal() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("legacy");
+        let destination = root.path().join("canonical");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("presets.json"), b"{}").unwrap();
+        fs::write(source.join("auth-config.json"), b"{}").unwrap();
+        let plan = plan_application_home(&source, &destination).unwrap();
+        // Simulate a crash mid-copy: no receipt yet, a partially filled
+        // destination, and a Copying journal recording the finished entry.
+        fs::create_dir_all(&destination).unwrap();
+        fs::copy(
+            source.join("presets.json"),
+            destination.join("presets.json"),
+        )
+        .unwrap();
+        let journal = AppHomeMigrationJournal {
+            schema_version: 1,
+            plan_id: plan.plan_id.clone(),
+            state: MigrationJournalState::Copying,
+            completed_entries: vec![PathBuf::from("presets.json")],
+            last_error: None,
+        };
+        let journal_path = migration_journal_path(&plan);
+        write_json_atomic(&journal_path, &journal).unwrap();
+        assert!(!destination.join("auth-config.json").exists());
+        // Both planning and execution must accept the partial destination and
+        // finish the remaining entries.
+        let resumed = plan_application_home(&source, &destination).unwrap();
+        assert_eq!(resumed.plan_id, plan.plan_id);
+        execute_application_home(&resumed).unwrap();
+        assert!(destination.join("auth-config.json").is_file());
     }
 
     // Symlink fixtures are Unix-only, like the escape test above; Windows

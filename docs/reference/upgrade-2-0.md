@@ -43,12 +43,30 @@ Choose **Keep legacy root** to continue using the existing files, or choose
 receipt-backed, resumable, and never silently merges two roots. The original
 legacy root remains available until you explicitly remove it.
 
+Migration explicitly does not copy the model tree: models are inventoried and
+retained at the legacy root for an explicit follow-up decision. The destructive
+operations are guarded against the only-copy scenario:
+
+- **Rollback** refuses to run while the canonical root holds a populated
+  `models` directory (a move would have left it as the only copy), and it
+  removes the migration receipt so a later migration re-copies instead of
+  early-returning an empty root.
+- **Legacy-root cleanup** refuses to run while the legacy root still holds a
+  populated `models` directory.
+- **Model-root moves** are refused until the application-home migration has
+  settled, because `models` inside the canonical root is itself a root-state
+  marker and creating it early strands startup in `Conflict`.
+- An interrupted migration resumes from its journal on the next start instead
+  of blocking startup.
+
 If the migration notice is already in notification history after a reload,
 **Review migration** remains enabled and opens Settings → Migration.
 
 Model libraries follow the same policy. An external/custom model root is never
 moved automatically. Use the Model Library migration preview to select a
-destination and retain or remove the source only after verification.
+destination and retain or remove the source only after verification. Model
+moves are a single rename with no copy fallback, so cross-filesystem moves are
+rejected at planning time.
 
 ## Headless and remote upgrades
 

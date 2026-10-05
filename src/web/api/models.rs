@@ -193,6 +193,39 @@ struct ModelRootRelocationExecuteRequest {
     confirmation: String,
 }
 
+/// A model move into the Foundry root is only safe once the application-home
+/// migration has settled: `canonical/models` is itself an app-state marker,
+/// so creating it while the legacy root is still active (or in conflict)
+/// produces a start-up Conflict with no recovery path.
+fn ensure_model_move_allowed(
+    choice: crate::models::root_relocation::ModelRootChoice,
+) -> anyhow::Result<()> {
+    use crate::app_migration::RootState;
+    use crate::models::root_relocation::ModelRootChoice;
+    if choice != ModelRootChoice::MoveIntoFoundry {
+        return Ok(());
+    }
+    let inspection = crate::app_migration::inspect_default_roots()?;
+    match inspection.state {
+        RootState::Fresh
+        | RootState::NewActive
+        | RootState::RollbackAvailable
+        | RootState::CustomConfig
+        | RootState::BothIdentical => Ok(()),
+        RootState::LegacyActive | RootState::MigrationQueued => anyhow::bail!(
+            "resolve the application-home migration before moving the model tree into Foundry"
+        ),
+        RootState::Conflict => {
+            anyhow::bail!(
+                "application roots are in conflict; resolve the conflict before moving the model tree"
+            )
+        }
+        RootState::Migrating | RootState::MigrationFailed => anyhow::bail!(
+            "an application-home migration is in progress or failed; resolve it before moving the model tree"
+        ),
+    }
+}
+
 fn api_model_root_relocation_preview(
     state: AppState,
     app_config: Arc<AppConfig>,
@@ -217,6 +250,9 @@ fn api_model_root_relocation_preview(
                             return Ok(error_reply(warp::http::StatusCode::BAD_REQUEST, error));
                         }
                     };
+                    if let Err(error) = ensure_model_move_allowed(request.choice) {
+                        return Ok(error_reply(warp::http::StatusCode::CONFLICT, error));
+                    }
                     let persistence = migration_persistence_files(&state);
                     let result = tokio::time::timeout(
                     std::time::Duration::from_secs(30),
@@ -284,6 +320,9 @@ fn api_model_root_relocation_execute(
                     Ok(paths) => paths,
                     Err(error) => return Ok(error_reply(warp::http::StatusCode::BAD_REQUEST, error)),
                 };
+                if let Err(error) = ensure_model_move_allowed(choice) {
+                    return Ok(error_reply(warp::http::StatusCode::CONFLICT, error));
+                }
                 let persistence = migration_persistence_files(&state);
                 let expected_plan_id = request.plan_id;
                 let result = tokio::time::timeout(
