@@ -1,65 +1,47 @@
 #!/usr/bin/env bash
+# Smoke-build every release target in parallel by delegating to
+# build-single-target.sh, so features and toolchain detection stay identical to
+# the release workflow. Each target gets its own CARGO_TARGET_DIR
+# (target/smoke-<target>) so the parallel builds do not contend for the lock.
+# Usage: build-release-targets.sh [target ...]   (default: all four targets)
 set -euo pipefail
 
-mkdir -p ~/.cargo
-cat > ~/.cargo/config.toml << 'EOF'
-[target.aarch64-apple-darwin]
-linker = "/opt/osxcross/target/bin/aarch64-apple-darwin25.1-clang"
-ar = "/opt/osxcross/target/bin/aarch64-apple-darwin25.1-ar"
-rustflags = [
-  "-C", "link-arg=-fuse-ld=/opt/osxcross/target/bin/aarch64-apple-darwin25.1-ld",
-  "-C", "link-arg=-isysroot",
-  "-C", "link-arg=/opt/osxcross/target/SDK/MacOSX26.1.sdk",
-]
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
 
-[target.aarch64-unknown-linux-gnu]
-linker = "aarch64-linux-gnu-gcc"
-rustflags = [
-  "-C", "link-arg=-Wl,--allow-shlib-undefined",
-]
-EOF
+if [[ $# -gt 0 ]]; then
+  TARGETS=("$@")
+else
+  TARGETS=(
+    x86_64-unknown-linux-gnu
+    aarch64-unknown-linux-gnu
+    x86_64-pc-windows-gnu
+    aarch64-apple-darwin
+  )
+fi
 
-echo "Building release targets..."
+LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/build-release-targets.XXXXXX")"
+trap 'rm -rf "$LOG_DIR"' EXIT
 
-cargo build --release --target x86_64-unknown-linux-gnu \
-  --target-dir target/smoke-x86_64-linux \
-  > /tmp/build-linux-x86_64.log 2>&1 &
-pid1=$!
+echo "Building release targets (logs: $LOG_DIR)..."
 
-PKG_CONFIG_ALLOW_CROSS=1 \
-  PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig \
-  CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
-  CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ \
-  AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar \
-  cargo build --release --target aarch64-unknown-linux-gnu \
-  --target-dir target/smoke-aarch64-linux \
-  > /tmp/build-linux-aarch64.log 2>&1 &
-pid2=$!
-
-CROSS_REMOTE=1 \
-  CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="-C target-feature=+crt-static" \
-  cross build --release --target x86_64-pc-windows-gnu \
-  --target-dir target/smoke-x86_64-windows \
-  --no-default-features --features native-tray \
-  > /tmp/build-windows-x86_64.log 2>&1 &
-pid3=$!
-
-SDKROOT=/opt/osxcross/target/SDK/MacOSX26.1.sdk \
-  CC_aarch64_apple_darwin=/opt/osxcross/target/bin/aarch64-apple-darwin25.1-clang \
-  AR_aarch64_apple_darwin=/opt/osxcross/target/bin/aarch64-apple-darwin25.1-ar \
-  AR=/opt/osxcross/target/bin/aarch64-apple-darwin25.1-ar \
-  RANLIB=/opt/osxcross/target/bin/aarch64-apple-darwin25.1-ranlib \
-  cargo build --release --target aarch64-apple-darwin \
-  --target-dir target/smoke-aarch64-macos \
-  > /tmp/build-macos-aarch64.log 2>&1 &
-pid4=$!
+PIDS=()
+for target in "${TARGETS[@]}"; do
+  CARGO_TARGET_DIR="target/smoke-${target}" \
+    bash "$SCRIPT_DIR/build-single-target.sh" "$target" \
+    > "$LOG_DIR/${target}.log" 2>&1 &
+  PIDS+=("$!")
+done
 
 result=0
+for i in "${!TARGETS[@]}"; do
+  target="${TARGETS[$i]}"
+  if ! wait "${PIDS[$i]}"; then
+    echo "FAILED: $target"
+    cat "$LOG_DIR/${target}.log"
+    result=1
+  fi
+done
 
-wait "$pid1" || { echo "FAILED: x86_64-unknown-linux-gnu"; cat /tmp/build-linux-x86_64.log; result=1; }
-wait "$pid2" || { echo "FAILED: aarch64-unknown-linux-gnu"; cat /tmp/build-linux-aarch64.log; result=1; }
-wait "$pid3" || { echo "FAILED: x86_64-pc-windows-gnu"; cat /tmp/build-windows-x86_64.log; result=1; }
-wait "$pid4" || { echo "FAILED: aarch64-apple-darwin"; cat /tmp/build-macos-aarch64.log; result=1; }
-
-[ "$result" -eq 0 ] && echo "All release targets built successfully."
+[[ "$result" -eq 0 ]] && echo "All release targets built successfully."
 exit "$result"

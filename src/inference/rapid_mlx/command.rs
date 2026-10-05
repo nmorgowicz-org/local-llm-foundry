@@ -8,6 +8,52 @@ use anyhow::Result;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+/// Reject any argv value that could be mistaken for another option or corrupt
+/// the command line. Values reach the runtime as single argv entries, so the
+/// dangerous cases are option injection (a leading `-`) and whitespace or
+/// control characters that split or disguise the token.
+fn validate_launch_argument(argument: &str) -> Result<()> {
+    if argument.is_empty() {
+        anyhow::bail!("model launch argument must not be empty");
+    }
+    if argument.starts_with('-') {
+        anyhow::bail!("model launch argument must not start with '-'; got {argument:?}");
+    }
+    Ok(())
+}
+
+fn validate_served_model_name(name: &str) -> Result<()> {
+    if name.is_empty() || name.starts_with('-') {
+        anyhow::bail!("served model name must be non-empty and not start with '-'; got {name:?}");
+    }
+    if name.chars().any(char::is_whitespace) {
+        anyhow::bail!("served model name must not contain whitespace; got {name:?}");
+    }
+    Ok(())
+}
+
+fn validate_host(host: &str) -> Result<()> {
+    if host.is_empty() {
+        anyhow::bail!("host must not be empty");
+    }
+    if host.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        anyhow::bail!("host must not contain whitespace or control characters; got {host:?}");
+    }
+    Ok(())
+}
+
+fn validate_safe_token(label: &str, value: &str) -> Result<()> {
+    if value.is_empty() || value.starts_with('-') {
+        anyhow::bail!("{label} must be non-empty and not start with '-'; got {value:?}");
+    }
+    if value.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        anyhow::bail!(
+            "{label} must be a single token without whitespace or control characters; got {value:?}"
+        );
+    }
+    Ok(())
+}
+
 pub struct RapidMlxCommandBuilder {
     model: ResolvedRapidMlxLaunchModel,
     served_model_name: Option<String>,
@@ -272,11 +318,154 @@ impl RapidMlxCommandBuilder {
         self
     }
 
+    /// Reject every value that could be mistaken for another option, corrupt argv, or make
+    /// the runtime misbehave. Called first in `build()` so the guarantee is local to the
+    /// builder rather than dependent on callers having validated beforehand.
+    fn validate(&self) -> Result<()> {
+        validate_launch_argument(&self.model.launch_argument)?;
+        if let Some(name) = &self.served_model_name {
+            validate_served_model_name(name)?;
+        }
+        validate_host(&self.host)?;
+        for (label, value) in [
+            ("log_level", &self.log_level),
+            ("tool_call_parser", &self.tool_call_parser),
+            ("reasoning_parser", &self.reasoning_parser),
+        ] {
+            if let Some(value) = value {
+                validate_safe_token(label, value)?;
+            }
+        }
+        if let Some(mode) = &self.turboquant_mode
+            && !matches!(mode.as_str(), "auto" | "none" | "v4" | "k8v4")
+        {
+            anyhow::bail!("turboquant_mode must be one of auto, none, v4, k8v4; got {mode:?}");
+        }
+        if let Some(util) = self.gpu_memory_utilization
+            && !(util.is_finite() && util > 0.0 && util <= 1.0)
+        {
+            anyhow::bail!(
+                "gpu_memory_utilization must be greater than 0 and at most 1; got {util}"
+            );
+        }
+        let in_range = |label: &str, value: Option<f64>, min: f64, max: f64| -> Result<()> {
+            if let Some(v) = value
+                && !(v.is_finite() && v >= min && v <= max)
+            {
+                anyhow::bail!("{label} must be a finite number in [{min}, {max}]; got {v}");
+            }
+            Ok(())
+        };
+        in_range("default_temperature", self.default_temperature, 0.0, 10.0)?;
+        in_range("default_top_p", self.default_top_p, 0.0, 1.0)?;
+        in_range("default_min_p", self.default_min_p, 0.0, 1.0)?;
+        in_range(
+            "default_repetition_penalty",
+            self.default_repetition_penalty,
+            0.0,
+            10.0,
+        )?;
+        in_range(
+            "default_presence_penalty",
+            self.default_presence_penalty,
+            -2.0,
+            2.0,
+        )?;
+        in_range(
+            "default_frequency_penalty",
+            self.default_frequency_penalty,
+            -2.0,
+            2.0,
+        )?;
+        if self.max_tokens == Some(0) {
+            anyhow::bail!("max_tokens must be at least 1");
+        }
+        if let Some(size) = self.prefill_step_size
+            && !(1..=2048).contains(&size)
+        {
+            anyhow::bail!("prefill_step_size must be between 1 and 2048");
+        }
+        Ok(())
+    }
+
+    /// Validate the escape-hatch flags and turn them into argv. Names and values are checked
+    /// against the allowlist descriptors, each flag must be probed as supported, duplicates are
+    /// refused, and a flag that a typed setting already controls is refused instead of being
+    /// emitted twice with an argparse-last-wins result.
+    fn escape_hatch_args(&self, capabilities: &ServeCapabilities) -> Result<Vec<String>> {
+        use crate::inference::rapid_mlx::escape_hatch::escape_flag_to_args;
+        if self.escape_hatch_flags.is_empty() {
+            return Ok(Vec::new());
+        }
+        crate::inference::rapid_mlx::escape_hatch::validate_escape_flag_values(
+            &self.escape_hatch_flags,
+        )
+        .map_err(|message| anyhow::anyhow!(message))?;
+
+        let mut seen = std::collections::HashSet::new();
+        for (name, _) in &self.escape_hatch_flags {
+            if !seen.insert(name.as_str()) {
+                anyhow::bail!("escape flag --{name} is specified more than once");
+            }
+        }
+        let active = |flag: &str| {
+            self.escape_hatch_flags
+                .iter()
+                .any(|(name, value)| name == flag && value == &serde_json::Value::Bool(true))
+        };
+        if active("force-hybrid") && active("no-hybrid") {
+            anyhow::bail!("--force-hybrid and --no-hybrid are mutually exclusive");
+        }
+        if self.hybrid_mode != RapidMlxHybridMode::Auto
+            && (active("force-hybrid") || active("no-hybrid"))
+        {
+            anyhow::bail!(
+                "hybrid_mode cannot be combined with legacy force-hybrid/no-hybrid escape flags"
+            );
+        }
+        if self
+            .escape_hatch_flags
+            .iter()
+            .any(|(name, _)| name == "pflash")
+            && self
+                .pflash_policy
+                .as_deref()
+                .is_some_and(|policy| policy != "auto")
+        {
+            anyhow::bail!(
+                "escape flag --pflash conflicts with the typed pflash_policy setting; set pflash_policy to \"auto\" or remove the escape flag"
+            );
+        }
+
+        let mut args = Vec::new();
+        for (name, value) in &self.escape_hatch_flags {
+            let fragment = escape_flag_to_args(name, value).map_err(|m| anyhow::anyhow!(m))?;
+            if fragment.is_empty() {
+                continue; // `false` switch: nothing to emit, nothing to probe.
+            }
+            let flag = format!("--{name}");
+            if !capabilities.contains(&flag) {
+                anyhow::bail!(
+                    "Installed Rapid-MLX does not support escape-hatch option {flag}; select a compatible runtime or remove that option"
+                );
+            }
+            args.extend(fragment);
+        }
+        Ok(args)
+    }
+
     pub fn build(
         self,
         binary_path: PathBuf,
         capabilities: &ServeCapabilities,
     ) -> Result<SupervisedLaunch> {
+        // Reject unsafe values before any argv is assembled.
+        self.validate()?;
+        // Escape-hatch flags go through the strict path: allowlist
+        // validation, capability probing, duplicate refusal, and conflicts
+        // with typed settings are all enforced before any argv is emitted.
+        // Computed up-front because `self` is partially moved below.
+        let escape_args = self.escape_hatch_args(capabilities)?;
         let mut args = vec!["serve".to_string()];
         args.push(self.model.launch_argument.clone());
 
@@ -322,39 +511,8 @@ impl RapidMlxCommandBuilder {
             capabilities.require("--enable-auto-tool-choice")?;
             args.push("--enable-auto-tool-choice".to_string());
         }
-        // Apply validated escape-hatch flags (already allowlisted at load time).
-        // Bool flags are boolean switches: true = presence of flag, false = omitted.
-        let legacy_force_hybrid = self
-            .escape_hatch_flags
-            .iter()
-            .any(|(name, value)| name == "force-hybrid" && value == &serde_json::Value::Bool(true));
-        let legacy_no_hybrid = self
-            .escape_hatch_flags
-            .iter()
-            .any(|(name, value)| name == "no-hybrid" && value == &serde_json::Value::Bool(true));
-        if legacy_force_hybrid && legacy_no_hybrid {
-            anyhow::bail!("--force-hybrid and --no-hybrid are mutually exclusive");
-        }
-        if self.hybrid_mode != RapidMlxHybridMode::Auto && (legacy_force_hybrid || legacy_no_hybrid)
-        {
-            anyhow::bail!(
-                "hybrid_mode cannot be combined with legacy force-hybrid/no-hybrid escape flags"
-            );
-        }
-        for (name, value) in &self.escape_hatch_flags {
-            match value {
-                serde_json::Value::Bool(true) => {
-                    args.push(format!("--{}", name));
-                }
-                serde_json::Value::Bool(false) => {
-                    // Omitted: false means "use default" for switch flags.
-                }
-                _ => {
-                    args.push(format!("--{}", name));
-                    args.push(serde_value_to_flag_arg(value));
-                }
-            }
-        }
+        // Escape-hatch flags were validated and converted above.
+        args.extend(escape_args);
         // Phase 7: KV/cache policy flags
         if let Some(ref dtype) = self.kv_cache_dtype {
             match dtype {
@@ -736,29 +894,6 @@ fn validate_trust_consent_simple(
     Ok(())
 }
 
-fn serde_value_to_flag_arg(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Bool(true) => String::new(),
-        serde_json::Value::Bool(false) => String::new(),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                i.to_string()
-            } else if let Some(f) = n.as_f64() {
-                format!("{f}")
-            } else {
-                String::new()
-            }
-        }
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Array(arr) => arr
-            .iter()
-            .map(serde_value_to_flag_arg)
-            .collect::<Vec<_>>()
-            .join(","),
-        _ => String::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1051,7 +1186,15 @@ mod tests {
             ResolvedRapidMlxLaunchModel::validated_alias("model").unwrap(),
         )
         .escape_hatch_flags(flags)
-        .build("rapid-mlx".into(), &ServeCapabilities::verified_baseline())
+        .build(
+            "rapid-mlx".into(),
+            // The verified baseline does not advertise the newer pflash
+            // sub-flags; a runtime that supports them probes them into its
+            // capability set.
+            &ServeCapabilities::from_help(
+                "--host --port --log-level --served-model-name --timeout --enable-prefix-cache --disable-prefix-cache --cache-memory-mb --hybrid-cache-entries --kv-disk-checkpoint-interval --tool-call-parser --reasoning-parser --enable-auto-tool-choice --no-thinking --reasoning --force-hybrid --no-hybrid --prefill-step-size --pflash --pflash-threshold --pflash-keep-ratio --speculative-config",
+            ),
+        )
         .unwrap();
         let args = args(&launch);
         assert!(args.contains(&"--force-hybrid".to_string()));

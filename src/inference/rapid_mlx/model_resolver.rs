@@ -880,32 +880,52 @@ fn reject_app_staging_directory(path: &Path, models_dir: &Path) -> Result<()> {
 /// trust_remote_code to load. A repo is considered safe (data-only) when it
 /// only contains safetensors/weights and standard config files. Custom-code
 /// repos are those that declare transformers main_class / auto_map entries or
-/// include model loading scripts (main.py, modeling_*.py) that rapid-mlx
-/// would need to execute.
+/// include model loading scripts (main.py, modeling_*.py,
+/// tokenization_*.py, processing_*.py) that rapid-mlx would need to execute.
+///
+/// Detection fails closed: an unreadable or unparseable config.json is treated
+/// as requiring trust_remote_code, because a config we cannot inspect gives no
+/// basis for calling the repo data-only.
 fn needs_trust_remote_code(model_dir: &Path) -> Result<bool> {
     // Check config.json for transformers main_class or auto_map indicators
     let config_path = model_dir.join("config.json");
     if config_path.is_file() {
         let content = match fs::read_to_string(&config_path) {
             Ok(c) => c,
-            Err(_) => return Ok(false), // safe default: assume data-only on read error
+            Err(_) => return Ok(true), // fail closed: unreadable config is uninspectable
         };
         let value: serde_json::Value = match serde_json::from_str(&content) {
             Ok(v) => v,
-            Err(_) => return Ok(false), // safe default: assume data-only on parse error
+            Err(_) => return Ok(true), // fail closed: unparseable config is uninspectable
         };
         // main_class indicates a custom model class must be imported
         if value.get("main_class").and_then(|v| v.as_str()).is_some() {
             return Ok(true);
         }
-        // auto_map with non-standard classes indicates custom code loading
+        // Any auto_map entry indicates custom code loading. Values may be a
+        // plain class string or an array like ["tokenization_x.Tok", null].
+        // Exact transformers-internal module paths ("transformers.models.…")
+        // are the only exemption; a substring match would let
+        // "evil.transformers.models.X" through.
         if let Some(auto_map) = value.get("auto_map").and_then(|v| v.as_object()) {
             for (_, class_value) in auto_map {
-                if let Some(class_str) = class_value.as_str()
-                    && !class_str.starts_with("Auto")
-                    && !class_str.contains("transformers.models")
-                    && !class_str.contains("transformers_modules")
-                {
+                let is_standard = match class_value {
+                    serde_json::Value::String(class_str) => {
+                        class_str.starts_with("Auto")
+                            || class_str.starts_with("transformers.models.")
+                    }
+                    serde_json::Value::Array(items) => items.iter().all(|item| match item {
+                        serde_json::Value::String(class_str) => {
+                            class_str.starts_with("Auto")
+                                || class_str.starts_with("transformers.models.")
+                        }
+                        serde_json::Value::Null => true,
+                        _ => false,
+                    }),
+                    serde_json::Value::Null => true,
+                    _ => false,
+                };
+                if !is_standard {
                     return Ok(true);
                 }
             }
@@ -919,6 +939,9 @@ fn needs_trust_remote_code(model_dir: &Path) -> Result<bool> {
             if name == "main.py"
                 || (name.starts_with("modeling_") && name.ends_with(".py"))
                 || (name.starts_with("configuration_") && name.ends_with(".py"))
+                || (name.starts_with("tokenization_") && name.ends_with(".py"))
+                || (name.starts_with("processing_") && name.ends_with(".py"))
+                || (name.starts_with("image_processing_") && name.ends_with(".py"))
             {
                 return Ok(true);
             }
@@ -2436,10 +2459,50 @@ mod tests {
     }
 
     #[test]
-    fn needs_trust_remote_code_config_parse_error_safe() {
+    fn needs_trust_remote_code_config_parse_error_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("config.json"), b"not json").unwrap();
-        assert!(!needs_trust_remote_code(dir.path()).unwrap());
+        assert!(needs_trust_remote_code(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn needs_trust_remote_code_auto_map_array_entry_detected() {
+        // transformers auto_map values may be arrays, e.g.
+        // ["tokenization_custom.Tokenizer", null]. They are custom code.
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.json"),
+            r#"{"auto_map":{"AutoTokenizer":["tokenization_custom.Tokenizer",null]}}"#,
+        )
+        .unwrap();
+        assert!(needs_trust_remote_code(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn needs_trust_remote_code_lookalike_module_prefix_detected() {
+        // A substring exemption would let "evil.transformers.models.X" pass;
+        // only an exact "transformers.models." prefix is standard.
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("config.json"),
+            r#"{"auto_map":{"AutoModel":"evil.transformers.models.X.Fake"}}"#,
+        )
+        .unwrap();
+        assert!(needs_trust_remote_code(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn needs_trust_remote_code_tokenization_py_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("tokenization_custom.py"), b"x").unwrap();
+        assert!(needs_trust_remote_code(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn needs_trust_remote_code_processing_py_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("processing_custom.py"), b"x").unwrap();
+        assert!(needs_trust_remote_code(dir.path()).unwrap());
     }
 
     #[test]

@@ -46,7 +46,7 @@ struct RuntimeApiState {
     manager: Result<Arc<RapidMlxRuntimeManager>, String>,
     releases: Arc<tokio::sync::Mutex<ReleaseCache>>,
     jobs: Arc<Mutex<RuntimeJobs>>,
-    model_downloads: Arc<Mutex<BTreeMap<String, ModelDownloadJob>>>,
+    model_downloads: Arc<Mutex<ModelDownloads>>,
     changelog_cache: Arc<changelog::ChangelogCacheManager>,
     client: reqwest::Client,
 }
@@ -80,13 +80,261 @@ const MODEL_DOWNLOAD_MAX_RESTARTS: u32 = 3;
 /// No forwarded progress for this long counts as a stall; the downloader is
 /// restarted and resumes (the hub skips files it already finished).
 const MODEL_DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(8 * 60);
+/// Upper bound on waiting for a killed (or EOF'd) downloader to be reaped.
+const MODEL_DOWNLOAD_REAP_TIMEOUT: Duration = Duration::from_secs(10);
+/// Concurrent downloads allowed at once; terminal jobs do not count.
+const MAX_ACTIVE_MODEL_DOWNLOADS: usize = 4;
+const MODEL_DOWNLOAD_SEGMENT_MAX_LEN: usize = 96;
+const MODEL_DOWNLOAD_REVISION_MAX_LEN: usize = 128;
+
+impl ModelDownloadJob {
+    fn is_active(&self) -> bool {
+        matches!(
+            self.state,
+            RuntimeJobState::Queued | RuntimeJobState::Running
+        )
+    }
+}
+
+/// Download registry. `order` records insertion order so eviction is
+/// oldest-first among *terminal* jobs; a running job is never evicted (its
+/// worker and cancel flag would become unreachable from the API).
+#[derive(Default)]
+struct ModelDownloads {
+    entries: BTreeMap<String, ModelDownloadJob>,
+    order: VecDeque<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ModelDownloadAdmission {
+    Registered,
+    AlreadyRunning { job_id: String },
+    AtCapacity,
+}
+
+impl ModelDownloads {
+    fn get(&self, id: &str) -> Option<&ModelDownloadJob> {
+        self.entries.get(id)
+    }
+
+    fn get_mut(&mut self, id: &str) -> Option<&mut ModelDownloadJob> {
+        self.entries.get_mut(id)
+    }
+
+    fn active_count(&self) -> usize {
+        self.entries.values().filter(|job| job.is_active()).count()
+    }
+
+    /// Dedupe, capacity check, eviction and insert as one step, so callers
+    /// holding the registry lock cannot interleave between check and insert.
+    fn register(&mut self, id: String, job: ModelDownloadJob) -> ModelDownloadAdmission {
+        if let Some((existing, _)) = self.entries.iter().find(|(_, existing)| {
+            existing.is_active()
+                && existing.repo_id == job.repo_id
+                && existing.revision == job.revision
+        }) {
+            return ModelDownloadAdmission::AlreadyRunning {
+                job_id: existing.clone(),
+            };
+        }
+        if self.active_count() >= MAX_ACTIVE_MODEL_DOWNLOADS {
+            return ModelDownloadAdmission::AtCapacity;
+        }
+        self.evict_terminal();
+        self.order.push_back(id.clone());
+        self.entries.insert(id, job);
+        ModelDownloadAdmission::Registered
+    }
+
+    /// Make room for one more entry by dropping the oldest terminal jobs.
+    fn evict_terminal(&mut self) {
+        while self.entries.len() >= MAX_RETAINED_JOBS {
+            let Some(position) = self
+                .order
+                .iter()
+                .position(|id| self.entries.get(id).is_none_or(|job| !job.is_active()))
+            else {
+                break;
+            };
+            if let Some(id) = self.order.remove(position) {
+                self.entries.remove(&id);
+            }
+        }
+    }
+}
+
+fn lock_model_downloads(state: &RuntimeApiState) -> std::sync::MutexGuard<'_, ModelDownloads> {
+    state
+        .model_downloads
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// One Hugging Face owner or repo-name segment: `[A-Za-z0-9._-]`, bounded,
+/// never `.`/`..`, never leading `-` (would read as an option downstream).
+fn valid_hub_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment.len() <= MODEL_DOWNLOAD_SEGMENT_MAX_LEN
+        && segment != "."
+        && segment != ".."
+        && !segment.starts_with('-')
+        && segment
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
 
 fn validate_model_download_repo(repo_id: &str) -> bool {
-    let parts: Vec<&str> = repo_id.splitn(3, '/').collect();
-    parts.len() == 2
-        && !parts
-            .iter()
-            .any(|p| p.is_empty() || p.contains("..") || p.contains('/'))
+    repo_id
+        .split_once('/')
+        .is_some_and(|(owner, name)| valid_hub_segment(owner) && valid_hub_segment(name))
+}
+
+/// A branch, tag, `refs/pr/N`, or commit SHA. Slashes are allowed for ref
+/// paths; traversal, empty segments and a leading `-`/`.`/`/` are not.
+fn validate_model_download_revision(revision: &str) -> bool {
+    !revision.is_empty()
+        && revision.len() <= MODEL_DOWNLOAD_REVISION_MAX_LEN
+        && !revision.starts_with(['-', '/', '.'])
+        && !revision.ends_with('/')
+        && !revision.contains("..")
+        && !revision.contains("//")
+        && revision
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'))
+}
+
+#[cfg(unix)]
+fn configure_process_group(command: &mut tokio::process::Command) {
+    use std::os::unix::process::CommandExt;
+    command.as_std_mut().process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_command: &mut tokio::process::Command) {}
+
+/// SIGKILL the whole process group created by `configure_process_group`
+/// (group id == child pid). Call before the child is reaped so the id cannot
+/// have been recycled.
+#[cfg(unix)]
+fn terminate_process_tree(pid: u32) {
+    if let Ok(pid) = i32::try_from(pid)
+        && pid > 1
+    {
+        // SAFETY: kill(2) with a negated, validated child pid and a constant signal.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_process_tree(_pid: u32) {}
+
+/// Kill the child's process tree, then reap it with a bounded wait so a child
+/// stuck in uninterruptible state cannot wedge the caller.
+async fn kill_and_reap(
+    child: &mut tokio::process::Child,
+    pid: Option<u32>,
+) -> Option<std::process::ExitStatus> {
+    if let Some(pid) = pid {
+        terminate_process_tree(pid);
+    }
+    let _ = child.start_kill();
+    tokio::time::timeout(MODEL_DOWNLOAD_REAP_TIMEOUT, child.wait())
+        .await
+        .ok()
+        .and_then(Result::ok)
+}
+
+/// Run a command to completion with a hard deadline. The child gets its own
+/// process group and `kill_on_drop`; on timeout the whole group is killed.
+async fn run_bounded_output(
+    mut command: tokio::process::Command,
+    timeout: Duration,
+) -> std::io::Result<std::process::Output> {
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    configure_process_group(&mut command);
+    let child = command.spawn()?;
+    let pid = child.id();
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(result) => result,
+        Err(_) => {
+            if let Some(pid) = pid {
+                terminate_process_tree(pid);
+            }
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "command timed out",
+            ))
+        }
+    }
+}
+
+/// What one downloader attempt produced, independent of how it was observed.
+struct DownloadAttempt {
+    cancelled: bool,
+    stalled: bool,
+    failure: Option<String>,
+    final_path: Option<String>,
+    exit_code: Option<i32>,
+    stderr_tail: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DownloadDecision {
+    Cancelled,
+    Complete {
+        path: String,
+    },
+    /// Stalled with restarts left: kill, then resume (the hub keeps finished files).
+    Restart,
+    StallExhausted,
+    Failed {
+        error: String,
+    },
+}
+
+/// Pure restart/terminal decision for a finished attempt. `attempt` is 1-based.
+fn decide_download_outcome(outcome: DownloadAttempt, attempt: u32) -> DownloadDecision {
+    if outcome.cancelled {
+        return DownloadDecision::Cancelled;
+    }
+    if outcome.failure.is_none()
+        && let Some(path) = outcome.final_path
+    {
+        return DownloadDecision::Complete { path };
+    }
+    if outcome.stalled {
+        return if attempt <= MODEL_DOWNLOAD_MAX_RESTARTS {
+            DownloadDecision::Restart
+        } else {
+            DownloadDecision::StallExhausted
+        };
+    }
+    let error = outcome.failure.unwrap_or_else(|| {
+        // Exit without a PATH line: pull the error from stderr text.
+        let code = outcome.exit_code.unwrap_or(-1);
+        let detail = outcome
+            .stderr_tail
+            .lines()
+            .rev()
+            .find(|l| {
+                let l = l.to_ascii_lowercase();
+                l.contains("error") || l.contains("exception")
+            })
+            .unwrap_or("")
+            .trim();
+        if detail.is_empty() {
+            format!("Hub downloader exited with status {code}")
+        } else {
+            format!("Hub downloader exited with status {code}: {detail}")
+        }
+    });
+    DownloadDecision::Failed { error }
 }
 
 #[derive(Default)]
@@ -320,7 +568,7 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         manager,
         releases: Arc::new(tokio::sync::Mutex::new(None)),
         jobs: Arc::new(Mutex::new(RuntimeJobs::default())),
-        model_downloads: Arc::new(Mutex::new(BTreeMap::new())),
+        model_downloads: Arc::new(Mutex::new(ModelDownloads::default())),
         changelog_cache: Arc::new(changelog::ChangelogCacheManager::new()),
         client,
     };
@@ -394,28 +642,63 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         .boxed()
 }
 
+fn validate_model_download_engine(engine: &str) -> bool {
+    matches!(engine, "rapid-mlx" | "omlx")
+}
+
 /// Shared driver for both model-download routes. Runs `huggingface_hub`
 /// per-file downloads in a Python child, streams progress lines from its
 /// stdout (file boundaries, cumulative bytes, final snapshot path) plus
 /// intra-file tqdm percentages from stderr, detects stalls with a watchdog
 /// and restarts to resume — the hub skips files it already finished.
-fn validate_model_download_engine(engine: &str) -> bool {
-    matches!(engine, "rapid-mlx" | "omlx")
-}
-
+///
+/// The work runs in its own task and a supervisor awaits it, so a panic in the
+/// worker marks the job Failed instead of leaving it "Running" forever (which
+/// would also block re-requesting the same repo).
 fn spawn_model_download_worker(
     state: RuntimeApiState,
     job_id: String,
     repo_id: String,
     revision: String,
     models_dir: std::path::PathBuf,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
 ) {
     tokio::spawn(async move {
-        use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+        let worker = tokio::spawn(run_model_download(
+            state.clone(),
+            job_id.clone(),
+            repo_id,
+            revision,
+            models_dir,
+            cancel,
+        ));
+        if let Err(error) = worker.await {
+            let mut downloads = lock_model_downloads(&state);
+            if let Some(job) = downloads.get_mut(&job_id)
+                && job.is_active()
+            {
+                job.state = RuntimeJobState::Failed;
+                job.message = "Download failed".into();
+                job.error = Some(format!("Download worker terminated unexpectedly: {error}"));
+                job.stalled = false;
+            }
+        }
+    });
+}
 
-        // Raw string on purpose: a `\` line continuation in a normal literal strips the
-        // next line's indentation, which breaks the Python `for` body.
-        let python_code = r#"from huggingface_hub import HfApi, hf_hub_download
+async fn run_model_download(
+    state: RuntimeApiState,
+    job_id: String,
+    repo_id: String,
+    revision: String,
+    models_dir: std::path::PathBuf,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
+    // Raw string on purpose: a `\` line continuation in a normal literal strips the
+    // next line's indentation, which breaks the Python `for` body.
+    let python_code = r#"from huggingface_hub import HfApi, hf_hub_download
 import os, sys
 repo_id, revision, cache = sys.argv[1], sys.argv[2], sys.argv[3]
 info = HfApi().model_info(repo_id, revision=revision, files_metadata=True)
@@ -427,262 +710,245 @@ for name, size in files:
     last = hf_hub_download(repo_id=repo_id, filename=name, revision=revision, cache_dir=cache)
 print('PATH ' + os.path.dirname(last), flush=True)"#;
 
-        // Progress is measured on disk: the hub writes `<blob>.incomplete` files under
-        // models--owner--repo/blobs while downloading, so the directory size is the
-        // true byte count (xet and plain HTTP alike), including files kept from an
-        // earlier attempt when resuming.
-        let blobs_dir = models_dir
-            .join("cache/huggingface/hub")
-            .join(format!("models--{}", repo_id.replace('/', "--")))
-            .join("blobs");
-        let dir_bytes = |dir: &std::path::Path| -> u64 {
-            std::fs::read_dir(dir)
-                .map(|entries| {
-                    entries
-                        .flatten()
-                        .filter_map(|e| e.metadata().ok())
-                        .filter(|m| m.is_file())
-                        .map(|m| m.len())
-                        .sum()
-                })
-                .unwrap_or(0)
-        };
+    // Progress is measured on disk: the hub writes `<blob>.incomplete` files under
+    // models--owner--repo/blobs while downloading, so the directory size is the
+    // true byte count (xet and plain HTTP alike), including files kept from an
+    // earlier attempt when resuming.
+    let blobs_dir = models_dir
+        .join("cache/huggingface/hub")
+        .join(format!("models--{}", repo_id.replace('/', "--")))
+        .join("blobs");
+    let dir_bytes = |dir: &std::path::Path| -> u64 {
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|e| e.metadata().ok())
+                    .filter(|m| m.is_file())
+                    .map(|m| m.len())
+                    .sum()
+            })
+            .unwrap_or(0)
+    };
 
-        let python = if cfg!(windows) {
-            "python.exe"
-        } else {
-            "python3"
-        };
-        let cancel = state
-            .model_downloads
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&job_id)
-            .map(|job| job.cancel.clone())
-            .unwrap_or_default();
+    let python = if cfg!(windows) {
+        "python.exe"
+    } else {
+        "python3"
+    };
 
-        // Preflight: say exactly what is missing instead of a bare exit status.
-        let preflight = tokio::process::Command::new(python)
-            .args(["-c", "import huggingface_hub"])
-            .stdin(std::process::Stdio::null())
-            .output()
-            .await;
-        let preflight_error = match preflight {
-            Err(_) => Some(format!(
-                "Python 3 was not found ({python}). Model downloads use the Hugging Face hub client; install Python 3 and run: pip install huggingface_hub"
-            )),
-            Ok(out) if !out.status.success() => Some(
-                "The Python package huggingface_hub is not installed. Run: pip install huggingface_hub"
-                    .to_string(),
-            ),
-            Ok(_) => None,
-        };
-        if let Some(message) = preflight_error {
-            let mut downloads = state
-                .model_downloads
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+    // Preflight: say exactly what is missing instead of a bare exit status.
+    let mut preflight_command = tokio::process::Command::new(python);
+    preflight_command.args(["-c", "import huggingface_hub"]);
+    let preflight = run_bounded_output(preflight_command, Duration::from_secs(30)).await;
+    let preflight_error = match preflight {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(format!(
+            "Python 3 was not found ({python}). Model downloads use the Hugging Face hub client; install Python 3 and run: pip install huggingface_hub"
+        )),
+        Err(error) => Some(format!(
+            "Could not check for the Hugging Face hub client ({python}): {error}"
+        )),
+        Ok(out) if !out.status.success() => Some(
+            "The Python package huggingface_hub is not installed. Run: pip install huggingface_hub"
+                .to_string(),
+        ),
+        Ok(_) => None,
+    };
+    if let Some(message) = preflight_error {
+        let mut downloads = lock_model_downloads(&state);
+        if let Some(job) = downloads.get_mut(&job_id) {
+            job.state = RuntimeJobState::Failed;
+            job.message = "Download unavailable".into();
+            job.error = Some(message);
+        }
+        return;
+    }
+
+    let mut attempt = 0u32;
+    loop {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            let mut downloads = lock_model_downloads(&state);
             if let Some(job) = downloads.get_mut(&job_id) {
-                job.state = RuntimeJobState::Failed;
-                job.message = "Download unavailable".into();
-                job.error = Some(message);
+                job.state = RuntimeJobState::Cancelled;
+                job.message = "Cancelled".into();
             }
             return;
         }
-
-        let mut attempt = 0u32;
-        loop {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                let mut downloads = state
-                    .model_downloads
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                if let Some(job) = downloads.get_mut(&job_id) {
-                    job.state = RuntimeJobState::Cancelled;
-                    job.message = "Cancelled".into();
-                }
-                return;
-            }
-            let mut child = match tokio::process::Command::new(if cfg!(windows) {
-                "python.exe"
-            } else {
-                "python3"
-            })
+        let mut command = tokio::process::Command::new(python);
+        command
             .args(["-c", python_code, &repo_id, &revision])
             .arg(models_dir.join("cache/huggingface/hub"))
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .stdin(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            {
-                Ok(c) => c,
-                Err(error) => {
-                    let mut downloads = state
-                        .model_downloads
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    {
-                        if let Some(job) = downloads.get_mut(&job_id) {
-                            job.state = RuntimeJobState::Failed;
-                            job.message = "Download failed".into();
-                            job.error =
-                                Some(format!("Could not start the hub downloader: {error}"));
-                        }
-                    }
-                    return;
-                }
-            };
-            attempt += 1;
-            let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped")).lines();
-            let mut stderr = child.stderr.take().expect("stderr piped");
-            let mut last_progress = tokio::time::Instant::now();
-            let mut last_bytes: u64 = 0;
-            let mut total: u64 = 0;
-            let mut final_path: Option<String> = None;
-            let mut failure: Option<String> = None;
-            let mut stalled = false;
-            let mut cancelled = false;
-            let mut err_tail = String::new();
-            let mut err_buf = [0u8; 4096];
-            let mut stderr_open = true;
-            let mut tick = tokio::time::interval(Duration::from_secs(1));
-            loop {
-                tokio::select! {
-                    line = stdout.next_line() => {
-                        match line {
-                            Ok(Some(line)) => {
-                                last_progress = tokio::time::Instant::now();
-                                if let Some(rest) = line.strip_prefix("TOTAL ") {
-                                    total = rest.trim().parse().unwrap_or(0);
-                                } else if let Some(rest) = line.strip_prefix("FILE ") {
-                                    let name = rest.rsplit_once('\t').map(|(n, _)| n).unwrap_or(rest);
-                                    let mut downloads = state.model_downloads.lock().unwrap_or_else(|e| e.into_inner());
-                                    if let Some(job) = downloads.get_mut(&job_id) {
-                                        job.current_file = name.to_string();
-                                    }
-                                } else if let Some(rest) = line.strip_prefix("PATH ") {
-                                    final_path = Some(rest.trim().to_string());
-                                }
-                            }
-                            Ok(None) => break,
-                            Err(error) => {
-                                failure = Some(format!("Downloader stream error: {error}"));
-                                break;
-                            }
-                        }
-                    }
-                    read = stderr.read(&mut err_buf), if stderr_open => {
-                        match read {
-                            Ok(0) | Err(_) => stderr_open = false,
-                            Ok(n) => {
-                                err_tail.push_str(&String::from_utf8_lossy(&err_buf[..n]));
-                                if err_tail.len() > 2000 {
-                                    let cut = err_tail.len() - 2000;
-                                    err_tail = err_tail.split_at(err_tail.ceil_char_boundary(cut)).1.to_string();
-                                }
-                            }
-                        }
-                    }
-                    _ = tick.tick() => {
-                        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                            cancelled = true;
-                            let _ = child.start_kill();
-                            break;
-                        }
-                        let bytes = dir_bytes(&blobs_dir);
-                        if bytes != last_bytes {
-                            last_bytes = bytes;
-                            last_progress = tokio::time::Instant::now();
-                        }
-                        {
-                            let mut downloads = state.model_downloads.lock().unwrap_or_else(|e| e.into_inner());
-                            if let Some(job) = downloads.get_mut(&job_id) {
-                                job.bytes_total = total.max(job.bytes_total);
-                                job.bytes_done = if job.bytes_total > 0 { bytes.min(job.bytes_total) } else { bytes };
-                                if last_progress.elapsed() < Duration::from_secs(30) {
-                                    job.stalled = false;
-                                }
-                            }
-                        }
-                        if last_progress.elapsed() > MODEL_DOWNLOAD_STALL_TIMEOUT {
-                            stalled = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            let status = child.wait().await;
-            if cancelled {
-                let mut downloads = state
-                    .model_downloads
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
+            .kill_on_drop(true);
+        // Own process group: the hub client may fork transfer workers, and a
+        // plain kill of the Python leader would leave those running.
+        configure_process_group(&mut command);
+        let mut child = match command.spawn() {
+            Ok(c) => c,
+            Err(error) => {
+                let mut downloads = lock_model_downloads(&state);
                 if let Some(job) = downloads.get_mut(&job_id) {
-                    job.state = RuntimeJobState::Cancelled;
-                    job.message = "Cancelled".into();
-                    job.stalled = false;
+                    job.state = RuntimeJobState::Failed;
+                    job.message = "Download failed".into();
+                    job.error = Some(format!("Could not start the hub downloader: {error}"));
                 }
                 return;
             }
-            if !stalled && failure.is_none() && final_path.is_none() {
-                // Non-stall exit without a PATH line: pull the error from stderr text.
-                let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
-                let detail = err_tail
-                    .lines()
-                    .rev()
-                    .find(|l| {
-                        let l = l.to_ascii_lowercase();
-                        l.contains("error") || l.contains("exception")
-                    })
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                failure = Some(if detail.is_empty() {
-                    format!("Hub downloader exited with status {code}")
-                } else {
-                    format!("Hub downloader exited with status {code}: {detail}")
-                });
+        };
+        attempt += 1;
+        let pid = child.id();
+        let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped")).lines();
+        let mut stderr = child.stderr.take().expect("stderr piped");
+        let mut last_progress = tokio::time::Instant::now();
+        let mut last_bytes: u64 = 0;
+        let mut total: u64 = 0;
+        let mut final_path: Option<String> = None;
+        let mut failure: Option<String> = None;
+        let mut stalled = false;
+        let mut cancelled = false;
+        let mut eof = false;
+        let mut err_tail = String::new();
+        let mut err_buf = [0u8; 4096];
+        let mut stderr_open = true;
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tokio::select! {
+                line = stdout.next_line() => {
+                    match line {
+                        Ok(Some(line)) => {
+                            last_progress = tokio::time::Instant::now();
+                            if let Some(rest) = line.strip_prefix("TOTAL ") {
+                                total = rest.trim().parse().unwrap_or(0);
+                            } else if let Some(rest) = line.strip_prefix("FILE ") {
+                                let name = rest.rsplit_once('\t').map(|(n, _)| n).unwrap_or(rest);
+                                let mut downloads = lock_model_downloads(&state);
+                                if let Some(job) = downloads.get_mut(&job_id) {
+                                    job.current_file = name.to_string();
+                                }
+                            } else if let Some(rest) = line.strip_prefix("PATH ") {
+                                final_path = Some(rest.trim().to_string());
+                            }
+                        }
+                        Ok(None) => {
+                            eof = true;
+                            break;
+                        }
+                        Err(error) => {
+                            failure = Some(format!("Downloader stream error: {error}"));
+                            break;
+                        }
+                    }
+                }
+                read = stderr.read(&mut err_buf), if stderr_open => {
+                    match read {
+                        Ok(0) | Err(_) => stderr_open = false,
+                        Ok(n) => {
+                            err_tail.push_str(&String::from_utf8_lossy(&err_buf[..n]));
+                            if err_tail.len() > 2000 {
+                                let cut = err_tail.len() - 2000;
+                                err_tail = err_tail.split_at(err_tail.ceil_char_boundary(cut)).1.to_string();
+                            }
+                        }
+                    }
+                }
+                _ = tick.tick() => {
+                    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        cancelled = true;
+                        break;
+                    }
+                    let bytes = dir_bytes(&blobs_dir);
+                    if bytes != last_bytes {
+                        last_bytes = bytes;
+                        last_progress = tokio::time::Instant::now();
+                    }
+                    {
+                        let mut downloads = lock_model_downloads(&state);
+                        if let Some(job) = downloads.get_mut(&job_id) {
+                            job.bytes_total = total.max(job.bytes_total);
+                            job.bytes_done = if job.bytes_total > 0 { bytes.min(job.bytes_total) } else { bytes };
+                            if last_progress.elapsed() < Duration::from_secs(30) {
+                                job.stalled = false;
+                            }
+                        }
+                    }
+                    if last_progress.elapsed() > MODEL_DOWNLOAD_STALL_TIMEOUT {
+                        stalled = true;
+                        break;
+                    }
+                }
             }
+        }
 
-            let mut restart = false;
-            let mut downloads = state
-                .model_downloads
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            {
-                if let Some(job) = downloads.get_mut(&job_id) {
-                    if let Some(path) = final_path.filter(|_| failure.is_none()) {
+        // Every exit other than a clean stdout EOF leaves the downloader alive
+        // (stall, cancel, stream error). Kill its whole process group *before*
+        // waiting: waiting on a live child is what made the restart path
+        // unreachable. Even a clean EOF gets a bounded wait, then a kill.
+        let status = if eof && !stalled && !cancelled && failure.is_none() {
+            match tokio::time::timeout(MODEL_DOWNLOAD_REAP_TIMEOUT, child.wait()).await {
+                Ok(status) => status.ok(),
+                Err(_) => kill_and_reap(&mut child, pid).await,
+            }
+        } else {
+            kill_and_reap(&mut child, pid).await
+        };
+
+        let decision = decide_download_outcome(
+            DownloadAttempt {
+                cancelled,
+                stalled,
+                failure,
+                final_path,
+                exit_code: status.and_then(|s| s.code()),
+                stderr_tail: err_tail,
+            },
+            attempt,
+        );
+
+        let mut restart = false;
+        {
+            let mut downloads = lock_model_downloads(&state);
+            if let Some(job) = downloads.get_mut(&job_id) {
+                match decision {
+                    DownloadDecision::Cancelled => {
+                        job.state = RuntimeJobState::Cancelled;
+                        job.message = "Cancelled".into();
+                        job.stalled = false;
+                    }
+                    DownloadDecision::Complete { path } => {
                         job.state = RuntimeJobState::Complete;
                         job.message = "Downloaded".into();
                         job.error = None;
                         job.local_path = Some(path);
                         job.stalled = false;
                         job.bytes_done = job.bytes_total;
-                    } else if stalled {
+                    }
+                    DownloadDecision::Restart => {
                         job.stalled = true;
                         job.restarts = attempt;
-                        if attempt <= MODEL_DOWNLOAD_MAX_RESTARTS {
-                            job.message = "Stalled \u{2014} resuming download".into();
-                            restart = true;
-                        } else {
-                            job.state = RuntimeJobState::Failed;
-                            job.message = "Download stalled".into();
-                            job.error = Some("No progress for 8 minutes across 4 attempts. Retry when your connection is stable — finished files are kept and the download resumes.".into());
-                        }
-                    } else {
+                        job.message = "Stalled \u{2014} resuming download".into();
+                        restart = true;
+                    }
+                    DownloadDecision::StallExhausted => {
+                        job.stalled = true;
+                        job.restarts = attempt;
+                        job.state = RuntimeJobState::Failed;
+                        job.message = "Download stalled".into();
+                        job.error = Some("No progress for 8 minutes across 4 attempts. Retry when your connection is stable — finished files are kept and the download resumes.".into());
+                    }
+                    DownloadDecision::Failed { error } => {
                         job.state = RuntimeJobState::Failed;
                         job.message = "Download failed".into();
-                        job.error = failure.or_else(|| Some("Download failed".into()));
+                        job.error = Some(error);
                     }
                 }
             }
-            if !restart {
-                return;
-            }
         }
-    });
+        if !restart {
+            return;
+        }
+    }
 }
 
 /// POST /api/models/downloads — start a background snapshot download of a
@@ -715,10 +981,16 @@ fn model_download_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
                     return Ok(Box::new(warp::reply::with_status(
                         warp::reply::json(&serde_json::json!({
                             "ok": false,
-                            "error": "Invalid repo_id format. Expected: owner/repo"
+                            "error": "Invalid repo_id format. Expected: owner/repo using letters, digits, '.', '_' and '-'"
                         })),
                         StatusCode::BAD_REQUEST,
                     )) as ApiReply);
+                }
+                if !validate_model_download_revision(&revision) {
+                    return Ok(json_error(
+                        StatusCode::BAD_REQUEST,
+                        "Invalid revision format. Expected a branch, tag, or commit SHA",
+                    ));
                 }
                 if !validate_model_download_engine(&engine) {
                     return Ok(Box::new(warp::reply::with_status(
@@ -728,31 +1000,6 @@ fn model_download_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
                         })),
                         StatusCode::BAD_REQUEST,
                     )) as ApiReply);
-                }
-
-                // One download at a time per repo@revision; report the in-flight job
-                // instead of stacking duplicate downloads. The guard is scoped so it
-                // is dropped before the insert lock below (std Mutex is not
-                // reentrant — holding it across the second lock self-deadlocks).
-                {
-                    let downloads = state
-                        .model_downloads
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    if let Some(_existing) = downloads.values().find(|job| {
-                        job.repo_id == repo_id
-                            && job.revision == revision
-                            && matches!(
-                                job.state,
-                                RuntimeJobState::Queued | RuntimeJobState::Running
-                            )
-                    }) {
-                        return Ok(Box::new(warp::reply::json(&serde_json::json!({
-                            "ok": true,
-                            "already_running": true,
-                            "repo_id": repo_id,
-                        }))) as ApiReply);
-                    }
                 }
 
                 let models_dir = super::models::get_effective_models_dir(&ctx.state)
@@ -769,6 +1016,7 @@ fn model_download_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
                     let seq = MODEL_DL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     format!("mdl-{}-{}", nanos, seq)
                 };
+                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let job = ModelDownloadJob {
                     repo_id: repo_id.clone(),
                     revision: revision.clone(),
@@ -782,18 +1030,28 @@ fn model_download_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
                     current_file: String::new(),
                     stalled: false,
                     restarts: 0,
-                    cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    cancel: cancel.clone(),
                 };
-                let mut downloads = state
-                    .model_downloads
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                {
-                    downloads.insert(job_id.clone(), job);
-                    while downloads.len() > MAX_RETAINED_JOBS {
-                        if let Some(oldest) = downloads.keys().next().cloned() {
-                            downloads.remove(&oldest);
-                        }
+                // Dedupe (one download per repo@revision), capacity check,
+                // terminal-only eviction and insert all happen under a single
+                // lock acquisition. The guard is a statement temporary: it is
+                // released before the worker spawns and never crosses an await.
+                let admission = lock_model_downloads(&state).register(job_id.clone(), job);
+                match admission {
+                    ModelDownloadAdmission::Registered => {}
+                    ModelDownloadAdmission::AlreadyRunning { job_id: existing } => {
+                        return Ok(Box::new(warp::reply::json(&serde_json::json!({
+                            "ok": true,
+                            "already_running": true,
+                            "job_id": existing,
+                            "repo_id": repo_id,
+                        }))) as ApiReply);
+                    }
+                    ModelDownloadAdmission::AtCapacity => {
+                        return Ok(json_error(
+                            StatusCode::TOO_MANY_REQUESTS,
+                            "Too many model downloads are already running. Wait for one to finish or cancel it.",
+                        ));
                     }
                 }
 
@@ -803,6 +1061,7 @@ fn model_download_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
                     repo_id.clone(),
                     revision.clone(),
                     models_dir,
+                    cancel,
                 );
 
                 Ok(Box::new(warp::reply::json(&serde_json::json!({
@@ -1168,34 +1427,25 @@ async fn build_command_preview(
     use std::path::PathBuf;
 
     let config = req.config;
-    // A preview that demands the caller already know the binary path is a preview no UI can
-    // call, which is why this endpoint had no consumer. Fall back to the same resolution the
-    // launcher uses (explicit -> managed -> PATH) so the frontend can just post a config.
-    let binary_path = match req.executable_path {
-        Some(path) => {
-            let path = PathBuf::from(path);
-            if !path.exists() {
+    // The caller-supplied `executable_path` is deliberately ignored: honoring it
+    // would let any API-token holder execute an arbitrary binary on the host
+    // (`<path> serve --help`). The preview uses the same resolution the launcher
+    // uses (explicit config -> managed -> PATH), so the frontend just posts a
+    // config and cannot aim the probe at an arbitrary file.
+    let _ = req.executable_path;
+    let binary_path = {
+        match crate::inference::rapid_mlx::discovery::Discovery::resolve_binary(
+            config.executable_path.as_deref(),
+            config.managed_runtime_path.as_deref(),
+        )
+        .await
+        {
+            Ok((path, _source)) => path,
+            Err(e) => {
                 return json_error(
                     StatusCode::BAD_REQUEST,
-                    format!("Executable not found: {}", path.display()),
+                    format!("Could not locate the Rapid-MLX executable: {}", e),
                 );
-            }
-            path
-        }
-        None => {
-            match crate::inference::rapid_mlx::discovery::Discovery::resolve_binary(
-                config.executable_path.as_deref(),
-                config.managed_runtime_path.as_deref(),
-            )
-            .await
-            {
-                Ok((path, _source)) => path,
-                Err(e) => {
-                    return json_error(
-                        StatusCode::BAD_REQUEST,
-                        format!("Could not locate the Rapid-MLX executable: {}", e),
-                    );
-                }
             }
         }
     };
@@ -3392,7 +3642,7 @@ mod tests {
             manager: Err("unused".into()),
             releases: Arc::new(tokio::sync::Mutex::new(None)),
             jobs: Arc::new(Mutex::new(RuntimeJobs::default())),
-            model_downloads: Arc::new(Mutex::new(BTreeMap::new())),
+            model_downloads: Arc::new(Mutex::new(ModelDownloads::default())),
             changelog_cache: Arc::new(changelog::ChangelogCacheManager::new()),
             client: reqwest::Client::new(),
         }
@@ -3471,7 +3721,10 @@ mod tests {
         for field in ["value", "name"] {
             let mut wire = serde_json::to_value(RapidMlxConfig::default()).unwrap();
             wire["model_source"] = serde_json::json!({"kind": "alias", field: "qwen3.8-27b-4bit"});
-            wire["executable_path"] = serde_json::json!(binary);
+            // The caller-supplied executable_path is deliberately ignored by
+            // the preview (it must not be able to aim the probe at an
+            // arbitrary file); the managed runtime path is the honored route.
+            wire["managed_runtime_path"] = serde_json::json!(binary);
             wire["capabilities"] = serde_json::json!(
                 super::command_preview_parity_tests::ALL_SERVE_FLAGS
                     .split_whitespace()
