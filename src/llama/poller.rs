@@ -70,6 +70,10 @@ pub async fn llama_metrics_poller(state: AppState, poll_interval: u64) {
     let mut rapid_poller: Option<crate::inference::rapid_mlx::poller::RapidMlxPoller> = None;
     let mut llama_previous_counters: Option<crate::inference::llama_cpp::CounterSnapshot> = None;
     let mut llama_previous_counter_session: Option<String> = None;
+    // llama.cpp's Prometheus counters only advance when a request completes,
+    // so the live decode rate has to come from per-slot progress deltas.
+    let mut llama_previous_slot_gen: Option<(u64, std::time::Instant)> = None;
+    let mut llama_previous_slot_prompt: Option<(u64, std::time::Instant)> = None;
 
     loop {
         if !enabled {
@@ -290,6 +294,96 @@ pub async fn llama_metrics_poller(state: AppState, poll_interval: u64) {
                 }
 
                 m.throughput_source = "backend_poll".to_string();
+
+                if let Some(details) = snapshot.backend_details.as_ref() {
+                    // Per-slot generation progress is the only live signal
+                    // while a request is decoding (see throughput note above).
+                    let gen_tokens = details
+                        .get("slot_generation_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    if let Some(remaining) = details
+                        .get("slot_generation_remaining")
+                        .and_then(|v| v.as_u64())
+                    {
+                        m.slot_generation_remaining = remaining;
+                    }
+                    if let Some(limit) = details
+                        .get("slot_generation_limit")
+                        .and_then(|v| v.as_u64())
+                    {
+                        m.slot_generation_limit = limit;
+                    }
+                    if let Some(active) = details
+                        .get("slot_generation_active")
+                        .and_then(|v| v.as_bool())
+                    {
+                        m.slot_generation_active = active;
+                    }
+                    if let Some(available) = details
+                        .get("slot_generation_available")
+                        .and_then(|v| v.as_bool())
+                    {
+                        m.slot_generation_available = available;
+                    }
+
+                    let now = std::time::Instant::now();
+                    let processing = details
+                        .get("slots_processing")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    // Live prefill progress: prompt_tokens_processed only
+                    // advances while the slot is prefilling — use its delta
+                    // for a live PP rate (the Prometheus counters stall).
+                    let prompt_processed = details
+                        .get("slot_prompt_processed")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    if let Some(total) = details.get("slot_prompt_total").and_then(|v| v.as_u64()) {
+                        m.slot_prompt_total = total;
+                    }
+                    if let Some(progress) =
+                        details.get("slot_prompt_progress").and_then(|v| v.as_f64())
+                    {
+                        m.slot_prompt_progress = progress;
+                    }
+                    if processing > 0 && prompt_processed > 0 {
+                        if let Some((prev_prompt, prev_at)) = llama_previous_slot_prompt {
+                            let elapsed = now.duration_since(prev_at).as_secs_f64();
+                            if prompt_processed > prev_prompt && elapsed > 0.5 {
+                                let live_pps = (prompt_processed - prev_prompt) as f64 / elapsed;
+                                m.prompt_tokens_per_sec = live_pps;
+                                m.prompt_throughput_active = true;
+                                m.last_prompt_tokens_per_sec = live_pps;
+                            }
+                        }
+                        llama_previous_slot_prompt = Some((prompt_processed, now));
+                    } else {
+                        llama_previous_slot_prompt = None;
+                    }
+                    m.slot_prompt_processed = prompt_processed;
+
+                    let now = std::time::Instant::now();
+                    if let Some((prev_tokens, prev_at)) = llama_previous_slot_gen {
+                        let elapsed = now.duration_since(prev_at).as_secs_f64();
+                        if processing == 0 {
+                            // Nothing decoding: drop the live rate so the UI
+                            // falls back to last-request numbers and Idle.
+                            m.generation_tokens_per_sec = 0.0;
+                            m.generation_throughput_active = false;
+                        } else if gen_tokens >= prev_tokens
+                            && elapsed > 0.5
+                            && gen_tokens - prev_tokens > 0
+                        {
+                            let live_tps = (gen_tokens - prev_tokens) as f64 / elapsed;
+                            m.generation_tokens_per_sec = live_tps;
+                            m.generation_throughput_active = true;
+                            m.last_generation_tokens_per_sec = live_tps;
+                        }
+                    }
+                    llama_previous_slot_gen = Some((gen_tokens, now));
+                    m.slot_generation_tokens = gen_tokens;
+                }
 
                 if let Some(prompt_total) = snapshot.prompt_tokens_total {
                     m.prompt_tokens_total = prompt_total;

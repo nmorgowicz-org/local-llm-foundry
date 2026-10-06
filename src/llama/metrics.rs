@@ -33,6 +33,9 @@ pub struct LlamaMetrics {
     pub slot_generation_limit: u64,
     pub slot_generation_active: bool,
     pub slot_generation_available: bool,
+    pub slot_prompt_processed: u64,
+    pub slot_prompt_total: u64,
+    pub slot_prompt_progress: f64,
     pub slots: Vec<SlotSnapshot>,
     pub requests_processing: u32,
     pub n_busy_slots_per_decode: f64,
@@ -111,6 +114,9 @@ pub struct SlotValues {
     pub slot_generation_limit: u64,
     pub slot_generation_active: bool,
     pub slot_generation_available: bool,
+    pub slot_prompt_processed: u64,
+    pub slot_prompt_total: u64,
+    pub slot_prompt_progress: f64,
     pub slots: Vec<SlotSnapshot>,
 }
 
@@ -191,6 +197,22 @@ pub fn parse_slot_metrics(body: &str) -> Option<SlotValues> {
         }
         if is_processing && vals.active_task_id.is_none() {
             vals.active_task_id = task_id;
+        }
+
+        // Live prefill progress — only meaningful while processing.
+        if is_processing {
+            if let Some(processed) = slot
+                .get("n_prompt_tokens_processed")
+                .and_then(|v| v.as_u64())
+            {
+                vals.slot_prompt_processed += processed;
+            }
+            if let Some(total) = slot.get("n_prompt_tokens").and_then(|v| v.as_u64()) {
+                vals.slot_prompt_total += total;
+            }
+            if let Some(progress) = slot.get("prompt_progress").and_then(|v| v.as_f64()) {
+                vals.slot_prompt_progress += progress.clamp(0.0, 1.0);
+            }
         }
 
         let mut output_tokens = 0;

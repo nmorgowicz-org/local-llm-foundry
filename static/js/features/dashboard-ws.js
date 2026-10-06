@@ -803,8 +803,12 @@ function updateInferenceMetrics(d) {
 
     const slotsProcessing = (l?.slots_processing || 0);
     const rapidRunning = Number(rm?.running_requests) || 0;
-    const generationActive = genRate > 0 || slotsProcessing > 0 || rapidRunning > 0;
-    const reading = !generationActive && promptRate > 0;
+    // A slot that is busy but only reporting prompt progress is still
+    // prefilling, not generating — llama.cpp raises slots_processing as soon
+    // as the request is picked up, long before the first token exists.
+    const promptOnly = slotsProcessing > 0 && genRate === 0 && promptRate > 0;
+    const generationActive = (genRate > 0 || slotsProcessing > 0 || rapidRunning > 0) && !promptOnly;
+    const reading = !generationActive && (promptRate > 0 || promptOnly);
     const queued = Number(l?.waiting_requests) || Number(rm?.waiting_requests) || 0;
     const sessionError = d.active_session_status === 'error';
 
@@ -836,7 +840,13 @@ function updateInferenceMetrics(d) {
     } else if (reading) {
         stateLabel = 'Reading';
         stateTone = 'reading';
-        if (promptDisplay) stateDetail = `${fmtTps(promptDisplay)} t/s prefill`;
+        const parts = [];
+        if (l?.slot_prompt_total > 0 && l?.slot_prompt_processed > 0) {
+            parts.push(`${formatMetricNumber(l.slot_prompt_processed)} / ${formatMetricNumber(l.slot_prompt_total)} prompt tokens`);
+            stateProgress = Math.min(1, l.slot_prompt_processed / l.slot_prompt_total);
+        }
+        if (promptDisplay) parts.push(`${fmtTps(promptDisplay)} t/s prefill`);
+        stateDetail = parts.join(' · ');
     } else if (!hasActiveEndpoint) {
         stateLabel = 'Waiting for a request';
     } else if (queued > 0) {

@@ -105,15 +105,16 @@ const METRIC_DEFS = [
         key: 'vram',
         label: 'VRAM',
         icon: 'layers',
-        pick: (v) => (v.gpu && v.gpu.vramTotal ? v.gpu.vramUsed / v.gpu.vramTotal : null),
+        pick: (v) => (v.gpu && v.gpu.unifiedTotal ? v.gpu.vramUsed / v.gpu.unifiedTotal : null),
         unit: '',
         max: 1,
         value: (v) => (v.gpu ? `${fmtGb(v.gpu.vramUsed)}` : null),
-        unitText: (v) => (v.gpu && v.gpu.vramTotal ? `/ ${fmtGb(v.gpu.vramTotal)} GB` : 'GB'),
-        // Apple Silicon: the ceiling is the Metal wired-limit cap, drawn from
-        // a larger unified pool — say so instead of repeating the chip name.
+        // Apple Silicon memory is drawn from the whole unified pool, so the
+        // denominator is the pool size; the Metal wired-limit cap (the real
+        // ceiling for GPU-resident weights) goes in the sub-label.
+        unitText: (v) => (v.gpu?.metalUnified ? `of ${fmtGb(v.gpu.unifiedTotal)} GB` : (v.gpu && v.gpu.vramTotal ? `/ ${fmtGb(v.gpu.vramTotal)} GB` : 'GB')),
         sub: (v) => (v.gpu?.metalUnified
-            ? `${fmtGb(v.gpu.unifiedTotal)} GB unified`
+            ? `Metal cap ${fmtGb(v.gpu.vramTotal)} GB`
             : (v.gpu ? v.gpu.name : '')),
     },
     {

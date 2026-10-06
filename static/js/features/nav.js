@@ -350,10 +350,15 @@ export function refreshTopCockpit() {
 
           if (generationActive) {
             dotEl.className = 'engine-indicator-dot live';
-            indicator.setAttribute('title', `${engineName} · ${modelName}${modelIdentity ? '\n' + modelIdentity : ''} (generating)`);
+            // data-tooltip, not title: the global tooltip steals `title`
+            // once, but this attribute is re-set on every WS tick — re-adding
+            // it would surface the browser's native tooltip alongside the
+            // styled one. data-tooltip is read by the global tooltip and has
+            // no native counterpart.
+            indicator.setAttribute('data-tooltip', `${engineName} · ${modelName}${modelIdentity ? '\n' + modelIdentity : ''} (generating)`);
           } else {
             dotEl.className = 'engine-indicator-dot idle-active';
-            indicator.setAttribute('title', `${engineName} · ${modelName}${modelIdentity ? '\n' + modelIdentity : ''} (idle)`);
+            indicator.setAttribute('data-tooltip', `${engineName} · ${modelName}${modelIdentity ? '\n' + modelIdentity : ''} (idle)`);
           }
 
           indicator.style.display = 'inline-flex';
