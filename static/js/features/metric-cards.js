@@ -11,7 +11,10 @@
 
 import { setHtml } from '../core/set-html.js';
 
-const HISTORY_LIMIT = 48;
+// 300 samples at the ~1s dashboard push ≈ a 5-minute window per sparkline.
+// Pushes slow down when the tab is hidden or in low-power mode, so the wall
+// clock span can stretch — the sample budget stays fixed.
+const HISTORY_LIMIT = 300;
 const history = new Map();
 
 function pushHistory(key, value) {

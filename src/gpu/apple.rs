@@ -127,9 +127,19 @@ impl GpuBackend for AppleBackend {
         // Approximate: MCLK = (dram_bw_gbs * 1000) / 8 / 2 (DDR)
         let mclk_mhz = (soc.dram_read_bw_gbs + soc.dram_write_bw_gbs) * 1000.0 / 16.0;
 
+        // mactop's gpu_active is an active-power-state residency ratio, not
+        // utilization: an idle Apple GPU serving only display compositing
+        // reads 70-90% while drawing ~2 W. Real inference work draws 15 W+,
+        // so below a 5 W floor report no load rather than a misleading
+        // always-busy number.
+        let load = if soc.gpu_power < 5.0 {
+            0
+        } else {
+            soc.gpu_active as u32
+        };
         let metrics = GpuMetrics {
             temp: soc.gpu_temp as f32,
-            load: soc.gpu_active as u32,
+            load,
             power_consumption: soc.gpu_power as f32,
             power_limit: 0, // Not available from mactop
             vram_used: vram_used_mb as u64,

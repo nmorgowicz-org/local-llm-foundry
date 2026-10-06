@@ -351,23 +351,27 @@ pub async fn llama_metrics_poller(state: AppState, poll_interval: u64) {
                         // Rate over the whole request span, not the last poll
                         // window: batches of 2048 land in bursts, so per-poll
                         // deltas swing wildly (2,000+ vs the true ~218 t/s).
-                        let base = match llama_previous_slot_prompt {
-                            Some((base_processed, base_at))
-                                if prompt_processed >= base_processed =>
-                            {
-                                Some((base_processed, base_at))
+                        // Recompute only while new prompt tokens arrive — once
+                        // prefill ends the processed counter freezes, and
+                        // letting the span timer run would decay the rate
+                        // toward zero during decode instead of holding the
+                        // request's final prefill rate.
+                        if let Some((base_processed, base_at)) = llama_previous_slot_prompt {
+                            if prompt_processed > base_processed {
+                                let elapsed = now.duration_since(base_at).as_secs_f64();
+                                if elapsed > 1.0 {
+                                    let live_pps =
+                                        (prompt_processed - base_processed) as f64 / elapsed;
+                                    m.prompt_tokens_per_sec = live_pps;
+                                    m.prompt_throughput_active = true;
+                                    m.last_prompt_tokens_per_sec = live_pps;
+                                }
+                                llama_previous_slot_prompt = Some((base_processed, base_at));
                             }
-                            _ => Some((prompt_processed, now)),
-                        };
-                        if let Some((base_processed, base_at)) = base {
-                            let elapsed = now.duration_since(base_at).as_secs_f64();
-                            if elapsed > 1.0 && prompt_processed > base_processed {
-                                let live_pps = (prompt_processed - base_processed) as f64 / elapsed;
-                                m.prompt_tokens_per_sec = live_pps;
-                                m.prompt_throughput_active = true;
-                                m.last_prompt_tokens_per_sec = live_pps;
-                            }
-                            llama_previous_slot_prompt = Some((base_processed, base_at));
+                            // delta == 0: prefill idle or finished — hold the
+                            // last computed rate untouched.
+                        } else {
+                            llama_previous_slot_prompt = Some((prompt_processed, now));
                         }
                     } else {
                         llama_previous_slot_prompt = None;
