@@ -375,7 +375,7 @@ pub async fn llama_metrics_poller(state: AppState, poll_interval: u64) {
                                 if elapsed > 1.0 {
                                     let chunk_rate = chunk as f64 / elapsed;
                                     let ema = match llama_prompt_rate_ema {
-                                        Some(prev) => prev * 0.5 + chunk_rate * 0.5,
+                                        Some(prev) => prev * 0.6 + chunk_rate * 0.4,
                                         None => chunk_rate,
                                     };
                                     llama_prompt_rate_ema = Some(ema);
