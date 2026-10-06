@@ -903,14 +903,19 @@ function buildGpuView(d) {
     const entries = Object.entries(d.gpu || {});
     if (!entries.length) return null;
     const [name, m] = entries[0];
-    const vramTotal = Number(m.metal_gpu_limit_mb || 0) > 0
-        ? Number(m.metal_gpu_limit_mb)
-        : Number(m.vram_total || 0);
+    // GpuMetrics reports MiB; the dashboard cards work in bytes.
+    const toBytes = (x) => (Number(x) || 0) * 1024 * 1024;
+    // On Apple Silicon the meaningful ceiling is the Metal wired-limit cap;
+    // vram_used/vram_total describe the unified memory pool.
+    const metalCap = toBytes(m.metal_gpu_limit_mb);
+    const unifiedTotal = toBytes(m.vram_total);
     return {
         name,
         load: Number(m.load) || 0,
-        vramUsed: Number(m.vram_used) || 0,
-        vramTotal,
+        vramUsed: toBytes(m.vram_used),
+        vramTotal: metalCap > 0 ? metalCap : unifiedTotal,
+        unifiedTotal,
+        metalUnified: metalCap > 0,
         temp: Number(m.temp) || 0,
         power: Number(m.power_consumption) || 0,
         powerLimit: Number(m.power_limit) || 0,

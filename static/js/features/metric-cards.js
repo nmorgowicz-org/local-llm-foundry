@@ -72,7 +72,7 @@ const METRIC_DEFS = [
                     : prefill != null ? 'Prefill last request' : 'Prefill';
             setText('ms-decode', decodeSub);
             setText('ms-prefill', prefillSub);
-            const svg = document.getElementById('mc-speed');
+            const svg = document.getElementById('mc-card-speed')?.querySelector('.mcard__spark');
             if (!svg) return;
             const line = svg.querySelector('.mcard__spark-line');
             const area = svg.querySelector('.mcard__spark-area');
@@ -110,7 +110,11 @@ const METRIC_DEFS = [
         max: 1,
         value: (v) => (v.gpu ? `${fmtGb(v.gpu.vramUsed)}` : null),
         unitText: (v) => (v.gpu && v.gpu.vramTotal ? `/ ${fmtGb(v.gpu.vramTotal)} GB` : 'GB'),
-        sub: (v) => (v.gpu ? v.gpu.name : ''),
+        // Apple Silicon: the ceiling is the Metal wired-limit cap, drawn from
+        // a larger unified pool — say so instead of repeating the chip name.
+        sub: (v) => (v.gpu?.metalUnified
+            ? `${fmtGb(v.gpu.unifiedTotal)} GB unified`
+            : (v.gpu ? v.gpu.name : '')),
     },
     {
         key: 'temp',
@@ -138,18 +142,6 @@ const METRIC_DEFS = [
         unit: '%',
         max: 100,
         sub: (v) => (v.sys ? v.sys.cpuName : ''),
-    },
-    {
-        key: 'ram',
-        label: 'System RAM',
-        icon: 'ram',
-        pick: (v) => (v.sys && v.sys.ramTotal ? v.sys.ramUsed / v.sys.ramTotal : null),
-        unit: '',
-        max: 1,
-        toneDangerAt: 0.92,
-        value: (v) => (v.sys ? `${fmtGb(v.sys.ramUsed)}` : null),
-        unitText: (v) => (v.sys && v.sys.ramTotal ? `/ ${fmtGb(v.sys.ramTotal)} GB` : 'GB'),
-        sub: () => 'system memory',
     },
 ];
 

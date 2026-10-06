@@ -337,19 +337,23 @@ export function refreshTopCockpit() {
 
         if (backend && endpointKind === 'Local' && isRunning && (modelIdentity || sessionStatus)) {
           const engineName = backend === 'rapid_mlx' ? 'Rapid-MLX' : 'llama.cpp';
+          // Show the model file's friendly name, never the full path — the
+          // chip is a status indicator, not a breadcrumb.
           const modelName = modelIdentity
-            ? modelIdentity.length > 24
-              ? modelIdentity.slice(0, 22) + '…'
-              : modelIdentity
+            ? (() => {
+                const file = String(modelIdentity).split(/[\\/]/).pop()
+                  .replace(/\.(gguf|safetensors)$/i, '');
+                return file.length > 24 ? file.slice(0, 22) + '…' : file;
+              })()
             : 'Active';
           labelEl.textContent = `${engineName} · ${modelName}`;
 
           if (generationActive) {
             dotEl.className = 'engine-indicator-dot live';
-            indicator.setAttribute('title', `${engineName} · ${modelIdentity || modelName} (generating)`);
+            indicator.setAttribute('title', `${engineName} · ${modelName}${modelIdentity ? '\n' + modelIdentity : ''} (generating)`);
           } else {
             dotEl.className = 'engine-indicator-dot idle-active';
-            indicator.setAttribute('title', `${engineName} · ${modelIdentity || modelName} (idle)`);
+            indicator.setAttribute('title', `${engineName} · ${modelName}${modelIdentity ? '\n' + modelIdentity : ''} (idle)`);
           }
 
           indicator.style.display = 'inline-flex';
