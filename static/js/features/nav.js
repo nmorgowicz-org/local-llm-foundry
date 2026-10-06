@@ -112,13 +112,15 @@ function initEndpointStatus() {
 function deriveTabCtxPct(tab, capacity) {
     if (!tab || !capacity) return 0;
     const asst = (tab.messages || []).filter(m => m.role === 'assistant' && !m.compaction_marker);
-    if (!asst.length) return tab.last_ctx_pct || 0;
-    // Use tab-level cumulative totals (most accurate); fall back to summing message fields.
-    const totalInput = tab.total_input_tokens
-        || asst.reduce((sum, m) => sum + (m.input_tokens || 0), 0);
+    if (!asst.length) return Math.min(100, tab.last_ctx_pct || 0);
+    // Context = cumulative output tokens + the LAST request's input. With KV
+    // cache every request's input re-includes the whole conversation, so
+    // summing inputs across requests overcounts massively (a 30k-context chat
+    // regenerated 6 times would read 109% of 200k).
     const totalOutput = tab.total_output_tokens
         || asst.reduce((sum, m) => sum + (m.output_tokens || 0), 0);
-    return Math.min(200, (totalInput + totalOutput) / capacity * 100);
+    const lastInput = asst.at(-1)?.input_tokens || 0;
+    return Math.min(100, (totalOutput + lastInput) / capacity * 100);
 }
 
 function buildCockpitSparkline(points) {
@@ -403,7 +405,8 @@ export function refreshTopCockpit() {
     refreshMemoryPressureChip();
 
     if (throughputEl) {
-        throughputEl.textContent = 'P ' + (promptDisplayRate > 0 ? promptDisplayRate.toFixed(0) : '—') + ' · G ' + (genDisplayRate > 0 ? genDisplayRate.toFixed(0) : '—');
+        // G first, then P — matching the Speed card's TG-over-PP order.
+        throughputEl.textContent = 'G ' + (genDisplayRate > 0 ? genDisplayRate.toFixed(0) : '—') + ' · P ' + (promptDisplayRate > 0 ? promptDisplayRate.toFixed(0) : '—');
     }
 
     if (specEl) {

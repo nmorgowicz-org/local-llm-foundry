@@ -745,8 +745,8 @@ function buildMessageElement(msg, idx, allMessages) {
     let metaHtml = '';
     if (!isUser) {
         const parts = [];
-        if (msg.input_tokens > 0) parts.push(`↓${formatTokenCount(msg.input_tokens)}`);
         if (msg.output_tokens > 0) parts.push(`↑${formatTokenCount(msg.output_tokens)}`);
+        if (msg.input_tokens > 0) parts.push(`↓${formatTokenCount(msg.input_tokens)}`);
         let cumInput = 0, cumOutput = 0;
         for (let i = 0; i <= idx; i++) {
             const m = allMessages[i];
@@ -1048,9 +1048,11 @@ export function finalizeAssistantMessage(el, content, usage, tab) {
         const totalOutput = tab ? (tab.total_output_tokens || 0) : out;
         const total = totalInput + totalOutput;
         const capacity = contextCapacityTokens || lastLlamaMetrics?.context_capacity_tokens || lastLlamaMetrics?.kv_cache_max || 0;
-        // ctx% = (cumulative input + cumulative output) / capacity.
-        // total_input_tokens and total_output_tokens are running tab-level sums updated each turn.
-        const ctxTokens = total;
+        // ctx% = cumulative output + THIS request's input. With KV cache each
+        // request's input re-includes the whole conversation, so summing
+        // tab.total_input_tokens across turns overcounts (30k-context chat
+        // regenerated 6x read as 109% of 200k).
+        const ctxTokens = totalOutput + inp;
         const ctxPct = capacity > 0 && ctxTokens > 0 ? Math.min(100, Math.round((ctxTokens / capacity) * 100)) : 0;
 
         if (tab) tab.last_ctx_pct = ctxPct;

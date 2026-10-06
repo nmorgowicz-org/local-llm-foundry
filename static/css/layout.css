@@ -992,7 +992,17 @@ body:not(.setup-active) .nav-logo:active {
   font-size: 0.64rem;
   font-weight: 700;
   white-space: nowrap;
+  /* Never hard-clip: chips shrink their text with ellipsis when the
+     cockpit runs out of width instead of spilling past the container. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.nav-cockpit-spark {
+  flex-shrink: 0;
 }
 
 /* ── Monitoring chip (nav-right) ─────────────────────────────────────────── */
