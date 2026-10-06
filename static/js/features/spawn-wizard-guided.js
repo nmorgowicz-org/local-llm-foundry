@@ -148,8 +148,13 @@ function wireVisionCard() {
         options.push(fallback);
       }
       visionSelect.replaceChildren(...options);
+      visionSelect.value = origSelect.value;
     }
     syncOptions();
+    // mmproj discovery populates the original select asynchronously (local
+    // scan, mradermacher/HF lookup, companion download) — re-sync whenever
+    // its option list changes so Guided never shows a stale "(none)".
+    new MutationObserver(syncOptions).observe(origSelect, { childList: true });
 
     // Keep in sync on change
     visionSelect.addEventListener('change', () => {

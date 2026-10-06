@@ -4995,8 +4995,9 @@
                         </div>
                     </div>
 
-                    <!-- Merged from former Review/Summary step -->
-                    <div>
+                    <!-- Merged from former Review/Summary step; Guided hides it
+                         (All settings drawer + the step-3 review cover it) -->
+                    <div data-guided-duplicate>
                         <div class="wizard-section-title">Review your configuration</div>
                         <div class="wizard-section-desc">
                             Adjust sampling defaults, then confirm settings before spawning.
@@ -5004,7 +5005,7 @@
                     </div>
 
                     <!-- Sampling defaults (pre-populated by use-case; user can adjust) -->
-                    <div class="sampling-params-section">
+                    <div class="sampling-params-section" data-guided-duplicate>
                         <div class="hw-section-divider">Sampling defaults</div>
                         <!-- Model-specific mode pills (e.g. Qwen3.6 thinking-general vs coding) -->
                         <div id="spawn-sampling-presets" style="display:none;"></div>
@@ -5059,7 +5060,7 @@
                     </div>
 
                     <!-- Thinking / reasoning controls (shown for models that support it) -->
-                    <div class="sampling-params-section" id="spawn-thinking-section" style="display:none;margin-top:14px;">
+                    <div class="sampling-params-section" id="spawn-thinking-section" data-guided-duplicate style="display:none;margin-top:14px;">
                         <div class="hw-section-divider">Thinking &amp; reasoning <span class="info-tip" title="Controls whether the model shows its chain-of-thought reasoning before answering. Enable thinking for harder tasks; preserve to keep reasoning across multi-turn chats; set a budget to limit reasoning length.">i</span></div>
                         <div class="thinking-controls">
                             <label class="thinking-toggle-row" title="--chat-template-kwargs {&quot;enable_thinking&quot;:true}. Enables chain-of-thought reasoning blocks.">
