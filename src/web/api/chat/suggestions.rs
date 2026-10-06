@@ -215,7 +215,9 @@ fn api_generate_keywords(
                     prepared.authenticate(
                         client
                             .post(&url)
-                            .timeout(std::time::Duration::from_secs(30))
+                            // No request-level timeout — see chat/stream.rs: reqwest's request
+                            // timeout includes the streamed body and aborted
+                            // long-context requests at 30s.
                             .header("Content-Type", "application/json")
                             .body(payload.clone()),
                     )
@@ -421,7 +423,9 @@ fn api_chat_suggestions(
                     prepared.authenticate(
                         client
                             .post(&url)
-                            .timeout(std::time::Duration::from_secs(30))
+                            // No request-level timeout — see chat/stream.rs: reqwest's request
+                            // timeout includes the streamed body and aborted
+                            // long-context requests at 30s.
                             .header("Content-Type", "application/json")
                             .body(payload.clone()),
                     )

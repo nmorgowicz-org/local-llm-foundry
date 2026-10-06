@@ -194,7 +194,9 @@ fn api_chat_guided(
                     prepared.authenticate(
                         client
                             .post(&url)
-                            .timeout(std::time::Duration::from_secs(120))
+                            // No request-level timeout — see chat/stream.rs:
+                            // reqwest's request timeout includes the streamed
+                            // body and aborted long prefills at 120s.
                             .header("Content-Type", "application/json")
                             .body(request_body.clone()),
                     )

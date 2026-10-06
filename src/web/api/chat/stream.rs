@@ -50,7 +50,13 @@ fn api_chat(
                     prepared.authenticate(
                         client
                             .post(&url)
-                            .timeout(std::time::Duration::from_secs(120))
+                            // No request-level timeout here: reqwest's request
+                            // timeout covers the whole streamed body, so long
+                            // prefills (22k+ tokens at ~200 t/s) were aborted
+                            // mid-prompt at 120s. The shared upstream client
+                            // has no default timeout; a hung stream still ends
+                            // when the browser client goes away or the backend
+                            // closes the connection.
                             .header("Content-Type", "application/json")
                             .body(request_body.clone()),
                     )

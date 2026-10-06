@@ -138,7 +138,9 @@ fn api_analyze_context_notes(
                     prepared.authenticate(
                         client
                             .post(&url)
-                            .timeout(std::time::Duration::from_secs(60))
+                            // No request-level timeout — see chat/stream.rs: reqwest's request
+                            // timeout includes the streamed body and aborted
+                            // long-context requests at 60s.
                             .header("Content-Type", "application/json")
                             .body(payload.clone()),
                     )
