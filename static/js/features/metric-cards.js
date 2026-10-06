@@ -17,6 +17,7 @@ import { setHtml } from '../core/set-html.js';
 const HISTORY_LIMIT = 300;
 const history = new Map();
 
+
 function pushHistory(key, value) {
     if (!Number.isFinite(value)) return;
     let series = history.get(key);
@@ -209,6 +210,8 @@ function setPairValue(key, value) {
 
 function drawPaths(line, area, values, max) {
     if (!line || !area) return;
+    // Strata semantics: nulls plot as 0, so a series visibly drops to the
+    // baseline when its phase ends and rises when it starts again.
     const v = (values || []).map((x) => (Number.isFinite(x) ? x : 0));
     if (v.length < 2) {
         line.setAttribute('d', '');
@@ -228,10 +231,11 @@ export function updateMetricCards(view) {
         const card = document.getElementById(`mc-card-${m.key}`);
         if (!card) continue;
         if (m.key === 'speed') {
-            // Push each series only while its phase is active; the other
-            // holds its last reported value (pushHistory skips non-finite).
-            if (view.state === 'generating') pushHistory('decode', view.decodeTps);
-            else if (view.state === 'reading') pushHistory('prefill', view.prefillTps);
+            // Strata: two independent full-length series, both pushed every
+            // tick; the inactive phase is 0, so its line rides the baseline
+            // while the active one draws above it.
+            pushHistory('decode', view.decodeTps == null ? 0 : view.decodeTps);
+            pushHistory('prefill', view.prefillTps == null ? 0 : view.prefillTps);
             m.update(view);
             continue;
         }
