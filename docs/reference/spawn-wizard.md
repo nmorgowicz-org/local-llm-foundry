@@ -211,6 +211,12 @@ Opens with a profile + use-case selection screen (wizard-step-0), then engine se
 model source input on the same step:
 
 - **Guided setup**: safe defaults and workload-specific recommendations stay visible, with every applicable control reachable through the canonical All settings drawer.
+The four Guided decision cards (context size, KV cache precision, vision,
+speed boost) are the single surface for those choices: the equivalent raw
+fields (context-size input, K/V cache quant selects, MTP section, mmproj
+picker) are hidden while the Guided view is active and remain available in
+Pro. The decision cards write through to the same underlying state, so the
+two views never diverge.
 - **Pro setup**: the power-user view exposes one searchable seven-category surface (Model & compatibility, Memory & context, Performance, Generation & reasoning, Tools & conversation formatting, Network & observability, and Advanced). Switching Guided/Pro relocates the same canonical controls without changing state; modified-only filtering and resolved-default reset operate on that shared state.
 Guided disclosure keeps safe defaults visible; every applicable control is reachable in the canonical All settings drawer.
 - **Workload cards** map to typed `workload_scenario` values sent to the backend VRAM estimator.

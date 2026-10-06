@@ -375,6 +375,9 @@ function renderProLayout(mode = wizardState.viewMode) {
   if (!layout || !host || !drawerGroup) return;
   _initProShell();
   const isPro = mode === 'pro';
+  // Guided shows the decision cards only; the legacy fields they duplicate
+  // are hidden via CSS while this class is present.
+  document.body.classList.toggle('wizard-guided', !isPro);
   const loader = wizardState.engine.selected || 'llama_cpp';
   const guidedSurface = document.querySelector('.hw-guided-old-layout');
   const stickyBar = document.getElementById('hw-sticky-bar');

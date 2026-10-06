@@ -4333,7 +4333,7 @@
                             <div id="hw-tags-pills" style="display:contents;"></div>
                             <button type="button" id="hw-tags-add-btn" class="btn-wizard-tertiary" style="font-size:10px;min-height:22px;padding:2px 8px;flex-shrink:0;" title="Add or remove tags for this model in your library">+</button>
                         </div>
-                        <div class="hw-quant-row" id="hw-mmproj-row" style="display:none; align-items:center; gap:6px;">
+                        <div class="hw-quant-row" id="hw-mmproj-row" data-guided-duplicate style="display:none; align-items:center; gap:6px;">
                             <label for="hw-mmproj-select" class="hw-quant-label" title="Adds ~0.5–1.5 GB VRAM. Required for multimodal inference;">Vision (mmproj)</label>
                             <select id="hw-mmproj-select" class="hw-quant-select" style="flex:1 1 auto;" title="Vision projector file. Choose (none) for text-only inference."></select>
                             <button type="button" id="hw-mmproj-browse-btn" class="btn-wizard-tertiary" style="flex-shrink:0; font-size:10px; min-height:22px; padding:2px 7px;" title="Browse for an mmproj / projector file on this machine">Browse…</button>
@@ -4371,7 +4371,7 @@
                             <div class="field-hint" id="spawn-gpu-layers-manual-hint" style="display:none;"></div>
                         </div>
                         <!-- Context size spans 5 subgrid rows in col 2 (label, input, hint, quick-picks, padding) -->
-                        <div class="hardware-field hardware-field-ctx">
+                        <div class="hardware-field hardware-field-ctx" data-guided-duplicate>
                             <div class="ctx-label-row">
                                 <label for="spawn-context-size">Context size</label>
                                 <span id="ctx-model-max-hint" class="ctx-model-max-hint" style="display:none;" title="Maximum context this model was trained on — going beyond this degrades quality"></span>
@@ -4391,7 +4391,7 @@
                         <!-- KV unified: explicit col 1, rows 4–6 — fills dead space beside context quick-picks.
                              display:flex overrides hardware-field's subgrid so label/select/hint stack tightly
                              instead of aligning to row heights set by the tall ctx-quick-picks on the right. -->
-                        <div class="hardware-field" style="grid-column:1; grid-row:4/span 3; display:flex; flex-direction:column; gap:6px;">
+                        <div class="hardware-field" data-guided-duplicate style="grid-column:1; grid-row:4/span 3; display:flex; flex-direction:column; gap:6px;">
                             <label for="spawn-kv-unified" title="Share a single KV cache pool across all parallel slots. Saves memory when running multiple slots; may reduce throughput.">KV unified</label>
                             <select id="spawn-kv-unified" title="Share a single KV cache pool across all parallel slots. Saves memory when running multiple slots; may reduce throughput.">
                                 <option value="">Default</option>
@@ -4405,7 +4405,7 @@
                     <!-- KV cache precision — always-open decision card (plan §3): unlike the
                          Advanced-tuning accordion below, this stays visible at every tier since
                          it is one of the four Option-A decisions, not a rarely-touched tuning knob. -->
-                    <div class="mlx-native-group">
+                    <div class="mlx-native-group" data-guided-duplicate>
                         <div class="mlx-native-group-header">
                             <h4 class="mlx-native-group-title">KV cache precision</h4>
                             <p class="mlx-native-group-description">Memory vs. quality for stored past tokens. q8_0 is recommended for most models.</p>
@@ -4432,7 +4432,7 @@
 
                     <!-- MTP section (shown for models with MTP heads) -->
                     <!-- Speculative decoding / speed-boost — always-open decision card (plan §3). -->
-                    <div class="hw-mtp-section mlx-native-group" id="hw-mtp-section" style="display:none;">
+                    <div class="hw-mtp-section mlx-native-group" id="hw-mtp-section" data-guided-duplicate style="display:none;">
                         <div class="mlx-native-group-header">
                             <h4 class="mlx-native-group-title">Speed boost (speculative decoding) <span class="info-tip" title="MTP heads predict several tokens ahead in one forward pass, then verify them together. This can give 1.4–2× faster generation with no quality loss. Enabled by default. Benchmark enabled versus disabled on your hardware; some backends can run slower.">i</span></h4>
                             <p class="mlx-native-group-description">Try to speed up replies by guessing next tokens before the model computes them.</p>
@@ -4526,7 +4526,7 @@
                              <div class="hw-decision-tiles hw-ctx-tiles" id="hw-ctx-tiles">
                                  <button type="button" class="hw-decision-tile" data-ctx="32768" title="32k — focused work">32k <span class="hw-tile-tag">Focused</span></button>
                                  <button type="button" class="hw-decision-tile" data-ctx="65536" title="65k — Roleplay / RP">65k <span class="hw-tile-tag">RP</span></button>
-                                 <button type="button" class="hw-decision-tile hw-decision-tile-active" data-ctx="131072" title="131k — Agentic work">131k <span class="hw-tile-tag">Agent</span></button>
+                                 <button type="button" class="hw-decision-tile" data-ctx="131072" title="131k — Agentic work">131k <span class="hw-tile-tag">Agent</span></button>
                                  <button type="button" class="hw-decision-tile" data-ctx="163840" title="160k — large context">160k <span class="hw-tile-tag">Large</span></button>
                                  <button type="button" class="hw-decision-tile" data-ctx="200000" title="200k — very large context">200k <span class="hw-tile-tag">Large</span></button>
                                  <button type="button" class="hw-decision-tile hw-ctx-tile-model-max" data-ctx="262144" title="262k — model training limit">262k <span class="hw-tile-tag">Max</span></button>
@@ -4569,10 +4569,10 @@
                          <div class="hw-decision-card-desc">Multimodal projector (mmproj). Required for vision models.</div>
                          <div class="hw-decision-card-content">
                          <label for="hw-vision-select" class="hw-decision-custom-label">Vision projector file</label>
-                         <select id="hw-vision-select">
+                         <select id="hw-vision-select" class="hw-quant-select">
                                  <option value="" selected>( none — text only )</option>
                              </select>
-                             <button type="button" id="hw-vision-browse-btn" class="hw-decision-browse-btn">Browse…</button>
+                             <button type="button" id="hw-vision-browse-btn" class="btn-wizard-tertiary">Browse…</button>
                          </div>
                      </div>
 

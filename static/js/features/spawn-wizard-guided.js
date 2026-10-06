@@ -85,14 +85,19 @@ function wireContextTiles() {
     });
   }
 
-  // Sync from original input (when set by other code)
-  if (origInput) {
-    origInput.addEventListener('input', () => {
-      const ctx = origInput.value;
-      if (customInput) customInput.value = ctx;
-      setTileActive(ctx);
-    });
+  // Sync from original input (when set by other code). Both events are
+  // observed because several code paths set .value and dispatch only one
+  // of them; programmatic writes without an event are covered by the
+  // MutationObserver in syncGuidedCards().
+  function syncFromOrig() {
+    const ctx = origInput?.value;
+    if (ctx == null) return;
+    if (customInput && customInput.value !== ctx) customInput.value = ctx;
+    setTileActive(ctx);
   }
+  origInput?.addEventListener('input', syncFromOrig);
+  origInput?.addEventListener('change', syncFromOrig);
+  syncFromOrig();
 }
 
 // Card 2: KV precision tiles sync with #spawn-cache-type-k/v
@@ -222,9 +227,40 @@ function wireStickyBar() {
     }
   }
 
-  // Initial update and on state changes
+  // Initial update and on state changes. The same observer keeps the
+  // decision cards in sync with programmatic writes to the canonical
+  // controls (context size, KV precision, vision, MTP) — a single source
+  // of truth with multiple writers.
+  function syncGuidedCards() {
+    const ctx = document.getElementById('spawn-context-size')?.value;
+    if (ctx != null) {
+      const customInput = document.getElementById('hw-ctx-custom');
+      if (customInput && customInput.value !== ctx) customInput.value = ctx;
+      document.querySelectorAll('#hw-ctx-tiles .hw-decision-tile').forEach(t => {
+        t.classList.toggle('hw-decision-tile-active', t.dataset.ctx === ctx);
+      });
+    }
+    const kv = document.getElementById('spawn-cache-type-k')?.value;
+    if (kv) {
+      document.querySelectorAll('#hw-kv-tiles .hw-decision-tile').forEach(t => {
+        t.classList.toggle('hw-decision-tile-active', t.dataset.kv === kv);
+      });
+    }
+    const visionSelect = document.getElementById('hw-vision-select');
+    const origVision = document.getElementById('hw-mmproj-select');
+    if (visionSelect && origVision && visionSelect.value !== origVision.value) {
+      visionSelect.value = origVision.value;
+    }
+    const mtp = document.getElementById('hw-use-mtp');
+    if (mtp) {
+      const radio = document.querySelector(`input[name="hw-speed"][value="${mtp.checked ? 'on' : 'off'}"]`);
+      if (radio && !radio.checked) radio.checked = true;
+    }
+  }
+
   updateStickyBar();
-  new MutationObserver(updateStickyBar).observe(document.body, {
+  syncGuidedCards();
+  new MutationObserver(() => { updateStickyBar(); syncGuidedCards(); }).observe(document.body, {
     subtree: true,
     attributes: true,
     attributeFilter: ['value']

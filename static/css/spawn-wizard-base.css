@@ -1942,3 +1942,13 @@ html[data-screenshot-capture="true"] .wizard-step[tabindex="-1"]:focus-visible {
 .wizard-section-title + .wizard-section-desc {
   margin-top: 2px;
 }
+
+/* ── Guided mode: single source of truth ──────────────────────────────────────
+   The Option-A decision cards (context / KV precision / vision / speed boost)
+   are the canonical Guided UI. The legacy fields they duplicate stay available
+   in Power-user mode only; in Guided they are hidden so nothing is asked
+   twice. */
+body.wizard-guided [data-guided-duplicate] { display: none !important; }
+
+/* Vision decision card control sizing (reuses hardware-select styling). */
+#hw-vision-select { width: 100%; }
