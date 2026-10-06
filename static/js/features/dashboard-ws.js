@@ -24,20 +24,12 @@ import {
   setLastSystemMetrics,
   setLastGpuMetrics,
   setLastCapabilities,
-  setLastGpuData,
   lastLlamaMetrics,
   lastSystemMetrics,
   wsData,
-  monitorState,
   setupViewState,
 } from '../core/app-state.js';
 import {
-  setChipState,
-  setCardState,
-  setEmptyState,
-  pushSparklinePoint,
-  renderSparkline,
-  renderLiveSparkline,
   updateLiveOutputEstimate,
   updateRequestActivity,
   renderRecentTask,
@@ -47,15 +39,10 @@ import {
   renderSlotUtilization,
   renderBatchEfficiency,
   renderRequestStats,
-  renderGenerationDetailItems,
   renderDecodingConfig,
   renderCapabilityPopover,
-  updateMetricDelta,
   setMetricSectionVisibility,
-  renderGpuCard,
-  renderSystemCard,
 } from './dashboard-render.js';
-import { animateNumber } from './animate.js';
 import { refreshChatTelemetry } from './chat-params.js';
 import { updateContextCard, updateContextCardFromChatTabs } from './context-card.js';
 import { refreshTopCockpit } from './nav.js';
@@ -65,7 +52,7 @@ import { hideConnectingState, switchView } from './setup-view.js';
 import Router from './router.js';
 import { showToast, showToastWithActions } from './toast.js';
 import { loadPresets, syncSelectedPresetSelection } from './presets.js';
-import { renderRapidMlxCards, restoreLlamaCards } from './rapid-mlx-cards.js';
+import { updateStateCard, updateMetricCards } from './metric-cards.js';
 
 // ── Cached DOM elements (populated at init time to avoid repeated queries) ──
 let cachedElements = null;
@@ -83,7 +70,6 @@ const LOG_TAIL_LINES_MIN = 1;
 const LOG_TAIL_LINES_MAX = 6;
 
 // ── Badge change detection — skip DOM writes when badge content is unchanged ──
-var cardStaleness = { throughput: 0, generation: 0, context: 0 };
 let prevBadgeState = { server: null, chat: null, logs: null };
 
 // ── Power optimization: Page Visibility API throttling ─────────────────────────
@@ -451,12 +437,6 @@ function updateDashboard(d) {
     }
     refreshTopCockpit();
 
-    // GPU card — freeze in both sleep and logs-only
-    if (activeTab === 'server' && mode === 'off') updateGpuCard(d);
-
-    // System card — freeze in both sleep and logs-only
-    if (activeTab === 'server' && mode === 'off') updateSystemCard(d);
-
     // Logs tab: enabled in off and logs-only
     if (activeTab === 'logs' && !isSleeping) updateLogs(d);
 
@@ -806,142 +786,86 @@ function updateServerState(d) {
 // ── Inference metrics ────────────────────────────────────────────────────────
 
 function updateInferenceMetrics(d) {
+    const ce = cachedElements;
     const l = lastLlamaMetrics;
     const rm = getLastRapidMlxMetrics();
     const hasActiveEndpoint = !!d.active_session_id;
-    const ce = cachedElements;
     const backend = d.backend || (rm ? 'rapid_mlx' : (l ? 'llama_cpp' : 'unknown'));
 
-    if (backend === 'rapid_mlx') {
-        renderRapidMlxCards(
-            rm,
-            d.inference_poll_sequence,
-            d.inference_poll_failed === true,
-            d.active_session_id,
-            d.inference_sampled_at_unix_ms
-        );
-        const hostMetricsVisible = d.host_metrics_available === true;
-        setMetricSectionVisibility('gpu-card', hostMetricsVisible && !!d.capabilities?.gpu, 'gpu-section');
-        setMetricSectionVisibility('system-card', hostMetricsVisible && !!d.capabilities?.system, 'system-section');
-        return;
-    }
-    restoreLlamaCards();
-
-    const promptEl = ce.mPrompt;
-    const genEl = ce.mGen;
-    const promptMaxEl = ce.mPromptMax;
-    const genMaxEl = ce.mGenMax;
-    const promptBar = ce.mPromptBar;
-    const genBar = ce.mGenBar;
-    const throughputState = ce.mThroughputState;
-    const throughputAge = ce.mThroughputAge;
-    const throughputCard = ce.throughputCard;
-    const generationCard = ce.generationCard;
-    const promptDeltaEl = ce.mPromptDelta;
-    const genDeltaEl = ce.mGenDelta;
-
+    // Normalized snapshot: llama.cpp and Rapid-MLX (and remote agents) feed
+    // the same card registry, so the dashboard no longer swaps card sets.
     const promptRate = l?.prompt_tokens_per_sec || 0;
     const genRate = l?.generation_tokens_per_sec || 0;
-    const promptDisplayRate = promptRate > 0 ? promptRate : l?.last_prompt_tokens_per_sec || 0;
-    const genDisplayRate = genRate > 0 ? genRate : l?.last_generation_tokens_per_sec || 0;
-    const latestThroughputMs = Math.max(l?.last_prompt_throughput_unix_ms || 0, l?.last_generation_throughput_unix_ms || 0);
-    const throughputActive = promptRate > 0 || genRate > 0;
+    const promptDisplay = promptRate > 0 ? promptRate : (l?.last_prompt_tokens_per_sec || 0)
+        || (Number.isFinite(rm?.prompt_tokens_per_second) ? rm.prompt_tokens_per_second : null);
+    const genDisplay = genRate > 0 ? genRate : (l?.last_generation_tokens_per_sec || 0)
+        || (Number.isFinite(rm?.generation_tokens_per_second) ? rm.generation_tokens_per_second : null);
 
-    if (!throughputActive) cardStaleness.throughput++;
-    else cardStaleness.throughput = 0;
+    const slotsProcessing = (l?.slots_processing || 0);
+    const rapidRunning = Number(rm?.running_requests) || 0;
+    const generationActive = genRate > 0 || slotsProcessing > 0 || rapidRunning > 0;
+    const reading = !generationActive && promptRate > 0;
+    const queued = Number(l?.waiting_requests) || Number(rm?.waiting_requests) || 0;
+    const sessionError = d.active_session_status === 'error';
 
-    const throughputVisible = hasActiveEndpoint && (throughputActive || cardStaleness.throughput < 3);
-    setCardState(throughputCard, !hasActiveEndpoint ? 'dormant' : throughputVisible ? (throughputActive ? 'live' : 'idle') : 'dormant');
-    setEmptyState(ce.mThroughputEmpty, !hasActiveEndpoint);
-    setChipState(throughputState, throughputActive ? 'live' : 'idle', throughputActive ? 'live' : 'idle');
-
-    if (throughputAge) {
-        throughputAge.textContent = formatMetricAge(latestThroughputMs);
+    // Progress: generating → tokens vs budget (llama slots) or backend
+    // progress (Rapid-MLX); reading has no observable fraction → hidden bar.
+    let stateProgress = null;
+    let stateTone = null;
+    let stateLabel = 'Idle';
+    let stateDetail = '';
+    if (sessionError) {
+        stateLabel = 'Error';
+        stateTone = 'danger';
+    } else if (generationActive) {
+        stateLabel = 'Generating';
+        const generated = l?.slot_generation_tokens || 0;
+        const remaining = l?.slot_generation_remaining || 0;
+        const slotLimit = getPrimarySlot(l)?.output_limit || 0;
+        const total = l?.slot_generation_limit || slotLimit || (generated + remaining);
+        if (total > 0) {
+            stateProgress = generated / total;
+            stateDetail = `${formatMetricNumber(generated)} / ${formatMetricNumber(total)} tokens`;
+        } else {
+            const ratio = normalizedProgressRatio(rm?.backend_details?.progress);
+            stateProgress = ratio;
+            stateDetail = ratio != null ? `${Math.round(ratio * 100)}%` : '';
+        }
+        if (genDisplay) stateDetail += `${stateDetail ? ' · ' : ''}${fmtTps(genDisplay)} t/s`;
+        stateTone = 'generating';
+    } else if (reading) {
+        stateLabel = 'Reading';
+        stateTone = 'reading';
+        if (promptDisplay) stateDetail = `${fmtTps(promptDisplay)} t/s prefill`;
+    } else if (!hasActiveEndpoint) {
+        stateLabel = 'Waiting for a request';
+    } else if (queued > 0) {
+        stateLabel = 'Queued';
+        stateDetail = `${queued} waiting`;
     }
 
-    // Prompt throughput
-    if (promptDisplayRate > 0) {
-        updateMetricDelta(promptDeltaEl, prevValues.prompt, promptDisplayRate, 1);
-        animateNumber(promptEl, prevValues.prompt, promptDisplayRate, 300, 1, ' t/s');
-        prevValues.prompt = promptDisplayRate;
+    const view = {
+        backend,
+        attached: hasActiveEndpoint,
+        state: sessionError ? 'error' : generationActive ? 'generating' : reading ? 'reading' : 'idle',
+        queued,
+        running: slotsProcessing || rapidRunning,
+        waiting: queued,
+        decodeTps: genDisplay || null,
+        prefillTps: promptDisplay || null,
+        stateLabel,
+        stateDetail,
+        stateProgress,
+        stateTone,
+        gpu: buildGpuView(d),
+        sys: buildSysView(d),
+    };
 
-        if (promptDisplayRate > monitorState.speedMax.prompt) {
-            monitorState.speedMax.prompt = promptDisplayRate;
-        }
-        if (promptMaxEl && monitorState.speedMax.prompt > 0) {
-            promptMaxEl.textContent = 'peak ' + monitorState.speedMax.prompt.toFixed(0);
-        }
-        const promptPct = Math.max((promptDisplayRate / monitorState.speedMax.prompt) * 100, 4);
-        if (promptBar) promptBar.style.transform = 'scaleX(' + (promptPct / 100) + ')';
-    } else {
-        promptEl.textContent = '\u2014';
-        if (promptMaxEl) promptMaxEl.textContent = '';
-        if (promptBar) promptBar.style.transform = 'scaleX(0)';
-    }
+    updateStateCard(view);
+    updateMetricCards(view);
 
-    // Generation throughput
-    if (genDisplayRate > 0) {
-        updateMetricDelta(genDeltaEl, prevValues.generation, genDisplayRate, 1);
-        animateNumber(genEl, prevValues.generation, genDisplayRate, 300, 1, ' t/s');
-        prevValues.generation = genDisplayRate;
-
-        if (genDisplayRate > monitorState.speedMax.generation) {
-            monitorState.speedMax.generation = genDisplayRate;
-        }
-        if (genMaxEl && monitorState.speedMax.generation > 0) {
-            genMaxEl.textContent = 'peak ' + monitorState.speedMax.generation.toFixed(0);
-        }
-        const genPct = Math.max((genDisplayRate / monitorState.speedMax.generation) * 100, 4);
-        if (genBar) genBar.style.transform = 'scaleX(' + (genPct / 100) + ')';
-    } else {
-        genEl.textContent = '\u2014';
-        if (genMaxEl) genMaxEl.textContent = '';
-        if (genBar) genBar.style.transform = 'scaleX(0)';
-    }
-
-    // Sparklines
-    pushSparklinePoint('prompt', promptDisplayRate);
-    pushSparklinePoint('generation', genDisplayRate);
-    renderSparkline('m-prompt-spark', metricSeries.prompt, 'prompt', false);
-    renderSparkline('m-gen-spark', metricSeries.generation, 'generation', false);
-
-    // Throughput ratio
-    const ratioBar = ce.mRatioBar;
-    const ratioValue = ce.mRatioValue;
-    if (promptDisplayRate > 0 && genDisplayRate > 0) {
-        const ratio = promptDisplayRate / genDisplayRate;
-        const ratioPct = Math.min((ratio / 50) * 100, 100);
-        if (ratioBar) ratioBar.style.transform = 'scaleX(' + (ratioPct / 100) + ')';
-        if (ratioValue) ratioValue.textContent = ratio.toFixed(1) + ':1';
-    } else {
-        if (ratioBar) ratioBar.style.transform = 'scaleX(0)';
-        if (ratioValue) ratioValue.textContent = '\u2014';
-    }
-
-    // Generation progress
-    const generationState = ce.mGenState;
-    const generationMain = ce.mGenMain;
-    const generationSub = ce.mGenSub;
-    const generationDetails = ce.mGenDetails;
-    const generationRing = ce.mGenRing;
-    const liveVelocity = ce.mLiveVelocity;
-    const promptStage = ce.mStagePrompt;
-    const outputStage = ce.mStageOutput;
-    const generated = l?.slot_generation_tokens || 0;
-    const remaining = l?.slot_generation_remaining || 0;
-    const generationAvailable = !!l?.slot_generation_available;
-    const generationActive = !!l?.slot_generation_active || (l?.slots_processing || 0) > 0;
-    const slotLimit = getPrimarySlot(l)?.output_limit || 0;
-    const generationTotal = l?.slot_generation_limit || slotLimit || (generated + remaining);
-    const generationPct = generationTotal > 0 ? Math.min(100, Math.max(2, (generated / generationTotal) * 100)) : 0;
-    const taskId = generationActive ? l?.active_task_id : l?.last_task_id;
-    const nowMs = Date.now();
-    const liveOutputRate = updateLiveOutputEstimate(taskId, generated, generationActive, nowMs);
-
-    updateRequestActivity(taskId, generationActive, generated, nowMs);
-    renderActivityRail(generationActive);
-    renderRecentTask();
-    if (backend === 'llama_cpp') {
+    // Loader-specific detail panels below the strip (unchanged behavior).
+    if (backend !== 'rapid_mlx') {
         renderSlotGrid(l, hasActiveEndpoint);
         renderSlotUtilization(l);
         renderBatchEfficiency(l);
@@ -952,89 +876,62 @@ function updateInferenceMetrics(d) {
         renderSlotUtilization(null);
         renderBatchEfficiency(null);
     }
+    updateRequestActivity(generationActive ? l?.active_task_id : l?.last_task_id, generationActive, l?.slot_generation_tokens || 0, Date.now());
+    renderActivityRail(generationActive);
+    renderRecentTask();
     renderRequestStats();
     renderDecodingConfig(l, hasActiveEndpoint, generationActive);
-    renderLiveSparkline('m-live-output-spark', metricSeries.liveOutput);
 
-    if (!generationActive) cardStaleness.generation++;
-    else cardStaleness.generation = 0;
-    const genVisible = hasActiveEndpoint && (generationActive || cardStaleness.generation < 3);
-    setCardState(generationCard, !hasActiveEndpoint ? 'dormant' : genVisible ? (generationActive ? 'live' : 'idle') : 'dormant');
-    setEmptyState(ce.mGenEmpty, !hasActiveEndpoint);
-    setChipState(generationState, generationActive ? 'generating' : 'idle', generationActive ? 'live' : 'idle');
-    setChipState(ce.mSlotsState, generationActive ? 'active' : 'idle', generationActive ? 'live' : 'idle');
-    setChipState(ce.mActivityState, generationActive ? 'active' : 'idle', generationActive ? 'live' : 'idle');
-    if (generationRing) generationRing.style.setProperty('--progress', generationPct.toFixed(2));
-    if (liveVelocity) {
-        liveVelocity.textContent = liveOutputRate > 0 ? liveOutputRate.toFixed(1) + ' t/s' : (generationActive ? 'warming' : 'retained');
-    }
-    if (promptStage && outputStage) {
-        const useThroughputFallback = !generationAvailable;
-        const isPromptPhase = useThroughputFallback
-            ? !!(l?.prompt_throughput_active && !l?.generation_throughput_active)
-            : (generated <= 1);
-        const isOutputPhase = useThroughputFallback
-            ? !!(l?.generation_throughput_active)
-            : (generated > 1);
-        promptStage.classList.toggle('active', generationActive && isPromptPhase);
-        outputStage.classList.toggle('active', generationActive && isOutputPhase);
-        promptStage.classList.toggle('idle', !generationActive && !isOutputPhase);
-        outputStage.classList.toggle('idle', !generationActive && !isPromptPhase);
-    }
-    if (generationAvailable) {
-        if (generationMain) generationMain.textContent = formatMetricNumber(generated) + ' output tokens';
-        if (generationSub) generationSub.textContent = formatMetricNumber(remaining) + ' remaining';
-        if (generationDetails) {
-            const detailParts = [];
-            if (taskId !== null && taskId !== undefined) detailParts.push('task ' + taskId);
-            if (generationTotal > 0) {
-                const maxStr = generationTotal >= 1000 ? Math.round(generationTotal / 1000) + 'k' : formatMetricNumber(generationTotal);
-                detailParts.push('max ' + maxStr);
-            }
-            detailParts.push(formatMetricNumber(remaining) + ' left');
-            renderGenerationDetailItems(generationDetails, detailParts);
-        }
-    } else {
-        if (generationMain) generationMain.textContent = generationActive ? 'working' : '\u2014';
-        if (generationSub) generationSub.textContent = 'output budget';
-        renderGenerationDetailItems(generationDetails, []);
-    }
-
-    // Context metrics
     updateContextMetrics(d, l, hasActiveEndpoint);
+    renderCapabilityPopover(d, l, !!l?.slot_generation_available, !!(l?.context_live_tokens_available || l?.kv_cache_tokens_available || (l?.context_capacity_tokens || 0) > 0));
 
-    // Capability popover
-    renderCapabilityPopover(d, l, generationAvailable, !!(l?.context_live_tokens_available || l?.kv_cache_tokens_available || (l?.context_capacity_tokens || 0) > 0));
-
-    // Metric section visibility
     const hostMetricsVisible = d.host_metrics_available === true;
-    const systemVisible = hostMetricsVisible && !!d.capabilities?.system;
-    const gpuVisible = hostMetricsVisible && !!d.capabilities?.gpu;
-    setMetricSectionVisibility('gpu-card', gpuVisible, 'gpu-section');
-    setMetricSectionVisibility('system-card', systemVisible, 'system-section');
+    setMetricSectionVisibility('gpu-card', hostMetricsVisible && !!d.capabilities?.gpu, 'gpu-section');
+    setMetricSectionVisibility('system-card', hostMetricsVisible && !!d.capabilities?.system, 'system-section');
+}
+
+function normalizedProgressRatio(value) {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > 1) return null;
+    return value;
+}
+
+function fmtTps(v) {
+    return v >= 100 ? Math.round(v).toLocaleString() : v.toFixed(1);
+}
+
+function buildGpuView(d) {
+    const entries = Object.entries(d.gpu || {});
+    if (!entries.length) return null;
+    const [name, m] = entries[0];
+    const vramTotal = Number(m.metal_gpu_limit_mb || 0) > 0
+        ? Number(m.metal_gpu_limit_mb)
+        : Number(m.vram_total || 0);
+    return {
+        name,
+        load: Number(m.load) || 0,
+        vramUsed: Number(m.vram_used) || 0,
+        vramTotal,
+        temp: Number(m.temp) || 0,
+        power: Number(m.power_consumption) || 0,
+        powerLimit: Number(m.power_limit) || 0,
+    };
+}
+
+function buildSysView(d) {
+    const sys = lastSystemMetrics;
+    if (!sys || d.host_metrics_available !== true || !d.capabilities?.system) return null;
+    return {
+        cpu: Number(sys.cpu_load) || 0,
+        cpuName: sys.cpu_name || '',
+        ramUsed: Number(sys.ram_used) || 0,
+        ramTotal: Number(sys.ram_total) || 0,
+    };
 }
 
 // ── Context metrics ──────────────────────────────────────────────────────────
 
 function updateContextMetrics(d, l, hasActiveEndpoint) {
     updateContextCard(d, l, hasActiveEndpoint);
-}
-
-// ── GPU card ─────────────────────────────────────────────────────────────────
-
-function updateGpuCard(d) {
-    const gpuVisible = d.host_metrics_available === true && !!d.capabilities?.gpu;
-    setLastGpuData(d.gpu || {});
-
-    renderGpuCard(d.gpu || {}, gpuVisible, window.__telemetryGrade);
-}
-
-// ── System card ──────────────────────────────────────────────────────────────
-
-function updateSystemCard(d) {
-    const systemVisible = d.host_metrics_available === true && !!d.capabilities?.system;
-
-    renderSystemCard(lastSystemMetrics, systemVisible, window.__telemetryGrade);
 }
 
 // ── Logs ─────────────────────────────────────────────────────────────────────

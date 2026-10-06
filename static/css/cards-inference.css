@@ -2898,3 +2898,189 @@
     .rapid-telemetry-card,
     .rapid-progress-fill { transition: none; }
 }
+
+/* ── Model state strip + registry metric cards (Strata-style) ─────────────── */
+
+.state-card {
+    grid-column: 1 / -1;
+    background: var(--surface-card-base);
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    padding: 14px 18px 16px;
+}
+
+.state-card__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.state-card__title {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.2px;
+}
+
+.state-pills {
+    display: inline-flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.state-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    background: var(--surface-card-overlay);
+    color: var(--color-text-muted);
+    border: 1px solid var(--border-subtle);
+}
+
+.state-pill::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.state-pill.active[data-s="idle"] { background: var(--surface-card-overlay-strong); color: var(--color-text-secondary); }
+.state-pill.active[data-s="reading"] { background: color-mix(in srgb, var(--color-info) 16%, transparent); color: var(--color-info); border-color: transparent; }
+.state-pill.active[data-s="generating"] { background: var(--accent-soft-bg-strong); color: var(--color-accent); border-color: transparent; }
+.state-pill.active[data-s="queued"] { background: color-mix(in srgb, var(--color-warning) 16%, transparent); color: var(--color-warning); border-color: transparent; }
+.state-pill.active[data-s="error"] { background: color-mix(in srgb, var(--color-error) 16%, transparent); color: var(--color-error); border-color: transparent; }
+
+.state-card__row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    margin-top: 10px;
+}
+
+.state-card__row > span:first-child {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.state-detail {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.state-progress {
+    height: 8px;
+    border-radius: 999px;
+    background: var(--surface-card-overlay);
+    border: 1px solid var(--border-subtle);
+    overflow: hidden;
+    margin-top: 10px;
+}
+
+.state-progress__bar {
+    height: 100%;
+    border-radius: inherit;
+    background: var(--color-accent);
+    transition: width 0.25s ease, background 0.25s ease;
+}
+
+.state-progress[data-tone="reading"] .state-progress__bar { background: var(--color-info); }
+.state-progress[data-tone="generating"] .state-progress__bar { background: var(--color-accent); }
+.state-progress[data-tone="danger"] .state-progress__bar { background: var(--color-error); }
+.state-progress--hidden { visibility: hidden; }
+
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+    grid-column: 1 / -1;
+}
+
+.mcard {
+    background: var(--surface-card-base);
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    padding: 14px 16px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    transition: border-color 0.2s ease;
+}
+
+.mcard:hover { border-color: var(--border-emphasis); }
+
+.mcard--na { opacity: 0.45; }
+.mcard--na .mcard__value { visibility: hidden; }
+
+.mcard__label {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+}
+
+.mcard__icon { width: 14px; height: 14px; }
+
+.mcard__values {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    min-height: 34px;
+}
+
+.mcard__value {
+    font-size: 27px;
+    font-weight: 800;
+    letter-spacing: -0.6px;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-text-primary);
+}
+
+.mcard__unit {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    margin-left: 4px;
+}
+
+.mcard__alt .mcard__value { font-size: 21px; font-weight: 700; color: var(--color-text-secondary); }
+
+.mcard__sub {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--color-text-muted);
+    min-height: 15px;
+}
+
+.mcard__sub-alt { color: color-mix(in srgb, var(--color-text-muted) 70%, transparent); }
+
+.mcard__spark {
+    width: 100%;
+    height: 32px;
+    color: var(--color-accent);
+    margin-top: auto;
+}
+
+.mcard__spark[data-tone="warn"] { color: var(--color-warning); }
+.mcard__spark[data-tone="info"] { color: var(--color-info); }
+.mcard__spark[data-tone="danger"] { color: var(--color-error); }
+
+.mcard__spark-alt { color: color-mix(in srgb, var(--color-accent) 55%, transparent); }
+
+@media (max-width: 950px) {
+    .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+}

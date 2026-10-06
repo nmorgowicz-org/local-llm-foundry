@@ -132,6 +132,7 @@ pub const FEATURES_HF_BROWSE_JS: &str = include_str!("../../static/js/features/h
 pub const FEATURES_LHM_JS: &str = include_str!("../../static/js/features/lhm.js");
 pub const FEATURES_LLAMA_UPDATER_JS: &str =
     include_str!("../../static/js/features/llama-updater.js");
+pub const FEATURES_METRIC_CARDS_JS: &str = include_str!("../../static/js/features/metric-cards.js");
 pub const FEATURES_MODEL_ROOT_MIGRATION_JS: &str =
     include_str!("../../static/js/features/model-root-migration.js");
 pub const FEATURES_MODELS_JS: &str = include_str!("../../static/js/features/models.js");
