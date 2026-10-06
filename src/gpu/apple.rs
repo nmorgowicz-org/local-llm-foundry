@@ -127,15 +127,14 @@ impl GpuBackend for AppleBackend {
         // Approximate: MCLK = (dram_bw_gbs * 1000) / 8 / 2 (DDR)
         let mclk_mhz = (soc.dram_read_bw_gbs + soc.dram_write_bw_gbs) * 1000.0 / 16.0;
 
-        // mactop's gpu_active is an active-power-state residency ratio, not
-        // utilization: an idle Apple GPU serving only display compositing
-        // reads 70-90% while drawing ~2 W. Real inference work draws 15 W+,
-        // so below a 5 W floor report no load rather than a misleading
-        // always-busy number.
-        let load = if soc.gpu_power < 5.0 {
-            0
-        } else {
-            soc.gpu_active as u32
+        // Prefer the IOAccelerator's real "Device Utilization %" — mactop's
+        // gpu_active is a power-state residency ratio that reads 70-90% on an
+        // idle GPU. Only fall back to the power-gated residency (below 5 W an
+        // idle Apple GPU draws 1-4 W) when ioreg is unavailable.
+        let load = match read_ioreg_gpu_utilization() {
+            Some(v) => v,
+            None if soc.gpu_power < 5.0 => 0,
+            None => soc.gpu_active as u32,
         };
         let metrics = GpuMetrics {
             temp: soc.gpu_temp as f32,
@@ -176,6 +175,32 @@ fn detect_chip_name() -> &'static str {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "Apple Silicon".to_string())
     })
+}
+
+/// Real GPU utilization from the IOAccelerator's PerformanceStatistics
+/// ("Device Utilization %"). mactop's gpu_active is a power-state residency
+/// ratio that reads 70-90% on an idle GPU, so this is the trustworthy load
+/// source on Apple Silicon — no sudo required.
+fn read_ioreg_gpu_utilization() -> Option<u32> {
+    let output = Command::new("ioreg")
+        .args(["-r", "-d", "1", "-w", "0", "-k", "PerformanceStatistics"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    // Take the max across accelerators (integrated + any discrete).
+    let mut best: Option<u32> = None;
+    for part in text.split("Device Utilization %=").skip(1) {
+        let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(v) = digits.parse::<u32>()
+            && best.is_none_or(|b| v > b)
+        {
+            best = Some(v);
+        }
+    }
+    best
 }
 
 /// Read `iogpu.wired_limit_mb` from the kernel each call.
