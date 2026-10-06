@@ -59,6 +59,8 @@ const METRIC_DEFS = [
             return `<div class="mcard__values"><div><span class="mcard__value" id="mv-decode">–</span><span class="mcard__unit">t/s</span></div>` +
                 `<div class="mcard__alt"><span class="mcard__value" id="mv-prefill">–</span><span class="mcard__unit">t/s</span></div></div>` +
                 `<div class="mcard__sub"><span id="ms-decode">Decode</span><span id="ms-prefill" class="mcard__sub-alt">Prefill</span></div>` +
+                // One strip, two overlaid lines — Strata-style: the active
+                // phase draws bright in front, the other phase dimmed behind.
                 `<svg class="mcard__spark" viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden="true">` +
                 `<path class="mcard__spark-area" fill="currentColor" opacity=".12"/><path class="mcard__spark-line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>` +
                 `<g class="mcard__spark-alt"><path class="mcard__spark-area" fill="currentColor" opacity=".08"/><path class="mcard__spark-line" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/></g></svg>`;
@@ -75,15 +77,17 @@ const METRIC_DEFS = [
                     : prefill != null ? 'Prefill last request' : 'Prefill';
             setText('ms-decode', decodeSub);
             setText('ms-prefill', prefillSub);
-            const svg = document.getElementById('mc-card-speed')?.querySelector('.mcard__spark');
+            const svg = document.getElementById('mc-card-speed');
             if (!svg) return;
-            const line = svg.querySelector('.mcard__spark-line');
-            const area = svg.querySelector('.mcard__spark-area');
+            // Bright line = the active phase; dim line = the other one
+            // (held at its last reported value while inactive).
+            const decoding = view.state === 'generating';
+            const main = decoding ? history.get('decode') : history.get('prefill');
+            const alt = decoding ? history.get('prefill') : history.get('decode');
+            drawPaths(svg.querySelector('.mcard__spark-line'), svg.querySelector('.mcard__spark-area'), main);
             const altLine = svg.querySelector('.mcard__spark-alt .mcard__spark-line');
             const altArea = svg.querySelector('.mcard__spark-alt .mcard__spark-area');
-            drawPaths(line, area, history.get('decode'));
-            drawPaths(altLine, altArea, history.get('prefill'));
-            if (line) line.setAttribute('d', line.getAttribute('d') || '');
+            drawPaths(altLine, altArea, alt);
         },
     },
     {
@@ -224,8 +228,10 @@ export function updateMetricCards(view) {
         const card = document.getElementById(`mc-card-${m.key}`);
         if (!card) continue;
         if (m.key === 'speed') {
-            pushHistory('decode', view.decodeTps);
-            pushHistory('prefill', view.prefillTps);
+            // Push each series only while its phase is active; the other
+            // holds its last reported value (pushHistory skips non-finite).
+            if (view.state === 'generating') pushHistory('decode', view.decodeTps);
+            else if (view.state === 'reading') pushHistory('prefill', view.prefillTps);
             m.update(view);
             continue;
         }

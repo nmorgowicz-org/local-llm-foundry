@@ -74,6 +74,11 @@ pub async fn llama_metrics_poller(state: AppState, poll_interval: u64) {
     // so the live decode rate has to come from per-slot progress deltas.
     let mut llama_previous_slot_gen: Option<(u64, std::time::Instant)> = None;
     let mut llama_previous_slot_prompt: Option<(u64, std::time::Instant)> = None;
+    // Exponential moving average across rate reports: llama.cpp's per-report
+    // values are cumulative-request averages that staircase downward as later
+    // chunks slow; the EMA settles on what throughput is actually doing.
+    let mut llama_gen_rate_ema: Option<f64> = None;
+    let mut llama_prompt_rate_ema: Option<f64> = None;
 
     loop {
         if !enabled {
@@ -368,10 +373,15 @@ pub async fn llama_metrics_poller(state: AppState, poll_interval: u64) {
                             if chunk >= PROMPT_REPORT_CHUNK {
                                 let elapsed = now.duration_since(base_at).as_secs_f64();
                                 if elapsed > 1.0 {
-                                    let live_pps = chunk as f64 / elapsed;
-                                    m.prompt_tokens_per_sec = live_pps;
+                                    let chunk_rate = chunk as f64 / elapsed;
+                                    let ema = match llama_prompt_rate_ema {
+                                        Some(prev) => prev * 0.5 + chunk_rate * 0.5,
+                                        None => chunk_rate,
+                                    };
+                                    llama_prompt_rate_ema = Some(ema);
+                                    m.prompt_tokens_per_sec = ema;
                                     m.prompt_throughput_active = true;
-                                    m.last_prompt_tokens_per_sec = live_pps;
+                                    m.last_prompt_tokens_per_sec = ema;
                                 }
                                 llama_previous_slot_prompt = Some((prompt_processed, now));
                             }
@@ -399,22 +409,29 @@ pub async fn llama_metrics_poller(state: AppState, poll_interval: u64) {
                         m.generation_tokens_per_sec = 0.0;
                         m.generation_throughput_active = false;
                         llama_previous_slot_gen = None;
+                        llama_gen_rate_ema = None;
                     } else if processing == 0 {
                         // Nothing decoding: drop the live rate so the UI
                         // falls back to last-request numbers and Idle.
                         m.generation_tokens_per_sec = 0.0;
                         m.generation_throughput_active = false;
                         llama_previous_slot_gen = None;
+                        llama_gen_rate_ema = None;
                     } else if let Some((prev_tokens, prev_at)) = llama_previous_slot_gen {
                         let elapsed = now.duration_since(prev_at).as_secs_f64();
                         if gen_tokens >= prev_tokens
                             && elapsed > 0.5
                             && gen_tokens - prev_tokens >= GEN_REPORT_CHUNK
                         {
-                            let live_tps = (gen_tokens - prev_tokens) as f64 / elapsed;
-                            m.generation_tokens_per_sec = live_tps;
+                            let chunk_rate = (gen_tokens - prev_tokens) as f64 / elapsed;
+                            let ema = match llama_gen_rate_ema {
+                                Some(prev) => prev * 0.5 + chunk_rate * 0.5,
+                                None => chunk_rate,
+                            };
+                            llama_gen_rate_ema = Some(ema);
+                            m.generation_tokens_per_sec = ema;
                             m.generation_throughput_active = true;
-                            m.last_generation_tokens_per_sec = live_tps;
+                            m.last_generation_tokens_per_sec = ema;
                             llama_previous_slot_gen = Some((gen_tokens, now));
                         }
                         // Below the chunk: hold the last reported rate.
