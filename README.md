@@ -9,8 +9,6 @@ This is a compatibility-preserving rebrand of Llama Monitor. Legacy roots,
 API routes, and browser storage remain supported through 2.x. The executable
 and release assets use `local-llm-foundry`; see the [2.0 upgrade guide](docs/reference/upgrade-2-0.md).
 
-One dashboard for local AI models on macOS, Linux, and Windows. Performance metrics, GPU and system telemetry, active sessions, chat, and a hardware-aware setup wizard.
-
 ## Getting started
 
 Run Local LLM Foundry and open it in your browser:
@@ -176,7 +174,7 @@ An integrated setup wizard for discovering, downloading, configuring, and launch
 | AMD | `rocm-smi` | Auto-detected |
 | NVIDIA | `nvidia-smi` | Auto-detected |
 | Apple Silicon | `mactop` | Auto-detected |
-| Apple Silicon (MLX) | Foundry-managed MLX runtimes (Rapid-MLX; MTPLX planned) | Apple Silicon/MLX capability probe; runtime availability shown separately |
+| Apple Silicon (MLX) | Foundry-managed MLX runtime (Rapid-MLX) | Apple Silicon/MLX capability probe; runtime availability shown separately |
 | Windows (CPU temp) | `sensor_bridge.exe` | Bundled |
 
 ## Installation
@@ -194,8 +192,8 @@ cargo build --release
 Local LLM Foundry includes in-app updates via the dashboard (Settings or header update prompt). No manual download is required.
 
 - On Windows, the update is seamless: the app restarts automatically with the new version.
-- On macOS (Apple Silicon) and Linux, the app briefly shuts down and restarts; if it does not restart on its own, relaunch once.
-- On Intel Mac (x86_64), in-app updates are not available; download the latest binary manually from GitHub Releases.
+- On macOS (Apple Silicon), release binaries are code-signed and notarized, so Gatekeeper verifies them on first launch (online check; no quarantine workaround). The app briefly shuts down and restarts during an update; if it does not restart on its own, relaunch once.
+- On Linux, the app briefly shuts down and restarts; if it does not restart on its own, relaunch once.
 
 ## Documentation
 

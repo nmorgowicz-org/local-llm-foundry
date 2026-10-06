@@ -33,7 +33,7 @@ See also: [Navigation](navigation.md)
 The compact strip in the top navigation shows the current endpoint state without leaving the active tab:
 
 | Chip | Description |
-|------|-------------|
+| ------ | ------------- |
 | **State** | Current llama.cpp activity such as idle, attach, prompting, or generating |
 | **Throughput** | Prompt (`P`) and generation (`G`) speed in tokens/sec |
 | **Context** | Highest context-pressure percentage across open chat tabs |
@@ -48,7 +48,7 @@ Clicking the cockpit jumps to the Server tab. On narrower layouts the GPU and sp
 Hovering the endpoint status chip in the top nav opens a popover listing per-subsystem telemetry states:
 
 | Row | Meaning |
-|-----|---------|
+| ----- | --------- |
 | **Inference** | Whether llama.cpp performance metrics are live |
 | **Slots** | Whether slot data is available |
 | **Metrics** | Whether throughput / context metrics are being reported |
@@ -69,13 +69,16 @@ The Server tab is the main monitoring dashboard. It combines llama.cpp inference
 ![Inference Section](../screenshots/dashboard--neutral--performance-section.png)
 
 | Card | What it shows |
-|------|----------------|
-| **Throughput** | Prompt and generation speeds, peak tracking, throughput ratio bar, metric age, and delta indicators |
-| **Generation** | Output tokens, remaining budget, generation ring progress, stage indicators (Prompt/Output), live output estimation sparkline |
+| ------ | ---------------- |
+| **Model state** | Idle / Reading / Generating / Queued / Error pills with a state progress bar (generation fills on tokens vs budget or backend progress; the tone follows the state) |
+| **Speed** | Decode and prefill tokens/sec side by side, with two overlaid sparklines (prefill dimmer) |
+| **Queue / GPU load / VRAM / GPU temp / Power / CPU / System RAM** | Compact registry-driven cards, each with a sparkline; a card with no data for the active loader renders dimmed instead of disappearing |
 | **Context Window** | Gauge or fleet view of context pressure across chat tabs |
 | **Active sessions** | Per-slot state, output tokens, context usage, slot utilization bar, and batch efficiency |
 | **Connection details** | Activity rail (recent request timeline), request count, and average duration |
 | **Model & Decoding** | Active model name, quantization, sampler config inline, speculative decoding chip and config grid |
+
+The metric strip is registry-driven: llama.cpp and Rapid-MLX feed the same cards through a normalized snapshot, so the layout no longer swaps when the backend changes.
 
 ![Server Tab](../screenshots/neutral--settings-server-tab.png)
 
@@ -137,7 +140,7 @@ On startup the frontend checks for a new version after a short delay to avoid co
 All endpoints require an `api-token`.
 
 | Method | Path | Description |
-|--------|------|-------------|
+| -------- | ------ | ------------- |
 | `GET` | `/api/llama-binary/version` | Returns the installed build number and binary path |
 | `GET` | `/api/llama-binary/latest` | Fetches the latest GitHub release (cached 30 minutes) |
 | `GET` | `/api/llama-binary/releases` | Lists the last 8 releases (cached 30 minutes) |
@@ -224,7 +227,6 @@ Llama Monitor can also update itself (separate from llama.cpp) via an in-app mec
 - **Update & Restart** is handled in-app; no manual download is required.
 - **Windows**: seamless in-place update followed by automatic restart.
 - **macOS (Apple Silicon) / Linux**: the app shuts down, applies the update, and restarts via a helper process. If it does not restart automatically, relaunch once.
-- **Intel Mac (x86_64)**: no in-app update; you must fetch the new binary manually from GitHub Releases.
 
 ## Benchmark
 
@@ -245,7 +247,7 @@ When the user clicks "Apply" on a suggestion card, the server is restarted with 
 The generation throughput (`gen_tokens_per_second`) is mapped to a 5-tier letter grade:
 
 | Grade | Minimum t/s | Label |
-|-------|-------------|-------|
+| ------- | ------------- | ------- |
 | **S** | 25 | Excellent |
 | **A** | 12 | Good |
 | **B** | 6 | Usable |
@@ -259,7 +261,7 @@ The grade chip appears in the results area with a color corresponding to the let
 The benchmark sends a short test prompt through the server's chat completions endpoint and measures:
 
 | Field | Description |
-|-------|-------------|
+| ------- | ------------- |
 | `gen_tokens_per_second` | Generation throughput (tokens/sec during decode) |
 | `prompt_tokens_per_second` | Prefill throughput (tokens/sec during prompt processing) |
 | `time_to_first_token_ms` | Time to first token in milliseconds |
@@ -271,7 +273,7 @@ The backend sends a 512-token generation request with `temperature: 0.5` and `st
 The response includes a `suggestions` array of tuning recommendations, each with:
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `label` | `string` | Short title of the suggestion |
 | `description` | `string` | Explanation of why the change helps |
 | `param` | `string` | Config key to modify (empty for informational-only cards) |
@@ -347,7 +349,7 @@ Each suggestion follows this structure (defined in `spawn_wizard.rs`):
 ```
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `label` | `string` | Short title displayed at the top of the card |
 | `description` | `string` | Detailed explanation of the suggestion |
 | `param` | `string` | Configuration key this suggestion modifies. Empty string (`""`) means the card is informational only |
@@ -372,7 +374,7 @@ The n_cpu_moe auto-tuner estimates the optimal number of MoE layers to offload t
 Requires `api-token`. Request body:
 
 | Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
+| ------- | ------ | ---------- | --------- | ------------- |
 | `name` | `string` | No | `""` | Model name for architecture detection |
 | `param_b` | `number` | No | `0` | Model size in billions of parameters |
 | `model_size_bytes` | `number` | No | `0` | GGUF file size |
@@ -423,7 +425,7 @@ Host metrics are available in two ways:
 All metrics endpoints require `api-token` and also act as wake-on-activity signals.
 
 | Method | Path | Description |
-|--------|------|-------------|
+| -------- | ------ | ------------- |
 | `GET` | `/api/metrics` | Returns combined `system` and `gpu` metrics |
 | `GET` | `/api/metrics/system` | Returns `system` metrics only |
 | `GET` | `/api/metrics/gpu` | Returns `gpu` metrics only |
@@ -431,7 +433,7 @@ All metrics endpoints require `api-token` and also act as wake-on-activity signa
 ### GPU metrics
 
 | Metric | Local sources |
-|--------|---------------|
+| -------- | --------------- |
 | Utilization | `rocm-smi`, `nvidia-smi`, `mactop` |
 | Power draw | `rocm-smi`, `nvidia-smi`; on Apple Silicon via `gpu_power` (dedicated GPU sensor), not `total_power` |
 | VRAM usage | `rocm-smi`, `nvidia-smi`, `mactop` |
@@ -454,7 +456,7 @@ Clock visualization:
 ### System metrics
 
 | Metric | Source |
-|--------|--------|
+| -------- | -------- |
 | CPU load and model | `sysinfo`; on Apple Silicon weighted from mactop cluster utilization |
 | CPU temperature | Linux thermal zones, `mactop`, or `sensor_bridge.exe` on Windows |
 | CPU clock | `/proc/cpuinfo` on Linux; on Apple Silicon derived from P-cluster frequency (`p_cluster_freq_mhz` via `mactop`), not a generic SoC “clock” |
@@ -525,7 +527,7 @@ unmapped by the OS (mlock failure), which can cause slowdowns or crashes.
 The UI exposes telemetry availability directly:
 
 | State | Meaning |
-|-------|---------|
+| ------- | --------- |
 | **Full telemetry** | Performance metrics plus host GPU/system data |
 | **Basic** | Connected to llama.cpp, but no host telemetry source is available |
 | **Partial** | Partial host telemetry is available but some sensors are missing |
@@ -538,7 +540,7 @@ This matters most for remote endpoints: attaching to a remote llama.cpp server a
 Remote endpoints use a unified 9-state telemetry grade to derive the agent connection quality:
 
 | Grade | Meaning |
-|-------|---------|
+| ------- | --------- |
 | `local_full` | Local session with full telemetry |
 | `remote_inference_only` | Remote attach with no agent |
 | `remote_agent_connecting` | Agent connection in progress |
@@ -600,7 +602,7 @@ The dashboard pushes live data over WebSocket. The backend clamps the interval t
 Use the nav **Cadence** chip for quick changes, or go to **Settings → Performance → Dashboard Refresh Rate**. The current presets are:
 
 | UI choice | Effective interval |
-|-----------|--------------------|
+| ----------- | -------------------- |
 | **Auto** | Adapts to network conditions using the browser Network Information API when available |
 | **Normal** | 500 ms |
 | **Balanced** | 1 s |
@@ -622,7 +624,7 @@ When the browser appears overloaded, Llama Monitor can also recommend **Battery 
 The nav monitoring chip supports three modes, cycled by clicking:
 
 | Mode | Label | Behavior |
-|------|-------|----------|
+| ------ | ------- | ---------- |
 | **Off** | Monitoring | Full telemetry and WebSocket pushes. |
 | **Logs only** | Logs only | No heavy metrics or network calls; live server logs still streamed. |
 | **Sleep** | Paused | Minimal heartbeat; no metrics, no logs. |
@@ -664,7 +666,7 @@ Do not rely on the Settings tab labels as the place to configure process launch 
 Ownership summary for the visible Settings surfaces:
 
 | Surface | Owner | Persistence |
-|---------|-------|-------------|
+| --------- | ------- | ------------- |
 | **Settings → Chat** guided-generation toggles, sidebar width, prompt templates | Shared workspace settings | `GET/PUT /api/settings` |
 | **Settings → Performance** refresh interval | Shared workspace settings | `GET/PUT /api/settings` |
 | **Settings → Model profile / GPU / Models** explanatory cards | Runtime/configuration handoff only | No direct save path in Settings |
@@ -720,7 +722,7 @@ The reset button restores each card's defaults (bar for load/power/VRAM/ram, chi
 Open the shortcuts modal with `Ctrl+/`.
 
 | Shortcut | Action |
-|----------|--------|
+| ---------- | -------- |
 | `Ctrl+1` | Server tab |
 | `Ctrl+2` | Chat tab |
 | `Ctrl+3` | Logs tab |
@@ -732,63 +734,25 @@ Open the shortcuts modal with `Ctrl+/`.
 | `Escape` | Close the active modal |
 
 ![Keyboard Shortcuts](../screenshots/neutral--panels-keyboard-shortcuts.png)
+
 ## Backend-aware inference telemetry
 
-The performance dashboard selects its inference cards from the active runtime's
-normalized telemetry contract. The backend field is emitted via WebSocket and
-drives which card set is rendered.
+The dashboard renders one unified metric strip for every runtime. The backend
+field is emitted via WebSocket; a normalized snapshot maps each runtime's
+telemetry onto the same cards, so llama.cpp and Rapid-MLX sessions look and
+behave identically.
 
-- **llama.cpp sessions** use the standard llama.cpp cards: throughput, generation,
-  context, slots, speculative decoding, and sampler config.
-- **Rapid-MLX sessions** replace llama.cpp cards with Rapid-MLX-specific telemetry
-  cards.
-
-### Rapid-MLX telemetry cards
-
-When the active session's backend is Rapid-MLX, the dashboard renders the following
-cards (in order) based on what metrics are available:
-
-![Rapid-MLX dashboard telemetry](../screenshots/dashboard-rapid-mlx--rapidmlx-local--dark.png)
-
-- **Rapid-MLX runtime** — model identity, runtime state (e.g. Ready, Degraded),
-  uptime. Marked live or degraded depending on health.
-- **Inference throughput** — prompt and generation tokens/sec, when available.
-- **Request queue** — running and waiting request counts; labeled "active" when
-  requests are running.
-- **Metal runtime memory** — active memory, peak memory, and cache memory usage in
-  human-readable units.
-- **Prefix & cache state** — global cache hit rate, cache entries, memory in use,
-  and whether multimodal cache is available.
-- **Cumulative totals** — completed requests, prompt tokens, completion tokens, and
-  compute steps.
-- **Request activity** — count of recognized active requests.
-- **Live progress** — an accessible progress bar driven from the backend's
-  progress value (0–100%) when present.
-
-Each card is shown only when its underlying metric is available; if it later
-becomes unavailable, it is removed from the grid so the layout reflows cleanly.
-
-### Partial telemetry (stale metrics)
-
-Rapid-MLX telemetry is intentionally graceful when metrics are missing:
-
-![Rapid-MLX partial telemetry](../screenshots/dashboard-rapid-mlx--rapidmlx-local--partial.png)
-
-- **Before first sample** — the inference area shows a compact "Connecting to
-  Rapid-MLX telemetry…" status instead of llama.cpp cards.
-- **Missing metrics (graceful degradation)** — when a previously available metric
-  stops appearing:
-  - For 1–2 polls: the card keeps its last known values and displays a stale
-    indicator with an age and a "X/3" counter.
-  - On the 3rd consecutive missing poll: the card is removed.
-- **Runtime card degradation** — if polling fails while the runtime card is
-  available, it is kept visible but marked as degraded with
-  "Telemetry unavailable" and a stale label instead of being removed.
-- **Zero vs. missing** — a real `0.0` throughput is displayed as zero (not as
-  "N/A") to differentiate from genuinely missing fields.
-
-This prevents the UI from freezing around stale values or cluttering the dashboard
-with irrelevant cards.
+- **Shared cards**: model state (pills + progress), Speed (decode + prefill
+  overlaid), Queue, GPU load, VRAM, GPU temperature, Power, CPU, System RAM.
+- **Loader gaps render dimmed**: a card whose metric has no source on the
+  active loader (for example GPU data on a remote session without an agent)
+  stays in place with an "n/a" state instead of the layout reflowing.
+- **Detail panels** (slots, request stats, model info) below the strip adapt
+  to the loader as before; llama.cpp-specific slot telemetry is hidden for
+  Rapid-MLX sessions.
+- **Stale metrics** keep their last known values with the existing
+  staleness/graceful-degradation behavior of the underlying snapshot; a real
+  `0.0` throughput is displayed as zero, not as missing.
 
 ### Engine · Model indicator
 
