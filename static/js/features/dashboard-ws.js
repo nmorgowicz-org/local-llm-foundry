@@ -803,10 +803,11 @@ function updateInferenceMetrics(d) {
 
     const slotsProcessing = (l?.slots_processing || 0);
     const rapidRunning = Number(rm?.running_requests) || 0;
-    // A slot that is busy but only reporting prompt progress is still
-    // prefilling, not generating — llama.cpp raises slots_processing as soon
-    // as the request is picked up, long before the first token exists.
-    const promptOnly = slotsProcessing > 0 && genRate === 0 && promptRate > 0;
+    // Classify by whether any token has been decoded this request — rate
+    // fields lag one poll and can hold stale values while a new prompt is
+    // still prefilling, which made the state flip Reading ↔ Generating.
+    const slotGenTokens = l?.slot_generation_tokens || 0;
+    const promptOnly = slotsProcessing > 0 && slotGenTokens === 0;
     const generationActive = (genRate > 0 || slotsProcessing > 0 || rapidRunning > 0) && !promptOnly;
     const reading = !generationActive && (promptRate > 0 || promptOnly);
     const queued = Number(l?.waiting_requests) || Number(rm?.waiting_requests) || 0;

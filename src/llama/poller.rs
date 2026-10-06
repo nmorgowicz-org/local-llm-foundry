@@ -348,23 +348,40 @@ pub async fn llama_metrics_poller(state: AppState, poll_interval: u64) {
                         m.slot_prompt_progress = progress;
                     }
                     if processing > 0 && prompt_processed > 0 {
-                        if let Some((prev_prompt, prev_at)) = llama_previous_slot_prompt {
-                            let elapsed = now.duration_since(prev_at).as_secs_f64();
-                            if prompt_processed > prev_prompt && elapsed > 0.5 {
-                                let live_pps = (prompt_processed - prev_prompt) as f64 / elapsed;
+                        // Rate over the whole request span, not the last poll
+                        // window: batches of 2048 land in bursts, so per-poll
+                        // deltas swing wildly (2,000+ vs the true ~218 t/s).
+                        let base = match llama_previous_slot_prompt {
+                            Some((base_processed, base_at))
+                                if prompt_processed >= base_processed =>
+                            {
+                                Some((base_processed, base_at))
+                            }
+                            _ => Some((prompt_processed, now)),
+                        };
+                        if let Some((base_processed, base_at)) = base {
+                            let elapsed = now.duration_since(base_at).as_secs_f64();
+                            if elapsed > 1.0 && prompt_processed > base_processed {
+                                let live_pps = (prompt_processed - base_processed) as f64 / elapsed;
                                 m.prompt_tokens_per_sec = live_pps;
                                 m.prompt_throughput_active = true;
                                 m.last_prompt_tokens_per_sec = live_pps;
                             }
+                            llama_previous_slot_prompt = Some((base_processed, base_at));
                         }
-                        llama_previous_slot_prompt = Some((prompt_processed, now));
                     } else {
                         llama_previous_slot_prompt = None;
                     }
                     m.slot_prompt_processed = prompt_processed;
 
                     let now = std::time::Instant::now();
-                    if let Some((prev_tokens, prev_at)) = llama_previous_slot_gen {
+                    if gen_tokens == 0 {
+                        // No token decoded yet this request (still prefilling):
+                        // the previous request's live decode rate must not leak
+                        // into the current display or the state classification.
+                        m.generation_tokens_per_sec = 0.0;
+                        m.generation_throughput_active = false;
+                    } else if let Some((prev_tokens, prev_at)) = llama_previous_slot_gen {
                         let elapsed = now.duration_since(prev_at).as_secs_f64();
                         if processing == 0 {
                             // Nothing decoding: drop the live rate so the UI
