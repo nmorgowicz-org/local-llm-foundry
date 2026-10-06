@@ -1548,7 +1548,21 @@ fn api_attach(
                         }
                     },
                     Err(e) => {
-                        eprintln!("[warn] inference runtime health check failed: {}", e);
+                        // reqwest wraps the real cause (refused, timed out,
+                        // "Operation not permitted" from macOS Local Network
+                        // privacy, DNS); walk the source chain so the console
+                        // shows why instead of a generic send failure.
+                        let mut cause = String::new();
+                        let mut src: Option<&dyn std::error::Error> = Some(&e);
+                        while let Some(err) = src {
+                            cause.push_str(&format!(": {}", err));
+                            src = err.source();
+                        }
+                        eprintln!(
+                            "[warn] inference runtime health check failed ({}{})",
+                            e,
+                            cause
+                        );
                         false
                     }
                 };
