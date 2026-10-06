@@ -435,7 +435,15 @@ export async function _doSendChat(tab, options = {}) {
     // Pre-send overflow guard: estimate token usage against current model capacity.
     const capacity = contextCapacityTokens || lastLlamaMetrics?.context_capacity_tokens || lastLlamaMetrics?.kv_cache_max || 0;
     if (capacity > 0) {
-        const estimatedTokens = (tab.total_input_tokens || 0) + (tab.total_output_tokens || 0);
+        // Context occupancy = cumulative output + the LAST request's input.
+        // With KV cache each request's input re-includes the whole
+        // conversation, so summing total_input_tokens across turns
+        // overcounts (a 30k-context chat read as ~109% of 200k here).
+        const asst = (tab.messages || []).filter((m) => m.role === 'assistant' && !m.compaction_marker);
+        const totalOutput = tab.total_output_tokens
+            || asst.reduce((s, m) => s + (m.output_tokens || 0), 0);
+        const lastInput = asst.at(-1)?.input_tokens || 0;
+        const estimatedTokens = totalOutput + lastInput;
         if (estimatedTokens > capacity) {
             const pct = Math.round((estimatedTokens / capacity) * 100);
             // Restore the user's message before showing the toast
