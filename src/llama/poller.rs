@@ -356,20 +356,26 @@ pub async fn llama_metrics_poller(state: AppState, poll_interval: u64) {
                         // letting the span timer run would decay the rate
                         // toward zero during decode instead of holding the
                         // request's final prefill rate.
+                        // Quantized reporting: hold the displayed rate until
+                        // PROMPT_REPORT_CHUNK more prompt tokens have been
+                        // processed. Speculative decoding trickles draft
+                        // tokens through prompt processing during decode, so
+                        // a running span recomputed per poll decayed steadily
+                        // (152 -> 85 t/s) even though prefill was long over.
+                        const PROMPT_REPORT_CHUNK: u64 = 1024;
                         if let Some((base_processed, base_at)) = llama_previous_slot_prompt {
-                            if prompt_processed > base_processed {
+                            let chunk = prompt_processed.saturating_sub(base_processed);
+                            if chunk >= PROMPT_REPORT_CHUNK {
                                 let elapsed = now.duration_since(base_at).as_secs_f64();
                                 if elapsed > 1.0 {
-                                    let live_pps =
-                                        (prompt_processed - base_processed) as f64 / elapsed;
+                                    let live_pps = chunk as f64 / elapsed;
                                     m.prompt_tokens_per_sec = live_pps;
                                     m.prompt_throughput_active = true;
                                     m.last_prompt_tokens_per_sec = live_pps;
                                 }
-                                llama_previous_slot_prompt = Some((base_processed, base_at));
+                                llama_previous_slot_prompt = Some((prompt_processed, now));
                             }
-                            // delta == 0: prefill idle or finished — hold the
-                            // last computed rate untouched.
+                            // Below the chunk: hold the last reported rate.
                         } else {
                             llama_previous_slot_prompt = Some((prompt_processed, now));
                         }
@@ -379,30 +385,42 @@ pub async fn llama_metrics_poller(state: AppState, poll_interval: u64) {
                     m.slot_prompt_processed = prompt_processed;
 
                     let now = std::time::Instant::now();
+                    // Rate reports are quantized: recompute only once another
+                    // REPORT_CHUNK tokens have decoded since the last report,
+                    // then hold the value. Polling every second re-derives a
+                    // slightly different number each tick (spec-decode stalls,
+                    // checkpoint pauses), which reads as a jagged, drifting
+                    // rate even when throughput is steady at ~9 t/s.
+                    const GEN_REPORT_CHUNK: u64 = 16;
                     if gen_tokens == 0 {
                         // No token decoded yet this request (still prefilling):
                         // the previous request's live decode rate must not leak
                         // into the current display or the state classification.
                         m.generation_tokens_per_sec = 0.0;
                         m.generation_throughput_active = false;
+                        llama_previous_slot_gen = None;
+                    } else if processing == 0 {
+                        // Nothing decoding: drop the live rate so the UI
+                        // falls back to last-request numbers and Idle.
+                        m.generation_tokens_per_sec = 0.0;
+                        m.generation_throughput_active = false;
+                        llama_previous_slot_gen = None;
                     } else if let Some((prev_tokens, prev_at)) = llama_previous_slot_gen {
                         let elapsed = now.duration_since(prev_at).as_secs_f64();
-                        if processing == 0 {
-                            // Nothing decoding: drop the live rate so the UI
-                            // falls back to last-request numbers and Idle.
-                            m.generation_tokens_per_sec = 0.0;
-                            m.generation_throughput_active = false;
-                        } else if gen_tokens >= prev_tokens
+                        if gen_tokens >= prev_tokens
                             && elapsed > 0.5
-                            && gen_tokens - prev_tokens > 0
+                            && gen_tokens - prev_tokens >= GEN_REPORT_CHUNK
                         {
                             let live_tps = (gen_tokens - prev_tokens) as f64 / elapsed;
                             m.generation_tokens_per_sec = live_tps;
                             m.generation_throughput_active = true;
                             m.last_generation_tokens_per_sec = live_tps;
+                            llama_previous_slot_gen = Some((gen_tokens, now));
                         }
+                        // Below the chunk: hold the last reported rate.
+                    } else {
+                        llama_previous_slot_gen = Some((gen_tokens, now));
                     }
-                    llama_previous_slot_gen = Some((gen_tokens, now));
                     m.slot_generation_tokens = gen_tokens;
                 }
 
