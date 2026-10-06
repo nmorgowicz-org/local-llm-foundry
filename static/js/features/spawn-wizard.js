@@ -699,7 +699,7 @@ export const wizardState = {
     minP: null,
     repeatPenalty: null,
     presencePenalty: null,
-    maxTokens: null,
+    maxTokens: 32768,             // hard cap per request; blank = unlimited
     seed: null,
     outputMode: '',
     enableThinking: null,
@@ -1152,7 +1152,7 @@ function resetWizardState() {
  wizardState.hardware.repeatPenalty = null;
  wizardState.hardware.repeatLastN = null;
   wizardState.hardware.presencePenalty = null;
-  wizardState.hardware.maxTokens = null;
+  wizardState.hardware.maxTokens = 32768;
   wizardState.hardware.seed = null;
   wizardState.hardware.mtpEnabled = false;
   wizardState.hardware.mtpDraftNMax = null;

@@ -608,8 +608,8 @@ function _bindThinkingFields() {
         const budgetEl  = document.getElementById('spawn-reasoning-budget');
         const msgEl     = document.getElementById('spawn-reasoning-budget-message');
         if (budgetEl && !budgetEl.value) {
-          budgetEl.value = '8192';
-          wizardState.hardware.reasoningBudget = 8192;
+          budgetEl.value = '16384';
+          wizardState.hardware.reasoningBudget = 16384;
         }
         if (msgEl && !msgEl.value) {
           msgEl.value = '\\nFinal Answer:';

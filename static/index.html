@@ -2939,8 +2939,8 @@
                              </div>
                              <div class="pe-row">
                                  <div class="pe-field">
-                                     <label class="pe-label" for="modal-reasoning-budget" title="Maximum number of tokens the model can use for its reasoning steps before answering. Higher = more thorough thinking but slower. Default: 8192.">Reasoning Budget</label>
-                                     <input type="number" class="pe-input" id="modal-reasoning-budget" step="1" placeholder="8192">
+                                     <label class="pe-label" for="modal-reasoning-budget" title="Maximum number of tokens the model can use for its reasoning steps before answering. Higher = more thorough thinking but slower. Default: 16384.">Reasoning Budget</label>
+                                     <input type="number" class="pe-input" id="modal-reasoning-budget" step="1" placeholder="16384">
                                  </div>
                                   <div class="pe-field">
                                   <label class="pe-label" for="modal-reasoning-budget-message" title="Text that appears after the reasoning block and before the final answer. Use \n for a newline. Example: \nFinal Answer:">Reasoning Budget Message</label>
@@ -5085,8 +5085,8 @@
                              </div>
                              <div class="sampling-field">
                                  <label for="spawn-reasoning-budget" title="Maximum tokens the model can spend on its reasoning steps before answering. Higher = more thorough thinking but slower. -1 = unlimited, 0 = disabled.">Budget (tokens)</label>
-                                 <input type="number" id="spawn-reasoning-budget" min="-1" step="1" placeholder="8192">
-                                 <div class="field-hint">Max tokens spent on chain-of-thought before the answer. -1 = unlimited, 0 = off. 4096–8192 typical.</div>
+                                 <input type="number" id="spawn-reasoning-budget" min="-1" step="1" placeholder="16384">
+                                 <div class="field-hint">Max tokens spent on chain-of-thought before the answer. -1 = unlimited, 0 = off. 8192–16384 typical.</div>
                              </div>
                              <div class="sampling-field">
                                    <label for="spawn-reasoning-budget-message" title="Text that appears after the reasoning block and before the final answer. Use \n for a newline before the answer. Example: \nFinal Answer:">Budget message</label>
