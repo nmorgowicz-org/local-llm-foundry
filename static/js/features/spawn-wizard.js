@@ -29,7 +29,7 @@ import { configureMlxWizardIA, applyMlxTierVisibility } from './spawn-wizard-mlx
 import { configureLlamaWizardIA, applyLlamaTierVisibility } from './spawn-wizard-llama-ia.js';
 import { controlsForLoader, controlsForView, applyEffectiveLocks } from './spawn-wizard-groups.js';
 import { createSettingStateRegistry } from './spawn-wizard-setting-state.js';
-import { initGuidedCards, refreshGuidedCapabilityCards } from './spawn-wizard-guided.js';
+import { initGuidedCards, refreshGuidedCapabilityCards, restoreTemplateSection } from './spawn-wizard-guided.js';
 import {
   _platformInfo,
   setWizardPlatformInfo,
@@ -378,6 +378,20 @@ function renderProLayout(mode = wizardState.viewMode) {
   // Guided shows the decision cards only; the legacy fields they duplicate
   // are hidden via CSS while this class is present.
   document.body.classList.toggle('wizard-guided', !isPro);
+  // The sampling block (defaults, thinking, response shaping, network,
+  // extra arguments) lives in the All settings drawer while Guided is
+  // active and returns inline for Pro.
+  const samplingBlock = document.getElementById('spawn-sampling-block');
+  const summaryList = document.getElementById('spawn-summary-list');
+  if (samplingBlock) {
+    if (isPro) {
+      if (summaryList && summaryList.parentElement && samplingBlock.parentElement !== summaryList.parentElement) {
+        summaryList.parentElement.insertBefore(samplingBlock, summaryList);
+      }
+    } else if (drawerGroup && samplingBlock.parentElement !== drawerGroup) {
+      drawerGroup.appendChild(samplingBlock);
+    }
+  }
   const loader = wizardState.engine.selected || 'llama_cpp';
   const guidedSurface = document.querySelector('.hw-guided-old-layout');
   const stickyBar = document.getElementById('hw-sticky-bar');
@@ -397,6 +411,9 @@ function renderProLayout(mode = wizardState.viewMode) {
   layout.style.display = isPro ? '' : 'none';
   document.querySelectorAll('#hw-decision-ctx, #hw-decision-kv, #hw-decision-vision, #hw-decision-speed')
     .forEach(card => { card.style.display = isPro ? 'none' : ''; });
+  // The chat-template panel is hosted in a Guided decision card; Pro gets it
+  // back in its original inline spot.
+  if (isPro) restoreTemplateSection();
   const drawer = document.getElementById('all-settings-drawer');
   if (drawer) drawer.style.display = isPro ? 'none' : '';
 

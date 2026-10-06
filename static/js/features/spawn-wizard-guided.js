@@ -6,6 +6,7 @@ export function initGuidedCards() {
   wireContextTiles();
   wireKvTiles();
   wireVisionCard();
+  wireTemplateCard();
   wireSpeedBoost();
   wireStickyBar();
   refreshGuidedCapabilityCards();
@@ -190,6 +191,24 @@ function wireSpeedBoost() {
       const radio = document.querySelector(`input[name="hw-speed"][value="${checked ? 'on' : 'off'}"]`);
       if (radio) radio.checked = true;
     });
+  }
+}
+
+// Card 5: host the shared chat-template panel inside the Guided card. The
+// panel keeps its ids (chat-template-section etc.) so the existing
+// chat-template logic drives it unchanged; Pro moves it back inline.
+function wireTemplateCard() {
+  const host = document.getElementById('ct-card-host');
+  const section = document.getElementById('chat-template-section');
+  if (!host || !section) return;
+  if (!host.contains(section)) host.appendChild(section);
+}
+
+export function restoreTemplateSection() {
+  const section = document.getElementById('chat-template-section');
+  const anchor = document.getElementById('rapid-mlx-profile-hints');
+  if (section && anchor && section.parentElement !== anchor.parentElement) {
+    anchor.parentElement.insertBefore(section, anchor);
   }
 }
 

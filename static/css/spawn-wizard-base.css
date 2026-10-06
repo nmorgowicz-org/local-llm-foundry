@@ -1069,9 +1069,10 @@
 
 /* Sticky context bar (pinned top of step 2) */
 .hw-sticky-bar {
-  position: sticky;
-  top: 0;
-  z-index: 100;
+  /* Static, not sticky: it overlapped the modal header and the model card
+     while scrolling, and duplicates the chips already shown on the card. */
+  position: static;
+  z-index: auto;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1952,3 +1953,14 @@ body.wizard-guided [data-guided-duplicate] { display: none !important; }
 
 /* Vision decision card control sizing (reuses hardware-select styling). */
 #hw-vision-select { width: 100%; }
+
+/* Checkboxes inside hardware fields must not inherit the full-width
+   text-input styling — they render as empty pills otherwise. */
+.hardware-field input[type="checkbox"] {
+  width: auto !important;
+  padding: 0;
+  border: 0;
+  margin: 0 8px 0 0;
+  vertical-align: middle;
+  accent-color: var(--color-accent);
+}
