@@ -83,7 +83,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ~/.appstoreconnect
-          echo "$APPLE_PRIVATE_KEY" | tr ' ' '\n' > /tmp/AuthKey.pem
+          # %b interprets literal \n escape sequences if the secret was
+          # stored that way, and leaves real newlines intact otherwise.
+          printf '%b\n' "$APPLE_PRIVATE_KEY" > /tmp/AuthKey.pem
           ./rcodesign encode-app-store-connect-api-key \
             -o ~/.appstoreconnect/key.json \
             "$APPLE_ISSUER_ID" "$APPLE_KEY_ID" /tmp/AuthKey.pem
@@ -95,8 +97,8 @@ jobs:
           MACOS_CERT_PEM: ${{ secrets.MACOS_CERT_PEM }}
         run: |
           set -euo pipefail
-          echo "$MACOS_KEY_PEM" > key.pem
-          echo "$MACOS_CERT_PEM" > cert.pem
+          printf '%b\n' "$MACOS_KEY_PEM" > key.pem
+          printf '%b\n' "$MACOS_CERT_PEM" > cert.pem
           ./rcodesign sign \
             --pem-file key.pem --pem-file cert.pem \
             --for-notarization \
