@@ -16,6 +16,9 @@ import { setHtml } from '../core/set-html.js';
 // clock span can stretch — the sample budget stays fixed.
 const HISTORY_LIMIT = 300;
 const history = new Map();
+// Timestamp of the last speed-card sample: throttled to one per second so
+// HISTORY_LIMIT samples span a true 5 minutes.
+let speedLastPush = 0;
 
 
 function pushHistory(key, value) {
@@ -231,11 +234,23 @@ export function updateMetricCards(view) {
         const card = document.getElementById(`mc-card-${m.key}`);
         if (!card) continue;
         if (m.key === 'speed') {
-            // Strata: two independent full-length series, both pushed every
-            // tick; the inactive phase is 0, so its line rides the baseline
-            // while the active one draws above it.
-            pushHistory('decode', view.decodeTps == null ? 0 : view.decodeTps);
-            pushHistory('prefill', view.prefillTps == null ? 0 : view.prefillTps);
+            // Strata plot semantics: the active phase plots its rate, the
+            // inactive phase plots 0 (the line drops to the baseline the
+            // moment the phase ends), and Idle appends nothing — the whole
+            // card freezes once the request completes.
+            // Samples are throttled to one per second: pushes arrive up to
+            // ~4/s, which burned the whole 300-sample window in under two
+            // minutes. One sample per second makes it a true 5 minutes.
+            const nowMs = Date.now();
+            if (
+                (view.state === 'generating' || view.state === 'reading')
+                && nowMs - (speedLastPush || 0) >= 1000
+            ) {
+                speedLastPush = nowMs;
+                const decoding = view.state === 'generating';
+                pushHistory('decode', decoding ? (view.decodeTps ?? 0) : 0);
+                pushHistory('prefill', decoding ? 0 : (view.prefillTps ?? 0));
+            }
             m.update(view);
             continue;
         }
