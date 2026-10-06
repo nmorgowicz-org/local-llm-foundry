@@ -29,7 +29,7 @@ import { configureMlxWizardIA, applyMlxTierVisibility } from './spawn-wizard-mlx
 import { configureLlamaWizardIA, applyLlamaTierVisibility } from './spawn-wizard-llama-ia.js';
 import { controlsForLoader, controlsForView, applyEffectiveLocks } from './spawn-wizard-groups.js';
 import { createSettingStateRegistry } from './spawn-wizard-setting-state.js';
-import { initGuidedCards, refreshGuidedCapabilityCards, restoreTemplateSection } from './spawn-wizard-guided.js';
+import { initGuidedCards, refreshGuidedCapabilityCards } from './spawn-wizard-guided.js';
 import {
   _platformInfo,
   setWizardPlatformInfo,
@@ -411,9 +411,6 @@ function renderProLayout(mode = wizardState.viewMode) {
   layout.style.display = isPro ? '' : 'none';
   document.querySelectorAll('#hw-decision-ctx, #hw-decision-kv, #hw-decision-vision, #hw-decision-speed')
     .forEach(card => { card.style.display = isPro ? 'none' : ''; });
-  // The chat-template panel is hosted in a Guided decision card; Pro gets it
-  // back in its original inline spot.
-  if (isPro) restoreTemplateSection();
   const drawer = document.getElementById('all-settings-drawer');
   if (drawer) drawer.style.display = isPro ? 'none' : '';
 
