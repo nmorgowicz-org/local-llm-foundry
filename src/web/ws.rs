@@ -12,7 +12,7 @@ use crate::state::MetricsCapabilities;
 
 static WS_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
 
-const WS_PUSH_INTERVAL_DEFAULT_MS: u64 = 500;
+const WS_PUSH_INTERVAL_DEFAULT_MS: u64 = 1_000; // Strata's dashboard cadence (app.js: setTimeout(poll, 1000))
 const WS_PUSH_INTERVAL_MIN_MS: u64 = 200;
 const WS_PUSH_INTERVAL_MAX_MS: u64 = 10_000;
 const WS_PUSH_INTERVAL_HIDDEN_MS: u64 = 5_000;
