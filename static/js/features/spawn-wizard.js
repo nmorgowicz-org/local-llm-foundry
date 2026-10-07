@@ -2633,6 +2633,10 @@ export function showStep(index) {
     }
   }
   if (index === 2) {
+    // Hardware state is otherwise refreshed only by change events on its
+    // controls. Reading it here keeps the review from showing the reset
+    // values (0 tokens, blank GPU layers) when the user accepted defaults.
+    readHardwareState();
     _renderPresetParamsStep();
     refreshWizardCalibrationOffer();
     _renderSpawnConfigCard();

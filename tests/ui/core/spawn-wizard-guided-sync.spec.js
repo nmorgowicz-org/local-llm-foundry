@@ -302,3 +302,21 @@ test('@fake-data-bypass user-selected projector sticks in Guided and Pro', async
     await page.waitForTimeout(300);
   }
 });
+
+test('@fake-data-bypass Launch review reflects accepted hardware defaults', async ({ page }) => {
+  await openGuided(page);
+  await page.evaluate(async () => {
+    const { showStep } = await import('/js/features/spawn-wizard.js');
+    showStep(2); // no hardware control was touched on step 1
+  });
+  const hardware = await page.evaluate(async () => {
+    const { wizardState } = await import('/js/features/spawn-wizard.js');
+    return { ...wizardState.hardware };
+  });
+  expect(hardware.contextSize).toBeGreaterThan(0);
+  expect(hardware.batchSize).toBeGreaterThan(0);
+  expect(hardware.ubatchSize).toBeGreaterThan(0);
+  expect(hardware.gpuLayers).not.toBe('');
+  await expect(page.locator('#wizard-step-2')).not.toContainText('0 tokens');
+  await expect(page.locator('#wizard-step-2')).toContainText(`${hardware.contextSize.toLocaleString()} tokens`);
+});
