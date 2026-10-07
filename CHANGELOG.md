@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.2.1...v2.3.0) (2026-10-07)
+
+
+### Features
+
+* **dashboard:** live throughput and prefill progress for llama.cpp ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **dashboard:** llama.cpp efficiency telemetry and runtime details ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **dashboard:** Strata-style state strip and unified metric cards ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **hf:** refresh Discover pills for the current model landscape ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **wizard:** raise default max tokens and reasoning budget ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+
+
+### Bug Fixes
+
+* **api:** bound upstream waits without limiting healthy streams ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **attach:** actionable error when a LAN runtime is unreachable ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **attach:** log the full error chain when a runtime health check fails ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **chat:** persist context fingerprints so stale usage is not reused ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **ctx:** correct context math; cockpit G-first order and fit ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **ctx:** use occupancy formula in the send-path overflow guard ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **dashboard:** 5-min sparklines, PP freeze, honest GPU load ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **dashboard:** drop inactive phase to baseline, freeze on idle ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **dashboard:** match Strata speed sparkline semantics exactly ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **dashboard:** quantize PP/TG rate reports to counter chunks ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **dashboard:** stable state classification and true PP rate ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **dashboard:** strata card corrections for Apple Silicon ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **dashboard:** Strata-style speed card and EMA-smoothed rates ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **dashboard:** stronger EMA smoothing on the prefill rate ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **dashboard:** throttle speed samples to 1/s for a true 5-min window ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **gpu:** parse Apple ioreg utilization from PerformanceStatistics only ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **gpu:** real Apple GPU utilization from IOAccelerator ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **metrics:** true CPU utilization; abort-proof chat timeouts ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **ui:** cockpit chips never collapse; advanced panel fits ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **wizard:** drawer access for sampling, template card, sticky bar ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **wizard:** keep Guided and Pro spawn wizard state in sync ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **wizard:** restore mmproj discovery in Guided; hide review block ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+* **wizard:** stop duplicating guided decisions ([d285a42](https://github.com/nmorgowicz-org/local-llm-foundry/commit/d285a4240c6ced76c0a2dbd776f30fdf95559f0d))
+
 ## [2.2.1](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.2.0...v2.2.1) (2026-10-06)
 
 
