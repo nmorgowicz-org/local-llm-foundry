@@ -190,17 +190,40 @@ fn read_ioreg_gpu_utilization() -> Option<u32> {
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    // Take the max across accelerators (integrated + any discrete).
-    let mut best: Option<u32> = None;
-    for part in text.split("Device Utilization %=").skip(1) {
-        let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if let Ok(v) = digits.parse::<u32>()
-            && best.is_none_or(|b| v > b)
-        {
-            best = Some(v);
-        }
-    }
-    best
+    parse_ioreg_gpu_utilization(&text)
+}
+
+/// Parse the inline dictionaries emitted by `ioreg -w 0`, not renderer/tiler
+/// counters or similarly named properties. Missing or invalid data stays None
+/// so the caller can retain its existing residency fallback.
+fn parse_ioreg_gpu_utilization(text: &str) -> Option<u32> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim_start_matches(|c: char| c.is_whitespace() || c == '|');
+            let (key, value) = line.split_once('=')?;
+            if key.trim() != "\"PerformanceStatistics\"" {
+                return None;
+            }
+            value.trim().strip_prefix('{')?.strip_suffix('}')
+        })
+        .flat_map(|statistics| statistics.split(','))
+        .filter_map(|field| {
+            let (key, value) = field.split_once('=')?;
+            if !matches!(
+                key.trim(),
+                "\"Device Utilization %\"" | "Device Utilization %"
+            ) {
+                return None;
+            }
+            let value = value.trim();
+            // Parse the whole unsigned integer, never a numeric prefix or sign.
+            if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            value.parse::<u32>().ok().filter(|v| *v <= 100)
+        })
+        // Integrated and discrete accelerators may each expose statistics.
+        .max()
 }
 
 /// Read `iogpu.wired_limit_mb` from the kernel each call.
@@ -281,6 +304,110 @@ pub fn wired_limit_behavior_notes() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ioreg_utilization_parses_real_quoted_statistics_fixture() {
+        // Captured with the production ioreg arguments; unrelated properties omitted.
+        let text = include_str!("fixtures/ioreg-performance-statistics.txt");
+        assert_eq!(parse_ioreg_gpu_utilization(text), Some(0));
+    }
+
+    #[test]
+    fn ioreg_utilization_tolerates_whitespace() {
+        let text = "\t|   \"PerformanceStatistics\" \t= \t{ \
+            \"Device Utilization %\" \t = \t 42 \t, \"Renderer Utilization %\"=99 } \r\n";
+        assert_eq!(parse_ioreg_gpu_utilization(text), Some(42));
+    }
+
+    #[test]
+    fn ioreg_utilization_takes_maximum_across_accelerators() {
+        let text = r#"
++-o AGXAccelerator  <class AGXAccelerator, registered, matched, active>
+    {
+      "PerformanceStatistics" = {"Device Utilization %"=17}
+    }
++-o AMDAccelerator  <class AMDAccelerator, registered, matched, active>
+    {
+      "PerformanceStatistics" = {"Device Utilization %"=83}
+    }
++-o OtherAccelerator  <class OtherAccelerator, registered, matched, active>
+    {
+      "PerformanceStatistics" = {"Device Utilization %"=24}
+    }
+"#;
+        assert_eq!(parse_ioreg_gpu_utilization(text), Some(83));
+    }
+
+    #[test]
+    fn ioreg_utilization_accepts_zero_and_full_utilization() {
+        for value in [0, 100] {
+            let text = format!("\"PerformanceStatistics\" = {{\"Device Utilization %\"={value}}}");
+            assert_eq!(parse_ioreg_gpu_utilization(&text), Some(value));
+        }
+    }
+
+    #[test]
+    fn ioreg_utilization_accepts_legacy_unquoted_key() {
+        let text = r#""PerformanceStatistics" = {Device Utilization %=31}"#;
+        assert_eq!(parse_ioreg_gpu_utilization(text), Some(31));
+    }
+
+    #[test]
+    fn ioreg_utilization_rejects_missing_and_unrelated_fields() {
+        for text in [
+            "",
+            r#""PerformanceStatistics" = {}"#,
+            r#""PerformanceStatistics" = {"Renderer Utilization %"=99,"Tiler Utilization %"=87}"#,
+            r#""PerformanceStatistics" = {"Other Device Utilization %"=99}"#,
+            r#""PerformanceStatistics" = {"Device Utilization % extra"=99}"#,
+            r#""OtherStatistics" = {"Device Utilization %"=99}"#,
+            r#""Device Utilization %" = 99"#,
+            r#""PerformanceStatisticsExtra" = {"Device Utilization %"=99}"#,
+            r#""Description" = "PerformanceStatistics = {Device Utilization %=99}""#,
+        ] {
+            assert_eq!(parse_ioreg_gpu_utilization(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn ioreg_utilization_rejects_malformed_values() {
+        for value in [
+            "",
+            "-1",
+            "+42",
+            "101",
+            "4294967296",
+            "18446744073709551616",
+            "42.5",
+            "42%",
+            "42junk",
+            "4 2",
+            "\"42\"",
+            "true",
+            "<2a>",
+        ] {
+            let text = format!("\"PerformanceStatistics\" = {{\"Device Utilization %\"={value}}}");
+            assert_eq!(parse_ioreg_gpu_utilization(&text), None, "{value}");
+        }
+        for text in [
+            r#""PerformanceStatistics" = {"Device Utilization %"42}"#,
+            r#""PerformanceStatistics" = {"Device Utilization %"==42}"#,
+            r#""PerformanceStatistics" = {"Device Utilization %=42}"#,
+            r#""PerformanceStatistics" = {"Device Utilization %"=42"#,
+        ] {
+            assert_eq!(parse_ioreg_gpu_utilization(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn ioreg_utilization_keeps_valid_data_when_an_accelerator_is_malformed() {
+        let text = r#"
+    "PerformanceStatistics" = {"Device Utilization %"=99junk}
+    "PerformanceStatistics" = {"Device Utilization %"=37,"Renderer Utilization %"=100}
+    "PerformanceStatistics" = {"Device Utilization %"=101}
+"#;
+        assert_eq!(parse_ioreg_gpu_utilization(text), Some(37));
+    }
 
     /// 8 GiB RAM system (base M1/M2)
     const RAM_8GB_BYTES: u64 = 8 * 1024 * 1024 * 1024;
