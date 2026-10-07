@@ -1,5 +1,6 @@
 // spawn-wizard-guided.js — Option A (Guided) decision cards wiring
 import { wizardState } from './spawn-wizard.js';
+import { _mtpUserConfigured } from './spawn-wizard-mtp-draft.js';
 
 // Wire up decision cards on step entry
 export function initGuidedCards() {
@@ -7,8 +8,19 @@ export function initGuidedCards() {
   wireKvTiles();
   wireVisionCard();
   wireSpeedBoost();
-  wireStickyBar();
   refreshGuidedCapabilityCards();
+  const overlay = document.getElementById('spawn-wizard-overlay');
+  overlay?.addEventListener('input', refreshGuidedCards);
+  overlay?.addEventListener('change', refreshGuidedCards);
+  // Direct listeners also cover existing callers that dispatch a non-bubbling
+  // input/change event on a canonical control.
+  ['spawn-context-size', 'spawn-cache-type-k', 'spawn-cache-type-v', 'hw-mmproj-select', 'hw-use-mtp']
+    .forEach(id => {
+      const control = document.getElementById(id);
+      control?.addEventListener('input', refreshGuidedCards);
+      control?.addEventListener('change', refreshGuidedCards);
+    });
+  refreshGuidedCards();
 }
 
 // Keep the primary speed decision truthful while metadata is loading. The
@@ -43,14 +55,27 @@ export function refreshGuidedCapabilityCards() {
 
   onRadio.disabled = !eligible;
   onRadio.setAttribute('aria-disabled', String(!eligible));
-  if (!eligible && !onRadio.dataset.userConfigured) {
+  const ngramRadio = document.querySelector('input[name="hw-speed"][value="ngram"]');
+  const speedConfigured = [...document.querySelectorAll('input[name="hw-speed"]')]
+    .some(radio => radio.dataset.userConfigured);
+  // Pro and Guided share the checkbox's existing authority flag. Metadata
+  // rediscovery may refresh availability, but must not re-answer a user choice
+  // or an explicit canonical speculative-mode selection.
+  const explicitSpec = document.getElementById('spawn-spec-type')?.value || wizardState.hardware?.specType;
+  const canApplyDefault = !_mtpUserConfigured && !speedConfigured && !explicitSpec;
+  if (!eligible && canApplyDefault) {
     onRadio.checked = false;
-    if (offRadio) offRadio.checked = true;
+    if (offRadio && !ngramRadio?.checked) offRadio.checked = true;
     if (wizardState.hardware) wizardState.hardware.mtpEnabled = false;
-  } else if (eligible && !onRadio.dataset.userConfigured && !offRadio?.dataset.userConfigured) {
+    const checkbox = document.getElementById('hw-use-mtp');
+    if (checkbox) checkbox.checked = false;
+  } else if (eligible && canApplyDefault) {
     onRadio.checked = true;
     if (wizardState.hardware) wizardState.hardware.mtpEnabled = true;
+    const checkbox = document.getElementById('hw-use-mtp');
+    if (checkbox) checkbox.checked = true;
   }
+  refreshGuidedCards();
 }
 
 // Card 1: Context size tiles sync with #spawn-context-size
@@ -72,32 +97,19 @@ function wireContextTiles() {
       if (origInput) origInput.value = ctx;
       setTileActive(ctx);
       // Trigger input event for existing handlers
-      customInput?.dispatchEvent(new Event('input', { bubbles: true }));
       origInput?.dispatchEvent(new Event('input', { bubbles: true }));
     });
   });
 
-  // Custom input updates tiles
-  if (customInput) {
-    customInput.addEventListener('change', () => {
-      const ctx = customInput.value;
-      setTileActive(ctx);
+  // Guided edits go through the real canonical field and its existing
+  // handlers; both live typing and a committed change must update launch state.
+  ['input', 'change'].forEach(type => {
+    customInput?.addEventListener(type, () => {
+      if (!origInput) return;
+      origInput.value = customInput.value;
+      origInput.dispatchEvent(new Event(type, { bubbles: true }));
     });
-  }
-
-  // Sync from original input (when set by other code). Both events are
-  // observed because several code paths set .value and dispatch only one
-  // of them; programmatic writes without an event are covered by the
-  // MutationObserver in syncGuidedCards().
-  function syncFromOrig() {
-    const ctx = origInput?.value;
-    if (ctx == null) return;
-    if (customInput && customInput.value !== ctx) customInput.value = ctx;
-    setTileActive(ctx);
-  }
-  origInput?.addEventListener('input', syncFromOrig);
-  origInput?.addEventListener('change', syncFromOrig);
-  syncFromOrig();
+  });
 }
 
 // Card 2: KV precision tiles sync with #spawn-cache-type-k/v
@@ -123,13 +135,8 @@ function wireKvTiles() {
     });
   });
 
-  // Sync from original inputs
-  function syncFromOrig() {
-    const kv = kInput?.value || vInput?.value;
-    if (kv) setTileActive(kv);
-  }
-  kInput?.addEventListener('change', syncFromOrig);
-  vInput?.addEventListener('change', syncFromOrig);
+  // Canonical input/change events refresh both K and V through
+  // refreshGuidedCards, including asymmetric cache configurations.
 }
 
 // Card 3: Vision select sync with existing mmproj controls
@@ -183,91 +190,52 @@ function wireSpeedBoost() {
     });
   });
 
-  // Sync from MTP checkbox
-  if (mtpCheckbox) {
-    mtpCheckbox.addEventListener('change', () => {
-      const checked = mtpCheckbox.checked;
-      const radio = document.querySelector(`input[name="hw-speed"][value="${checked ? 'on' : 'off'}"]`);
-      if (radio) radio.checked = true;
-    });
-  }
 }
 
-// Sticky context bar: populate from wizardState
-function wireStickyBar() {
-  function updateStickyBar() {
-    const modelEl = document.getElementById('hw-sticky-model-name');
-    const quantEl = document.getElementById('hw-sticky-quant');
-    const loaderEl = document.getElementById('hw-sticky-loader');
-    const usecaseEl = document.getElementById('hw-sticky-usecase');
-    const ctxEl = document.getElementById('hw-sticky-ctx');
-    const kvEl = document.getElementById('hw-sticky-kv');
-
-    if (modelEl) {
-      const modelName = wizardState.model.name || wizardState.model.path || '—';
-      modelEl.textContent = modelName.split('/').pop() || modelName;
-    }
-    if (quantEl) {
-      quantEl.textContent = wizardState.model.quant || '—';
-    }
-    if (loaderEl) {
-      loaderEl.textContent = wizardState.engine?.selected === 'rapid_mlx' ? 'Rapid-MLX' : 'llama.cpp';
-    }
-    if (usecaseEl) {
-      const useCaseLabel = wizardState.useCase || 'General';
-      usecaseEl.textContent = useCaseLabel;
-    }
-    if (ctxEl) {
-      const ctx = wizardState.hardware?.contextSize || 0;
-      if (ctx > 0) {
-        const display = ctx >= 1000 ? `${(ctx / 1000).toFixed(0)}k` : ctx;
-        ctxEl.textContent = `ctx ${display}`;
-      }
-    }
-    if (kvEl) {
-      const kCache = document.getElementById('spawn-cache-type-k');
-      if (kCache && kCache.value) {
-        kvEl.textContent = `KV ${kCache.value}`;
-      }
-    }
+// Read-only mirror for explicit canonical writers (autosize, scenarios,
+// presets, capability/discovery renders) and real input/change events. DOM
+// properties are not HTML attributes: observing "value" cannot track them.
+export function refreshGuidedCards(event) {
+  // A radio emits input before its change handler updates the canonical
+  // checkbox. Do not overwrite the new selection with that old checkbox.
+  if (event?.type === 'input' && event.target?.name === 'hw-speed') return;
+  const ctx = document.getElementById('spawn-context-size')?.value;
+  if (ctx != null) {
+    const customInput = document.getElementById('hw-ctx-custom');
+    if (customInput && customInput.value !== ctx) customInput.value = ctx;
+    document.querySelectorAll('#hw-ctx-tiles .hw-decision-tile').forEach(tile => {
+      tile.classList.toggle('hw-decision-tile-active', tile.dataset.ctx === ctx);
+    });
   }
 
-  // Initial update and on state changes. The same observer keeps the
-  // decision cards in sync with programmatic writes to the canonical
-  // controls (context size, KV precision, vision, MTP) — a single source
-  // of truth with multiple writers.
-  function syncGuidedCards() {
-    const ctx = document.getElementById('spawn-context-size')?.value;
-    if (ctx != null) {
-      const customInput = document.getElementById('hw-ctx-custom');
-      if (customInput && customInput.value !== ctx) customInput.value = ctx;
-      document.querySelectorAll('#hw-ctx-tiles .hw-decision-tile').forEach(t => {
-        t.classList.toggle('hw-decision-tile-active', t.dataset.ctx === ctx);
-      });
-    }
-    const kv = document.getElementById('spawn-cache-type-k')?.value;
-    if (kv) {
-      document.querySelectorAll('#hw-kv-tiles .hw-decision-tile').forEach(t => {
-        t.classList.toggle('hw-decision-tile-active', t.dataset.kv === kv);
-      });
-    }
-    const visionSelect = document.getElementById('hw-vision-select');
-    const origVision = document.getElementById('hw-mmproj-select');
-    if (visionSelect && origVision && visionSelect.value !== origVision.value) {
-      visionSelect.value = origVision.value;
-    }
-    const mtp = document.getElementById('hw-use-mtp');
-    if (mtp) {
-      const radio = document.querySelector(`input[name="hw-speed"][value="${mtp.checked ? 'on' : 'off'}"]`);
-      if (radio && !radio.checked) radio.checked = true;
-    }
-  }
-
-  updateStickyBar();
-  syncGuidedCards();
-  new MutationObserver(() => { updateStickyBar(); syncGuidedCards(); }).observe(document.body, {
-    subtree: true,
-    attributes: true,
-    attributeFilter: ['value']
+  const k = document.getElementById('spawn-cache-type-k')?.value || '';
+  const v = document.getElementById('spawn-cache-type-v')?.value || '';
+  document.querySelectorAll('#hw-kv-tiles .hw-decision-tile').forEach(tile => {
+    tile.classList.toggle('hw-decision-tile-active', !!k && k === v && tile.dataset.kv === k);
   });
+
+  const vision = document.getElementById('hw-vision-select');
+  const canonicalVision = document.getElementById('hw-mmproj-select');
+  if (vision && canonicalVision) vision.value = canonicalVision.value;
+  const mtp = document.getElementById('hw-use-mtp');
+  const ngram = document.querySelector('input[name="hw-speed"][value="ngram"]');
+  if (mtp && (mtp.checked || !ngram?.checked)) {
+    const selected = mtp.checked ? 'on' : 'off';
+    document.querySelectorAll('input[name="hw-speed"]').forEach(radio => {
+      radio.checked = radio.value === selected;
+    });
+  }
+
+  const setText = (id, text) => {
+    const element = document.getElementById(id);
+    if (element) element.textContent = text;
+  };
+  const modelName = wizardState.model.name || wizardState.model.path || '—';
+  setText('hw-sticky-model-name', modelName.split('/').pop() || modelName);
+  setText('hw-sticky-quant', wizardState.model.quant || '—');
+  setText('hw-sticky-loader', wizardState.engine?.selected === 'rapid_mlx' ? 'Rapid-MLX' : 'llama.cpp');
+  setText('hw-sticky-usecase', wizardState.useCase || 'General');
+  const context = Number(ctx) || 0;
+  setText('hw-sticky-ctx', context > 0 ? `ctx ${context >= 1000 ? `${(context / 1000).toFixed(0)}k` : context}` : 'ctx —');
+  setText('hw-sticky-kv', k ? `KV ${k === v ? k : `${k}/${v || '—'}`}` : 'KV —');
 }
