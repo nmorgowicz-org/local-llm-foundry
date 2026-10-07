@@ -275,3 +275,30 @@ test('@fake-data-bypass backend roundtrips keep llama-only sampling out of Rapid
   await page.locator('#view-mode-select').selectOption('guided');
   await expect(page.locator('#all-settings-group #spawn-sampling-block')).toHaveCount(1);
 });
+
+test('@fake-data-bypass user-selected projector sticks in Guided and Pro', async ({ page }) => {
+  await openGuided(page);
+  await page.evaluate(async () => {
+    const { wizardState } = await import('/js/features/spawn-wizard.js');
+    const { renderMmprojSection } = await import('/js/features/spawn-wizard-mmproj.js');
+    wizardState.model.mmprojFiles = [
+      { path: '/tmp/mmproj-BF16.gguf', size: 946_000_000 },
+      { path: '/tmp/mmproj-Q8_0.gguf', size: 644_000_000 },
+    ];
+    renderMmprojSection();
+  });
+  const state = () => page.evaluate(async () => {
+    const { wizardState } = await import('/js/features/spawn-wizard.js');
+    return wizardState.model.mmprojPath;
+  });
+  for (const id of ['#hw-vision-select', '#hw-mmproj-select']) {
+    await page.locator(id).selectOption('/tmp/mmproj-Q8_0.gguf', { force: true });
+    await page.waitForTimeout(1500); // let debounced VRAM/autosize work settle
+    expect(await state(), id).toBe('/tmp/mmproj-Q8_0.gguf');
+    expect(await page.evaluate(async () => (await import('/js/features/spawn-wizard.js')).wizardState.arch.mmprojBytes), id).toBe(644_000_000);
+    await expect(page.locator('#hw-vision-select')).toHaveValue('/tmp/mmproj-Q8_0.gguf');
+    await expect(page.locator('#hw-mmproj-select')).toHaveValue('/tmp/mmproj-Q8_0.gguf');
+    await page.locator(id).selectOption('/tmp/mmproj-BF16.gguf', { force: true });
+    await page.waitForTimeout(300);
+  }
+});
