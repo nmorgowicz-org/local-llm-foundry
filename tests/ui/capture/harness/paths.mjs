@@ -43,6 +43,15 @@ const configuredAttachTimeout = Number.parseInt(process.env.CAPTURE_ATTACH_TIMEO
 export const CAPTURE_ATTACH_TIMEOUT_MS = Number.isFinite(configuredAttachTimeout) && configuredAttachTimeout > 0
     ? configuredAttachTimeout
     : 120000;
+// Remote runtimes may be busy (queued prefill, other agents). Generous defaults,
+// overridable: CAPTURE_REMOTE_REQUEST_TIMEOUT_MS bounds one generation request,
+// CAPTURE_REMOTE_IDLE_TIMEOUT_MS bounds the wait for the remote to go idle.
+const positiveEnvInt = (name, fallback) => {
+    const value = Number.parseInt(process.env[name] || '', 10);
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+};
+export const CAPTURE_REMOTE_REQUEST_TIMEOUT_MS = positiveEnvInt('CAPTURE_REMOTE_REQUEST_TIMEOUT_MS', 30 * 60 * 1000);
+export const CAPTURE_REMOTE_IDLE_TIMEOUT_MS = positiveEnvInt('CAPTURE_REMOTE_IDLE_TIMEOUT_MS', 30 * 60 * 1000);
 export const BINARY_PATH = join(ROOT_DIR, 'target/release/local-llm-foundry');
 export const CAPTURE_FORM_AUTH = process.env.SCREENSHOT_FORM_AUTH || 'admin:secret123';
 export const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
