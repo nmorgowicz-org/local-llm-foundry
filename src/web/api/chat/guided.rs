@@ -9,6 +9,7 @@ use crate::state::AppState;
 use super::super::common::{ApiCtx, ApiRoute, box_reply, check_api_token, unauthorized_api_token};
 use super::super::upstream::{
     build_upstream_client, prepare_inference_request, send_upstream_request_with_retry,
+    upstream_body_stream,
 };
 
 pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
@@ -194,9 +195,7 @@ fn api_chat_guided(
                     prepared.authenticate(
                         client
                             .post(&url)
-                            // No request-level timeout — see chat/stream.rs:
-                            // reqwest's request timeout includes the streamed
-                            // body and aborted long prefills at 120s.
+                            // Like chat, bound stalls but not healthy stream duration.
                             .header("Content-Type", "application/json")
                             .body(request_body.clone()),
                     )
@@ -210,7 +209,7 @@ fn api_chat_guided(
                 tokio::spawn(async move {
                     use futures_util::StreamExt;
                     let _permit = permit;
-                    let mut stream = resp.bytes_stream();
+                    let mut stream = upstream_body_stream(resp);
                     let mut buf = String::new();
 
                     loop {

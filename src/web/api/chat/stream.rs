@@ -10,6 +10,7 @@ use crate::state::AppState;
 use super::super::common::{ApiCtx, ApiRoute, box_reply, check_api_token, unauthorized_api_token};
 use super::super::upstream::{
     build_upstream_client, prepare_inference_request, send_upstream_request_with_retry,
+    upstream_body_stream,
 };
 
 const CHAT_SSE_QUEUE_CAPACITY: usize = 32;
@@ -50,13 +51,8 @@ fn api_chat(
                     prepared.authenticate(
                         client
                             .post(&url)
-                            // No request-level timeout here: reqwest's request
-                            // timeout covers the whole streamed body, so long
-                            // prefills (22k+ tokens at ~200 t/s) were aborted
-                            // mid-prompt at 120s. The shared upstream client
-                            // has no default timeout; a hung stream still ends
-                            // when the browser client goes away or the backend
-                            // closes the connection.
+                            // Bound connection/headers and idle reads separately;
+                            // healthy interactive streaming has no overall deadline.
                             .header("Content-Type", "application/json")
                             .body(request_body.clone()),
                     )
@@ -76,7 +72,7 @@ fn api_chat(
 
                 tokio::spawn(async move {
                     let _permit = permit;
-                    let mut stream = resp.bytes_stream();
+                    let mut stream = upstream_body_stream(resp);
                     let mut buf = String::new();
                     let mut pending_utf8: Vec<u8> = Vec::new();
 
@@ -555,6 +551,49 @@ mod tests {
         .await
         .expect("disconnect must not wait for another upstream byte");
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn disconnect_cancels_bounded_body_wait_and_releases_inference_permit() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            let mut received = Vec::new();
+            while !received.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let count = socket.read(&mut request).await.unwrap();
+                assert!(count > 0, "client closed before sending complete headers");
+                received.extend_from_slice(&request[..count]);
+            }
+            socket.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+            ).await.unwrap();
+            // Keep the body silent; downstream disconnect, not the generous
+            // prefill timeout, must cancel the pending transport read.
+            let _ = socket.read(&mut request).await;
+        });
+        let client = build_upstream_client().unwrap();
+        let response = send_upstream_request_with_retry(|| client.post(&url))
+            .await
+            .unwrap();
+        let mut upstream = upstream_body_stream(response);
+        let gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = gate.clone().acquire_owned().await.unwrap();
+        let (sender, receiver) = tokio::sync::mpsc::channel::<()>(1);
+        drop(receiver);
+        let result = tokio::time::timeout(std::time::Duration::from_millis(100), async {
+            let _permit = permit;
+            next_chunk_or_disconnect(&sender, &mut upstream).await
+        })
+        .await
+        .expect("disconnect must cancel the bounded upstream wait immediately");
+        assert!(result.is_none());
+        assert_eq!(gate.available_permits(), 1);
+        drop(upstream);
+        server.abort();
     }
 
     #[tokio::test]

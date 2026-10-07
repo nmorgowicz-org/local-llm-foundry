@@ -1576,6 +1576,21 @@ Inference admission behavior:
 - If the upstream server cannot be reached, the route returns `502 Bad Gateway`.
 - If the upstream server accepts the connection but does not respond in time, the route returns `504 Gateway Timeout`.
 
+Upstream waits are bounded independently of interactive generation duration:
+
+- Connection establishment (including TLS): 10 seconds.
+- Response headers and the first response-body chunk: up to 15 minutes each, allowing long prefills.
+- Silence between subsequent body chunks: 5 minutes. Continued token or heartbeat traffic renews this idle wait.
+- Keyword generation, suggestions, and context-note analysis: one 30-minute overall deadline across retries and response-body collection.
+- Error response bodies: at most 64 KiB and 30 seconds.
+
+Healthy `/api/chat` and `/api/chat/guided` streams have no overall duration deadline.
+Disconnect still stops forwarding and releases the inference permit. A header timeout
+is not retried because the runtime may already have accepted the inference. Timeouts
+before a response starts return `504`; after SSE begins they emit an error event and
+end forwarding. Helper timeout failures also release their inference permits.
+
+
 ### `POST /api/chat/abort`
 
 Auth: api-token.

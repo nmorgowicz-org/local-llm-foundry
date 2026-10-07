@@ -1,0 +1,27 @@
++-o AGXAcceleratorG17X  <class AGXAcceleratorG17X, id 0x1000007d3, registered, matched, active, busy 0 (159693 ms), retain 108>
+    {
+      "SchedulerState" = {"Stamps"=({"idx"=18,"sub"=1873814016,"gpu"=1873814016},{"idx"=19,"sub"=1920095488,"gpu"=1920095488}),"BusyWorkQueues"=()}
+      "IOMatchedAtBoot" = Yes
+      "vendor-id" = <6b100000>
+      "GPURawCounterBundleName" = "AGXGPURawCounterBundle"
+      "GPURawCounterPluginClassName" = "AGXGPURawCounterSourceGroup"
+      "MetalPluginClassName" = "AGXG17CDevice"
+      "AGCInfo" = {"fLastSubmissionPID"=25653,"fSubmissionsSinceLastCheck"=0,"fBusyCount"=0}
+      "MetalPluginName" = "AGXMetalG17X"
+      "IONameMatched" = "gpu,t6050"
+      "CommandSubmissionEnabled" = Yes
+      "PerformanceStatistics" = {"In use system memory (driver)"=0,"Alloc system memory"=34599911424,"Tiler Utilization %"=0,"recoveryCount"=0,"lastRecoveryTime"=0,"Renderer Utilization %"=0,"TiledSceneBytes"=0,"Device Utilization %"=0,"SplitSceneCount"=0,"Allocated PB Size"=166723584,"In use system memory"=2147205120}
+      "IOGLBundleName" = "AppleMetalOpenGLRenderer"
+      "IOGLESBundleName" = "AppleMetalGLRenderer"
+      "IOPowerManagement" = {"CurrentPowerState"=1,"CapabilityFlags"=2,"MaxPowerState"=1,"DriverPowerState"=1}
+      "model" = "Apple M5 Max"
+      "gpu-core-count" = 40
+      "IOProviderClass" = "AppleARMIODevice"
+      "IONameMatch" = ("gpu,t8015","gpu,t8027","gpu,t8030","gpu,t8103","gpu,t6050","gpu,t6051","gpu,t6052")
+      "IOClass" = "AGXAcceleratorG17X"
+      "GPUConfigurationVariable" = {"num_gps"=16,"kickid_qid_shift"=40,"is_sksm"=1,"usc_gen"=3,"kickid_qid_mask"=127,"num_cores"=40,"num_mgpus"=4,"gpu_gen"=17,"core_mask_list"=(1023,1023,1023,1023),"gpu_var"="C","num_frags"=40}
+      "IOMatchCategory" = "IOAccelerator"
+      "IOProbeScore" = 10000
+      "KDebugVersion" = 4294967296
+      "SurfaceList" = ()
+    }
