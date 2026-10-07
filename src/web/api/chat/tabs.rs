@@ -547,6 +547,7 @@ fn api_append_messages(
                                 output_tokens: None,
                                 cumulative_input_tokens: None,
                                 cumulative_output_tokens: None,
+                                context_fingerprint: None,
                                 compaction_marker: false,
                                 variants: None,
                                 variant_index: None,

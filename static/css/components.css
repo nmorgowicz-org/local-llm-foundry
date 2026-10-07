@@ -3348,6 +3348,55 @@ button:disabled {
   user-select: none;
 }
 
+.endpoint-health-strip .engine-indicator,
+.endpoint-health-strip .engine-indicator * {
+  cursor: pointer;
+}
+
+.engine-indicator:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+.engine-model-popover {
+  width: min(520px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: 20px;
+  border: 1px solid var(--border-emphasis);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+}
+
+.engine-model-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.engine-model-header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.engine-model-popover dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  margin: 20px 0 0;
+  font-size: 13px;
+}
+
+.engine-model-popover dt {
+  color: var(--color-text-secondary);
+}
+
+.engine-model-popover dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .engine-indicator-label {
   max-width: 140px;
   overflow: hidden;

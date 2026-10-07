@@ -10,6 +10,18 @@ pub struct LlamaMetrics {
     pub last_prompt_throughput_unix_ms: u64,
     pub last_generation_throughput_unix_ms: u64,
     pub prompt_tokens_total: u64,
+    /// Availability-preserving aliases; legacy prompt_tokens_total remains unchanged.
+    pub prompt_tokens_processed_total: Option<f64>,
+    pub prompt_tokens_cached_total: Option<f64>,
+    pub speculative_draft_tokens_total: Option<u64>,
+    pub speculative_accepted_tokens_total: Option<u64>,
+    pub speculative_verification_steps_total: Option<u64>,
+    /// Explicit runtime configuration, never inferred from historical counters.
+    pub speculative_enabled: Option<bool>,
+    pub runtime_facts: Option<LlamaRuntimeFacts>,
+    /// Source tags let WebSocket consumers reject a snapshot assembled across a switch.
+    pub telemetry_session_id: Option<String>,
+    pub telemetry_endpoint: Option<String>,
     pub generation_tokens_total: u64,
     pub tokens_per_decode: f64,
     pub speculative_acceptance_rate: Option<f64>,
@@ -33,6 +45,9 @@ pub struct LlamaMetrics {
     pub slot_generation_limit: u64,
     pub slot_generation_active: bool,
     pub slot_generation_available: bool,
+    pub slot_prompt_processed: u64,
+    pub slot_prompt_total: u64,
+    pub slot_prompt_progress: f64,
     pub slots: Vec<SlotSnapshot>,
     pub requests_processing: u32,
     pub n_busy_slots_per_decode: f64,
@@ -40,6 +55,29 @@ pub struct LlamaMetrics {
     pub model_name: String,
     pub model_params: Option<u64>,
     pub model_ctx_train: Option<u64>,
+}
+
+/// Allowlisted facts reported by the attached server, not local launch settings.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct LlamaRuntimeFacts {
+    /// Basename of the server-reported model file, never its API alias.
+    pub model_name: Option<String>,
+    pub model_alias: Option<String>,
+    pub quantization: Option<String>,
+    pub model_params: Option<u64>,
+    pub server_build: Option<String>,
+    pub capabilities: std::collections::BTreeMap<String, bool>,
+    /// None means unavailable; an empty list means the endpoint reported no adapters.
+    pub adapters: Option<Vec<LlamaRuntimeAdapter>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct LlamaRuntimeAdapter {
+    pub id: Option<u64>,
+    pub name: Option<String>,
+    pub scale: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -54,6 +92,9 @@ pub struct SlotSnapshot {
     pub n_ctx: u64,
     pub is_processing: bool,
     pub id_task: Option<u64>,
+    /// Per-request prefill progress; absent is not the same as observed zero.
+    #[serde(default)]
+    pub prompt_tokens_processed: Option<u64>,
     pub output_tokens: u64,
     pub output_remaining: u64,
     pub output_limit: u64,
@@ -83,6 +124,8 @@ struct SlotSnapshotInput {
 #[derive(Debug, Clone, Default)]
 pub struct PrometheusValues {
     pub prompt_tokens_total: f64,
+    pub prompt_tokens_processed_total: Option<f64>,
+    pub prompt_tokens_cached_total: Option<f64>,
     pub prompt_seconds_total: f64,
     pub predicted_tokens_total: f64,
     pub predicted_seconds_total: f64,
@@ -92,8 +135,9 @@ pub struct PrometheusValues {
     pub n_busy_slots_per_decode: f64,
     // Derived: predicted_tokens_total / n_decode_total — spec efficiency (>1 means drafts accepted)
     pub tokens_per_decode: f64,
-    pub speculative_draft_tokens_total: f64,
-    pub speculative_accepted_tokens_total: f64,
+    pub speculative_draft_tokens_total: Option<u64>,
+    pub speculative_accepted_tokens_total: Option<u64>,
+    pub speculative_verification_steps_total: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -111,7 +155,17 @@ pub struct SlotValues {
     pub slot_generation_limit: u64,
     pub slot_generation_active: bool,
     pub slot_generation_available: bool,
+    pub slot_prompt_processed: u64,
+    pub slot_prompt_total: u64,
+    pub slot_prompt_progress: f64,
     pub slots: Vec<SlotSnapshot>,
+    pub speculative_enabled: Option<bool>,
+}
+
+fn counter_value(value: f64) -> Option<u64> {
+    // Casts saturate in Rust: reject invalid/overflow samples rather than fabricate zero.
+    (value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value < u64::MAX as f64)
+        .then_some(value as u64)
 }
 
 /// Parse Prometheus text format and extract the metrics we care about.
@@ -129,11 +183,19 @@ pub fn parse_prometheus_metrics(body: &str) -> PrometheusValues {
         };
         let name = name.split_once('{').map_or(name, |(name, _)| name);
         let value = match parts.next().and_then(|v| v.parse::<f64>().ok()) {
-            Some(v) => v,
-            None => continue,
+            Some(v) if v.is_finite() && v >= 0.0 => v,
+            _ => continue,
         };
         match name {
-            "llamacpp:prompt_tokens_total" => vals.prompt_tokens_total = value,
+            "llamacpp:prompt_tokens_total" => {
+                vals.prompt_tokens_processed_total = counter_value(value).map(|v| v as f64);
+                if vals.prompt_tokens_processed_total.is_some() {
+                    vals.prompt_tokens_total = value;
+                }
+            }
+            "llamacpp:prompt_tokens_cached_total" => {
+                vals.prompt_tokens_cached_total = counter_value(value).map(|v| v as f64);
+            }
             "llamacpp:prompt_seconds_total" => vals.prompt_seconds_total = value,
             "llamacpp:tokens_predicted_total" => vals.predicted_tokens_total = value,
             "llamacpp:tokens_predicted_seconds_total" => vals.predicted_seconds_total = value,
@@ -142,10 +204,13 @@ pub fn parse_prometheus_metrics(body: &str) -> PrometheusValues {
             "llamacpp:n_decode_total" => vals.n_decode_total = value,
             "llamacpp:n_busy_slots_per_decode" => vals.n_busy_slots_per_decode = value,
             "llamacpp:spec_decode_num_draft_tokens_total" => {
-                vals.speculative_draft_tokens_total = value
+                vals.speculative_draft_tokens_total = counter_value(value)
             }
             "llamacpp:spec_decode_num_accepted_tokens_total" => {
-                vals.speculative_accepted_tokens_total = value
+                vals.speculative_accepted_tokens_total = counter_value(value)
+            }
+            "llamacpp:spec_decode_num_drafts_total" => {
+                vals.speculative_verification_steps_total = counter_value(value)
             }
             _ => {}
         }
@@ -156,9 +221,54 @@ pub fn parse_prometheus_metrics(body: &str) -> PrometheusValues {
     vals
 }
 
+/// Explicit runtime configuration only: absent/invalid is not disabled.
+pub(crate) fn speculative_config_enabled(params: &serde_json::Value) -> Option<bool> {
+    if let Some(enabled) = params
+        .pointer("/speculative/enabled")
+        .and_then(|v| v.as_bool())
+    {
+        return Some(enabled);
+    }
+    let value = params
+        .get("speculative.types")
+        .or_else(|| params.get("speculative.type"))?;
+    let types: Vec<&str> = if let Some(value) = value.as_str() {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .collect()
+    } else {
+        value
+            .as_array()?
+            .iter()
+            .map(|v| v.as_str().map(str::trim))
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
+            .filter(|v| !v.is_empty())
+            .collect()
+    };
+    (!types.is_empty()).then(|| types.iter().any(|v| *v != "none"))
+}
+
 pub fn parse_slot_metrics(body: &str) -> Option<SlotValues> {
     let slots = serde_json::from_str::<Vec<serde_json::Value>>(body).ok()?;
     let mut vals = SlotValues::default();
+    let explicit: Vec<Option<bool>> = slots
+        .iter()
+        .map(|slot| {
+            slot.get("speculative")
+                .and_then(|v| v.as_bool())
+                .or_else(|| slot.get("params").and_then(speculative_config_enabled))
+        })
+        .collect();
+    vals.speculative_enabled = if explicit.contains(&Some(true)) {
+        Some(true)
+    } else if explicit.contains(&Some(false)) {
+        Some(false)
+    } else {
+        None
+    };
 
     for slot in &slots {
         let is_processing = slot
@@ -191,6 +301,22 @@ pub fn parse_slot_metrics(body: &str) -> Option<SlotValues> {
         }
         if is_processing && vals.active_task_id.is_none() {
             vals.active_task_id = task_id;
+        }
+
+        // Live prefill progress — only meaningful while processing.
+        if is_processing {
+            if let Some(processed) = slot
+                .get("n_prompt_tokens_processed")
+                .and_then(|v| v.as_u64())
+            {
+                vals.slot_prompt_processed += processed;
+            }
+            if let Some(total) = slot.get("n_prompt_tokens").and_then(|v| v.as_u64()) {
+                vals.slot_prompt_total += total;
+            }
+            if let Some(progress) = slot.get("prompt_progress").and_then(|v| v.as_f64()) {
+                vals.slot_prompt_progress += progress.clamp(0.0, 1.0);
+            }
         }
 
         let mut output_tokens = 0;
@@ -252,6 +378,9 @@ fn slot_snapshot(slot: &serde_json::Value, input: SlotSnapshotInput) -> SlotSnap
             .unwrap_or_default(),
         is_processing: input.is_processing,
         id_task: input.task_id,
+        prompt_tokens_processed: slot
+            .get("n_prompt_tokens_processed")
+            .and_then(|v| v.as_u64()),
         output_tokens: input.output_tokens,
         output_remaining: input.output_remaining,
         output_limit: input.output_limit,
@@ -404,6 +533,106 @@ mod tests {
     use super::*;
 
     #[test]
+    fn per_slot_prompt_counts_preserve_presence_zero_and_idle_values() {
+        let vals = parse_slot_metrics(
+            r#"[
+            {"id":0,"id_task":10,"is_processing":true,"n_prompt_tokens_processed":0},
+            {"id":1,"id_task":11,"is_processing":true,"n_prompt_tokens_processed":1024},
+            {"id":2,"id_task":12,"is_processing":false,"n_prompt_tokens_processed":4096},
+            {"id":3,"is_processing":true}
+        ]"#,
+        )
+        .unwrap();
+        assert_eq!(vals.slot_prompt_processed, 1024);
+        assert_eq!(vals.slots[0].prompt_tokens_processed, Some(0));
+        assert_eq!(vals.slots[1].prompt_tokens_processed, Some(1024));
+        assert_eq!(vals.slots[2].prompt_tokens_processed, Some(4096));
+        assert_eq!(vals.slots[3].prompt_tokens_processed, None);
+        let mut legacy = serde_json::to_value(&vals.slots[0]).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("prompt_tokens_processed");
+        let restored: SlotSnapshot = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.prompt_tokens_processed, None);
+    }
+
+    #[test]
+    fn slot_speculation_distinguishes_explicit_config_from_missing_fields() {
+        for (body, expected) in [
+            ("[]", None),
+            (r#"[{"id":0}]"#, None),
+            (r#"[{"id":0,"speculative":false}]"#, Some(false)),
+            (r#"[{"id":0,"speculative":true}]"#, Some(true)),
+            (r#"[{"speculative":false},{}]"#, Some(false)),
+            (r#"[{"speculative":true},{}]"#, Some(true)),
+            (r#"[{"params":{"speculative.type":"none"}}]"#, Some(false)),
+            (
+                r#"[{"params":{"speculative":{"enabled":false},"speculative.types":"draft-mtp"}}]"#,
+                Some(false),
+            ),
+            (
+                r#"[{"params":{"speculative":{"enabled":true}}}]"#,
+                Some(true),
+            ),
+        ] {
+            assert_eq!(
+                parse_slot_metrics(body).unwrap().speculative_enabled,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn efficiency_counters_preserve_presence_and_zero_activity() {
+        let vals = parse_prometheus_metrics(
+            "llamacpp:prompt_tokens_total 120\nllamacpp:prompt_tokens_cached_total 0\n\
+             llamacpp:spec_decode_num_draft_tokens_total 0\n\
+             llamacpp:spec_decode_num_accepted_tokens_total 0\n\
+             llamacpp:spec_decode_num_drafts_total 0\n",
+        );
+        assert_eq!(vals.prompt_tokens_processed_total, Some(120.0));
+        assert_eq!(vals.prompt_tokens_cached_total, Some(0.0));
+        assert_eq!(vals.speculative_draft_tokens_total, Some(0));
+        assert_eq!(vals.speculative_accepted_tokens_total, Some(0));
+        assert_eq!(vals.speculative_verification_steps_total, Some(0));
+        let absent = parse_prometheus_metrics("");
+        assert_eq!(absent.prompt_tokens_processed_total, None);
+        assert_eq!(absent.prompt_tokens_cached_total, None);
+        assert_eq!(absent.speculative_draft_tokens_total, None);
+        assert_eq!(absent.speculative_accepted_tokens_total, None);
+        assert_eq!(absent.speculative_verification_steps_total, None);
+    }
+
+    #[test]
+    fn efficiency_counters_reject_invalid_samples() {
+        for invalid in ["NaN", "+Inf", "-Inf", "-1", "1.5", "oops", "1e30"] {
+            let vals = parse_prometheus_metrics(&format!(
+                "llamacpp:prompt_tokens_total {invalid}\n\
+                 llamacpp:prompt_tokens_cached_total {invalid}\n\
+                 llamacpp:spec_decode_num_draft_tokens_total {invalid}\n\
+                 llamacpp:spec_decode_num_accepted_tokens_total {invalid}\n\
+                 llamacpp:spec_decode_num_drafts_total {invalid}\n"
+            ));
+            assert_eq!(vals.prompt_tokens_processed_total, None, "{invalid}");
+            assert_eq!(vals.prompt_tokens_cached_total, None, "{invalid}");
+            assert_eq!(vals.speculative_draft_tokens_total, None, "{invalid}");
+            assert_eq!(vals.speculative_accepted_tokens_total, None, "{invalid}");
+            assert_eq!(vals.speculative_verification_steps_total, None, "{invalid}");
+        }
+    }
+
+    #[test]
+    fn efficiency_counters_accept_exponents_labels_and_timestamps() {
+        let vals = parse_prometheus_metrics(
+            "  llamacpp:prompt_tokens_cached_total{model=\"test\"} 1.2e3 12345\n\
+             llamacpp:spec_decode_num_drafts_total 2e1\n",
+        );
+        assert_eq!(vals.prompt_tokens_cached_total, Some(1200.0));
+        assert_eq!(vals.speculative_verification_steps_total, Some(20));
+    }
+
+    #[test]
     fn test_parse_prometheus_metrics() {
         let body = include_str!("../../tests/fixtures/prometheus_metrics.txt");
         let vals = parse_prometheus_metrics(body);
@@ -416,8 +645,8 @@ mod tests {
         assert_eq!(vals.requests_processing, 1);
         assert!((vals.n_decode_total - 42000.0).abs() < 0.1);
         assert!((vals.n_busy_slots_per_decode - 1.5).abs() < 0.01);
-        assert_eq!(vals.speculative_draft_tokens_total, 200.0);
-        assert_eq!(vals.speculative_accepted_tokens_total, 100.0);
+        assert_eq!(vals.speculative_draft_tokens_total, Some(200));
+        assert_eq!(vals.speculative_accepted_tokens_total, Some(100));
     }
 
     #[test]

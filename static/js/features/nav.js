@@ -1,14 +1,15 @@
 // ── Navigation ────────────────────────────────────────────────────────────────
 // Tab switching and sidebar collapse.
 
-import { chat, contextCapacityTokens, lastLlamaMetrics, lastSystemMetrics, metricSeries, setWsData, wsData } from '../core/app-state.js';
-import { setHtml } from '../core/set-html.js';
+import { chat, contextCapacityTokens, lastLlamaMetrics, lastSystemMetrics, setWsData, wsData } from '../core/app-state.js';
 import { chatScroll } from './chat-render.js';
 import { showSessionPanel, hideSessionPanel } from './chat-sessions-sidebar.js';
 import { isFocusModeActive, exitFocusMode } from './chat-focus-mode.js';
 import { renderCapabilityPopover } from './dashboard-render.js';
 import { showToast } from './toast.js';
 import Router from './router.js';
+import { isLlamaTelemetryForTarget } from './llama-cpp-details.js';
+import { estimateChatContextPct } from './chat-state.js';
 
 export function switchTab(name) {
     if (name !== 'chat' && isFocusModeActive()) exitFocusMode();
@@ -110,44 +111,9 @@ function initEndpointStatus() {
 }
 
 function deriveTabCtxPct(tab, capacity) {
-    if (!tab || !capacity) return 0;
-    const asst = (tab.messages || []).filter(m => m.role === 'assistant' && !m.compaction_marker);
-    if (!asst.length) return tab.last_ctx_pct || 0;
-    // Use tab-level cumulative totals (most accurate); fall back to summing message fields.
-    const totalInput = tab.total_input_tokens
-        || asst.reduce((sum, m) => sum + (m.input_tokens || 0), 0);
-    const totalOutput = tab.total_output_tokens
-        || asst.reduce((sum, m) => sum + (m.output_tokens || 0), 0);
-    return Math.min(200, (totalInput + totalOutput) / capacity * 100);
+    return estimateChatContextPct(tab, capacity) || 0;
 }
 
-function buildCockpitSparkline(points) {
-    if (!points || points.length < 2) return '';
-    const width = 120;
-    const height = 28;
-    const max = Math.max(...points, 1);
-    const step = width / (points.length - 1);
-    const currentValue = points[points.length - 1];
-    const currentX = width;
-    const currentY = height - ((currentValue / max) * (height - 6)) - 3;
-    const path = points.map((value, index) => {
-        const x = index * step;
-        const y = height - ((value / max) * (height - 6)) - 3;
-        return (index === 0 ? 'M' : 'L') + x.toFixed(2) + ' ' + y.toFixed(2);
-    }).join(' ');
-    return [
-        '<path class="sparkline-fill live-output" d="' + path + ' L 120 28 L 0 28 Z" fill="currentColor"></path>',
-        '<path class="sparkline-line live-output" d="' + path + '"></path>',
-        '<line class="sparkline-current-trace live-output" x1="' + Math.max(currentX - 8, 0).toFixed(2) + '" y1="' + currentY.toFixed(2) + '" x2="' + currentX.toFixed(2) + '" y2="' + currentY.toFixed(2) + '"></line>',
-        '<circle class="sparkline-current-halo live-output" cx="' + currentX.toFixed(2) + '" cy="' + currentY.toFixed(2) + '" r="7.4"></circle>',
-        '<circle class="sparkline-current live-output" cx="' + currentX.toFixed(2) + '" cy="' + currentY.toFixed(2) + '" r="3.6"></circle>',
-        '<circle class="sparkline-current-core live-output" cx="' + currentX.toFixed(2) + '" cy="' + currentY.toFixed(2) + '" r="1.2"></circle>',
-    ].join('');
-}
-
-function buildIdleCockpitPoints() {
-    return [0.18, 0.42, 0.3, 0.54, 0.36, 0.62, 0.4, 0.5, 0.34, 0.46];
-}
 
 function refreshMonitoringChip(mode, isManual, hasActiveEndpoint) {
     const chip = document.getElementById('nav-monitoring-chip');
@@ -312,8 +278,6 @@ export function refreshTopCockpit() {
     const throughputEl = document.getElementById('nav-cockpit-throughput');
     const specEl = document.getElementById('nav-cockpit-spec');
     const contextEl = document.getElementById('nav-cockpit-context');
-    const gpuEl = document.getElementById('nav-cockpit-gpu');
-    const sparkEl = document.getElementById('nav-cockpit-spark');
 
     const hasActiveEndpoint = !!wsData?.active_session_id;
     const l = hasActiveEndpoint ? lastLlamaMetrics : null;
@@ -331,30 +295,65 @@ export function refreshTopCockpit() {
       if (indicator && labelEl && dotEl) {
         const backend = wsData?.backend || null;
         const endpointKind = wsData?.endpoint_kind || null;
-        const modelIdentity = wsData?.active_session_model_identity || null;
+        const basename = value => typeof value === 'string' ? value.trim().split(/[\\/]/).pop() : '';
+        const modelIdentity = basename(wsData?.active_session_model_identity);
+        const metrics = lastLlamaMetrics;
+        const runtimeFacts = backend === 'llama_cpp' && isLlamaTelemetryForTarget(
+          metrics, wsData?.active_session_id, wsData?.active_session_endpoint_tag,
+        ) ? metrics.runtime_facts : null;
+        const modelFile = basename(runtimeFacts?.model_name);
+        const modelAlias = basename(runtimeFacts?.model_alias);
+        const popover = document.getElementById('engine-model-popover');
+        const modelFacts = document.getElementById('engine-model-facts');
         const sessionStatus = wsData?.active_session_status || null;
         const isRunning = sessionStatus === 'running' || sessionStatus === 'disconnected';
 
         if (backend && endpointKind === 'Local' && isRunning && (modelIdentity || sessionStatus)) {
           const engineName = backend === 'rapid_mlx' ? 'Rapid-MLX' : 'llama.cpp';
-          const modelName = modelIdentity
-            ? modelIdentity.length > 24
-              ? modelIdentity.slice(0, 22) + '…'
-              : modelIdentity
+          // Show the model file's friendly name, never the full path — the
+          // chip is a status indicator, not a breadcrumb.
+          const modelName = modelFile || modelIdentity
+            ? (() => {
+                const file = String(modelFile || modelIdentity).split(/[\\/]/).pop()
+                  .replace(/\.(gguf|safetensors)$/i, '');
+                return file.length > 24 ? file.slice(0, 22) + '…' : file;
+              })()
             : 'Active';
           labelEl.textContent = `${engineName} · ${modelName}`;
 
           if (generationActive) {
             dotEl.className = 'engine-indicator-dot live';
-            indicator.setAttribute('title', `${engineName} · ${modelIdentity || modelName} (generating)`);
+            // data-tooltip, not title: the global tooltip steals `title`
+            // once, but this attribute is re-set on every WS tick — re-adding
+            // it would surface the browser's native tooltip alongside the
+            // styled one. data-tooltip is read by the global tooltip and has
+            // no native counterpart.
+            indicator.setAttribute('data-tooltip', `${engineName}\n${modelFile || modelIdentity || 'Model not reported'}${modelAlias ? '\nAlias: ' + modelAlias : ''}\nGenerating · Click for model details`);
           } else {
             dotEl.className = 'engine-indicator-dot idle-active';
-            indicator.setAttribute('title', `${engineName} · ${modelIdentity || modelName} (idle)`);
+            indicator.setAttribute('data-tooltip', `${engineName}\n${modelFile || modelIdentity || 'Model not reported'}${modelAlias ? '\nAlias: ' + modelAlias : ''}\nIdle · Click for model details`);
+          }
+          if (modelFacts) {
+            const rows = [['Engine', engineName]];
+            if (modelFile) rows.push(['Model', modelFile]);
+            else if (backend === 'llama_cpp') rows.push(['Model', 'Model file not reported by server']);
+            if (modelAlias) rows.push(['Alias', modelAlias]);
+            else if (modelIdentity) rows.push(['Model identity', modelIdentity]);
+            const nodes = rows.flatMap(([label, value]) => {
+              const term = document.createElement('dt');
+              const definition = document.createElement('dd');
+              term.textContent = label;
+              definition.textContent = value;
+              return [term, definition];
+            });
+            modelFacts.replaceChildren(...nodes);
           }
 
           indicator.style.display = 'inline-flex';
         } else {
           indicator.style.display = 'none';
+          modelFacts?.replaceChildren();
+          if (popover?.matches(':popover-open')) popover.hidePopover();
         }
       }
     }
@@ -394,7 +393,8 @@ export function refreshTopCockpit() {
     refreshMemoryPressureChip();
 
     if (throughputEl) {
-        throughputEl.textContent = 'P ' + (promptDisplayRate > 0 ? promptDisplayRate.toFixed(0) : '—') + ' · G ' + (genDisplayRate > 0 ? genDisplayRate.toFixed(0) : '—');
+        // G first, then P — matching the Speed card's TG-over-PP order.
+        throughputEl.textContent = 'G ' + (genDisplayRate > 0 ? genDisplayRate.toFixed(0) : '—') + ' · P ' + (promptDisplayRate > 0 ? promptDisplayRate.toFixed(0) : '—');
     }
 
     if (specEl) {
@@ -417,33 +417,6 @@ export function refreshTopCockpit() {
         contextEl.title = worstCtx > 0 ? 'Highest chat context pressure across tabs' : 'No live context pressure available';
     }
 
-    const gpuEntries = Object.values(wsData?.gpu || {});
-    const hottestGpu = gpuEntries.length > 0
-        ? Math.max(...gpuEntries.map(m => Number(m?.temp) || 0))
-        : 0;
-    if (gpuEl) {
-        gpuEl.textContent = 'GPU ' + (hottestGpu > 0 ? hottestGpu.toFixed(0) + 'C' : '—');
-    }
-
-    if (sparkEl) {
-        const promptPoints = hasActiveEndpoint ? (metricSeries.prompt || []) : [];
-        const genPoints = hasActiveEndpoint ? (metricSeries.generation || []) : [];
-        const livePoints = hasActiveEndpoint ? (metricSeries.liveOutput || []) : [];
-        const maxLen = Math.max(promptPoints.length, genPoints.length);
-        const points = [];
-        for (let i = 0; i < maxLen; i += 1) {
-            const p = promptPoints[promptPoints.length - maxLen + i] || 0;
-            const g = genPoints[genPoints.length - maxLen + i] || 0;
-            points.push(Math.max(p, g));
-        }
-        const fallbackPoints = livePoints.filter(value => value > 0);
-        let displayPoints = points.some(value => value > 0) ? points : fallbackPoints;
-        if (displayPoints.length < 2) {
-            displayPoints = buildIdleCockpitPoints();
-        }
-
-        setHtml(sparkEl, displayPoints.length >= 2 ? buildCockpitSparkline(displayPoints) : '');
-    }
 }
 
 // ── Sidebar drag-resize ───────────────────────────────────────────────────────

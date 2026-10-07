@@ -11,6 +11,10 @@ import {
     scheduleChatPersist,
     substituteNames,
     updateChatName,
+    estimateChatContextPct,
+    estimateChatContextTokens,
+    estimateChatMessageTokens,
+    invalidateChatContext,
 } from './chat-state.js';
 import { saveSettings } from './settings.js';
 import { exportChatTab, importChatTab, renderChatMessages, renderMd } from './chat-render.js';
@@ -191,14 +195,8 @@ function syncMessageLimitInput() {
 
 // ── Compaction ────────────────────────────────────────────────────────────────
 
-// Estimate ctx% from message token metadata (mirrors deriveCtxPctFromMessages in context-card.js).
 function estimateCtxPct(tab, capacity) {
-    if (!capacity) return null;
-    const asst = (tab.messages || []).filter(m => m.role === 'assistant' && !m.compaction_marker);
-    if (!asst.length) return null;
-    const totalOutput = asst.reduce((sum, m) => sum + (m.output_tokens || 0), 0);
-    const lastInput = asst.at(-1).input_tokens || 0;
-    return Math.min(200, (totalOutput + lastInput) / capacity * 100); // allow >100 so overflow is visible
+    return estimateChatContextPct(tab, capacity);
 }
 
 // Calculate how many recent messages can be kept while staying within 65% of capacity.
@@ -211,9 +209,8 @@ function calcKeepTailForCapacity(conversational, capacity) {
     let keep = 0;
     for (let i = conversational.length - 1; i >= 0; i--) {
         const m = conversational[i];
-        // Use recorded tokens; fall back to rough char estimate (4 chars ≈ 1 token)
-        const t = (m.input_tokens || 0) + (m.output_tokens || 0)
-            || Math.ceil((m.content?.length || 0) / 4);
+        // Prompt usage describes the whole request, not this message's size.
+        const t = estimateChatMessageTokens(m);
         if (tokensUsed + t > budget) break;
         tokensUsed += t;
         keep++;
@@ -341,7 +338,7 @@ export async function compactChatTab(tab, keepTail = null, summarize = true) {
         summarized: isSummarized,
         dropped_count: dropped.length,
         dropped_preview: dropped.slice(0, 8).map(m => ({ role: m.role, snippet: m.content.slice(0, 80) })),
-        tokens_freed_estimate: dropped.reduce((sum, m) => sum + Math.round((m.input_tokens || 0) + (m.output_tokens || 0)), 0),
+        tokens_freed_estimate: dropped.reduce((sum, m) => sum + estimateChatMessageTokens(m), 0),
         ctx_pct_before: tab.last_ctx_pct || 0,
         memory_version: memoryVersion,
         memory_domain: memoryDomain,
@@ -359,6 +356,7 @@ export async function compactChatTab(tab, keepTail = null, summarize = true) {
         tombstone,
         ...kept,
     ];
+    invalidateChatContext(tab);
     const finalTombstones = tab.messages.filter(m => m.compaction_marker);
     console.log('[COMPACT] done — final:', tab.messages.length, 'tombstones:', finalTombstones.length);
     tab.updated_at = Date.now();
@@ -407,8 +405,8 @@ function showCompactConfirmation(tab, isAuto = false) {
     const keptCount = resolvedKeepTail;
     const dropped = conversational.slice(0, droppedCount);
     const kept = conversational.slice(-keptCount);
-    const tokensFreed = dropped.reduce((sum, m) => sum + Math.round((m.input_tokens || 0) + (m.output_tokens || 0)), 0);
-    const ctxPct = tab.last_ctx_pct || 0;
+    const tokensFreed = dropped.reduce((sum, m) => sum + estimateChatMessageTokens(m), 0);
+    const ctxPct = estimateCtxPct(tab, capacity) || 0;
     const summarize = tab.auto_compact_summarize !== false;
     const domain = inferCompactionDomain(tab, dropped, kept);
     const existingMemory = tombstones.length > 0;
@@ -727,10 +725,7 @@ export async function checkAutoCompact(tab) {
     let shouldCompact = false;
     if (mode === 'optimized') {
         // Compact when fewer than 25k tokens remain
-        const asstMsgs = (tab.messages || []).filter(m => m.role === 'assistant' && !m.compaction_marker);
-        const totalOutput = asstMsgs.reduce((sum, m) => sum + (m.output_tokens || 0), 0);
-        const lastInput = asstMsgs.at(-1)?.input_tokens || 0;
-        shouldCompact = capacity - (totalOutput + lastInput) < 25_000;
+        shouldCompact = capacity - (estimateChatContextTokens(tab) || 0) < 25_000;
     } else {
         const threshold = (tab.compact_threshold || 0.8) * 100;
         shouldCompact = ctxPct >= threshold;

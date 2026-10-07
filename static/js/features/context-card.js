@@ -7,6 +7,7 @@ import { setCardState, setChipState, setEmptyState } from './dashboard-render.js
 import Router from './router.js';
 import { showToastWithActions } from './toast.js';
 import { compactChatTab } from './chat-params.js';
+import { estimateChatContextPct } from './chat-state.js';
 
 const STALE_CHAT_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_VISIBLE_CHATS = 5;
@@ -54,19 +55,10 @@ function pctState(pct) {
     return 'idle';
 }
 
-// Compute ctx% for a tab from its message history.
-// Formula: (cumulative output tokens + last request's input tokens) / capacity.
-// KV cache means each request's input_tokens is incremental, not the full context.
-// All output tokens remain in the KV cache as conversation content grows.
+// Keep the underlying percentage uncapped so capacity-shrink warnings work.
+// Gauge rendering alone clamps the visual ring.
 function deriveCtxPctFromMessages(tab, capacity) {
-    if (!capacity) return null;
-    const messages = tab.messages || [];
-    const asst = messages.filter(m => m.role === 'assistant' && (m.output_tokens || m.input_tokens));
-    if (!asst.length) return null;
-    const totalOutput = asst.reduce((sum, m) => sum + (m.output_tokens || 0), 0);
-    const lastInput = asst.at(-1).input_tokens || 0;
-    const ctxTokens = totalOutput + lastInput;
-    return Math.min(100, Math.round((ctxTokens / capacity) * 100));
+    return estimateChatContextPct(tab, capacity);
 }
 
 // Backfill last_ctx_pct for tabs that don't have it persisted yet.
@@ -97,9 +89,7 @@ function deriveChatSummaries(capacity) {
             // Always re-derive from message tokens when capacity is known — using stale
             // last_ctx_pct after a model swap would show the wrong percentage (e.g. 37% of
             // 131k still showing as 37% on a 32k model where it actually represents 150%+).
-            let ctxPct = capacity > 0
-                ? deriveCtxPctFromMessages(tab, capacity)
-                : (typeof tab.last_ctx_pct === 'number' && tab.last_ctx_pct > 0 ? tab.last_ctx_pct : null);
+            let ctxPct = deriveCtxPctFromMessages(tab, capacity);
 
             return {
                 id: tab.id,
@@ -413,6 +403,7 @@ export function initContextCard() {
     initialized = true;
     const { card, gaugeToggle, fleetToggle } = ensureElements();
     gaugeToggle?.addEventListener('click', () => setViewMode('gauge', { persist: true }));
+    window.addEventListener('replyPlanChanged', updateContextCardFromChatTabs);
     fleetToggle?.addEventListener('click', () => setViewMode('fleet', { persist: true }));
     card?.addEventListener('click', event => {
         if (handleCardClick(event)) {

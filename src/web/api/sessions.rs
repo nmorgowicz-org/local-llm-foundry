@@ -1540,6 +1540,8 @@ fn api_attach(
                 if let Some(ref key) = api_key {
                     health_req = health_req.header("Authorization", format!("Bearer {}", key));
                 }
+                let mut cause = String::new();
+                let mut err_desc = String::new();
                 let server_up = match health_req.send().await {
                     Ok(resp) => match backend {
                         crate::inference::InferenceBackend::LlamaCpp => true,
@@ -1548,15 +1550,42 @@ fn api_attach(
                         }
                     },
                     Err(e) => {
-                        eprintln!("[warn] inference runtime health check failed: {}", e);
+                        // reqwest wraps the real cause (refused, timed out,
+                        // "Operation not permitted" / "No route to host" from
+                        // macOS Local Network privacy, DNS); walk the source
+                        // chain so the console shows why instead of a generic
+                        // send failure.
+                        let mut src: Option<&dyn std::error::Error> = Some(&e);
+                        while let Some(err) = src {
+                            cause.push_str(&format!(": {}", err));
+                            src = err.source();
+                        }
+                        err_desc.push_str(&format!("(error sending request){}", cause));
+                        eprintln!(
+                            "[warn] inference runtime health check failed{}",
+                            err_desc
+                        );
                         false
                     }
                 };
                 if !server_up {
+                    let hint = if cause.contains("No route to host") || cause.contains("os error 65")
+                    {
+                        // EHOSTUNREACH for a LAN address with the server
+                        // actually up is the signature of macOS Local Network
+                        // privacy silently blocking this process (localhost
+                        // is exempt, so local connects still work).
+                        " If this is a local-network address, macOS may be blocking it: System Settings → Privacy & Security → Local Network → allow this app (or relaunch it from Terminal, which usually has permission)."
+                    } else {
+                        ""
+                    };
                     return Ok::<_, warp::Rejection>(warp::reply::with_status(
                         warp::reply::json(&serde_json::json!({
                             "ok": false,
-                            "error": format!("Cannot reach the selected inference runtime at {}. Is it ready?", endpoint)
+                            "error": format!(
+                                "Cannot reach the selected inference runtime at {}. Is it ready? {}{}",
+                                endpoint, err_desc, hint
+                            )
                         })),
                         warp::http::StatusCode::OK,
                     ));

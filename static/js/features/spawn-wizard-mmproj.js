@@ -5,6 +5,7 @@
 import { wizardState, scheduleVramUpdate, _modelStemForSearch, _hfFilesPost, _deriveMmprojSaveName } from './spawn-wizard.js';
 import { formatBytes } from './spawn-wizard-format.js';
 import { showToast } from './toast.js';
+import { refreshGuidedCards } from './spawn-wizard-guided.js';
 
 // ── Hardware step: mmproj name-matching helper ────────────────────────────────
 
@@ -160,6 +161,7 @@ export function renderMmprojSection() {
       scheduleVramUpdate();
     }
   }
+  refreshGuidedCards();
 }
 
 // Search HF for the first GGUF repo that contains an mmproj file matching this model.

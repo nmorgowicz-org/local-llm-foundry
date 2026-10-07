@@ -8,6 +8,7 @@ import {
   isUnifiedMemory, guessQuantFromName,
 } from './spawn-wizard.js';
 import { updateVramDisplay } from './spawn-wizard-vram-display.js';
+import { refreshGuidedCards } from './spawn-wizard-guided.js';
 import { updateCtxQuickPickActive, showCtxFitWarning } from './spawn-wizard-context-fit.js';
 import { formatCtx } from './spawn-wizard-format.js';
 import { buildEstimateBody, rapidEstimatePolicyFromWizardHardware } from './vram-estimate.js';
@@ -182,6 +183,7 @@ export async function triggerAutoSize() {
     if (dom.fitTargetInput)   dom.fitTargetInput.value    = wizardState.hardware.fitTarget || '';
     if (r.n_cpu_moe != null && dom.nCpuMoeInput) dom.nCpuMoeInput.value = r.n_cpu_moe;
     if (r.n_cpu_moe != null && dom.moeOffloadSlider) dom.moeOffloadSlider.value = r.n_cpu_moe;
+    refreshGuidedCards();
 
     const note = `${adjusted ? 'Adjusted:' : 'Set:'} ${formatCtx(r.context_size)} ctx · ${r.kv_quant_k.toUpperCase()} KV · ubatch ${r.ubatch_size}`;
     if (dom.vramAutosizeNote) dom.vramAutosizeNote.textContent = note;

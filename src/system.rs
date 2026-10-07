@@ -185,53 +185,26 @@ pub fn get_system_metrics() -> SystemMetrics {
         #[cfg(target_os = "macos")]
         {
             if let Some(cache) = mactop_cache::get_cache() {
-                // Weighted average of cluster utilization based on core counts
-                let (p_cores, s_cores_raw, _e_cores_raw, _, _) = get_core_counts();
-                let s_cores = if s_cores_raw > 0 {
-                    s_cores_raw
-                } else {
-                    p_cores
-                };
-                let total_cores = p_cores + s_cores;
-                if total_cores > 0 {
-                    let weighted_load = (cache.p_cluster_active * p_cores as f32
-                        + cache.s_cluster_active * s_cores as f32)
-                        / total_cores as f32;
-                    let cpu_load = weighted_load as u32;
+                // Real utilization from sysinfo (average across all cores) —
+                // mactop's cluster_active is a frequency/residency ratio, not
+                // load: the S cluster reads 100% even while the machine idles.
+                let cpu_load = get_cpu_load(&sys);
 
-                    // Use P-cluster frequency as the "main" clock (it's the one doing heavy work)
-                    let cpu_clock_mhz = cache.p_cluster_freq_mhz;
-                    (
-                        cpu_load,
-                        cpu_clock_mhz,
-                        cache.power_total_w,
-                        cache.power_cpu_w,
-                        cache.power_gpu_w,
-                        cache.p_cluster_freq_mhz,
-                        cache.s_cluster_freq_mhz,
-                        cache.e_cluster_freq_mhz,
-                        cache.p_cluster_active,
-                        cache.s_cluster_active,
-                        cache.e_cluster_active,
-                    )
-                } else {
-                    // Fallback if core counts are unknown
-                    let cpu_load = get_cpu_load(&sys);
-                    let cpu_clock_mhz = get_cpu_clock(&sys);
-                    (
-                        cpu_load,
-                        cpu_clock_mhz,
-                        0.0,
-                        0.0,
-                        0.0,
-                        0,
-                        0,
-                        0,
-                        0.0,
-                        0.0,
-                        0.0,
-                    )
-                }
+                // Use P-cluster frequency as the "main" clock (it's the one doing heavy work)
+                let cpu_clock_mhz = cache.p_cluster_freq_mhz;
+                (
+                    cpu_load,
+                    cpu_clock_mhz,
+                    cache.power_total_w,
+                    cache.power_cpu_w,
+                    cache.power_gpu_w,
+                    cache.p_cluster_freq_mhz,
+                    cache.s_cluster_freq_mhz,
+                    cache.e_cluster_freq_mhz,
+                    cache.p_cluster_active,
+                    cache.s_cluster_active,
+                    cache.e_cluster_active,
+                )
             } else {
                 // Cache not yet populated — fallback to sysinfo
                 let cpu_load = get_cpu_load(&sys);

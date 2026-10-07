@@ -25,6 +25,7 @@ import { openEstimateEvidenceDrawer } from './evidence-drawer.js';
 import { showToast } from './toast.js';
 import { lastSystemMetrics } from '../core/app-state.js';
 import { renderStickyVramBar, initStickyVramBar } from './spawn-wizard-sticky-vram.js';
+import { refreshGuidedCards } from './spawn-wizard-guided.js';
 
 // Initialize sticky VRAM bar visibility
 initStickyVramBar();
@@ -73,6 +74,9 @@ function updateMlockWarning(availBytes = 0, freeBytes = null) {
 }
 
 export function updateVramDisplay() {
+  // Writers such as quick-picks/scenarios update canonical properties and
+  // hardware state directly. Mirror them even when no estimate panel exists.
+  refreshGuidedCards();
   const availVram = effectiveAvailBytes();
   if (!dom.vramPanel) return;
 

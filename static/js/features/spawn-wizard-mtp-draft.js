@@ -10,6 +10,7 @@ import {
 import { formatBytes } from './spawn-wizard-format.js';
 import { showToast } from './toast.js';
 import { openModelFileBrowser } from './file-browser-launcher.js';
+import { refreshGuidedCards } from './spawn-wizard-guided.js';
 
 // Generic draft-model matching: score candidates by shared token overlap.
 export function _bestDraftForModel(modelFilename, candidates) {
@@ -361,6 +362,11 @@ export function renderMtpSection() {
           dom.specTypeSelect.value = 'draft-mtp,ngram-mod';
           dom.specTypeSelect.dispatchEvent(new Event('change'));
         }
+        if (!checkbox.checked && dom.specTypeSelect
+          && /draft-(mtp|model)/.test(dom.specTypeSelect.value)) {
+          dom.specTypeSelect.value = '';
+          dom.specTypeSelect.dispatchEvent(new Event('change'));
+        }
 
         renderMtpSection();
         scheduleVramUpdate();
@@ -394,4 +400,5 @@ export function renderMtpSection() {
     }
   }
   if (slotsHint) slotsHint.style.display = mtpEffectivelyEnabled ? '' : 'none';
+  refreshGuidedCards();
 }

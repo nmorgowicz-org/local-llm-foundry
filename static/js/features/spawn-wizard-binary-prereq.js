@@ -3,6 +3,7 @@ import { getPlatformInfo } from '../core/platform-info.js';
 import { showToast } from './toast.js';
 import { dom, wizardState } from './spawn-wizard.js';
 import { _mtpUserConfigured } from './spawn-wizard-mtp-draft.js';
+import { refreshGuidedCards } from './spawn-wizard-guided.js';
 
 export let _binaryReady  = false;
 export let _platformInfo = null;   // cached result of /api/llama-binary/platform-info
@@ -57,6 +58,7 @@ export async function _checkBinaryPrereq() {
         mtpDepthRow.style.display = wizardState.hardware.mtpEnabled ? '' : 'none';
       }
     }
+    refreshGuidedCards();
 
     // Unified-memory Auto disables the extra host prompt-state cache. Preserve explicit
     // values, including -1 (unlimited), which remains an Advanced user choice.

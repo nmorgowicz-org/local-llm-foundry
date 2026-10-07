@@ -169,15 +169,19 @@ export function resolveAuthorRole(repoId, tags) {
 }
 
 // ── Discover categories ───────────────────────────────────────────────────────
+// Kept aligned with the current open-weight landscape: the Qwen3.6-27B,
+// Qwen3.8-27B, and Qwen3.6-35B-A3B lines (and their finetunes) dominate;
+// Gemma4 remains relevant; "uncensored"/"heretic" cover the abliterated
+// finetune scene. Stale families (Llama 3.x, Mistral, EXAONE) are gone —
+// free-text search still reaches them.
 
 export const HF_DISCOVER_CATEGORIES = [
-  { id: 'trending',  label: 'Trending',      params: { query: '',           sort: 'trending',  limit: 30 } },
-  { id: 'qwen3',     label: 'Qwen3',         params: { query: 'qwen3',      sort: 'downloads', limit: 30 } },
-  { id: 'llama3',    label: 'Llama 3.x',     params: { query: 'llama-3',    sort: 'downloads', limit: 30 } },
-  { id: 'mistral',   label: 'Mistral / MoE', params: { query: 'mistral',    sort: 'downloads', limit: 30 } },
-  { id: 'gemma',     label: 'Gemma',         params: { query: 'gemma',      sort: 'downloads', limit: 30 } },
-  { id: 'exaone',    label: 'EXAONE',        params: { query: 'exaone',     sort: 'downloads', limit: 30 } },
-  { id: 'heretic',   label: 'Heretic',       params: { query: 'heretic',    sort: 'downloads', limit: 30 } },
+  { id: 'trending',   label: 'Trending',   params: { query: '',            sort: 'trending',  limit: 30 } },
+  { id: 'qwen36',     label: 'Qwen3.6',    params: { query: 'qwen3.6',     sort: 'downloads', limit: 30 } },
+  { id: 'qwen38',     label: 'Qwen3.8',    params: { query: 'qwen3.8',     sort: 'downloads', limit: 30 } },
+  { id: 'uncensored', label: 'Uncensored', params: { query: 'uncensored',  sort: 'downloads', limit: 30 } },
+  { id: 'gemma',      label: 'Gemma',      params: { query: 'gemma',       sort: 'downloads', limit: 30 } },
+  { id: 'heretic',    label: 'Heretic',    params: { query: 'heretic',     sort: 'downloads', limit: 30 } },
 ];
 
 // ── Small utilities ───────────────────────────────────────────────────────────

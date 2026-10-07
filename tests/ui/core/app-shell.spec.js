@@ -466,12 +466,6 @@ test.describe('inference metric rendering', () => {
       renderDecodingConfig(l, true, true);
       updateRequestActivity(6686, true, 690, Date.now());
       renderActivityRail(true);
-      renderGenerationDetailItems(document.getElementById('m-generation-details'), [
-        'task 6686',
-        '700 output budget',
-        '10 output tokens remaining',
-        '1 busy · 0 idle',
-      ]);
       setChipState(document.getElementById('m-slots-state'), 'active', 'live');
       setChipState(document.getElementById('m-activity-state'), 'active', 'live');
     });
@@ -481,10 +475,12 @@ test.describe('inference metric rendering', () => {
     await expect(page.locator('#m-speculative-chip')).toContainText('Speculative · ngram_map_k · n_max 48');
     await expect(page.locator('#m-sampler-params-inline')).toContainText('top_k');
     await expect(page.locator('#m-sampler-params-inline')).toContainText('top_p');
-    await expect(page.locator('#m-activity-rail .activity-segment.active')).toBeVisible();
-    await expect(page.locator('#m-activity-rail .activity-phase.prompt')).toBeVisible();
-    await expect(page.locator('#m-activity-rail .activity-phase.generation')).toBeVisible();
-    await expect(page.locator('#m-generation-details .generation-detail-chip')).toHaveCount(4);
+    // HEAD retains these renderers inside the hidden inference-detail-grid.
+    // Assert their DOM output without reviving the excluded request/slot UI.
+    await expect(page.locator('#m-activity-rail .activity-segment.active')).toHaveCount(1);
+    await expect(page.locator('#m-activity-rail .activity-phase.prompt')).toHaveCount(1);
+    await expect(page.locator('#m-activity-rail .activity-phase.generation')).toHaveCount(1);
+    await expect(page.locator('#m-activity-rail')).toBeHidden();
   });
 
   test('request rail leaves completion markers for finished tasks', async ({ page }) => {
@@ -499,8 +495,9 @@ test.describe('inference metric rendering', () => {
       renderActivityRail(false);
     });
 
-    await expect(page.locator('#m-activity-rail .activity-segment.complete')).toBeVisible();
-    await expect(page.locator('#m-activity-rail .activity-marker')).toBeVisible();
+    await expect(page.locator('#m-activity-rail .activity-segment.complete')).toHaveCount(1);
+    await expect(page.locator('#m-activity-rail .activity-marker')).toHaveCount(1);
+    await expect(page.locator('#m-activity-rail')).toBeHidden();
   });
 
   test('smooths live output estimate across recent polling samples', async ({ page }) => {

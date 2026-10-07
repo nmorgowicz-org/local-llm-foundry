@@ -4,13 +4,15 @@
 import { chat, lastLlamaMetrics, contextCapacityTokens } from '../core/app-state.js';
 import {
     activeChatTab,
-    substituteNames,
     scheduleChatPersist,
     setChatBusyUI,
     setTransportGetter,
     getChatViewBindings,
-    getDefaultRoleBoundaryText,
     normalizeGeneratedMessageContent,
+    buildChatRequestContext,
+    chatContextFingerprint,
+    estimateChatContextTokens,
+    invalidateChatContext,
 } from './chat-state.js';
 import {
     renderChatMessages,
@@ -27,7 +29,6 @@ import {
 } from './chat-render.js';
 import { escapeHtml, formatMetricNumber } from '../core/format.js';
 import { autoResizeChatInput } from './chat-state.js';
-import { getExplicitModePolicy, resolveActiveTemplate } from './chat-templates.js';
 import { showToast, showToastWithActions } from './toast.js';
 import Router from './router.js';
 
@@ -142,15 +143,6 @@ NEWLY COMPACTED TRANSCRIPT
 ${transcript}`;
 }
 
-function buildRoleBoundaryInstruction(tab) {
-    const text = tab?.role_boundary_custom?.trim() || getDefaultRoleBoundaryText(tab);
-    return `### ROLE BOUNDARY ###\n\n${text}`;
-}
-
-function getArmedStoryBeat(tab) {
-    const beats = (tab?.armed_story_beats || []).filter(beat => beat.enabled !== false);
-    return beats.find(beat => (beat.remaining_turns || 0) === 0) || null;
-}
 
 export async function fetchSummary(messages, options = {}) {
     const {
@@ -293,7 +285,7 @@ export async function sendChatWithContent(text, options = {}) {
 
     if (typeof renderChatMessages === 'function') renderChatMessages();
 
-    _doSendChat(tab, options);
+    return _doSendChat(tab, { ...options, pendingUserMessage: userMsg });
 }
 
 // Send a message that is already in tab.messages (for resend/regenerate — no duplicate push)
@@ -349,7 +341,7 @@ export async function sendChat() {
         if (typeof chatScroll === 'function') chatScroll(true);
     });
 
-    const result = await _doSendChat(tab);
+    const result = await _doSendChat(tab, { pendingUserMessage: userMsg });
     if (result) {
         tab.composer_draft = '';
         scheduleChatPersist();
@@ -409,6 +401,7 @@ export async function regenerateQuickGuideReply(tab, msgIdx, quickGuideMeta, var
     if (!tab || !quickGuideMeta?.instruction || typeof msgIdx !== 'number' || msgIdx < 0) return null;
 
     tab.messages = tab.messages.slice(0, msgIdx);
+    invalidateChatContext(tab);
     tab.updated_at = Date.now();
     tab._pendingVariants = variants?.length ? [...variants] : null;
     renderChatMessages();
@@ -431,20 +424,23 @@ export async function regenerateQuickGuideReply(tab, msgIdx, quickGuideMeta, var
 }
 
 export async function _doSendChat(tab, options = {}) {
-    const { transientUserPrompt = null, guided = false } = options;
+    const { transientUserPrompt = null, guided = false, pendingUserMessage = null } = options;
     // Pre-send overflow guard: estimate token usage against current model capacity.
     const capacity = contextCapacityTokens || lastLlamaMetrics?.context_capacity_tokens || lastLlamaMetrics?.kv_cache_max || 0;
     if (capacity > 0) {
-        const estimatedTokens = (tab.total_input_tokens || 0) + (tab.total_output_tokens || 0);
+        const estimatedTokens = estimateChatContextTokens(tab, tab.messages, transientUserPrompt) || 0;
         if (estimatedTokens > capacity) {
             const pct = Math.round((estimatedTokens / capacity) * 100);
-            // Restore the user's message before showing the toast
-            const lastMsg = tab.messages.at(-1);
-            if (lastMsg?.role === 'user') {
+            // Restore only a newly submitted message, never an existing user
+            // turn during regenerate/resend. Preserve its draft durably.
+            if (pendingUserMessage && tab.messages.at(-1) === pendingUserMessage) {
                 tab.messages.pop();
+                tab.composer_draft = pendingUserMessage.content;
                 const input = document.getElementById('chat-input');
-                if (input) input.value = lastMsg.content;
-                if (typeof autoResizeChatInput === 'function') autoResizeChatInput();
+                if (input && tab === activeChatTab()) input.value = pendingUserMessage.content;
+                autoResizeChatInput();
+                scheduleChatPersist(tab);
+                if (tab === activeChatTab()) renderChatMessages({ skipAutoScroll: true });
             }
             chat.busy = false;
             setChatBusyUI(false);
@@ -467,87 +463,8 @@ export async function _doSendChat(tab, options = {}) {
     }
 
     const params = tab.model_params;
-    const messages = [];
-    const systemParts = [];
-    const armedBeat = getArmedStoryBeat(tab);
-    let systemPrompt = tab.system_prompt ? substituteNames(tab.system_prompt, tab.ai_name, tab.user_name, tab.ai_gender) : '';
-    if (tab.explicit_level > 0) {
-        const template = typeof resolveActiveTemplate === 'function'
-            ? resolveActiveTemplate(tab.active_template_id) : null;
-        const policies = template?.explicit_policies;
-
-        if (policies) {
-            if (tab.explicit_level >= 1 && policies.level1) {
-                systemPrompt += `\n\n${policies.level1}`;
-            }
-            if (tab.explicit_level >= 2 && policies.level2) {
-                systemPrompt += `\n\n${policies.level2}`;
-            }
-        } else {
-            const explicitPolicy = typeof getExplicitModePolicy === 'function'
-                ? getExplicitModePolicy() : '';
-            if (explicitPolicy) {
-                systemPrompt += `\n\n${explicitPolicy}`;
-            }
-        }
-    }
-    if (systemPrompt) {
-        systemParts.push(systemPrompt);
-    }
-
-    // Fold all guidance into a single leading system message. Some llama.cpp
-    // chat templates reject any non-leading or repeated system messages.
-    const contextNotes = (tab.context_notes || []).filter(note => note.content?.trim());
-    if (contextNotes.length > 0) {
-        const notesBySection = {};
-        contextNotes.forEach(note => {
-            if (!notesBySection[note.section]) {
-                notesBySection[note.section] = [];
-            }
-            notesBySection[note.section].push(note.content);
-        });
-
-        Object.entries(notesBySection).forEach(([section, contents]) => {
-            const sectionContent = contents.join('\n\n');
-            systemParts.push(`### ${section.toUpperCase()} NOTES ###\n\n${sectionContent}`);
-        });
-    }
-
-    // Inject active quick guide as persistent reply context until changed or cleared.
-    const quickGuideInstruction = tab.quick_guide_active || tab.quick_guide_pending || tab._quickGuideInstruction;
-    if (quickGuideInstruction) {
-        systemParts.push(`### QUICK GUIDE ###\n\n${quickGuideInstruction}`);
-    }
-
-    if (armedBeat?.instruction) {
-        systemParts.push(`### ARMED STORY BEAT ###\n\n${armedBeat.instruction}`);
-    }
-
-    systemParts.push(buildRoleBoundaryInstruction(tab));
-
-    const compactionMarkers = (tab.messages || []).filter(m => m.compaction_marker && m.content?.trim());
-    if (compactionMarkers.length > 0) {
-        const compactedMemory = compactionMarkers
-            .map((marker, index) => `Memory ${index + 1}:\n${marker.content.trim()}`)
-            .join('\n\n');
-        systemParts.push(`### COMPACTED MEMORY ###\n\n${compactedMemory}`);
-    }
-
-    if (systemParts.length > 0) {
-        messages.push({ role: 'system', content: systemParts.join('\n\n') });
-    }
-
-    // Strip transient/legacy system entries from chat history before sending.
-    // The active system prompt, context notes, quick guide, and compaction
-    // summaries are injected into the single leading system message above.
-    const persistentHistory = (tab.messages || []).filter(m => m.role !== 'system' && !m.compaction_marker);
-    messages.push(...persistentHistory.map(m => ({ role: m.role, content: m.content })));
-    if (transientUserPrompt) {
-        messages.push({
-            role: 'user',
-            content: transientUserPrompt,
-        });
-    }
+    const { messages, systemParts, persistentHistory, armedBeat } = buildChatRequestContext(tab, tab.messages, transientUserPrompt);
+    const requestHistoryFingerprint = chatContextFingerprint(tab);
 
     // Capture debug snapshot of the exact outbound request shape.
     const roughTokens = (str) => Math.max(1, Math.round((str || '').length / 4));
@@ -850,6 +767,11 @@ export async function _doSendChat(tab, options = {}) {
             thinking_content: thinkContent || undefined,
         };
         tab.messages.push(finalMessage);
+        // Edits/deletions can happen during streaming; usage only describes the
+        // history actually sent, never the mutated history that received it.
+        finalMessage.context_fingerprint = !transientUserPrompt && chatContextFingerprint(tab, tab.messages.slice(0, -1)) === requestHistoryFingerprint
+            ? chatContextFingerprint(tab)
+            : '';
         tab.updated_at = Date.now();
         if (armedBeat) {
             tab.armed_story_beats = (tab.armed_story_beats || []).filter(beat => beat.id !== armedBeat.id);

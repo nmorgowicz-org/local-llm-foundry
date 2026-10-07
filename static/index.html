@@ -124,10 +124,10 @@
                         <div class="agent-tooltip-details" id="agent-tooltip-details"></div>
                     </div>
                 </div>
-                <div id="engine-indicator" class="engine-indicator" style="display:none;" title="Active local engine and model">
+                <button id="engine-indicator" class="engine-indicator" type="button" style="display:none;" popovertarget="engine-model-popover" aria-label="View loaded model" data-tooltip="View loaded model">
                     <span class="engine-indicator-label"></span>
                     <span class="engine-indicator-dot"></span>
-                </div>
+                </button>
                 <button class="nav-monitoring-chip" id="nav-monitoring-chip" type="button" aria-pressed="false" title="Dashboard monitoring active — click to pause telemetry" style="display:none;">
                     <span class="status-dot ok" id="nav-monitoring-dot"></span>
                     <span id="nav-monitoring-label">Monitoring</span>
@@ -177,11 +177,9 @@
         <div class="nav-center">
             <div class="nav-cockpit" id="nav-cockpit" role="button" tabindex="0" title="Global telemetry — click to open Server">
                 <span class="metric-live-chip idle nav-cockpit-state" id="nav-cockpit-state">idle</span>
-                <span class="nav-cockpit-chip nav-cockpit-throughput" id="nav-cockpit-throughput" title="Prompt and generation throughput">P &mdash; · G &mdash;</span>
+                <span class="nav-cockpit-chip nav-cockpit-throughput" id="nav-cockpit-throughput" title="Generation and prompt throughput">G &mdash; &middot; P &mdash;</span>
                 <span class="nav-cockpit-chip nav-cockpit-spec hidden" id="nav-cockpit-spec" title="Speculative decoding efficiency — tokens accepted per decode pass"></span>
                 <span class="nav-cockpit-chip nav-cockpit-context" id="nav-cockpit-context" title="Highest chat context pressure">Ctx &mdash;</span>
-                <span class="nav-cockpit-chip nav-cockpit-gpu" id="nav-cockpit-gpu" title="Hottest GPU temperature">GPU &mdash;</span>
-                <svg class="metric-sparkline nav-cockpit-spark" id="nav-cockpit-spark" viewBox="0 0 120 28" preserveAspectRatio="none" aria-hidden="true"></svg>
             </div>
         </div>
         <div class="nav-right">
@@ -572,8 +570,9 @@
                 <div class="page active" id="page-server">
             <div class="dashboard-grid">
                 <div class="dashboard-header" id="server-header">
-                    <div>
+                    <div class="server-identity">
                         <h2>Server</h2>
+                        <div class="server-model-identity" id="server-model-identity" hidden></div>
                     </div>
                     <div class="dashboard-header-actions">
                         <label class="num-sm" id="server-endpoint-label">
@@ -775,88 +774,89 @@
                     </h2>
                     <div class="inference-log-tail" id="inference-log-tail" style="display:none;"></div>
                     <div class="inference-grid" id="inference">
-                        <!-- Throughput Card -->
-                        <div class="widget-card widget-metric widget-speed">
-                            <div class="metric-card-topline">
-                                <div class="widget-metric-label">Speed (throughput)</div>
-                                <div class="metric-live-chip" id="m-throughput-state">idle</div>
+                        <!-- Model state strip (pills + progress) -->
+                        <div class="state-card" id="state-card">
+                            <div class="state-card__head">
+                                <span class="state-card__title">Model state</span>
+                                <span class="state-pills">
+                                    <span class="state-pill" data-s="idle">Idle</span>
+                                    <span class="state-pill" data-s="reading">Reading</span>
+                                    <span class="state-pill" data-s="generating">Generating</span>
+                                    <span class="state-pill" data-s="queued">Queued</span>
+                                    <span class="state-pill" data-s="error">Error</span>
+                                </span>
                             </div>
-                            <div class="inference-empty-state visible" id="m-throughput-empty">Attach an endpoint to begin telemetry</div>
-                            <div class="speed-item">
-                                <span class="speed-peak-badge" id="m-prompt-max" title="Peak seen"></span>
-                                <div class="speed-header">
-                                    <span class="speed-label">prompt</span>
-                                    <span class="speed-value-wrap">
-                                        <span class="speed-value" id="m-prompt">&mdash;</span>
-                                        <span class="metric-delta" id="m-prompt-delta"></span>
-                                    </span>
-                                </div>
-                                <div class="speed-bar-bg">
-                                    <div class="speed-bar prompt-bar" id="m-prompt-bar"></div>
-                                </div>
-                            </div>
-                            <div class="speed-item">
-                                <span class="speed-peak-badge" id="m-gen-max" title="Peak seen"></span>
-                                <div class="speed-header">
-                                    <span class="speed-label">generation</span>
-                                    <span class="speed-value-wrap">
-                                        <span class="speed-value" id="m-gen">&mdash;</span>
-                                        <span class="metric-delta" id="m-gen-delta"></span>
-                                    </span>
-                                </div>
-                                <div class="speed-bar-bg">
-                                    <div class="speed-bar gen-bar" id="m-gen-bar"></div>
-                                </div>
-                            </div>
-                            <div class="sparkline-pair">
-                                <svg class="metric-sparkline" id="m-prompt-spark" viewBox="0 0 120 28" preserveAspectRatio="none" aria-hidden="true"></svg>
-                                <svg class="metric-sparkline" id="m-gen-spark" viewBox="0 0 120 28" preserveAspectRatio="none" aria-hidden="true"></svg>
-                            </div>
-                            <div class="throughput-ratio">
-                                <div class="ratio-label">Prompt/Gen ratio</div>
-                                <div class="ratio-bar-bg">
-                                    <div class="ratio-bar" id="m-throughput-ratio-bar"></div>
-                                </div>
-                                <div class="ratio-value" id="m-throughput-ratio">&mdash;</div>
-                            </div>
-                            <div class="metric-footnote" id="m-throughput-age">&mdash;</div>
+                            <div class="state-card__row"><span id="state-label">Waiting for a request</span><span class="state-detail" id="state-detail"></span></div>
+                            <div class="state-progress" id="state-progress"><div class="state-progress__bar" id="state-bar" style="width:0%"></div></div>
                         </div>
-
-                        <!-- Generation Card -->
-                        <div class="widget-card widget-metric widget-generation">
-                            <div class="metric-card-topline">
-                                <div class="widget-metric-label">Generation details</div>
-                                <div class="metric-live-chip" id="m-generation-state">idle</div>
-                            </div>
-                            <div class="inference-empty-state visible" id="m-generation-empty">Waiting for the next completion</div>
-                            <div class="generation-stage" id="m-generation-stage" title="Inferred from slot activity and output token changes.">
-                                <span class="stage-segment" id="m-stage-prompt">Prompt ingest</span>
-                                <span class="stage-segment" id="m-stage-output">Output generation</span>
-                            </div>
-                            <div class="generation-layout">
-                                <div class="generation-ring" id="m-generation-ring" style="--progress: 0;">
-                                    <div class="generation-ring-core">
-                                        <div class="generation-main" id="m-generation-main">&mdash;</div>
-                                        <div class="generation-sub" id="m-generation-sub">output budget</div>
-                                    </div>
+                        <!-- Registry-driven metric cards (built by metric-cards.js) -->
+                        <div class="metrics-grid" id="metrics-grid">
+                            <article class="mcard llama-runtime-card" id="llama-runtime-card" aria-labelledby="llama-runtime-heading" hidden>
+                                <div class="llama-runtime-head">
+                                    <h4 class="mcard__label" id="llama-runtime-heading">Runtime</h4>
+                                    <button type="button" class="llama-runtime-details-button" id="llama-runtime-details-button" popovertarget="llama-runtime-popover" aria-label="View full runtime details">Details</button>
                                 </div>
-                                <div class="generation-live-panel">
-                                    <div class="velocity-row">
-                                        <span>Live generation estimate</span>
-                                        <strong id="m-live-velocity">&mdash;</strong>
-                                    </div>
-                                    <svg class="metric-sparkline live-output-sparkline" id="m-live-output-spark" viewBox="0 0 120 28" preserveAspectRatio="xMidYMid slice" aria-hidden="true"></svg>
-                                    <div class="token-flow" id="m-token-flow" aria-hidden="true">
-                                        <span></span><span></span><span></span><span></span><span></span>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="generation-details" id="m-generation-details">&mdash;</div>
-                            <div class="recent-task-strip" id="m-recent-task" style="display:none;"></div>
+                                <div class="llama-runtime-model" id="llama-runtime-model"></div>
+                                <div class="llama-runtime-meta" id="llama-runtime-meta"></div>
+                                <div class="llama-runtime-badges" id="llama-runtime-badges"></div>
+                            </article>
                         </div>
-
-                        <!-- Context Card -->
-                        <div class="widget-card widget-metric widget-context">
+                        <section class="llama-runtime-popover" id="llama-runtime-popover" popover aria-labelledby="llama-runtime-popover-heading">
+                            <div class="llama-runtime-head">
+                                <h3 id="llama-runtime-popover-heading">Runtime details</h3>
+                                <button type="button" class="llama-runtime-details-button" popovertarget="llama-runtime-popover" popovertargetaction="hide" aria-label="Close runtime details">Close</button>
+                            </div>
+                            <dl class="llama-runtime-facts" id="llama-runtime-facts"></dl>
+                        </section>
+                        <section class="inference-efficiency" id="inference-efficiency" aria-labelledby="efficiency-heading" hidden>
+                            <h3 class="dashboard-section-title" id="efficiency-heading">Inference efficiency</h3>
+                            <div class="efficiency-grid" id="efficiency-grid">
+                                <article class="mcard efficiency-card" id="prompt-cache-reuse" aria-labelledby="cache-reuse-heading" hidden>
+                                    <div class="efficiency-card__head">
+                                        <h4 class="mcard__label" id="cache-reuse-heading">Prompt cache reuse</h4>
+                                        <span class="efficiency-scope">Server totals</span>
+                                    </div>
+                                    <div class="efficiency-card__body">
+                                        <div class="efficiency-readout">
+                                            <span class="mcard__value" id="cache-reuse-value">&mdash;</span>
+                                            <span class="efficiency-status" id="cache-reuse-status"></span>
+                                        </div>
+                                        <div class="efficiency-breakdown">
+                                            <div class="efficiency-bar" id="cache-reuse-bar" role="progressbar" aria-label="Cached share of prompt tokens" aria-valuemin="0" aria-valuemax="100">
+                                                <div class="efficiency-bar__fill" id="cache-reuse-fill"></div>
+                                            </div>
+                                            <div class="efficiency-counts">
+                                                <span id="cache-reuse-cached"></span>
+                                                <span id="cache-reuse-processed"></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </article>
+                                <article class="mcard efficiency-card" id="speculative-effectiveness" aria-labelledby="spec-effectiveness-heading" hidden>
+                                    <div class="efficiency-card__head">
+                                        <h4 class="mcard__label" id="spec-effectiveness-heading">Speculative effectiveness</h4>
+                                        <span class="efficiency-scope">Server totals</span>
+                                    </div>
+                                    <div class="efficiency-card__body">
+                                        <div class="efficiency-readout" id="spec-acceptance-metric">
+                                            <span class="mcard__value" id="spec-acceptance-value">&mdash;</span>
+                                            <span class="efficiency-status">Draft acceptance</span>
+                                        </div>
+                                        <div class="efficiency-readout" id="spec-verification-metric">
+                                            <span class="mcard__value" id="spec-tokens-per-verification">&mdash;</span>
+                                            <span class="efficiency-status">Tokens / verification</span>
+                                        </div>
+                                    </div>
+                                    <div class="efficiency-bar efficiency-bar--acceptance" id="spec-acceptance-bar" role="progressbar" aria-label="Accepted share of drafted tokens" aria-valuemin="0" aria-valuemax="100" hidden>
+                                        <div class="efficiency-bar__fill" id="spec-acceptance-fill"></div>
+                                    </div>
+                                    <div class="efficiency-status" id="spec-effectiveness-status"></div>
+                                    <div class="efficiency-counts" id="spec-effectiveness-counts"></div>
+                                    <p class="efficiency-note">Not a speedup measurement</p>
+                                </article>
+                            </div>
+                        </section>
+                        <div class="widget-card widget-metric widget-context" style="display:none;">
                             <div class="metric-card-topline">
                                 <div class="context-topline-main">
                                     <div class="widget-metric-label">Chat context & memory</div>
@@ -903,7 +903,7 @@
                             </div>
                         </div>
                     </div>
-                    <div class="inference-detail-grid">
+                    <div class="inference-detail-grid" style="display:none;">
                         <div class="widget-card inference-mini-panel">
                             <div class="metric-card-topline">
                                 <div class="widget-metric-label" title="Slots are parallel conversation sessions.">Active sessions</div>
@@ -956,144 +956,6 @@
                     </div>
                 </section>
 
-                <section class="metric-section" id="gpu-section" style="display:none;">
-                    <h2 class="dashboard-section-title" title="Graphics/memory usage for model acceleration.">GPUs</h2>
-                    <div class="widget-card widget-hardware widget-gpu" id="gpu-card">
-                        <div class="metric-card-topline">
-                            <div class="widget-metric-label" title="Graphics/memory usage for model acceleration.">GPU</div>
-                            <span class="hw-device-name" id="gpu-device-name"></span>
-                            <div class="hw-topline-right">
-                                <div class="hw-temp-gauge" id="gpu-temp-gauge" style="--pct:0;--gauge-color:#8fbcbb;">
-                                    <span class="hw-temp-value" id="gpu-temp-value"></span>
-                                </div>
-                                <div class="metric-live-chip" id="gpu-state">idle</div>
-                                <button class="viz-gear-btn" id="viz-gear-gpu" title="Customize visualization">⚙</button>
-                            </div>
-                        </div>
-                        <div class="inference-empty-state visible" id="gpu-empty">GPU metrics appear after attach</div>
-                        <div class="hw-metric-row">
-                            <div class="hw-metric-block" id="gpu-load-block">
-                                <div class="hw-metric-label">Load</div>
-                                <div class="hw-metric-viz" id="gpu-load-viz"></div>
-                                <svg class="hw-metric-sparkline" id="gpu-load-spark" viewBox="0 0 120 28" preserveAspectRatio="xMidYMid slice" aria-hidden="true"></svg>
-                                <div class="hw-metric-value" id="gpu-load-value">&mdash;</div>
-                            </div>
-                            <div class="hw-metric-block" id="gpu-power-block">
-                                <div class="hw-metric-label">Power</div>
-                                <div class="hw-metric-viz" id="gpu-power-viz"></div>
-                                <svg class="hw-metric-sparkline" id="gpu-power-spark" viewBox="0 0 120 28" preserveAspectRatio="xMidYMid slice" aria-hidden="true"></svg>
-                                <div class="hw-metric-value" id="gpu-power-value">&mdash;</div>
-                            </div>
-                            <div class="hw-metric-block" id="gpu-vram-block">
-                                <div class="hw-metric-label">VRAM</div>
-                                <div class="hw-metric-viz" id="gpu-vram-viz"></div>
-                                <svg class="hw-metric-sparkline" id="gpu-vram-spark" viewBox="0 0 120 28" preserveAspectRatio="xMidYMid slice" aria-hidden="true"></svg>
-                                <div class="hw-metric-value" id="gpu-vram-value">&mdash;</div>
-                            </div>
-                            <div class="hw-metric-block" id="gpu-clocks-block">
-                                <div class="hw-metric-label">Clocks</div>
-                                <div class="hw-metric-viz" id="gpu-clocks-viz"></div>
-                                <div class="hw-metric-value" id="gpu-clocks-value">&mdash;</div>
-                            </div>
-                        </div>
-                    </div>
-                </section>
-
-                <section class="metric-section" id="system-section" style="display:none;">
-                    <h2 class="dashboard-section-title">System</h2>
-                    <div class="widget-card widget-hardware widget-system" id="system-card">
-                        <div class="metric-card-topline">
-                            <div class="widget-metric-label">SYSTEM</div>
-                            <span class="hw-device-name" id="sys-device-name"></span>
-                            <div class="hw-topline-right">
-                                <div class="hw-temp-gauge" id="sys-temp-gauge" style="--pct:0;--gauge-color:#8fbcbb;">
-                                    <span class="hw-temp-value" id="sys-temp-value"></span>
-                                </div>
-                                <div class="hw-temp-unavailable-badge" id="sys-temp-unavailable-badge" style="display:none;" title="">
-                                    <span class="hw-temp-badge-icon">⚠</span>
-                                    <span class="hw-temp-badge-text"></span>
-                                </div>
-                                <div id="sensor-bridge-setup-callout" style="display:none; margin-top:6px; padding:8px 10px; background:#3b4252; border-radius:6px; border-left:3px solid #ebcb8b; font-size:12px; color:#d8dee9;">
-                                  CPU temperature requires a one-time service install.
-                                  <button id="btn-sensor-bridge-setup" style="margin-left:8px; padding:3px 10px; background:#5e81ac; border:none; border-radius:4px; color:#eceff4; cursor:pointer; font-size:12px;">Setup</button>
-                                </div>
-                                <div class="metric-live-chip" id="sys-state">idle</div>
-                                <button class="viz-gear-btn" id="viz-gear-system" title="Customize visualization">⚙</button>
-                            </div>
-                        </div>
-                        <div class="inference-empty-state visible" id="sys-empty">System metrics appear after attach</div>
-                        <div class="hw-metric-row">
-                            <div class="hw-metric-block" id="sys-load-block">
-                                <div class="hw-metric-label">CPU Load</div>
-                                <div class="hw-metric-viz" id="sys-load-viz"></div>
-                                <svg class="hw-metric-sparkline" id="sys-load-spark" viewBox="0 0 120 28" preserveAspectRatio="xMidYMid slice" aria-hidden="true"></svg>
-                                <div class="hw-metric-value" id="sys-load-value">&mdash;</div>
-                            </div>
-                            <div class="hw-metric-block" id="sys-ram-block">
-                                <div class="hw-metric-label">RAM</div>
-                                <div class="hw-metric-viz" id="sys-ram-viz"></div>
-                                <svg class="hw-metric-sparkline" id="sys-ram-spark" viewBox="0 0 120 28" preserveAspectRatio="xMidYMid slice" aria-hidden="true"></svg>
-                                <div class="hw-metric-value" id="sys-ram-value">&mdash;</div>
-                            </div>
-                            <div class="hw-metric-block" id="sys-pressure-block" style="display:none;">
-                                <div class="hw-metric-label">Memory Pressure</div>
-                                <svg class="hw-metric-sparkline" id="sys-pressure-spark" viewBox="0 0 120 28" preserveAspectRatio="xMidYMid slice" aria-hidden="true"></svg>
-                                <div class="mem-pressure-breakdown" id="sys-pressure-breakdown">
-                                    <div class="mem-pressure-row"><span class="mem-pressure-key">Free</span><span class="mem-pressure-val" id="sys-pressure-free">&mdash;</span></div>
-                                    <div class="mem-pressure-row"><span class="mem-pressure-key">Wired</span><span class="mem-pressure-val" id="sys-pressure-wired">&mdash;</span></div>
-                                    <div class="mem-pressure-row"><span class="mem-pressure-key">Compressed</span><span class="mem-pressure-val" id="sys-pressure-compressed">&mdash;</span></div>
-                                    <div class="mem-pressure-row"><span class="mem-pressure-key">Purgeable</span><span class="mem-pressure-val" id="sys-pressure-purgeable">&mdash;</span></div>
-                                    <div class="mem-pressure-row"><span class="mem-pressure-key">Inactive</span><span class="mem-pressure-val" id="sys-pressure-inactive">&mdash;</span></div>
-                                </div>
-                                <button class="mem-pressure-purge-btn" id="sys-pressure-purge-btn" type="button" title="Runs 'purge' via macOS admin dialog to reclaim inactive memory">
-                                    <span id="sys-pressure-purge-label">Free Memory</span>
-                                </button>
-                                <div class="mem-pressure-purge-status" id="sys-pressure-purge-status" style="display:none;"></div>
-                            </div>
-                            <div class="hw-metric-block" id="sys-clock-block">
-                                <div class="hw-metric-label">Clock</div>
-                                <div class="hw-metric-viz" id="sys-clock-viz"></div>
-                                <div class="hw-metric-value" id="sys-clock-value">&mdash;</div>
-                            </div>
-                            <div class="hw-metric-block" id="sys-power-block" style="display:none;">
-                                <div class="hw-metric-label">SoC Power</div>
-                                <div class="hw-metric-viz" id="sys-power-viz"></div>
-                                <svg class="hw-metric-sparkline" id="sys-power-spark" viewBox="0 0 120 28" preserveAspectRatio="xMidYMid slice" aria-hidden="true"></svg>
-                                <div class="hw-metric-value" id="sys-power-value">&mdash;</div>
-                            </div>
-                          <div class="hw-metric-block hw-clusters-block" id="sys-clusters-block" style="display:none;">
-                                 <div class="hw-metric-label">CPU Clusters</div>
-
-                                 <div class="hw-cluster-row" id="sys-cluster-p-row">
-                                     <div class="hw-cluster-meta">
-                                         <div class="hw-cluster-name" id="sys-cluster-p-name" title="Performance (Super) cores — highest clock speed. Handle GPU command dispatch and CPU-side sampling during inference. High utilization here is normal and expected while a model is running.">P-Cores</div>
-                                         <div class="hw-cluster-value" id="sys-cluster-p-value">&mdash;</div>
-                                     </div>
-                                     <div class="hw-cluster-bar" id="sys-cluster-p-bar"></div>
-                                     <svg class="hw-cluster-sparkline" id="sys-cluster-p-spark" viewBox="0 0 120 20" preserveAspectRatio="xMidYMid slice" aria-hidden="true"></svg>
-                                 </div>
-
-                                 <div class="hw-cluster-row" id="sys-cluster-s-row" style="display:none;">
-                                     <div class="hw-cluster-meta">
-                                         <div class="hw-cluster-name" id="sys-cluster-s-name" title="Secondary Performance cores — lower clock than P-cores but still high-power. Handle prefill batching and parallel thread workloads. High utilization during heavy batch processing is expected.">S-Cores</div>
-                                         <div class="hw-cluster-value" id="sys-cluster-s-value">&mdash;</div>
-                                     </div>
-                                     <div class="hw-cluster-bar" id="sys-cluster-s-bar"></div>
-                                     <svg class="hw-cluster-sparkline" id="sys-cluster-s-spark" viewBox="0 0 120 20" preserveAspectRatio="xMidYMid slice" aria-hidden="true"></svg>
-                                 </div>
-
-                                 <div class="hw-cluster-row" id="sys-cluster-e-row">
-                                     <div class="hw-cluster-meta">
-                                         <div class="hw-cluster-name" id="sys-cluster-e-name" title="Efficiency cores — optimized for low power, handle background OS tasks and browser activity. Should stay low during inference; high E-core utilization suggests other apps competing for CPU time.">E-Cores</div>
-                                         <div class="hw-cluster-value" id="sys-cluster-e-value">&mdash;</div>
-                                     </div>
-                                     <div class="hw-cluster-bar" id="sys-cluster-e-bar"></div>
-                                     <svg class="hw-cluster-sparkline" id="sys-cluster-e-spark" viewBox="0 0 120 20" preserveAspectRatio="xMidYMid slice" aria-hidden="true"></svg>
-                                 </div>
-                             </div>
-                        </div>
-                    </div>
-                </section>
 
                 <!-- GPU Visualization Switcher -->
                 <div class="viz-switcher" id="gpu-viz-switcher" style="display:none;">
@@ -3141,8 +3003,8 @@
                              </div>
                              <div class="pe-row">
                                  <div class="pe-field">
-                                     <label class="pe-label" for="modal-reasoning-budget" title="Maximum number of tokens the model can use for its reasoning steps before answering. Higher = more thorough thinking but slower. Default: 8192.">Reasoning Budget</label>
-                                     <input type="number" class="pe-input" id="modal-reasoning-budget" step="1" placeholder="8192">
+                                     <label class="pe-label" for="modal-reasoning-budget" title="Maximum number of tokens the model can use for its reasoning steps before answering. Higher = more thorough thinking but slower. Default: 16384.">Reasoning Budget</label>
+                                     <input type="number" class="pe-input" id="modal-reasoning-budget" step="1" placeholder="16384">
                                  </div>
                                   <div class="pe-field">
                                   <label class="pe-label" for="modal-reasoning-budget-message" title="Text that appears after the reasoning block and before the final answer. Use \n for a newline. Example: \nFinal Answer:">Reasoning Budget Message</label>
@@ -4535,7 +4397,7 @@
                             <div id="hw-tags-pills" style="display:contents;"></div>
                             <button type="button" id="hw-tags-add-btn" class="btn-wizard-tertiary" style="font-size:10px;min-height:22px;padding:2px 8px;flex-shrink:0;" title="Add or remove tags for this model in your library">+</button>
                         </div>
-                        <div class="hw-quant-row" id="hw-mmproj-row" style="display:none; align-items:center; gap:6px;">
+                        <div class="hw-quant-row" id="hw-mmproj-row" data-guided-duplicate style="display:none; align-items:center; gap:6px;">
                             <label for="hw-mmproj-select" class="hw-quant-label" title="Adds ~0.5–1.5 GB VRAM. Required for multimodal inference;">Vision (mmproj)</label>
                             <select id="hw-mmproj-select" class="hw-quant-select" style="flex:1 1 auto;" title="Vision projector file. Choose (none) for text-only inference."></select>
                             <button type="button" id="hw-mmproj-browse-btn" class="btn-wizard-tertiary" style="flex-shrink:0; font-size:10px; min-height:22px; padding:2px 7px;" title="Browse for an mmproj / projector file on this machine">Browse…</button>
@@ -4573,7 +4435,7 @@
                             <div class="field-hint" id="spawn-gpu-layers-manual-hint" style="display:none;"></div>
                         </div>
                         <!-- Context size spans 5 subgrid rows in col 2 (label, input, hint, quick-picks, padding) -->
-                        <div class="hardware-field hardware-field-ctx">
+                        <div class="hardware-field hardware-field-ctx" data-guided-duplicate>
                             <div class="ctx-label-row">
                                 <label for="spawn-context-size">Context size</label>
                                 <span id="ctx-model-max-hint" class="ctx-model-max-hint" style="display:none;" title="Maximum context this model was trained on — going beyond this degrades quality"></span>
@@ -4593,7 +4455,7 @@
                         <!-- KV unified: explicit col 1, rows 4–6 — fills dead space beside context quick-picks.
                              display:flex overrides hardware-field's subgrid so label/select/hint stack tightly
                              instead of aligning to row heights set by the tall ctx-quick-picks on the right. -->
-                        <div class="hardware-field" style="grid-column:1; grid-row:4/span 3; display:flex; flex-direction:column; gap:6px;">
+                        <div class="hardware-field" data-guided-duplicate style="grid-column:1; grid-row:4/span 3; display:flex; flex-direction:column; gap:6px;">
                             <label for="spawn-kv-unified" title="Share a single KV cache pool across all parallel slots. Saves memory when running multiple slots; may reduce throughput.">KV unified</label>
                             <select id="spawn-kv-unified" title="Share a single KV cache pool across all parallel slots. Saves memory when running multiple slots; may reduce throughput.">
                                 <option value="">Default</option>
@@ -4607,7 +4469,7 @@
                     <!-- KV cache precision — always-open decision card (plan §3): unlike the
                          Advanced-tuning accordion below, this stays visible at every tier since
                          it is one of the four Option-A decisions, not a rarely-touched tuning knob. -->
-                    <div class="mlx-native-group">
+                    <div class="mlx-native-group" data-guided-duplicate>
                         <div class="mlx-native-group-header">
                             <h4 class="mlx-native-group-title">KV cache precision</h4>
                             <p class="mlx-native-group-description">Memory vs. quality for stored past tokens. q8_0 is recommended for most models.</p>
@@ -4634,7 +4496,7 @@
 
                     <!-- MTP section (shown for models with MTP heads) -->
                     <!-- Speculative decoding / speed-boost — always-open decision card (plan §3). -->
-                    <div class="hw-mtp-section mlx-native-group" id="hw-mtp-section" style="display:none;">
+                    <div class="hw-mtp-section mlx-native-group" id="hw-mtp-section" data-guided-duplicate style="display:none;">
                         <div class="mlx-native-group-header">
                             <h4 class="mlx-native-group-title">Speed boost (speculative decoding) <span class="info-tip" title="MTP heads predict several tokens ahead in one forward pass, then verify them together. This can give 1.4–2× faster generation with no quality loss. Enabled by default. Benchmark enabled versus disabled on your hardware; some backends can run slower.">i</span></h4>
                             <p class="mlx-native-group-description">Try to speed up replies by guessing next tokens before the model computes them.</p>
@@ -4728,7 +4590,7 @@
                              <div class="hw-decision-tiles hw-ctx-tiles" id="hw-ctx-tiles">
                                  <button type="button" class="hw-decision-tile" data-ctx="32768" title="32k — focused work">32k <span class="hw-tile-tag">Focused</span></button>
                                  <button type="button" class="hw-decision-tile" data-ctx="65536" title="65k — Roleplay / RP">65k <span class="hw-tile-tag">RP</span></button>
-                                 <button type="button" class="hw-decision-tile hw-decision-tile-active" data-ctx="131072" title="131k — Agentic work">131k <span class="hw-tile-tag">Agent</span></button>
+                                 <button type="button" class="hw-decision-tile" data-ctx="131072" title="131k — Agentic work">131k <span class="hw-tile-tag">Agent</span></button>
                                  <button type="button" class="hw-decision-tile" data-ctx="163840" title="160k — large context">160k <span class="hw-tile-tag">Large</span></button>
                                  <button type="button" class="hw-decision-tile" data-ctx="200000" title="200k — very large context">200k <span class="hw-tile-tag">Large</span></button>
                                  <button type="button" class="hw-decision-tile hw-ctx-tile-model-max" data-ctx="262144" title="262k — model training limit">262k <span class="hw-tile-tag">Max</span></button>
@@ -4771,10 +4633,10 @@
                          <div class="hw-decision-card-desc">Multimodal projector (mmproj). Required for vision models.</div>
                          <div class="hw-decision-card-content">
                          <label for="hw-vision-select" class="hw-decision-custom-label">Vision projector file</label>
-                         <select id="hw-vision-select">
+                         <select id="hw-vision-select" class="hw-quant-select">
                                  <option value="" selected>( none — text only )</option>
                              </select>
-                             <button type="button" id="hw-vision-browse-btn" class="hw-decision-browse-btn">Browse…</button>
+                             <button type="button" id="hw-vision-browse-btn" class="btn-wizard-tertiary">Browse…</button>
                          </div>
                      </div>
 
@@ -5197,14 +5059,16 @@
                         </div>
                     </div>
 
-                    <!-- Merged from former Review/Summary step -->
-                    <div>
+                    <!-- Merged from former Review/Summary step; Guided hides it
+                         (All settings drawer + the step-3 review cover it) -->
+                    <div data-guided-duplicate>
                         <div class="wizard-section-title">Review your configuration</div>
                         <div class="wizard-section-desc">
                             Adjust sampling defaults, then confirm settings before spawning.
                         </div>
                     </div>
 
+                    <div id="spawn-sampling-block">
                     <!-- Sampling defaults (pre-populated by use-case; user can adjust) -->
                     <div class="sampling-params-section">
                         <div class="hw-section-divider">Sampling defaults</div>
@@ -5285,8 +5149,8 @@
                              </div>
                              <div class="sampling-field">
                                  <label for="spawn-reasoning-budget" title="Maximum tokens the model can spend on its reasoning steps before answering. Higher = more thorough thinking but slower. -1 = unlimited, 0 = disabled.">Budget (tokens)</label>
-                                 <input type="number" id="spawn-reasoning-budget" min="-1" step="1" placeholder="8192">
-                                 <div class="field-hint">Max tokens spent on chain-of-thought before the answer. -1 = unlimited, 0 = off. 4096–8192 typical.</div>
+                                 <input type="number" id="spawn-reasoning-budget" min="-1" step="1" placeholder="16384">
+                                 <div class="field-hint">Max tokens spent on chain-of-thought before the answer. -1 = unlimited, 0 = off. 8192–16384 typical.</div>
                              </div>
                              <div class="sampling-field">
                                    <label for="spawn-reasoning-budget-message" title="Text that appears after the reasoning block and before the final answer. Use \n for a newline before the answer. Example: \nFinal Answer:">Budget message</label>
@@ -5371,6 +5235,7 @@
                             <input type="text" id="spawn-extra-args" placeholder="e.g. --log-verbosity 2 --no-perf">
                         </div>
                         <div class="field-hint" style="margin-top:4px;">Passed directly to the inference server after all other flags. Use this for any option the wizard doesn't expose.</div>
+                    </div>
                     </div>
 
                     <div class="summary-list" id="spawn-summary-list"></div>
@@ -7924,5 +7789,12 @@
         </div>
     </div>
 </div>
+<section id="engine-model-popover" class="engine-model-popover" popover aria-labelledby="engine-model-heading">
+    <div class="engine-model-header">
+        <h2 id="engine-model-heading">Loaded model</h2>
+        <button type="button" popovertarget="engine-model-popover" popovertargetaction="hide" aria-label="Close loaded model details">Close</button>
+    </div>
+    <dl id="engine-model-facts"></dl>
+</section>
 </body>
 </html>

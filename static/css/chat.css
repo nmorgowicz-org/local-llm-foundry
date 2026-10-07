@@ -4837,7 +4837,9 @@
 }
 .chat-behavior-panel.open,
 .chat-params-panel.open {
-  max-height: 800px;
+  /* Large enough for the Advanced section (threshold slider + hint) to fit
+     without the bottom being cut off; the chat column scrolls instead. */
+  max-height: 2200px;
   overflow-y: auto;
   opacity: 1;
   padding: var(--gap-sm) var(--gap-md);

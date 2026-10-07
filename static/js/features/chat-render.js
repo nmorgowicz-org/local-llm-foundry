@@ -16,6 +16,8 @@ import {
   renameChatTab,
   normalizeTabForSave,
   togglePinTab,
+  estimateChatContextPct,
+  invalidateChatContext,
 } from './chat-state.js';
 import { showToast, showToastWithActions, showConfirmDialog } from './toast.js';
 import './chat-templates.js';
@@ -745,10 +747,11 @@ function buildMessageElement(msg, idx, allMessages) {
     let metaHtml = '';
     if (!isUser) {
         const parts = [];
-        if (msg.input_tokens > 0) parts.push(`↓${formatTokenCount(msg.input_tokens)}`);
         if (msg.output_tokens > 0) parts.push(`↑${formatTokenCount(msg.output_tokens)}`);
+        if (msg.input_tokens > 0) parts.push(`↓${formatTokenCount(msg.input_tokens)}`);
         let cumInput = 0, cumOutput = 0;
-        for (let i = 0; i <= idx; i++) {
+        const historyIndex = allMessages.indexOf(msg);
+        for (let i = 0; i <= historyIndex; i++) {
             const m = allMessages[i];
             if (m.role === 'assistant') {
                 cumInput += m.input_tokens || 0;
@@ -758,10 +761,7 @@ function buildMessageElement(msg, idx, allMessages) {
         const cumTotal = cumInput + cumOutput;
         if (cumTotal > 0) parts.push(`R${formatTokenCount(cumTotal)}`);
         const capacity = contextCapacityTokens || lastLlamaMetrics?.context_capacity_tokens || lastLlamaMetrics?.kv_cache_max || 0;
-        // ctx% = (cumulative output tokens up to this message + this message's input) / capacity.
-        // KV cache means input_tokens is incremental; output tokens accumulate as the actual context content.
-        const ctxTokens = cumOutput + (msg.input_tokens || 0);
-        const ctxPct = capacity > 0 && ctxTokens > 0 ? Math.min(100, Math.round((ctxTokens / capacity) * 100)) : 0;
+        const ctxPct = Math.round(estimateChatContextPct(tab, capacity, allMessages.slice(0, historyIndex + 1)) || 0);
         if (ctxPct > 0) parts.push(`${ctxPct}% ctx · ${formatTokenCount(capacity)}`);
         const modelName = msg.model_name || lastLlamaMetrics?.model_name || '';
         if (modelName) parts.push(modelName);
@@ -1048,10 +1048,7 @@ export function finalizeAssistantMessage(el, content, usage, tab) {
         const totalOutput = tab ? (tab.total_output_tokens || 0) : out;
         const total = totalInput + totalOutput;
         const capacity = contextCapacityTokens || lastLlamaMetrics?.context_capacity_tokens || lastLlamaMetrics?.kv_cache_max || 0;
-        // ctx% = (cumulative input + cumulative output) / capacity.
-        // total_input_tokens and total_output_tokens are running tab-level sums updated each turn.
-        const ctxTokens = total;
-        const ctxPct = capacity > 0 && ctxTokens > 0 ? Math.min(100, Math.round((ctxTokens / capacity) * 100)) : 0;
+        const ctxPct = Math.round(estimateChatContextPct(tab, capacity) || 0);
 
         if (tab) tab.last_ctx_pct = ctxPct;
 
@@ -1120,6 +1117,7 @@ function navigateVariant(btn, direction) {
 
         // Truncate to include the user message, remove all subsequent
         tab.messages = tab.messages.slice(0, userMsgIdx + 1);
+        invalidateChatContext(tab);
         tab.updated_at = Date.now();
 
         tab._pendingVariants = newVariants;
@@ -1134,6 +1132,7 @@ function navigateVariant(btn, direction) {
 
     msg._variantIndex = Math.max(0, Math.min(variants.length - 1, curIdx + direction));
     msg.content = msg._variants[msg._variantIndex];
+    invalidateChatContext(tab);
     tab.updated_at = Date.now();
 
     renderChatMessages();
@@ -1158,6 +1157,7 @@ function regenerateFromMessage(btn) {
 
     // Truncate to include the user message, remove all subsequent
     tab.messages = tab.messages.slice(0, userMsgIdx + 1);
+    invalidateChatContext(tab);
     tab.updated_at = Date.now();
     tab._pendingVariants = variants;
     scheduleChatPersist();
@@ -1213,6 +1213,7 @@ function resendMessageEdit(btn) {
 
     // Truncate to include the user message, remove all subsequent messages
     tab.messages = tab.messages.slice(0, msgIdx + 1);
+    invalidateChatContext(tab);
     scheduleChatPersist();
 
     // Use sendChatResend — the user message is already in tab.messages
@@ -1233,6 +1234,7 @@ function saveMessageEdit(btn) {
     const newContent = textarea.value.trim();
     if (newContent !== msg.content) {
         msg.content = newContent;
+        invalidateChatContext(tab);
         tab.updated_at = Date.now();
         scheduleChatPersist();
     }
@@ -1241,6 +1243,7 @@ function saveMessageEdit(btn) {
     setHtml(body, typeof renderMd === 'function' ? renderMd(msg.content) : escapeHtml(msg.content));
     if (msg.role === 'assistant') colorizeRpText(body);
     body.classList.add('chat-msg-body-rendered');
+    if (!chat.busy) renderChatMessages({ skipAutoScroll: true });
 }
 
 function cancelMessageEdit(btn) {
@@ -1269,6 +1272,7 @@ function deleteMessage(btn) {
     ).then((ok) => {
         if (!ok) return;
         tab.messages.splice(msgIdx, 1);
+        invalidateChatContext(tab);
         tab.updated_at = Date.now();
         scheduleChatPersist();
         // Do not re-render if AI is busy (would wipe streaming message from DOM)
@@ -1305,6 +1309,7 @@ function retrySend(btn) {
     const msgIdx = parseInt(msgEl.dataset.msgIdx);
     if (!isNaN(msgIdx)) {
         tab.messages = tab.messages.slice(0, msgIdx + 1);
+        invalidateChatContext(tab);
         tab.updated_at = Date.now();
         scheduleChatPersist();
     }

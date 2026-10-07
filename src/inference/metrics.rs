@@ -95,6 +95,36 @@ pub struct InferenceMetricsSnapshot {
 }
 
 impl InferenceMetricsSnapshot {
+    /// Start a poll with unavailable values rather than fabricating zero activity.
+    pub fn empty(backend: InferenceBackend) -> Self {
+        Self {
+            sampled_at: SystemTime::now(),
+            backend,
+            health: None,
+            ready: None,
+            model: None,
+            uptime_seconds: None,
+            generation_tokens_per_second: None,
+            prompt_tokens_per_second: None,
+            running_requests: None,
+            waiting_requests: None,
+            completed_requests_total: None,
+            prompt_tokens_total: None,
+            completion_tokens_total: None,
+            steps_executed: None,
+            global_cache_hit_rate: None,
+            global_cache_entries: None,
+            ttft: None,
+            speculative_acceptance_rate: None,
+            active_memory_bytes: None,
+            peak_memory_bytes: None,
+            cache_memory_bytes: None,
+            cache_metrics: None,
+            active_requests: None,
+            backend_details: None,
+        }
+    }
+
     /// A stable, privacy-safe dictionary for dashboard and API consumers.
     /// Only aggregate counters and rates are included; request ids, model
     /// names, and opaque backend payloads are deliberately excluded.

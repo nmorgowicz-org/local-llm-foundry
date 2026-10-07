@@ -29,7 +29,7 @@ import { configureMlxWizardIA, applyMlxTierVisibility } from './spawn-wizard-mlx
 import { configureLlamaWizardIA, applyLlamaTierVisibility } from './spawn-wizard-llama-ia.js';
 import { controlsForLoader, controlsForView, applyEffectiveLocks } from './spawn-wizard-groups.js';
 import { createSettingStateRegistry } from './spawn-wizard-setting-state.js';
-import { initGuidedCards, refreshGuidedCapabilityCards } from './spawn-wizard-guided.js';
+import { initGuidedCards, refreshGuidedCards, refreshGuidedCapabilityCards } from './spawn-wizard-guided.js';
 import {
   _platformInfo,
   setWizardPlatformInfo,
@@ -199,7 +199,7 @@ const PRO_CATEGORIES = [
 const PRO_WRAPPER_IDS = ['spawn-advanced-fields', 'spawn-rapid-advanced-fields'];
 const PRO_RELOCATED_SELECTORS = [
   '#hw-decision-ctx', '#hw-decision-kv', '#hw-decision-vision', '#hw-decision-speed',
-  '#wizard-step-1 > .wizard-main > .sampling-params-section',
+  '#spawn-sampling-block',
 ];
 const PRO_RELOCATED_FIELD_IDS = ['hw-quant-select', 'spawn-kv-unified', 'hw-mtp-depth'];
 const PRO_SHARED_ACCESS_FIELD_IDS = ['spawn-port', 'spawn-bind-host', 'spawn-alias', 'spawn-api-key'];
@@ -275,7 +275,9 @@ function _renderRapidProNotes(host, loader) {
 }
 
 function _restoreProSurfaces() {
-  for (const [node, position] of proOriginalPositions) {
+  // Restore successors first so a remembered next sibling has already
+  // returned to its parent, preserving row order through backend roundtrips.
+  for (const [node, position] of [...proOriginalPositions].reverse()) {
     if (!position.parent) continue;
     if (position.next?.parentNode === position.parent) position.parent.insertBefore(node, position.next);
     else position.parent.appendChild(node);
@@ -375,6 +377,11 @@ function renderProLayout(mode = wizardState.viewMode) {
   if (!layout || !host || !drawerGroup) return;
   _initProShell();
   const isPro = mode === 'pro';
+  // Guided shows the decision cards only; the legacy fields they duplicate
+  // are hidden via CSS while this class is present.
+  document.body.classList.toggle('wizard-guided', !isPro);
+  // The entire sampling wrapper moves as one canonical surface. Restoring
+  // individual sections would strand their shared generation/network controls.
   const loader = wizardState.engine.selected || 'llama_cpp';
   const guidedSurface = document.querySelector('.hw-guided-old-layout');
   const stickyBar = document.getElementById('hw-sticky-bar');
@@ -391,6 +398,11 @@ function renderProLayout(mode = wizardState.viewMode) {
     guidedSurface.style.display = 'block';
     _restoreProSurfaces();
   }
+  const samplingBlock = document.getElementById('spawn-sampling-block');
+  if (samplingBlock && (!isPro || loader !== 'llama_cpp')) {
+    drawerGroup.appendChild(samplingBlock);
+  }
+  if (samplingBlock) samplingBlock.style.display = isPro && loader === 'rapid_mlx' ? 'none' : '';
   layout.style.display = isPro ? '' : 'none';
   document.querySelectorAll('#hw-decision-ctx, #hw-decision-kv, #hw-decision-vision, #hw-decision-speed')
     .forEach(card => { card.style.display = isPro ? 'none' : ''; });
@@ -413,12 +425,6 @@ function renderProLayout(mode = wizardState.viewMode) {
 
   if (isPro) {
     _moveProSurfaces(host, loader);
-    if (loader === 'rapid_mlx') {
-      document.querySelectorAll('#wizard-step-1 > .wizard-main > .sampling-params-section').forEach(section => {
-        _rememberProPosition(section);
-        section.style.display = 'none';
-      });
-    }
     _renderRapidProNotes(host, loader);
     host.querySelectorAll('.hw-decision-card').forEach(card => { card.style.display = ''; });
     // Pro is the explicit power-user view: every canonical category is
@@ -433,6 +439,7 @@ function renderProLayout(mode = wizardState.viewMode) {
     applyEffectiveLocks(host);
     _refreshProControls();
   }
+  refreshGuidedCards();
 }
 
 // ── View mode toggle ────────────────────────────────────────────────────────
@@ -682,7 +689,7 @@ export const wizardState = {
     minP: null,
     repeatPenalty: null,
     presencePenalty: null,
-    maxTokens: null,
+    maxTokens: 32768,             // hard cap per request; blank = unlimited
     seed: null,
     outputMode: '',
     enableThinking: null,
@@ -1135,7 +1142,7 @@ function resetWizardState() {
  wizardState.hardware.repeatPenalty = null;
  wizardState.hardware.repeatLastN = null;
   wizardState.hardware.presencePenalty = null;
-  wizardState.hardware.maxTokens = null;
+  wizardState.hardware.maxTokens = 32768;
   wizardState.hardware.seed = null;
   wizardState.hardware.mtpEnabled = false;
   wizardState.hardware.mtpDraftNMax = null;
@@ -2197,6 +2204,7 @@ function applyUseCaseKvDtype(useCase) {
   wizardState.hardware.cacheTypeV = dtype;
   if (dom.cacheTypeKSelect) dom.cacheTypeKSelect.value = dtype;
   if (dom.cacheTypeVSelect) dom.cacheTypeVSelect.value = dtype;
+  refreshGuidedCards();
 }
 
 // Provenance chips (M3-B): small pill next to KV labels showing where the value came from.
@@ -2543,6 +2551,10 @@ export function showStep(index) {
       if (dom.contextSizeInput && wizardState.hardware.contextSize > 0) {
         dom.contextSizeInput.value = wizardState.hardware.contextSize;
       }
+    // Preset and pending-restore hardware values are written before entering
+    // this step. Replay them into the canonical selects, including on re-entry.
+    if (dom.cacheTypeKSelect && wizardState.hardware.cacheTypeK) dom.cacheTypeKSelect.value = wizardState.hardware.cacheTypeK;
+    if (dom.cacheTypeVSelect && wizardState.hardware.cacheTypeV) dom.cacheTypeVSelect.value = wizardState.hardware.cacheTypeV;
       if (dom.loadModeSelect) dom.loadModeSelect.value = wizardState.hardware.loadMode || 'mmap';
       if (dom.verbosityInput) dom.verbosityInput.value = String(wizardState.hardware.verbosity ?? 4);
       if (dom.ctxCheckpointsInput) dom.ctxCheckpointsInput.value = wizardState.hardware.ctxCheckpoints ?? '';
@@ -2632,6 +2644,7 @@ export function showStep(index) {
   }
 
   refreshStepGuardrails();
+  refreshGuidedCards();
 }
 
 // ── KV cache options from llama-server capabilities ──────────────────────────
@@ -2686,6 +2699,7 @@ function _populateKvCacheOptions() {
 
   fillSelect(kSelect);
   fillSelect(vSelect);
+  refreshGuidedCards();
 }
 
 function _capabilityAvailable(state) {

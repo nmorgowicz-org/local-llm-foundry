@@ -9,7 +9,8 @@ use super::super::common::{
     ApiCtx, ApiError, ApiRoute, box_reply, check_api_token, unauthorized_api_token,
 };
 use super::super::upstream::{
-    build_upstream_client, prepare_inference_request, send_upstream_request_with_retry,
+    build_upstream_client, prepare_inference_request, send_helper_request_with_retry,
+    upstream_body_stream,
 };
 use super::suggestions::SuggestionContextMessage;
 
@@ -134,11 +135,10 @@ fn api_analyze_context_notes(
                 )?;
                 let url = prepared.url.clone();
 
-                let response = send_upstream_request_with_retry(|| {
+                let response = send_helper_request_with_retry(|| {
                     prepared.authenticate(
                         client
                             .post(&url)
-                            .timeout(std::time::Duration::from_secs(60))
                             .header("Content-Type", "application/json")
                             .body(payload.clone()),
                     )
@@ -146,12 +146,12 @@ fn api_analyze_context_notes(
                 .await?;
 
                 use futures_util::StreamExt;
-                let mut upstream = response.bytes_stream();
+                let mut upstream = upstream_body_stream(response);
                 let mut buf = String::new();
                 let mut content = String::new();
 
                 while let Some(chunk) = upstream.next().await {
-                    let chunk = chunk.map_err(|e| warp::reject::custom(ApiError::from_reqwest(e)))?;
+                    let chunk = chunk.map_err(warp::reject::custom)?;
                     buf.push_str(&String::from_utf8_lossy(&chunk));
 
                     while let Some(pos) = buf.find('\n') {

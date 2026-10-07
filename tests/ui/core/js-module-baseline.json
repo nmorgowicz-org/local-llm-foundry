@@ -1,4 +1,4 @@
 {
-  "count": 99,
+  "count": 100,
   "note": "Update with: cd tests/ui && npm run update-baseline"
 }

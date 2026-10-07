@@ -108,6 +108,8 @@ Rapid wizard stills belong in `artifacts/wizard-rapidmlx`; llama.cpp wizard stil
 | `settings` | Settings modal, performance tab, advanced tab, user preferences, persona, models, shortcuts |
 | `panels` | Behavior, model, style, and prompt-debug surfaces |
 | `dashboard` | Server tab and GPU section |
+| `dashboard-rapid-mlx` | Deterministic Rapid-MLX telemetry cards rendered by production frontend modules |
+| `dashboard-llama-cpp-efficiency` | Deterministic llama.cpp server totals and hardware-grid Runtime card; dark/light, 430px reduced-motion, zero activity, and cache-only states; no model attachment |
 | `sparkline` | Sparkline validation stills and clipped metric captures |
 | `gifs` | Animated inference and GPU/system captures |
 | `smoke` | Startup smoke validation |
@@ -147,6 +149,9 @@ SCREENSHOT_PORT=8896 node tests/ui/capture/index.mjs --scenario panels
 # Server tab and GPU section
 SCREENSHOT_PORT=8897 node tests/ui/capture/index.mjs --scenario dashboard
 
+# Deterministic llama.cpp efficiency and runtime facts (no live model required)
+SCREENSHOT_PORT=8903 node tests/ui/capture/index.mjs --scenario dashboard-llama-cpp-efficiency --no-attach
+
 # Sparkline validation
 SCREENSHOT_PORT=8898 node tests/ui/capture/index.mjs --scenario sparkline
 
@@ -183,6 +188,7 @@ The harness now writes its outputs to `docs/screenshots/artifacts/`. Promote sel
 When you change dashboard / metrics / server tab visuals, use this subset instead of the full suite:
 
 - `dashboard` — primary Server tab + GPU section (produces `dashboard-performance-section.png`, `settings-server-tab.png`, `dashboard-gpu-section.png`)
+- `dashboard-llama-cpp-efficiency` — mocked llama.cpp efficiency and hardware-grid Runtime card through `renderLlamaCppDetails`, with coherent hardware/speed fixtures through the shared metric-card module. A held WebSocket installed before navigation prevents live telemetry from overwriting the fixture. No attachment or inference request is made, even without `--no-attach`.
 - `gifs` — animated metric graphs
   - `--gpu-only` — only GPU/system metrics GIF
   - `--inference-only` — only inference metrics GIF
@@ -190,6 +196,27 @@ When you change dashboard / metrics / server tab visuals, use this subset instea
 - `benchmark-results` — benchmark results view
 - `llama-updater` — updater pill + version modal
 - `appearance-palette` — includes light-mode dashboard screenshot
+
+### Deterministic llama.cpp efficiency captures
+
+`dashboard-llama-cpp-efficiency` is registered in category `features` with runtime tag `llamacpp-local`. Its receipt records these exact files under `docs/screenshots/artifacts/features/`:
+
+- `dashboard-llama-cpp-efficiency--llamacpp-local--dark-overview.png`
+- `dashboard-llama-cpp-efficiency--llamacpp-local--dark-runtime-card.png`
+- `dashboard-llama-cpp-efficiency--llamacpp-local--runtime-details.png`
+- `dashboard-llama-cpp-efficiency--llamacpp-local--model-badge.png`
+- `dashboard-llama-cpp-efficiency--llamacpp-local--loaded-model.png`
+- `dashboard-llama-cpp-efficiency--llamacpp-local--compact-cockpit.png`
+- `dashboard-llama-cpp-efficiency--llamacpp-local--narrow-cockpit.png`
+- `dashboard-llama-cpp-efficiency--llamacpp-local--light-runtime-card.png`
+- `dashboard-llama-cpp-efficiency--llamacpp-local--narrow-runtime-reduced-motion.png`
+- `dashboard-llama-cpp-efficiency--llamacpp-local--narrow-efficiency-reduced-motion.png`
+- `dashboard-llama-cpp-efficiency--llamacpp-local--awaiting-activity.png`
+- `dashboard-llama-cpp-efficiency--llamacpp-local--cache-only.png`
+
+Primary desktop stills crop the real Server layout from the header through efficiency, including the shared performance cards. The 430px reduced-motion stills crop runtime details and efficiency separately rather than creating an oversized full-page image. The scenario asserts the fixture's cache reuse, draft acceptance, tokens-per-verification yield, runtime facts, and missing/zero/disabled visibility semantics. It contains no draft-position chart and does not validate live inference, attachment, or metadata-cache timing.
+
+Run captures sequentially, not in parallel with other scenarios. Rebuild the release binary after frontend changes so its embedded assets include the actual renderer. The runtime tag describes the mocked UI, not evidence of a running llama.cpp model.
 
 ## Updating the harness
 

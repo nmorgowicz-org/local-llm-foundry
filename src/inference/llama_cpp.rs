@@ -13,7 +13,9 @@ use crate::inference::capabilities::CapabilitySet;
 use crate::inference::llama_cpp_capabilities::CapabilitySnapshot;
 use crate::inference::metrics::{HealthState, InferenceMetricsSnapshot};
 use crate::inference::supervisor::SupervisedLaunch;
-use crate::llama::metrics::{parse_prometheus_metrics, parse_slot_metrics};
+use crate::llama::metrics::{
+    LlamaRuntimeAdapter, LlamaRuntimeFacts, parse_prometheus_metrics, parse_slot_metrics,
+};
 
 fn describe_process_status(status: std::process::ExitStatus) -> String {
     if let Some(code) = status.code() {
@@ -510,6 +512,250 @@ pub struct CounterSnapshot {
     predicted_seconds_total: f64,
 }
 
+/// Endpoint-scoped optional metadata. Deliberately not Debug: the key contains auth.
+#[derive(Clone, Default)]
+pub struct LlamaRuntimeCache {
+    target: Option<(String, Option<String>, String)>,
+    last_attempt: Option<Instant>,
+    facts: Option<LlamaRuntimeFacts>,
+    speculative_enabled: Option<bool>,
+    model_ctx_train: Option<u64>,
+}
+
+pub(crate) fn same_api_key(left: Option<&str>, right: Option<&str>) -> bool {
+    use subtle::ConstantTimeEq;
+    match (left, right) {
+        (Some(left), Some(right)) => bool::from(left.as_bytes().ct_eq(right.as_bytes())),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// Comparable source identity without exposing URL credentials, queries, or fragments.
+pub(crate) fn telemetry_endpoint_tag(base: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let canonical = match url::Url::parse(base) {
+        Ok(mut url) => {
+            if url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none()
+            {
+                // Preserve the existing comparison for plain endpoints.
+                return base.trim_end_matches('/').into();
+            }
+            // Strip only path slashes: a trailing slash in a query value is data.
+            let path = url.path().trim_end_matches('/').to_owned();
+            url.set_path(if path.is_empty() { "/" } else { &path });
+            url.to_string()
+        }
+        Err(_) => base.to_owned(),
+    };
+    // Hash the whole canonical URL so changes to credentials or server identity
+    // cannot collapse into a shared redaction marker. This is not an auth token.
+    let digest: String = Sha256::digest(canonical.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("sha256:{digest}")
+}
+
+impl LlamaRuntimeCache {
+    pub fn select_target(&mut self, base: &str, api_key: Option<&str>, session_id: &str) -> bool {
+        let base = base.trim_end_matches('/');
+        let unchanged = self
+            .target
+            .as_ref()
+            .is_some_and(|(old_base, old_key, old_session)| {
+                old_base == base
+                    && old_session == session_id
+                    && same_api_key(old_key.as_deref(), api_key)
+            });
+        if unchanged {
+            return false;
+        }
+        *self = Self {
+            target: Some((base.into(), api_key.map(str::to_owned), session_id.into())),
+            ..Default::default()
+        };
+        true
+    }
+
+    fn refresh_due(&self, now: Instant) -> bool {
+        self.last_attempt
+            .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(60))
+    }
+
+    async fn refresh(&mut self, client: &Client, base: &str, api_key: Option<&str>) {
+        let now = Instant::now();
+        if !self.refresh_due(now) {
+            return;
+        }
+        // Failed/unsupported endpoints are throttled too. Expire facts rather than
+        // holding an old attached model indefinitely after a runtime reload.
+        self.last_attempt = Some(now);
+        let (props, models) = tokio::join!(
+            optional_runtime_json(client, base, "/props", api_key),
+            optional_runtime_json(client, base, "/v1/models", api_key),
+        );
+        self.speculative_enabled = props.as_ref().and_then(props_speculative_enabled);
+        self.model_ctx_train = models
+            .as_ref()
+            .and_then(|v| v.pointer("/data/0/meta/n_ctx_train"))
+            .and_then(|v| v.as_u64());
+        self.facts = parse_runtime_facts(props.as_ref(), models.as_ref());
+        // GET /lora-adapters uses the server task queue. Only probe an explicitly
+        // awake llama.cpp server; do not wake sleeping servers for optional facts.
+        if props
+            .as_ref()
+            .and_then(|v| v.get("is_sleeping"))
+            .and_then(|v| v.as_bool())
+            == Some(false)
+            && let Some(adapters) =
+                optional_runtime_json(client, base, "/lora-adapters", api_key).await
+            && let Some(adapters) = parse_runtime_adapters(&adapters)
+        {
+            self.facts.get_or_insert_with(Default::default).adapters = Some(adapters);
+        }
+    }
+}
+
+async fn optional_runtime_json(
+    client: &Client,
+    base: &str,
+    path: &str,
+    api_key: Option<&str>,
+) -> Option<serde_json::Value> {
+    // Bound the whole exchange, including body decoding. Never log upstream
+    // bodies, URLs, or credentials from these optional endpoints.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let mut request = client.get(format!("{}{path}", base.trim_end_matches('/')));
+        if let Some(key) = api_key {
+            request = request.bearer_auth(key);
+        }
+        const MAX_RUNTIME_BYTES: usize = 1024 * 1024;
+        let mut response = request.send().await.ok()?.error_for_status().ok()?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_RUNTIME_BYTES as u64)
+        {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.ok()? {
+            if chunk.len() > MAX_RUNTIME_BYTES.saturating_sub(bytes.len()) {
+                return None;
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn display_basename(value: &serde_json::Value) -> Option<String> {
+    let value = value.as_str()?.trim();
+    let name = value.rsplit(['/', '\\']).next()?;
+    (!name.is_empty() && name != "." && name != ".." && !name.chars().any(char::is_control))
+        .then(|| name.to_owned())
+}
+
+fn fact_string(value: Option<&serde_json::Value>) -> Option<String> {
+    let value = value?.as_str()?.trim();
+    (!value.is_empty() && !value.contains(['/', '\\']) && !value.chars().any(char::is_control))
+        .then(|| value.to_owned())
+}
+
+fn parse_runtime_facts(
+    props: Option<&serde_json::Value>,
+    models: Option<&serde_json::Value>,
+) -> Option<LlamaRuntimeFacts> {
+    let model = models.and_then(|v| v.pointer("/data/0"));
+    let mut facts = LlamaRuntimeFacts {
+        model_name: props
+            .and_then(|v| v.get("model_path"))
+            .and_then(display_basename),
+        model_alias: props
+            .and_then(|v| v.get("model_alias"))
+            .and_then(display_basename)
+            .or_else(|| model.and_then(|v| v.get("id")).and_then(display_basename)),
+        quantization: fact_string(props.and_then(|v| v.get("model_ftype")))
+            .or_else(|| fact_string(model.and_then(|v| v.pointer("/meta/ftype")))),
+        model_params: model
+            .and_then(|v| v.pointer("/meta/n_params"))
+            .and_then(|v| v.as_u64())
+            .or_else(|| {
+                props
+                    .and_then(|v| v.get("n_params"))
+                    .and_then(|v| v.as_u64())
+            }),
+        server_build: fact_string(props.and_then(|v| v.get("build_info"))),
+        ..Default::default()
+    };
+    // Only explicit booleans under named capability containers. No inference
+    // from local binary capabilities, templates, launch args, or file names.
+    for (container, names) in [
+        ("modalities", &["vision", "video", "audio"][..]),
+        (
+            "chat_template_caps",
+            &[
+                "supports_string_content",
+                "supports_typed_content",
+                "supports_tools",
+                "supports_tool_calls",
+                "supports_parallel_tool_calls",
+                "supports_system_role",
+                "supports_preserve_reasoning",
+                "supports_reasoning_effort",
+                "supports_object_arguments",
+            ][..],
+        ),
+    ] {
+        for name in names {
+            if let Some(value) = props
+                .and_then(|v| v.get(container))
+                .and_then(|v| v.get(*name))
+                .and_then(|v| v.as_bool())
+            {
+                facts.capabilities.insert((*name).into(), value);
+            }
+        }
+    }
+    (facts != LlamaRuntimeFacts::default()).then_some(facts)
+}
+
+fn props_speculative_enabled(props: &serde_json::Value) -> Option<bool> {
+    let params = props.pointer("/default_generation_settings/params")?;
+    crate::llama::metrics::speculative_config_enabled(params)
+}
+
+fn parse_runtime_adapters(value: &serde_json::Value) -> Option<Vec<LlamaRuntimeAdapter>> {
+    Some(
+        value
+            .as_array()?
+            .iter()
+            .take(64)
+            .filter_map(|value| {
+                let adapter = LlamaRuntimeAdapter {
+                    id: value.get("id").and_then(|v| v.as_u64()),
+                    name: value
+                        .get("name")
+                        .or_else(|| value.get("path"))
+                        .and_then(display_basename),
+                    scale: value
+                        .get("scale")
+                        .and_then(|v| v.as_f64())
+                        .filter(|v| v.is_finite()),
+                };
+                (adapter != LlamaRuntimeAdapter::default()).then_some(adapter)
+            })
+            .collect(),
+    )
+}
+
 fn counter_rate(
     current_tokens: f64,
     previous_tokens: f64,
@@ -533,6 +779,7 @@ pub struct LlamaCppAdapter {
     capabilities: Option<CapabilitySnapshot>,
     previous_counters: Mutex<Option<CounterSnapshot>>,
     previous_counter_session: Mutex<Option<String>>,
+    runtime_cache: tokio::sync::Mutex<LlamaRuntimeCache>,
 }
 
 #[allow(dead_code)]
@@ -554,6 +801,7 @@ impl LlamaCppAdapter {
             capabilities,
             previous_counters: Mutex::new(None),
             previous_counter_session: Mutex::new(None),
+            runtime_cache: tokio::sync::Mutex::new(LlamaRuntimeCache::default()),
         }
     }
 
@@ -1195,6 +1443,7 @@ impl LlamaCppAdapter {
         base: &str,
         session_id: &str,
     ) -> Result<InferenceMetricsSnapshot> {
+        let mut runtime_cache = self.runtime_cache.lock().await;
         let mut previous_counters = self.previous_counters.lock().unwrap().clone();
         let mut previous_counter_session = self.previous_counter_session.lock().unwrap().clone();
         let result = poll_llama_cpp_metrics(
@@ -1203,6 +1452,7 @@ impl LlamaCppAdapter {
             session_id,
             &mut previous_counters,
             &mut previous_counter_session,
+            &mut runtime_cache,
         )
         .await;
         *self.previous_counters.lock().unwrap() = previous_counters;
@@ -1250,7 +1500,14 @@ pub async fn poll_llama_cpp_metrics(
     session_id: &str,
     previous_counters: &mut Option<CounterSnapshot>,
     previous_counter_session: &mut Option<String>,
+    runtime_cache: &mut LlamaRuntimeCache,
 ) -> Result<InferenceMetricsSnapshot> {
+    let endpoint_tag = telemetry_endpoint_tag(base);
+    let base = base.trim_end_matches('/');
+    if runtime_cache.select_target(base, api_key, session_id) {
+        *previous_counters = None;
+        *previous_counter_session = None;
+    }
     {
         let client = Client::builder()
             .timeout(Duration::from_secs(5))
@@ -1258,32 +1515,7 @@ pub async fn poll_llama_cpp_metrics(
             .pool_idle_timeout(Duration::from_secs(0))
             .build()?;
 
-        let mut snapshot = InferenceMetricsSnapshot {
-            sampled_at: std::time::SystemTime::now(),
-            backend: InferenceBackend::LlamaCpp,
-            health: None,
-            ready: None,
-            model: None,
-            uptime_seconds: None,
-            generation_tokens_per_second: None,
-            prompt_tokens_per_second: None,
-            running_requests: None,
-            waiting_requests: None,
-            completed_requests_total: None,
-            prompt_tokens_total: None,
-            completion_tokens_total: None,
-            steps_executed: None,
-            global_cache_hit_rate: None,
-            global_cache_entries: None,
-            ttft: None,
-            speculative_acceptance_rate: None,
-            active_memory_bytes: None,
-            peak_memory_bytes: None,
-            cache_memory_bytes: None,
-            cache_metrics: None,
-            active_requests: None,
-            backend_details: None,
-        };
+        let mut snapshot = InferenceMetricsSnapshot::empty(InferenceBackend::LlamaCpp);
 
         // Health check
         let health_req = if let Some(key) = api_key {
@@ -1310,6 +1542,7 @@ pub async fn poll_llama_cpp_metrics(
         // Prometheus metrics
         let mut tokens_per_decode = 0.0;
         let mut n_busy_slots_per_decode = 0.0;
+        let mut details = serde_json::Map::new();
         let metrics_req = if let Some(key) = api_key {
             client
                 .get(format!("{base}/metrics"))
@@ -1319,19 +1552,28 @@ pub async fn poll_llama_cpp_metrics(
         };
 
         if let Ok(resp) = metrics_req.send().await
+            && resp.status().is_success()
             && let Ok(body) = resp.text().await
         {
             let prom = parse_prometheus_metrics(&body);
-            snapshot.prompt_tokens_total = Some(prom.prompt_tokens_total as u64);
+            snapshot.prompt_tokens_total = prom.prompt_tokens_processed_total.map(|v| v as u64);
             snapshot.completion_tokens_total = Some(prom.predicted_tokens_total as u64);
             snapshot.running_requests = Some(prom.requests_processing as u64);
             snapshot.steps_executed = Some(prom.n_decode_total as u64);
             tokens_per_decode = prom.tokens_per_decode;
             n_busy_slots_per_decode = prom.n_busy_slots_per_decode;
-            snapshot.speculative_acceptance_rate = (prom.speculative_draft_tokens_total > 0.0)
-                .then(|| {
-                    prom.speculative_accepted_tokens_total / prom.speculative_draft_tokens_total
-                });
+            snapshot.speculative_acceptance_rate = prom
+                .speculative_accepted_tokens_total
+                .zip(prom.speculative_draft_tokens_total)
+                .filter(|(_, drafted)| *drafted > 0)
+                .map(|(accepted, drafted)| accepted as f64 / drafted as f64);
+            details.extend(serde_json::json!({
+                "prompt_tokens_processed_total": prom.prompt_tokens_processed_total,
+                "prompt_tokens_cached_total": prom.prompt_tokens_cached_total,
+                "speculative_draft_tokens_total": prom.speculative_draft_tokens_total,
+                "speculative_accepted_tokens_total": prom.speculative_accepted_tokens_total,
+                "speculative_verification_steps_total": prom.speculative_verification_steps_total,
+            }).as_object().unwrap().clone());
 
             let current_counters = CounterSnapshot {
                 prompt_tokens_total: prom.prompt_tokens_total,
@@ -1381,10 +1623,11 @@ pub async fn poll_llama_cpp_metrics(
         };
 
         if let Ok(resp) = slots_req.send().await
+            && resp.status().is_success()
             && let Ok(body) = resp.text().await
             && let Some(slots) = parse_slot_metrics(&body)
         {
-            snapshot.backend_details = Some(serde_json::json!({
+            let slot_details = serde_json::json!({
                 "slots_idle": slots.slots_idle,
                 "slots_processing": slots.slots_processing,
                 "kv_cache_max": slots.kv_cache_max,
@@ -1398,29 +1641,58 @@ pub async fn poll_llama_cpp_metrics(
                 "slot_generation_limit": slots.slot_generation_limit,
                 "slot_generation_active": slots.slot_generation_active,
                 "slot_generation_available": slots.slot_generation_available,
+                "slot_prompt_processed": slots.slot_prompt_processed,
+                "slot_prompt_total": slots.slot_prompt_total,
+                "slot_prompt_progress": slots.slot_prompt_progress,
                 "slots": slots.slots,
+                "speculative_enabled": slots.speculative_enabled,
                 "tokens_per_decode": tokens_per_decode,
                 "n_busy_slots_per_decode": n_busy_slots_per_decode,
                 "speculative_acceptance_rate": snapshot.speculative_acceptance_rate,
-            }));
+            });
+            details.extend(slot_details.as_object().unwrap().clone());
         }
 
-        // Models metadata
-        let models_req = if let Some(key) = api_key {
-            client
-                .get(format!("{base}/v1/models"))
-                .header("Authorization", format!("Bearer {}", key))
-        } else {
-            client.get(format!("{base}/v1/models"))
-        };
-
-        if let Ok(resp) = models_req.send().await
-            && let Ok(body) = resp.text().await
-            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&body)
-            && let Some(model) = json["data"][0].get("id").and_then(|v| v.as_str())
-        {
-            snapshot.model = Some(model.to_string());
-        }
+        runtime_cache.refresh(&client, base, api_key).await;
+        snapshot.model = runtime_cache.facts.as_ref().and_then(|facts| {
+            facts
+                .model_alias
+                .clone()
+                .or_else(|| facts.model_name.clone())
+        });
+        // /slots gives per-request config; /props is the runtime default fallback
+        // when slots are unavailable, not evidence inferred from old counters.
+        let speculative_enabled = details
+            .get("speculative_enabled")
+            .and_then(|v| v.as_bool())
+            .or(runtime_cache.speculative_enabled);
+        details.insert(
+            "speculative_enabled".into(),
+            serde_json::json!(speculative_enabled),
+        );
+        details.insert(
+            "runtime_facts".into(),
+            serde_json::json!(runtime_cache.facts),
+        );
+        details.insert(
+            "model_ctx_train".into(),
+            serde_json::json!(runtime_cache.model_ctx_train),
+        );
+        details.insert(
+            "tokens_per_decode".into(),
+            serde_json::json!(tokens_per_decode),
+        );
+        details.insert(
+            "n_busy_slots_per_decode".into(),
+            serde_json::json!(n_busy_slots_per_decode),
+        );
+        details.insert(
+            "speculative_acceptance_rate".into(),
+            serde_json::json!(snapshot.speculative_acceptance_rate),
+        );
+        details.insert("telemetry_session_id".into(), serde_json::json!(session_id));
+        details.insert("telemetry_endpoint".into(), serde_json::json!(endpoint_tag));
+        snapshot.backend_details = Some(serde_json::Value::Object(details));
 
         Ok(snapshot)
     }
@@ -1430,6 +1702,478 @@ pub async fn poll_llama_cpp_metrics(
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn telemetry_endpoint_tags_are_opaque_and_deterministic_for_sensitive_urls() {
+        for (endpoint, expected) in [
+            (
+                "http://user:password@host:8001",
+                "sha256:5060e47947dfab9807e4d705486d2967db47b6e3deb62061de46c2e58dc85526",
+            ),
+            (
+                "http://host:8001/proxy/?api_key=secret",
+                "sha256:caf0000ec0b93a2616855d1a63581960d2ccda36947d2fb2274f7f95a27b8052",
+            ),
+            (
+                "http://host:8001#secret",
+                "sha256:9093850d104d22ed397428f769c3802d7f82bde0c5004f3bab85a542a3789156",
+            ),
+            (
+                "not a URL password",
+                "sha256:ee685e3de5b0999f52cde3c28bb6d11472a826493dc9effd0958ada0cec67419",
+            ),
+        ] {
+            for _ in 0..2 {
+                let tag = telemetry_endpoint_tag(endpoint);
+                assert_eq!(tag, expected);
+                assert!(!tag.contains("secret"));
+                assert!(!tag.contains("password"));
+                assert!(!tag.contains("user"));
+            }
+        }
+    }
+
+    #[test]
+    fn telemetry_endpoint_tags_normalize_path_slashes_not_query_value_slashes() {
+        for endpoint in [
+            "http://host:8001/proxy?api_key=secret",
+            "http://host:8001/proxy/?api_key=secret",
+            "http://host:8001/proxy///?api_key=secret",
+        ] {
+            assert_eq!(
+                telemetry_endpoint_tag(endpoint),
+                "sha256:caf0000ec0b93a2616855d1a63581960d2ccda36947d2fb2274f7f95a27b8052"
+            );
+        }
+        assert_eq!(
+            telemetry_endpoint_tag("http://host:8001/proxy/?api_key=secret/"),
+            "sha256:54f24c7817c6ebaa5e4aaf5e8f16739b783fe8424fd76fff522e1dacf98c607a"
+        );
+        for endpoint in [
+            "http://host:8001",
+            "http://host:8001/",
+            "http://host:8001///",
+        ] {
+            assert_eq!(telemetry_endpoint_tag(endpoint), "http://host:8001");
+        }
+        assert_eq!(
+            telemetry_endpoint_tag("http://host:8001/proxy/"),
+            "http://host:8001/proxy"
+        );
+    }
+
+    #[test]
+    fn telemetry_endpoint_tags_distinguish_query_path_credentials_and_server() {
+        let endpoints = [
+            "http://user:password@host:8001/proxy?api_key=secret",
+            "http://user:password@host:8001/proxy?api_key=other",
+            "http://user:password@host:8001/other?api_key=secret",
+            "http://user:other@host:8001/proxy?api_key=secret",
+            "http://other:password@host:8001/proxy?api_key=secret",
+            "http://user:password@other:8001/proxy?api_key=secret",
+            "http://user:password@host:8002/proxy?api_key=secret",
+        ];
+        let tags: std::collections::HashSet<_> =
+            endpoints.into_iter().map(telemetry_endpoint_tag).collect();
+        assert_eq!(tags.len(), 7);
+    }
+
+    #[tokio::test]
+    async fn nonempty_slots_use_props_only_when_speculation_config_is_unavailable() {
+        for (slots_body, props_body, expected) in [
+            (
+                r#"[{"id":0}]"#,
+                r#"{"default_generation_settings":{"params":{"speculative.types":"draft-mtp"}}}"#,
+                Some(true),
+            ),
+            (
+                r#"[{"id":0,"speculative":false}]"#,
+                r#"{"default_generation_settings":{"params":{"speculative.types":"draft-mtp"}}}"#,
+                Some(false),
+            ),
+            (
+                r#"[{"id":0,"params":{"speculative.type":"none"}}]"#,
+                r#"{"default_generation_settings":{"params":{"speculative.types":"draft-mtp"}}}"#,
+                Some(false),
+            ),
+            (r#"[{"id":0}]"#, "{}", None),
+        ] {
+            let mut server = mockito::Server::new_async().await;
+            let slots = server
+                .mock("GET", "/slots")
+                .with_body(slots_body)
+                .create_async()
+                .await;
+            let props = server
+                .mock("GET", "/props")
+                .with_body(props_body)
+                .create_async()
+                .await;
+            let snapshot = poll_llama_cpp_metrics(
+                &server.url(),
+                None,
+                "s",
+                &mut None,
+                &mut None,
+                &mut LlamaRuntimeCache::default(),
+            )
+            .await
+            .unwrap();
+            let enabled = snapshot.backend_details.unwrap()["speculative_enabled"].as_bool();
+            assert_eq!(
+                enabled, expected,
+                "slots: {slots_body}, props: {props_body}"
+            );
+            slots.assert_async().await;
+            props.assert_async().await;
+        }
+    }
+
+    #[test]
+    fn runtime_facts_are_allowlisted_and_paths_are_reduced_to_basenames() {
+        let props = serde_json::json!({
+            "model_path": "C:\\private\\models\\attached.gguf",
+            "model_ftype": "Q4_K_M",
+            "build_info": "b1234-deadbeef",
+            "modalities": {"vision": true, "audio": false, "bad": "/private"},
+            "chat_template_caps": {"supports_tool_calls": true, "unknown_private_flag": true},
+            "default_generation_settings": {"params": {"speculative.types": "none,draft-mtp"}},
+            "chat_template": "private template", "total_slots": 8
+        });
+        let models = serde_json::json!({"data": [{
+            "id": "attached-alias", "meta": {"n_params": 27000000000_u64, "ftype": "Q4_K_M"}
+        }]});
+        let facts = parse_runtime_facts(Some(&props), Some(&models)).unwrap();
+        assert_eq!(facts.model_name.as_deref(), Some("attached.gguf"));
+        assert_eq!(facts.quantization.as_deref(), Some("Q4_K_M"));
+        assert_eq!(facts.model_params, Some(27000000000));
+        assert_eq!(facts.server_build.as_deref(), Some("b1234-deadbeef"));
+        assert_eq!(facts.capabilities.get("vision"), Some(&true));
+        assert_eq!(facts.capabilities.get("audio"), Some(&false));
+        assert_eq!(facts.capabilities.get("supports_tool_calls"), Some(&true));
+        assert!(!facts.capabilities.contains_key("unknown_private_flag"));
+        let json = serde_json::to_string(&facts).unwrap();
+        assert!(!json.contains("private"));
+        assert!(!json.contains("total_slots"));
+        assert!(!json.contains("default_generation_settings"));
+        assert_eq!(props_speculative_enabled(&props), Some(true));
+    }
+
+    #[test]
+    fn runtime_parsing_tolerates_absent_and_malformed_fields() {
+        assert!(parse_runtime_facts(None, None).is_none());
+        let props = serde_json::json!({
+            "model_alias": 42, "model_path": "/", "model_ftype": {},
+            "build_info": [], "modalities": {"vision": "yes"}
+        });
+        assert!(parse_runtime_facts(Some(&props), None).is_none());
+        for (value, expected) in [
+            (serde_json::json!("none"), Some(false)),
+            (serde_json::json!("none, draft-mtp"), Some(true)),
+            (serde_json::json!(null), None),
+            (serde_json::json!(["none"]), Some(false)),
+            (serde_json::json!(["none", "ngram"]), Some(true)),
+            (serde_json::json!(""), None),
+        ] {
+            let props = serde_json::json!({
+                "default_generation_settings": {"params": {"speculative.types": value}}
+            });
+            assert_eq!(props_speculative_enabled(&props), expected);
+        }
+        assert_eq!(props_speculative_enabled(&serde_json::json!({})), None);
+        let alias =
+            serde_json::json!({"model_alias": "actual-alias", "model_path": "/secret/other.gguf"});
+        let facts = parse_runtime_facts(Some(&alias), None).unwrap();
+        assert_eq!(facts.model_alias.as_deref(), Some("actual-alias"));
+        let alias_only = serde_json::json!({"model_alias": "alias-only"});
+        let facts = parse_runtime_facts(Some(&alias_only), None).unwrap();
+        assert!(facts.model_name.is_none());
+        assert_eq!(facts.model_alias.as_deref(), Some("alias-only"));
+        assert_eq!(
+            parse_runtime_facts(Some(&alias), None)
+                .unwrap()
+                .model_name
+                .as_deref(),
+            Some("other.gguf")
+        );
+    }
+
+    #[test]
+    fn adapters_preserve_zero_scale_without_exposing_paths() {
+        let adapters = parse_runtime_adapters(&serde_json::json!([
+            {"id": 0, "path": "/private/lora/adapter.gguf", "scale": 0.0},
+            {"id": 1, "path": "C:\\private\\second.gguf", "scale": 0.5},
+            {"id": "invalid", "scale": "bad"}
+        ]))
+        .unwrap();
+        assert_eq!(adapters.len(), 2);
+        assert_eq!(adapters[0].name.as_deref(), Some("adapter.gguf"));
+        assert_eq!(adapters[0].scale, Some(0.0));
+        assert_eq!(adapters[1].name.as_deref(), Some("second.gguf"));
+        assert!(
+            !serde_json::to_string(&adapters)
+                .unwrap()
+                .contains("private")
+        );
+        assert_eq!(parse_runtime_adapters(&serde_json::json!([])), Some(vec![]));
+        assert_eq!(parse_runtime_adapters(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn runtime_cache_is_scoped_to_endpoint_session_and_auth_and_throttles_failures() {
+        let mut cache = LlamaRuntimeCache::default();
+        let now = Instant::now();
+        assert!(cache.select_target("http://a", Some("key-a"), "session-a"));
+        cache.last_attempt = Some(now);
+        cache.facts = Some(crate::llama::metrics::LlamaRuntimeFacts {
+            model_name: Some("model-a".into()),
+            ..Default::default()
+        });
+        cache.speculative_enabled = Some(true);
+        assert!(!cache.select_target("http://a/", Some("key-a"), "session-a"));
+        assert!(!cache.refresh_due(now + Duration::from_secs(59)));
+        assert!(cache.refresh_due(now + Duration::from_secs(60)));
+        for (base, key, session) in [
+            ("http://b", Some("key-a"), "session-a"),
+            ("http://b", Some("key-b"), "session-a"),
+            ("http://b", Some("key-b"), "session-b"),
+        ] {
+            assert!(cache.select_target(base, key, session));
+            assert!(cache.facts.is_none());
+            assert!(cache.speculative_enabled.is_none());
+            assert!(cache.refresh_due(now));
+            cache.facts = Some(Default::default());
+        }
+    }
+
+    #[tokio::test]
+    async fn normalized_poll_keeps_efficiency_without_slots_and_caches_runtime_facts() {
+        let mut server = mockito::Server::new_async().await;
+        let metrics = server
+            .mock("GET", "/metrics")
+            .match_header("authorization", "Bearer test-key")
+            .with_body(
+                "llamacpp:prompt_tokens_total 100\n\
+                llamacpp:prompt_tokens_cached_total 300\n\
+                llamacpp:spec_decode_num_draft_tokens_total 20\n\
+                llamacpp:spec_decode_num_accepted_tokens_total 10\n\
+                llamacpp:spec_decode_num_drafts_total 5\n",
+            )
+            .expect(2)
+            .create_async()
+            .await;
+        let props = server.mock("GET", "/props")
+            .match_header("authorization", "Bearer test-key")
+            .with_body(r#"{"model_alias":"actual","model_ftype":"Q4_K_M","build_info":"b1234",
+                "is_sleeping":false,"default_generation_settings":{"params":{"speculative.type":"ngram"}}}"#)
+            .expect(1).create_async().await;
+        let models = server
+            .mock("GET", "/v1/models")
+            .match_header("authorization", "Bearer test-key")
+            .with_body(
+                r#"{"data":[{"id":"actual","meta":{"n_params":123456,"n_ctx_train":8192}}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let adapters = server
+            .mock("GET", "/lora-adapters")
+            .match_header("authorization", "Bearer test-key")
+            .with_body(r#"[{"id":0,"path":"/private/adapter.gguf","scale":0}]"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let mut cache = LlamaRuntimeCache::default();
+        let mut counters = None;
+        let mut session = None;
+        for _ in 0..2 {
+            let snapshot = poll_llama_cpp_metrics(
+                &server.url(),
+                Some("test-key"),
+                "s",
+                &mut counters,
+                &mut session,
+                &mut cache,
+            )
+            .await
+            .unwrap();
+            assert_eq!(snapshot.prompt_tokens_total, Some(100));
+            assert_eq!(snapshot.speculative_acceptance_rate, Some(0.5));
+            assert_eq!(snapshot.model.as_deref(), Some("actual"));
+            let details = snapshot.backend_details.unwrap();
+            assert_eq!(details["prompt_tokens_processed_total"], 100.0);
+            assert_eq!(details["prompt_tokens_cached_total"], 300.0);
+            assert_eq!(details["speculative_verification_steps_total"], 5);
+            assert_eq!(details["speculative_enabled"], true);
+            assert_eq!(details["runtime_facts"]["model_params"], 123456);
+            assert_eq!(
+                details["runtime_facts"]["adapters"][0]["name"],
+                "adapter.gguf"
+            );
+            assert_eq!(details["runtime_facts"]["adapters"][0]["scale"], 0.0);
+            assert!(!details.to_string().contains("private"));
+            assert!(details.get("slots").is_none());
+        }
+        metrics.assert_async().await;
+        props.assert_async().await;
+        models.assert_async().await;
+        adapters.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn auth_switch_resets_facts_and_counters_before_unavailable_runtime_poll() {
+        let mut server = mockito::Server::new_async().await;
+        let props = server
+            .mock("GET", "/props")
+            .match_header("authorization", "Bearer first-key")
+            .with_body(r#"{"model_alias":"old","is_sleeping":true}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let metrics = server
+            .mock("GET", "/metrics")
+            .match_header("authorization", "Bearer first-key")
+            .with_body("llamacpp:prompt_tokens_total 42\n")
+            .create_async()
+            .await;
+        let unavailable = server
+            .mock("GET", "/props")
+            .match_header("authorization", "Bearer second-key")
+            .with_status(403)
+            .with_body(r#"{"model_alias":"must-not-leak"}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let adapters = server
+            .mock("GET", "/lora-adapters")
+            .expect(0)
+            .create_async()
+            .await;
+        let mut cache = LlamaRuntimeCache::default();
+        let mut counters = None;
+        let mut session = None;
+        let first = poll_llama_cpp_metrics(
+            &server.url(),
+            Some("first-key"),
+            "s",
+            &mut counters,
+            &mut session,
+            &mut cache,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.model.as_deref(), Some("old"));
+        assert!(counters.is_some());
+        assert!(first.backend_details.unwrap()["runtime_facts"]["adapters"].is_null());
+        for _ in 0..2 {
+            let next = poll_llama_cpp_metrics(
+                &server.url(),
+                Some("second-key"),
+                "s",
+                &mut counters,
+                &mut session,
+                &mut cache,
+            )
+            .await
+            .unwrap();
+            assert!(next.model.is_none());
+            assert!(next.prompt_tokens_total.is_none());
+            assert!(next.backend_details.as_ref().unwrap()["runtime_facts"].is_null());
+            assert!(counters.is_none());
+        }
+        props.assert_async().await;
+        metrics.assert_async().await;
+        unavailable.assert_async().await;
+        adapters.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn runtime_request_timeout_degrades_without_failing_the_poll() {
+        use warp::Filter;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let route = warp::any().and_then(|| async {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Ok::<_, std::convert::Infallible>(warp::reply::json(
+                &serde_json::json!({"model_alias":"late"}),
+            ))
+        });
+        let task = tokio::spawn(warp::serve(route).incoming(listener).run());
+        let result = optional_runtime_json(&Client::new(), &base, "/props", None).await;
+        task.abort();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn oversized_optional_runtime_body_is_omitted() {
+        let mut server = mockito::Server::new_async().await;
+        let body = format!(r#"{{"model_alias":"{}"}}"#, "x".repeat(1024 * 1024));
+        let response = server
+            .mock("GET", "/props")
+            .with_body(body)
+            .create_async()
+            .await;
+        assert!(
+            optional_runtime_json(&Client::new(), &server.url(), "/props", None)
+                .await
+                .is_none()
+        );
+        response.assert_async().await;
+    }
+
+    #[test]
+    fn build_facts_reject_path_bearing_strings_and_unknown_shapes() {
+        for value in [
+            serde_json::json!("/private/bin/llama-server b123"),
+            serde_json::json!("C:\\private\\llama-server.exe"),
+            serde_json::json!({"version": "unknown schema"}),
+        ] {
+            let facts = parse_runtime_facts(
+                Some(&serde_json::json!({
+                    "model_alias": "model", "build_info": value, "model_ftype": 15
+                })),
+                None,
+            )
+            .unwrap();
+            assert_eq!(facts.server_build, None);
+            assert_eq!(facts.quantization, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn expired_facts_are_cleared_on_failed_refresh_and_failures_are_throttled() {
+        let mut server = mockito::Server::new_async().await;
+        let props = server
+            .mock("GET", "/props")
+            .with_status(404)
+            .expect(1)
+            .create_async()
+            .await;
+        let mut cache = LlamaRuntimeCache::default();
+        cache.select_target(&server.url(), None, "s");
+        cache.last_attempt = Some(Instant::now() - Duration::from_secs(60));
+        cache.facts = Some(LlamaRuntimeFacts {
+            model_name: Some("old".into()),
+            ..Default::default()
+        });
+        cache.speculative_enabled = Some(true);
+        cache.model_ctx_train = Some(8192);
+        cache.refresh(&Client::new(), &server.url(), None).await;
+        assert!(cache.facts.is_none());
+        assert!(cache.speculative_enabled.is_none());
+        assert!(cache.model_ctx_train.is_none());
+        cache.refresh(&Client::new(), &server.url(), None).await;
+        props.assert_async().await;
+    }
+
+    #[test]
+    fn runtime_adapter_list_is_bounded() {
+        let value =
+            serde_json::Value::Array((0..65).map(|id| serde_json::json!({"id": id})).collect());
+        let adapters = parse_runtime_adapters(&value).unwrap();
+        assert_eq!(adapters.len(), 64);
+        assert_eq!(adapters.last().unwrap().id, Some(63));
+    }
 
     async fn launch_args(config: ServerConfig) -> Vec<String> {
         let config_dir = tempfile::tempdir().unwrap();

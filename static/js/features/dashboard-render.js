@@ -508,14 +508,6 @@ function renderRequestStats() {
     }
 }
 
-function renderGenerationDetailItems(el, parts) {
-    if (!el) return;
-    // eslint-disable-next-line no-unsanitized/property -- all parts wrapped in escapeHtml()
-    el.innerHTML = parts
-        .filter(Boolean)
-        .map(part => '<span class="generation-detail-chip">' + escapeHtml(part) + '</span>')
-        .join('');
-}
 
 function primarySpeculativeType(specType) {
     if (!specType) return '';
@@ -1619,8 +1611,7 @@ export {
     renderSlotUtilization,
     renderBatchEfficiency,
     renderRequestStats,
-    renderGenerationDetailItems,
-    renderDecodingConfig,
+      renderDecodingConfig,
     formatParamCount,
     renderCapabilityPopover,
     updateMetricDelta,

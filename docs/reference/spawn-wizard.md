@@ -46,6 +46,28 @@ places them in the searchable category rail. Both presentations read and write
 the same control node and `wizardState`, and therefore produce identical spawn
 and preset payloads.
 
+The generation, reasoning, output-format, network, and extra-argument sections
+move together as `#spawn-sampling-block`: into `#pro-controls-host` for
+llama.cpp Pro, and back into the Guided All settings drawer on every return.
+Controls are never cloned, so search, category navigation, and edits continue
+to operate on the original nodes. Rapid-MLX Pro keeps its backend-native
+wrapper and shared access fields rather than exposing llama.cpp-only sampling
+or projector/MTP controls.
+
+`spawn-wizard-guided.js` mirrors canonical context, both KV precisions,
+projector selection, and MTP state through `refreshGuidedCards()`. Programmatic
+writers (autosize, fit scenarios, preset/step restore, projector discovery,
+and MTP/capability renders) explicitly refresh the mirror; real `input` and
+`change` events use the same path. Guided custom-context edits write through
+the canonical context control. There is no polling or body-wide attribute
+observer: assigning `.value` or `.checked` does not mutate an HTML attribute.
+Asymmetric K/V configurations leave the symmetric KV tiles unselected and
+show both precisions in the sticky strip.
+Capability rediscovery only seeds MTP when no explicit decision exists. It
+respects the canonical checkbox's `_mtpUserConfigured` authority, Guided
+radio edits, and an explicit speculative-mode selection; Pro edits survive
+metadata refreshes and Guided/Pro roundtrips.
+
 The canonical additions are idle-slot cache retention, projector offload,
 native reasoning effort/format/preserve, plus the previously existing
 continuous-batching, SWA, load-mode, verbosity, checkpoint, and cache-reuse
@@ -211,6 +233,12 @@ Opens with a profile + use-case selection screen (wizard-step-0), then engine se
 model source input on the same step:
 
 - **Guided setup**: safe defaults and workload-specific recommendations stay visible, with every applicable control reachable through the canonical All settings drawer.
+The four Guided decision cards (context size, KV cache precision, vision,
+speed boost) are the single surface for those choices: the equivalent raw
+fields (context-size input, K/V cache quant selects, MTP section, mmproj
+picker) are hidden while the Guided view is active and remain available in
+Pro. The decision cards write through to the same underlying state, so the
+two views never diverge.
 - **Pro setup**: the power-user view exposes one searchable seven-category surface (Model & compatibility, Memory & context, Performance, Generation & reasoning, Tools & conversation formatting, Network & observability, and Advanced). Switching Guided/Pro relocates the same canonical controls without changing state; modified-only filtering and resolved-default reset operate on that shared state.
 Guided disclosure keeps safe defaults visible; every applicable control is reachable in the canonical All settings drawer.
 - **Workload cards** map to typed `workload_scenario` values sent to the backend VRAM estimator.

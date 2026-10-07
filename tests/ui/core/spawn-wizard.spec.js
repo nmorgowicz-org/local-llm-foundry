@@ -1254,6 +1254,17 @@ test('review step exposes structured output and full sampling defaults', async (
         await page.locator('#wizard-next-btn').click();
 
         await expect(page.locator('#wizard-step-1')).toHaveClass(/active/);
+        // Guided hides the merged review section (sampling, thinking, response
+        // shaping, network); the controls remain reachable through the
+        // All settings drawer, which relocates them (data-bound="1").
+        await expect(page.locator('#wizard-step-1 .sampling-params-section').first()).toBeHidden();
+
+        // Sampling controls live in the All settings drawer in Guided.
+        await page.locator('#all-settings-btn').click();
+        await expect(page.locator('#all-settings-body')).toBeVisible();
+        await expect(page.locator('#spawn-output-mode')).toBeVisible();
+
+        await page.selectOption('#view-mode-select', 'pro');
         await expect(page.locator('#spawn-top-k')).toBeVisible();
         await expect(page.locator('#spawn-max-tokens')).toBeVisible();
         await expect(page.locator('#spawn-output-mode')).toBeVisible();
