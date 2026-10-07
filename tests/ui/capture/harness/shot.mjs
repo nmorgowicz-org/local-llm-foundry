@@ -3,7 +3,9 @@
 import fs from 'fs';
 import { join } from 'path';
 import { execFileSync } from 'child_process';
-import { FRAME_DIR, REMOTE_SERVER, SCREENSHOT_TAB_PREFIX, currentArtifactsDir, tagFilename, sleep } from './paths.mjs';
+import http from 'http';
+import https from 'https';
+import { CAPTURE_REMOTE_IDLE_TIMEOUT_MS, CAPTURE_REMOTE_REQUEST_TIMEOUT_MS, FRAME_DIR, REMOTE_SERVER, SCREENSHOT_TAB_PREFIX, currentArtifactsDir, tagFilename, sleep } from './paths.mjs';
 import { recordCapture } from './receipt.mjs';
 
 export async function cleanupScreenshotTabs(page, { keepOne = false } = {}) {
@@ -170,25 +172,63 @@ export async function captureSparklineClips(page, selector) {
     console.log(`[CAPTURE] Saved ${rects.length} sparkline SVG clips`);
 }
 
-export async function startLiveGeneration(remoteServer = REMOTE_SERVER) {
-    return fetch(`${remoteServer}/v1/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            model: 'default',
-            stream: false,
-            temperature: 0.7,
-            max_tokens: 800,
-            messages: [{
-                role: 'user',
-                content: 'Write a dense explanation of transformer inference performance, token throughput, KV cache behavior, and GPU offload tradeoffs.',
-            }],
-        }),
-    }).then(async response => {
-        if (!response.ok) {
-            throw new Error(`Generation request failed: ${response.status} ${response.statusText}`);
+// Resolve once the remote reports no processing slot, so a busy shared runtime
+// (other agents, benchmarks) does not queue the capture's request invisibly.
+export async function waitForRemoteIdle(remoteServer = REMOTE_SERVER, timeoutMs = CAPTURE_REMOTE_IDLE_TIMEOUT_MS) {
+    const start = Date.now();
+    let announced = false;
+    while (Date.now() - start < timeoutMs) {
+        try {
+            const response = await fetch(`${remoteServer}/slots`, { signal: AbortSignal.timeout(10000) });
+            if (response.ok) {
+                const slots = await response.json();
+                if (Array.isArray(slots) && !slots.some(slot => slot.is_processing)) return;
+            } else {
+                return; // /slots unavailable: nothing to wait on.
+            }
+        } catch {
+            // Busy servers may be slow to answer /slots; keep waiting.
         }
-        await response.text();
+        if (!announced) {
+            console.log('[CAPTURE] Remote is busy; waiting for it to go idle...');
+            announced = true;
+        }
+        await sleep(5000);
+    }
+    throw new Error(`Remote ${remoteServer} did not become idle within ${Math.ceil(timeoutMs / 1000)}s`);
+}
+
+// node:http has no header/body timeout of its own, unlike global fetch (undici
+// aborts at 300s), so a long queued prefill can finish.
+export async function startLiveGeneration(remoteServer = REMOTE_SERVER, timeoutMs = CAPTURE_REMOTE_REQUEST_TIMEOUT_MS) {
+    const url = new URL(`${remoteServer}/v1/chat/completions`);
+    const payload = JSON.stringify({
+        model: 'default',
+        stream: false,
+        temperature: 0.7,
+        max_tokens: 800,
+        messages: [{
+            role: 'user',
+            content: 'Write a dense explanation of transformer inference performance, token throughput, KV cache behavior, and GPU offload tradeoffs.',
+        }],
+    });
+    const client = url.protocol === 'https:' ? https : http;
+    return new Promise((resolve, reject) => {
+        const request = client.request(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+            timeout: timeoutMs, // socket inactivity; non-streaming replies are silent until done
+        }, response => {
+            response.resume();
+            response.on('end', () => {
+                if (response.statusCode >= 200 && response.statusCode < 300) resolve();
+                else reject(new Error(`Generation request failed: ${response.statusCode} ${response.statusMessage}`));
+            });
+            response.on('error', reject);
+        });
+        request.on('timeout', () => request.destroy(new Error(`Generation request timed out after ${Math.ceil(timeoutMs / 1000)}s`)));
+        request.on('error', reject);
+        request.end(payload);
     });
 }
 

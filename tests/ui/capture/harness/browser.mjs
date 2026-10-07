@@ -31,6 +31,17 @@ export async function launchBrowser(viewport = DEFAULT_VIEWPORT) {
     };
     const page = await browser.newPage();
     await page.setCacheEnabled(false);
+    // Migration toasts pop once per browser session and cover the bottom-right
+    // of every capture. The notification entries stay; only the pop-ups are
+    // marked as already shown, matching the dedicated migration scenario.
+    await page.evaluateOnNewDocument(() => {
+        try {
+            sessionStorage.setItem('local-llm-foundry-migration-toast-seen', '1');
+            sessionStorage.setItem('local-llm-foundry-model-move-toast-seen', '1');
+        } catch {
+            // Storage may be unavailable on non-app documents (about:blank).
+        }
+    });
     await page.setViewport(viewport);
     return { browser, page };
 }

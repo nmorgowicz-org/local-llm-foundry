@@ -1955,7 +1955,10 @@ function bindEvents() {
       const fpath = mmprojSelect.value || '';
       wizardState.model.mmprojPath = fpath || '';
       wizardState.model.mmprojHfFile = fpath || '';
-      wizardState.arch.mmprojBytes = 0;
+      // Keep the size recorded by the section's own handler so VRAM estimates
+      // still include the projector; Browse-chosen files have no known size.
+      const known = (wizardState.model.mmprojFiles || []).find(f => (f.path || f.name) === fpath);
+      wizardState.arch.mmprojBytes = fpath && known?.size ? Number(known.size) : 0;
       scheduleVramUpdate();
     });
   }
@@ -2630,6 +2633,10 @@ export function showStep(index) {
     }
   }
   if (index === 2) {
+    // Hardware state is otherwise refreshed only by change events on its
+    // controls. Reading it here keeps the review from showing the reset
+    // values (0 tokens, blank GPU layers) when the user accepted defaults.
+    readHardwareState();
     _renderPresetParamsStep();
     refreshWizardCalibrationOffer();
     _renderSpawnConfigCard();

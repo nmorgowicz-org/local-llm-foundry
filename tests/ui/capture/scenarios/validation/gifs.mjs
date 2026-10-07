@@ -4,7 +4,7 @@ import { join } from 'path';
 import { attachToServer } from '../../harness/attach.mjs';
 import { gotoApp, switchTab } from '../../harness/browser.mjs';
 import { currentArtifactsDir, tagFilename, sleep } from '../../harness/paths.mjs';
-import { captureFrames, cleanupFrames, framesToGif, startLiveGeneration } from '../../harness/shot.mjs';
+import { captureFrames, cleanupFrames, framesToGif, startLiveGeneration, waitForRemoteIdle } from '../../harness/shot.mjs';
 
 export default async function(ctx, options) {
     const { page, baseUrl } = ctx;
@@ -28,6 +28,7 @@ export default async function(ctx, options) {
             if (pg && section) pg.scrollTop = section.offsetTop - 8;
         });
         await sleep(300);
+        if (process.env.CAPTURE_WAIT_FOR_IDLE === '1') await waitForRemoteIdle();
         const generationPromise = startLiveGeneration();
         await sleep(1500);
         await captureFrames(page, 'inference', inferenceTotalFrames, fps);

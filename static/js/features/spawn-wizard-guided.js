@@ -214,9 +214,13 @@ export function refreshGuidedCards(event) {
     tile.classList.toggle('hw-decision-tile-active', !!k && k === v && tile.dataset.kv === k);
   });
 
+  // Same input-before-change ordering as the speed radios: the Guided select
+  // emits `input` (bubbling to the overlay) before its `change` handler writes
+  // the canonical select. Mirroring now would revert the user's pick to "(none)".
   const vision = document.getElementById('hw-vision-select');
   const canonicalVision = document.getElementById('hw-mmproj-select');
-  if (vision && canonicalVision) vision.value = canonicalVision.value;
+  const userIsPickingVision = event?.type === 'input' && event.target === vision;
+  if (vision && canonicalVision && !userIsPickingVision) vision.value = canonicalVision.value;
   const mtp = document.getElementById('hw-use-mtp');
   const ngram = document.querySelector('input[name="hw-speed"][value="ngram"]');
   if (mtp && (mtp.checked || !ngram?.checked)) {
