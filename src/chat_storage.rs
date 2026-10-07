@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS messages (
     compaction_marker         INTEGER NOT NULL DEFAULT 0,
     variants                  TEXT,
     variant_index             INTEGER,
+    context_fingerprint       TEXT,
     seq                       INTEGER NOT NULL
 );
 
@@ -192,6 +193,9 @@ pub struct MessageRow {
     pub output_tokens: Option<i64>,
     pub cumulative_input_tokens: Option<i64>,
     pub cumulative_output_tokens: Option<i64>,
+    /// None denotes legacy usage; an empty fingerprint explicitly invalidates it.
+    #[serde(default)]
+    pub context_fingerprint: Option<String>,
     #[serde(default)]
     pub compaction_marker: bool,
     pub variants: Option<serde_json::Value>,
@@ -664,7 +668,7 @@ impl ChatStorage {
             "SELECT id, tab_id, role, content, thinking_content, timestamp_ms,
                     input_tokens, output_tokens,
                     cumulative_input_tokens, cumulative_output_tokens,
-                    compaction_marker, variants, variant_index, seq
+                    compaction_marker, variants, variant_index, seq, context_fingerprint
              FROM messages WHERE tab_id = ?1 ORDER BY seq",
         )?;
         let rows = stmt.query_map(params![tab_id], |row| {
@@ -685,6 +689,7 @@ impl ChatStorage {
                     .and_then(|s| serde_json::from_str(&s).ok()),
                 variant_index: row.get(12)?,
                 seq: row.get(13)?,
+                context_fingerprint: row.get(14)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -698,8 +703,8 @@ impl ChatStorage {
             "INSERT INTO messages (tab_id, role, content, thinking_content, timestamp_ms,
                  input_tokens, output_tokens,
                  cumulative_input_tokens, cumulative_output_tokens,
-                 compaction_marker, variants, variant_index, seq)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,
+                 compaction_marker, variants, variant_index, context_fingerprint, seq)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,
                  COALESCE((SELECT MAX(seq)+1 FROM messages WHERE tab_id=?1), 0))",
             params![
                 msg.tab_id,
@@ -714,6 +719,7 @@ impl ChatStorage {
                 msg.compaction_marker as i64,
                 msg.variants.as_ref().map(|v| v.to_string()),
                 msg.variant_index,
+                msg.context_fingerprint,
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -729,8 +735,8 @@ impl ChatStorage {
                 "INSERT INTO messages (tab_id, role, content, thinking_content, timestamp_ms,
                      input_tokens, output_tokens,
                      cumulative_input_tokens, cumulative_output_tokens,
-                     compaction_marker, variants, variant_index, seq)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                     compaction_marker, variants, variant_index, seq, context_fingerprint)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
                 params![
                     tab_id,
                     msg.role,
@@ -745,6 +751,7 @@ impl ChatStorage {
                     msg.variants.as_ref().map(|v| v.to_string()),
                     msg.variant_index,
                     seq as i64,
+                    msg.context_fingerprint,
                 ],
             )?;
         }
@@ -1337,6 +1344,17 @@ fn run_schema_migrations(conn: &Connection) -> Result<()> {
     if !has_thinking_content {
         conn.execute("ALTER TABLE messages ADD COLUMN thinking_content TEXT", [])?;
     }
+    let has_context_fingerprint: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM pragma_table_info('messages') WHERE name = 'context_fingerprint'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_context_fingerprint {
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN context_fingerprint TEXT",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -1564,10 +1582,120 @@ mod tests {
             output_tokens: None,
             cumulative_input_tokens: None,
             cumulative_output_tokens: None,
+            context_fingerprint: None,
             compaction_marker: false,
             variants: None,
             variant_index: None,
             seq: 0,
+        }
+    }
+
+    #[test]
+    fn context_fingerprint_round_trips_append_replace_get_with_usage() {
+        let dir = tempdir().expect("temp dir");
+        let store = ChatStorage::open(&dir.path().join("chat.db")).expect("open storage");
+        let mut tab = make_tab("usage", "Usage");
+        tab.total_input_tokens = 1_234;
+        tab.total_output_tokens = 567;
+        store.create_tab(&tab).expect("create tab");
+        let mut messages = Vec::new();
+        for fingerprint in [Some("context-v1"), Some(""), None] {
+            let mut msg = make_message("usage", "assistant", "answer");
+            msg.context_fingerprint = fingerprint.map(str::to_string);
+            msg.input_tokens = Some(101);
+            msg.output_tokens = Some(23);
+            msg.cumulative_input_tokens = Some(1_234);
+            msg.cumulative_output_tokens = Some(567);
+            store.append_message(&msg).expect("append message");
+            messages.push(msg);
+        }
+        for replace in [false, true] {
+            if replace {
+                store
+                    .replace_messages("usage", &messages)
+                    .expect("replace messages");
+            }
+            let loaded = store.get_tab("usage").expect("get tab");
+            assert_eq!(loaded.total_input_tokens, 1_234);
+            assert_eq!(loaded.total_output_tokens, 567);
+            assert_eq!(loaded.messages.len(), messages.len());
+            for (seq, (actual, expected)) in loaded.messages.iter().zip(&messages).enumerate() {
+                assert_eq!(actual.context_fingerprint, expected.context_fingerprint);
+                assert_eq!(actual.input_tokens, expected.input_tokens);
+                assert_eq!(actual.output_tokens, expected.output_tokens);
+                assert_eq!(
+                    actual.cumulative_input_tokens,
+                    expected.cumulative_input_tokens
+                );
+                assert_eq!(
+                    actual.cumulative_output_tokens,
+                    expected.cumulative_output_tokens
+                );
+                assert_eq!(actual.seq, seq as i64);
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_message_json_defaults_context_fingerprint_to_none() {
+        let msg: MessageRow = serde_json::from_value(serde_json::json!({
+            "role": "assistant", "content": "legacy answer",
+            "input_tokens": 101, "output_tokens": 23,
+            "cumulative_input_tokens": 1234, "cumulative_output_tokens": 567
+        }))
+        .expect("deserialize legacy message");
+        assert_eq!(msg.context_fingerprint, None);
+        assert_eq!(msg.input_tokens, Some(101));
+        assert_eq!(msg.output_tokens, Some(23));
+        assert_eq!(msg.cumulative_input_tokens, Some(1_234));
+        assert_eq!(msg.cumulative_output_tokens, Some(567));
+    }
+
+    #[test]
+    fn schema_migration_adds_nullable_context_fingerprint_for_existing_databases() {
+        let dir = tempdir().expect("temp dir");
+        let db_path = dir.path().join("chat.db");
+        let conn = Connection::open(&db_path).expect("open raw db");
+        let legacy_schema = SCHEMA_SQL.replace("    context_fingerprint       TEXT,\n", "");
+        conn.execute_batch(&legacy_schema)
+            .expect("create legacy schema");
+        conn.execute(
+            "INSERT INTO tabs (id, name, created_at, updated_at,
+                total_input_tokens, total_output_tokens) VALUES ('legacy', 'Legacy', 1, 1, 1234, 567)",
+            [],
+        ).expect("insert legacy tab");
+        conn.execute(
+            "INSERT INTO messages (tab_id, role, content, seq,
+                input_tokens, output_tokens, cumulative_input_tokens, cumulative_output_tokens)
+             VALUES ('legacy', 'assistant', 'old answer', 0, 101, 23, 1234, 567)",
+            [],
+        )
+        .expect("insert legacy message");
+        drop(conn);
+        // Opening twice also verifies the additive migration is idempotent.
+        for _ in 0..2 {
+            let store = ChatStorage::open(&db_path).expect("open migrated storage");
+            let loaded = store.get_tab("legacy").expect("get legacy tab");
+            assert_eq!(loaded.total_input_tokens, 1_234);
+            assert_eq!(loaded.total_output_tokens, 567);
+            assert_eq!(loaded.messages.len(), 1);
+            let msg = &loaded.messages[0];
+            assert_eq!(msg.context_fingerprint, None);
+            assert_eq!(msg.input_tokens, Some(101));
+            assert_eq!(msg.output_tokens, Some(23));
+            assert_eq!(msg.cumulative_input_tokens, Some(1_234));
+            assert_eq!(msg.cumulative_output_tokens, Some(567));
+            let guard = store.conn.lock().expect("lock db");
+            let conn = guard.as_ref().expect("db open");
+            let nullable_columns: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('messages')
+                 WHERE name = 'context_fingerprint' AND type = 'TEXT' AND \"notnull\" = 0",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("query nullable column");
+            assert_eq!(nullable_columns, 1);
         }
     }
 

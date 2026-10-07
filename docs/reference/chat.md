@@ -110,7 +110,7 @@ Per-tab draft text in the composer is saved on input and persisted to the backen
 A compact chip bar above the composer shows which steering inputs are active for the next reply:
 
 | Chip | Shown When |
-|------|-----------|
+| ------ | ----------- |
 | Persona | A template is active on the tab |
 | Explicit mode | Explicit level is greater than 0 |
 | Context notes | Notes exist on the tab |
@@ -140,7 +140,7 @@ The template manager is the central place for chat personas.
 ### Template List Sections
 
 | Section | Description |
-|---------|-------------|
+| --------- | ------------- |
 | **Active** | The persona currently applied to this tab |
 | **Custom** | User-created personas |
 | **Built-in** | Personas shipped with llama-monitor |
@@ -160,7 +160,7 @@ Each persona stores separate Level 1 and Level 2 explicit-policy text. When expl
 System prompts support:
 
 | Token | Replaced With |
-|-------|---------------|
+| ------- | --------------- |
 | `{{char}}` | The AI name for the tab |
 | `{{user}}` | The user name for the tab |
 | `{{gender}}` | The AI gender (`male`, `female`, or `neutral`) |
@@ -180,7 +180,7 @@ The behavior panel provides fast access to the active persona prompt, role-bound
 Per-tab controls for generation behavior. A dot indicator appears when the active tab differs from defaults.
 
 | Parameter | Default | Description |
-|-----------|---------|-------------|
+| ----------- | --------- | ------------- |
 | Temperature | `0.7` | Randomness |
 | `top_p` | `0.9` | Nucleus sampling threshold |
 | `top_k` | `40` | Top-k sampling |
@@ -200,6 +200,23 @@ These parameters are applied for both llama.cpp and Rapid-MLX sessions. Rapid-ML
 
 ![Response Settings](../screenshots/panels--neutral--model-settings.png)
 
+## Upstream Wait Limits
+
+The backend distinguishes a slow prefill from a stalled token stream. It allows
+10 seconds to establish the upstream connection, up to 15 minutes for response
+headers and another 15 minutes for the first body chunk, then up to 5 minutes of
+silence between chunks. Continued token or heartbeat traffic renews the idle wait;
+healthy chat and guided-chat streams have no overall generation-duration deadline.
+Browser Stop and disconnect still terminate local forwarding.
+
+Keyword generation, suggestions, and context-note analysis collect their responses
+before replying. They share a generous 30-minute overall deadline across retries and
+body collection, so a silent or endlessly streaming helper cannot retain an inference
+permit indefinitely. Error responses are bounded to 64 KiB and 30 seconds. Timeouts
+return an upstream timeout error (or an error event after SSE has begun) and release
+the permit. These transport limits are separate from the per-tab `stream_timeout`
+control.
+
 ## Context Pressure Bar
 
 A thin progress bar in the chat header reflects the estimated context-usage percentage for the active tab.
@@ -209,7 +226,11 @@ A thin progress bar in the chat header reflects the estimated context-usage perc
   - Orange (high) at 75%+
   - Red (critical) at 90%+
 - The chat input border mirrors the same color at high usage.
-- When usage is near capacity, attempting to send a message triggers a "Context overflow" toast with a "Compact now" action.
+- If estimated history plus the pending user message exceeds capacity, sending shows a "Context overflow" toast with a "Compact now" action. A newly submitted message is restored to the composer and saved as a draft for retry; existing history is not removed during resend or regeneration.
+- Completed-request occupancy uses the latest prompt plus that reply's completion; earlier replies are already included in the latest prompt. Running input/output totals are billing counters, not context occupancy.
+- Edits, deletion, variant changes, regeneration and compaction invalidate old prompt usage without removing historical token counts. Until fresh usage arrives, pressure is estimated from the current outbound history and system context, including rolling memory. Usage fingerprints persist with messages so stale estimates do not return after reloading.
+
+`context_fingerprint` on a stored message has three states: absent (`null`, legacy rows) means the fingerprint is derived once from the preceding history on load and then cached in memory; an empty string means the usage was explicitly invalidated (edit, regeneration, compaction) and never feeds the pressure bar; any other value is trusted only while it matches the fingerprint of the current outbound context.
 
 ## Context Compaction
 
@@ -242,7 +263,7 @@ The debug inspector shows the exact outbound request shape used for the next rep
 ### What It Shows
 
 | Section | Description |
-|---------|-------------|
+| --------- | ------------- |
 | **System slices** | The assembled system prompt split into base prompt, context notes, quick guide, armed story beat, role boundary, and compacted memory sections when present |
 | **History** | The non-system message history that will actually be sent upstream |
 | **Totals** | Rough token estimates versus the model context capacity |
@@ -291,7 +312,7 @@ These values are derived from backend-provided metrics (llama.cpp health/telemet
 The style panel changes message presentation for the current browser.
 
 | Style | Description |
-|-------|-------------|
+| ------- | ------------- |
 | **Rounded** | Rounded bubbles with shadows |
 | **Compact** | Tighter spacing and lighter chrome |
 | **Minimal** | Flat layout with minimal decoration |
@@ -308,7 +329,7 @@ Message font size can be adjusted from 70% to 150% via the style panel.
 Message timestamps follow the shared workspace date-format setting:
 
 | Format | Example |
-|--------|---------|
+| -------- | --------- |
 | `MM/DD/YY` | `05/06/26` |
 | `DD/MM/YY` | `06/05/26` |
 | `YYYY-MM-DD` | `2026-05-06` |
@@ -373,6 +394,7 @@ When the model's answer reveals that a piece of story information is genuinely m
 - **From scratch**: Click **✎ Write scene** in the footer to open the same editor blank.
 
 The editor lets you:
+
 - Edit the text freely before inserting.
 - Choose the role: **User** (written from the user's perspective) or **Assistant** (narrator/AI perspective — the default).
 - Confirm with **Insert into history** or dismiss with **Cancel**.
@@ -406,7 +428,7 @@ The right-side context notes panel stores structured notes on the active tab and
 #### Built-In Sections
 
 | Section | Purpose |
-|---------|---------|
+| --------- | --------- |
 | Character | Character traits, motivations, voice, and relationships |
 | Setting | Places, world rules, atmosphere |
 | Plot/Scenario | Current beats, stakes, and scenario facts |
@@ -484,7 +506,7 @@ The setup panel can auto-generate focus keywords through `POST /api/keywords/gen
 Quick Guide is the inline steering surface for one-off reply direction.
 
 | Mode | Description |
-|------|-------------|
+| ------ | ------------- |
 | **Quick** | Applies a direct instruction to the next guided reply, then clears it |
 | **Director** | Expands one directing note into four continuation options |
 | **Surprise** | Arms a hidden future beat that lands on a later assistant reply |
@@ -516,7 +538,7 @@ Quick Guide is the inline steering surface for one-off reply direction.
 Explicit mode is a three-level content filter layered on top of the active persona.
 
 | Level | Icon | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | **Off** | 🔒 | Default filtering |
 | **Unlocked** | 🔓 | Level 1 persona policy |
 | **Unrestricted** | 🔥 | Level 2 persona policy |
@@ -529,7 +551,7 @@ Explicit mode is a three-level content filter layered on top of the active perso
 ## Message Management
 
 | Feature | Description |
-|---------|-------------|
+| --------- | ------------- |
 | **Message limit** | Controls how many messages are rendered at once (default 15) |
 | **Copy settings** | Copies prompt and parameter settings from another tab into the current one |
 | **AI/You names** | Per-tab display names used in the UI and prompt token substitution |

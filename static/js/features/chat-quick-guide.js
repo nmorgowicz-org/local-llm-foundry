@@ -1,7 +1,7 @@
 // ── Guide AI Surface ────────────────────────────────────────────────────────
 // Multi-mode assistant steering surface: Quick, Director, Surprise.
 
-import { activeChatTab, getChatViewBindings, scheduleChatPersist } from './chat-state.js';
+import { activeChatTab, getChatViewBindings, scheduleChatPersist, invalidateChatContext } from './chat-state.js';
 import { settingsState } from '../core/app-state.js';
 import { showToast } from './toast.js';
 
@@ -260,6 +260,7 @@ function restorePreviousInstructionForEdit() {
             }
         }
     }
+    invalidateChatContext(tab);
 
     tab.quick_guide_draft = lastRun.instruction;
     tab.quick_guide_active = '';

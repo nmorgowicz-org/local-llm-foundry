@@ -5,10 +5,12 @@ import { chat, settingsState } from '../core/app-state.js';
 import { refreshTopCockpit } from './nav.js';
 import { showToast, showToastWithActions } from './toast.js';
 import Router from './router.js';
+import { getExplicitModePolicy, resolveActiveTemplate } from './chat-templates.js';
 
 const CHAT_TABS_PERSIST_DEBOUNCE_MS = 500;
 const TRASH_AUTO_PURGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const TRASH_PURGE_CHECK_INTERVAL_MS = 60 * 60 * 1000; // check every hour
+const legacyUsageFingerprints = new WeakMap();
 const chatViewBindings = {
     renderChatTabs: null,
     renderChatMessages: null,
@@ -37,6 +39,111 @@ export function getChatViewBindings() {
 
 export function activeChatTab() {
     return chat.tabs.find(t => t.id === chat.activeTabId) ?? null;
+}
+
+// Build the same context for transport and estimates. Legacy system entries are
+// not sent; memory markers are folded into the single leading system message.
+export function buildChatRequestContext(tab, history = tab.messages || [], transientUserPrompt = null) {
+    const messages = [];
+    const systemParts = [];
+    const beats = (tab.armed_story_beats || []).filter(beat => beat.enabled !== false);
+    const armedBeat = beats.find(beat => (beat.remaining_turns || 0) === 0) || null;
+    let systemPrompt = tab.system_prompt ? substituteNames(tab.system_prompt, tab.ai_name, tab.user_name, tab.ai_gender) : '';
+    if (tab.explicit_level > 0) {
+        const policies = resolveActiveTemplate(tab.active_template_id)?.explicit_policies;
+        if (policies) {
+            if (tab.explicit_level >= 1 && policies.level1) systemPrompt += `\n\n${policies.level1}`;
+            if (tab.explicit_level >= 2 && policies.level2) systemPrompt += `\n\n${policies.level2}`;
+        } else {
+            const policy = getExplicitModePolicy();
+            if (policy) systemPrompt += `\n\n${policy}`;
+        }
+    }
+    if (systemPrompt) systemParts.push(systemPrompt);
+    const notesBySection = {};
+    for (const note of (tab.context_notes || []).filter(note => note.content?.trim())) {
+        if (!notesBySection[note.section]) notesBySection[note.section] = [];
+        notesBySection[note.section].push(note.content);
+    }
+    for (const [section, contents] of Object.entries(notesBySection)) {
+        systemParts.push(`### ${section.toUpperCase()} NOTES ###\n\n${contents.join('\n\n')}`);
+    }
+    const guide = tab.quick_guide_active || tab.quick_guide_pending || tab._quickGuideInstruction;
+    if (guide) systemParts.push(`### QUICK GUIDE ###\n\n${guide}`);
+    if (armedBeat?.instruction) systemParts.push(`### ARMED STORY BEAT ###\n\n${armedBeat.instruction}`);
+    systemParts.push(`### ROLE BOUNDARY ###\n\n${tab.role_boundary_custom?.trim() || getDefaultRoleBoundaryText(tab)}`);
+    const markers = history.filter(m => m.compaction_marker && m.content?.trim());
+    if (markers.length) {
+        const memory = markers.map((marker, index) => `Memory ${index + 1}:\n${marker.content.trim()}`).join('\n\n');
+        systemParts.push(`### COMPACTED MEMORY ###\n\n${memory}`);
+    }
+    if (systemParts.length) messages.push({ role: 'system', content: systemParts.join('\n\n') });
+    const persistentHistory = history.filter(m => m.role !== 'system' && !m.compaction_marker);
+    messages.push(...persistentHistory.map(m => ({ role: m.role, content: m.content })));
+    if (transientUserPrompt) messages.push({ role: 'user', content: transientUserPrompt });
+    return { messages, systemParts, persistentHistory, armedBeat };
+}
+
+// A non-security fingerprint of the actual prompt shape and retained history.
+// IDs, timestamps, usage/billing counters and thinking persistence do not affect it.
+export function chatContextFingerprint(tab, history = tab.messages || []) {
+    const text = JSON.stringify(buildChatRequestContext(tab, history).messages);
+    let a = 2166136261, b = 5381;
+    for (let i = 0; i < text.length; i++) {
+        a = Math.imul(a ^ text.charCodeAt(i), 16777619);
+        b = Math.imul(b, 33) ^ text.charCodeAt(i);
+    }
+    return `v1:${(a >>> 0).toString(16)}:${(b >>> 0).toString(16)}`;
+}
+
+// Invalidation is durable per message, not a frontend-only tab flag. Keep
+// historical input/output usage and cumulative billing totals unchanged.
+export function invalidateChatContext(tab) {
+    for (const message of tab.messages || []) {
+        if (message.role === 'assistant') message.context_fingerprint = '';
+    }
+    tab.last_ctx_pct = 0;
+}
+
+export function estimateChatMessageTokens(message) {
+    // Existing four-character heuristic, rounded up with chat-template overhead.
+    return Math.ceil((message.content?.length || 0) / 4) + 4;
+}
+
+export function estimateChatContextTokens(tab, history = tab?.messages, transientUserPrompt = null) {
+    if (!tab || !Array.isArray(history)) return null; // lazy-loaded, not known yet
+    if (!history.length && !transientUserPrompt) return 0;
+    const lastAssistantIndex = history.findLastIndex(m => m.role === 'assistant' && !m.compaction_marker);
+    const latest = history[lastAssistantIndex];
+    const prefix = history.slice(0, lastAssistantIndex + 1);
+    let fingerprint = latest?.context_fingerprint ?? (latest ? legacyUsageFingerprints.get(latest) : null);
+    if (latest?.input_tokens > 0 && fingerprint == null && !prefix.some(m => m.compaction_marker)) {
+        // Adopt legacy usage once without mutating persisted history on a read.
+        // Later prompt/history changes are checked against this original shape.
+        fingerprint = chatContextFingerprint(tab, prefix);
+        legacyUsageFingerprints.set(latest, fingerprint);
+    }
+    // Legacy usage remains useful on unmodified history. A legacy compacted
+    // tail is ambiguous: its prompts can still describe the removed history.
+    const validUsage = latest?.input_tokens > 0 && !history.slice(lastAssistantIndex + 1).some(m => m.compaction_marker) && (
+        fingerprint == null
+            ? !prefix.some(m => m.compaction_marker)
+            : fingerprint !== '' && fingerprint === chatContextFingerprint(tab, prefix)
+    );
+    if (validUsage) {
+        const pending = history.slice(lastAssistantIndex + 1).filter(m => m.role !== 'system' && !m.compaction_marker);
+        return latest.input_tokens + (latest.output_tokens || 0)
+            + pending.reduce((sum, message) => sum + estimateChatMessageTokens(message), 0)
+            + (transientUserPrompt ? estimateChatMessageTokens({ content: transientUserPrompt }) : 0);
+    }
+    // Never substitute cumulative billing totals or surviving stale prompt usage.
+    return buildChatRequestContext(tab, history, transientUserPrompt).messages
+        .reduce((sum, message) => sum + estimateChatMessageTokens(message), 0);
+}
+
+export function estimateChatContextPct(tab, capacity, history = tab?.messages) {
+    const tokens = estimateChatContextTokens(tab, history);
+    return capacity > 0 && tokens != null ? tokens / capacity * 100 : null;
 }
 
 // ── Tab Creation ───────────────────────────────────────────────────────────────
@@ -113,11 +220,21 @@ function normalizeChatTab(tab) {
     };
 }
 
+function withoutThinkingContent(message) {
+    const clone = { ...message, thinking_content: undefined };
+    // Cloning must carry the original usage snapshot, not re-adopt usage under
+    // whatever system/history context happens to be active when thinking is stripped.
+    if (clone.context_fingerprint == null && legacyUsageFingerprints.has(message)) {
+        clone.context_fingerprint = legacyUsageFingerprints.get(message);
+    }
+    return clone;
+}
+
 function sanitizeThinkingContent(messages) {
     if (settingsState.persist_thinking_content) return messages || [];
     return (messages || []).map(message => {
         if (!message?.thinking_content) return message;
-        return { ...message, thinking_content: undefined };
+        return withoutThinkingContent(message);
     });
 }
 
@@ -219,6 +336,7 @@ async function _loadTabMessages(id) {
             full.messages = sanitizeThinkingContent(full.messages);
         }
         Object.assign(tab, full);
+        estimateChatContextTokens(tab); // capture legacy validity before callers edit settings/history
         tab._loaded = true;
     } catch (e) {
         console.error(`_loadTabMessages failed for ${id}:`, e);
@@ -729,6 +847,9 @@ export function normalizeTabForSave(tab) {
     delete t.quick_guide_pending;
     t.messages = (t.messages || []).map(m => {
         const msg = { ...m };
+        if (msg.context_fingerprint == null && legacyUsageFingerprints.has(m)) {
+            msg.context_fingerprint = legacyUsageFingerprints.get(m);
+        }
         delete msg.cumulativeInputTokens;
         delete msg.cumulativeOutputTokens;
         if (!settingsState.persist_thinking_content) {
@@ -747,7 +868,7 @@ function stripThinkingFromLoadedTabs() {
         tab.messages = tab.messages.map(message => {
             if (!message?.thinking_content) return message;
             tabChanged = true;
-            return { ...message, thinking_content: undefined };
+            return withoutThinkingContent(message);
         });
         if (tabChanged) {
             changed = true;
@@ -762,6 +883,8 @@ function stripThinkingFromLoadedTabs() {
 export function scheduleChatPersist(tab) {
     const t = tab || activeChatTab();
     if (!t) return;
+    chatViewBindings.refreshChatTelemetry?.();
+    refreshTopCockpit();
     window.dispatchEvent(new CustomEvent('replyPlanChanged'));
     if (!chat._persistTab) {
         chat._persistTab = debounce(async (tabToSave) => {
