@@ -130,6 +130,8 @@ pub const FEATURES_FILE_BROWSER_LAUNCHER_JS: &str =
 pub const FEATURES_FILE_BROWSER_JS: &str = include_str!("../../static/js/features/file-browser.js");
 pub const FEATURES_HF_BROWSE_JS: &str = include_str!("../../static/js/features/hf-browse.js");
 pub const FEATURES_LHM_JS: &str = include_str!("../../static/js/features/lhm.js");
+pub const FEATURES_LLAMA_CPP_DETAILS_JS: &str =
+    include_str!("../../static/js/features/llama-cpp-details.js");
 pub const FEATURES_LLAMA_UPDATER_JS: &str =
     include_str!("../../static/js/features/llama-updater.js");
 pub const FEATURES_METRIC_CARDS_JS: &str = include_str!("../../static/js/features/metric-cards.js");

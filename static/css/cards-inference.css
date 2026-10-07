@@ -3084,3 +3084,190 @@
 @media (max-width: 950px) {
     .metrics-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+
+/* llama.cpp server-total efficiency: a quiet tier below the hardware strip. */
+.inference-efficiency {
+    grid-column: 1 / -1;
+    min-width: 0;
+}
+
+.inference-efficiency .dashboard-section-title { margin: 10px 0 12px; }
+
+.efficiency-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.efficiency-grid[data-card-count="1"] { grid-template-columns: minmax(0, 1fr); }
+.efficiency-card { padding-bottom: 14px; gap: 12px; }
+
+.inference-efficiency[hidden],
+.efficiency-card[hidden],
+.efficiency-readout[hidden],
+.efficiency-bar[hidden],
+.server-model-identity[hidden] { display: none; }
+
+.efficiency-card__head,
+.efficiency-card__body {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.efficiency-card__head .mcard__label { margin: 0; }
+
+.efficiency-scope,
+.efficiency-status,
+.efficiency-counts,
+.efficiency-note {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.efficiency-scope { flex-shrink: 0; }
+.efficiency-readout { display: flex; flex-direction: column; gap: 6px; }
+.efficiency-breakdown { flex: 1; min-width: 0; }
+
+.efficiency-bar {
+    height: 8px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: var(--surface-card-overlay);
+    border: 1px solid var(--border-subtle);
+}
+
+.efficiency-bar[data-awaiting="true"] { border-style: dashed; }
+.efficiency-bar__fill { width: 0; height: 100%; background: var(--color-accent); }
+.efficiency-bar--acceptance { height: 6px; }
+
+.efficiency-counts {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 6px 14px;
+    margin-top: 6px;
+    line-height: 1.5;
+}
+
+.efficiency-note { margin: 0; }
+
+.server-model-identity {
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    margin-top: 6px;
+    overflow-wrap: anywhere;
+}
+
+.server-identity {
+    min-width: 0;
+    max-width: 100%;
+    flex: 1;
+}
+
+.llama-runtime-card {
+    grid-column: span 2;
+    min-width: 0;
+    justify-content: flex-start;
+    /* Hardware cards define row height; exhaustive metadata must not size it. */
+    contain: size;
+    contain-intrinsic-block-size: 112px;
+    overflow: hidden;
+}
+
+.llama-runtime-card[hidden] { display: none; }
+.llama-runtime-card .mcard__label { margin: 0; }
+
+.llama-runtime-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.llama-runtime-model { font-size: 16px; font-weight: 600; color: var(--color-text-primary); }
+.llama-runtime-model, .llama-runtime-meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.llama-runtime-meta { font-size: 12px; color: var(--color-text-muted); }
+.llama-runtime-badges { display: flex; gap: 6px; flex-wrap: nowrap; overflow: hidden; margin-top: auto; }
+.llama-runtime-badges .llama-runtime-capability { white-space: nowrap; flex-shrink: 0; }
+.llama-runtime-details-button {
+    font: inherit;
+    font-size: 12px;
+    color: var(--color-text-secondary);
+    background: transparent;
+    border: 0;
+    padding: 3px 0;
+    cursor: pointer;
+}
+.llama-runtime-details-button:hover { color: var(--color-text-primary); }
+.llama-runtime-details-button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; border-radius: 3px; }
+.llama-runtime-popover {
+    box-sizing: border-box;
+    width: min(560px, calc(100vw - 32px));
+    max-height: calc(100dvh - 48px);
+    overflow: auto;
+    padding: 20px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    background: var(--surface-card-base);
+    color: var(--color-text-secondary);
+    box-shadow: 0 16px 48px rgb(0 0 0 / 25%);
+}
+.llama-runtime-popover::backdrop { background: rgb(0 0 0 / 25%); }
+.llama-runtime-popover h3 { margin: 0; font-size: 16px; color: var(--color-text-primary); }
+.llama-runtime-facts {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    padding: 0;
+    margin: 18px 0 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--color-text-secondary);
+}
+
+.llama-runtime-fact {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+}
+
+.llama-runtime-fact--wide { grid-column: 1 / -1; }
+.llama-runtime-facts dt { color: var(--color-text-muted); flex-shrink: 0; font-size: 11px; }
+.llama-runtime-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+.llama-runtime-capabilities {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 4px 6px;
+}
+
+.llama-runtime-capability {
+    display: inline-flex;
+    max-width: 100%;
+    padding: 2px 7px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    background: var(--surface-card-overlay);
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+/* All tones resolve through the shared theme tokens, including the light palette. */
+[data-theme="light"] .efficiency-card,
+[data-theme="light"] .llama-runtime-card { color: var(--color-text-secondary); }
+
+@media (max-width: 700px) {
+    .efficiency-grid { grid-template-columns: minmax(0, 1fr); }
+    .efficiency-card__body { flex-wrap: wrap; }
+    .efficiency-breakdown { flex-basis: 160px; }
+    .llama-runtime-card { grid-column: 1 / -1; }
+    .llama-runtime-facts { column-gap: 12px; }
+    #server-header { grid-column: 1 / -1; width: 100%; box-sizing: border-box; flex-direction: column; flex-wrap: nowrap; }
+    #server-header .server-identity { flex: 0 0 auto; width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .efficiency-card, .llama-runtime-card { transition: none; }
+}

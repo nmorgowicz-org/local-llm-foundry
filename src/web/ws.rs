@@ -270,8 +270,9 @@ pub fn ws_route(
                                         .iter()
                                         .find(|ss| ss.id == active_session_id)
                                         .map(|ss| match &ss.mode {
-                                            crate::state::SessionMode::Spawn { port, .. } => {
-                                                format!("http://127.0.0.1:{port}")
+                                            crate::state::SessionMode::Spawn { port, bind_host, .. } => {
+                                                let host = crate::web::api::upstream::local_connect_host(bind_host.as_deref());
+                                                format!("http://{host}:{port}")
                                             }
                                             crate::state::SessionMode::Attach {
                                                 endpoint, ..
@@ -280,6 +281,8 @@ pub fn ws_route(
                                             }
                                         })
                                         .unwrap_or_default();
+                                    let active_session_endpoint_tag =
+                                        crate::inference::llama_cpp::telemetry_endpoint_tag(&active_session_endpoint);
                                     let active_backend = sessions
                                         .iter()
                                         .find(|ss| ss.id == active_session_id)
@@ -369,6 +372,7 @@ pub fn ws_route(
                                         "active_session_error": active_session_error,
                                          "active_session_id": active_session_id,
                                          "active_session_endpoint": active_session_endpoint,
+                                         "active_session_endpoint_tag": active_session_endpoint_tag,
                                          "active_session_preset_id": active_session_preset_id,
                                          "active_session_model_identity": active_session_model_identity,
                                         "local_metrics_available": local_metrics_available,
@@ -480,6 +484,64 @@ fn is_full_capabilities(caps: &MetricsCapabilities, _sleep_mode: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn full_ws_payload_includes_comparable_endpoint_tags() {
+        for (endpoint, expected_tag) in [
+            ("http://host:8001/", "http://host:8001"),
+            (
+                "http://user:password@host:8001",
+                "sha256:5060e47947dfab9807e4d705486d2967db47b6e3deb62061de46c2e58dc85526",
+            ),
+            (
+                "http://host:8001/proxy/?api_key=secret",
+                "sha256:caf0000ec0b93a2616855d1a63581960d2ccda36947d2fb2274f7f95a27b8052",
+            ),
+            (
+                "http://host:8001/proxy/?api_key=secret/",
+                "sha256:54f24c7817c6ebaa5e4aaf5e8f16739b783fe8424fd76fff522e1dacf98c607a",
+            ),
+        ] {
+            let state = AppState::default();
+            *state.active_session_id.lock().unwrap() = "source-session".into();
+            state
+                .sessions
+                .lock()
+                .unwrap()
+                .push(crate::state::Session::new_attach(
+                    "source-session".into(),
+                    "test".into(),
+                    endpoint.into(),
+                    None,
+                ));
+            state.ui_settings.lock().unwrap().ws_push_interval_ms = 200;
+            {
+                let mut metrics = state.llama_metrics.lock().unwrap();
+                metrics.telemetry_session_id = Some("source-session".into());
+                metrics.telemetry_endpoint = Some(expected_tag.into());
+            }
+            let mut client = warp::test::ws()
+                .path("/ws")
+                .handshake(ws_route(state))
+                .await
+                .unwrap();
+            let message = tokio::time::timeout(Duration::from_secs(5), client.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let payload: serde_json::Value =
+                serde_json::from_str(message.to_str().unwrap()).unwrap();
+            assert_eq!(payload["mode"], "off");
+            assert_eq!(payload["active_session_endpoint"], endpoint);
+            assert_eq!(payload["active_session_endpoint_tag"], expected_tag);
+            assert_eq!(payload["llama"]["telemetry_endpoint"], expected_tag);
+            assert_eq!(payload["llama"]["telemetry_session_id"], "source-session");
+            let tag = payload["active_session_endpoint_tag"].as_str().unwrap();
+            assert!(!tag.contains("secret"));
+            assert!(!tag.contains("password"));
+            drop(client);
+        }
+    }
 
     #[test]
     fn is_full_capabilities_returns_true_when_full() {

@@ -19,6 +19,18 @@ const history = new Map();
 // Timestamp of the last speed-card sample: throttled to one per second so
 // HISTORY_LIMIT samples span a true 5 minutes.
 let speedLastPush = 0;
+let historyOwner = null;
+
+function selectHistoryOwner(view) {
+    // Counters belong to an inference target, not the lifetime of this module.
+    // Detach and backend changes also replace the owner, clearing every plot
+    // and the speed throttle before the first sample from the new target.
+    const owner = JSON.stringify([view.backend ?? null, view.sessionId ?? null, view.endpointTag ?? null, view.attached ?? null]);
+    if (owner === historyOwner) return;
+    historyOwner = owner;
+    history.clear();
+    speedLastPush = 0;
+}
 
 
 function pushHistory(key, value) {
@@ -75,10 +87,9 @@ const METRIC_DEFS = [
             setPairValue('decode', decode, 't/s');
             setValue('mv-prefill', prefill, fmtSpeed);
             const decodeSub = view.state === 'generating' ? 'Decode now'
-                : decode != null ? 'Decode last request' : 'Decode';
+                : decode != null ? 'Decode last measured' : 'Decode';
             const prefillSub = view.state === 'reading' ? 'Prefill now'
-                : view.state === 'generating' ? 'Prefill this request'
-                    : prefill != null ? 'Prefill last request' : 'Prefill';
+                : prefill != null ? 'Prefill last measured' : 'Prefill';
             setText('ms-decode', decodeSub);
             setText('ms-prefill', prefillSub);
             const svg = document.getElementById('mc-card-speed');
@@ -178,6 +189,8 @@ export function initMetricCards() {
     const grid = document.getElementById('metrics-grid');
     if (!grid || grid.dataset.built === '1') return;
     grid.dataset.built = '1';
+    // Preserve the static llama.cpp runtime card while building registry cards.
+    const runtimeCard = document.getElementById('llama-runtime-card');
     // Markup is built entirely from the static registry below — no user data.
     setHtml(grid, METRIC_DEFS.map((m) => {
         if (m.build) {
@@ -188,6 +201,7 @@ export function initMetricCards() {
             `<div class="mcard__sub" id="ms-${m.key}"></div>` +
             sparklineMarkup(m.tone) + `</div>`;
     }).join(''));
+    if (runtimeCard) grid.appendChild(runtimeCard);
 }
 
 // ── Update ──────────────────────────────────────────────────────────────────────
@@ -230,6 +244,7 @@ function drawPaths(line, area, values, max) {
 
 export function updateMetricCards(view) {
     initMetricCards();
+    selectHistoryOwner(view);
     for (const m of METRIC_DEFS) {
         const card = document.getElementById(`mc-card-${m.key}`);
         if (!card) continue;

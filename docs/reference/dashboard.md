@@ -28,6 +28,13 @@ See also: [Navigation](navigation.md)
 
 ## Monitoring Surfaces
 
+### Loaded model badge
+
+The topmost endpoint strip contains an engine/model badge, distinct from the llama.cpp **version-update pill** in the navigation below. Hover shows the untruncated identity; clicking, or pressing Enter/Space while focused, opens **Loaded model** details. Escape, Close, or clicking outside dismisses it.
+
+For llama.cpp, matching runtime telemetry supplies the actual model-file basename and a separately labelled API alias. When a file is not reported, the details say so and show the session's **Model identity** instead of claiming an alias is a filename. Filesystem directories are omitted. The badge also supports Rapid-MLX session identities, updates when the active model changes, and clears on detach.
+
+
 ### Top-nav cockpit
 
 The compact strip in the top navigation shows the current endpoint state without leaving the active tab:
@@ -35,13 +42,12 @@ The compact strip in the top navigation shows the current endpoint state without
 | Chip | Description |
 | ------ | ------------- |
 | **State** | Current llama.cpp activity such as idle, attach, prompting, or generating |
-| **Throughput** | Prompt (`P`) and generation (`G`) speed in tokens/sec |
-| **Context** | Highest context-pressure percentage across open chat tabs |
-| **GPU** | Temperature of the hottest available GPU |
-| **Sparkline** | Recent generation-speed history |
+| **Throughput** | Generation (`G`) followed by prompt (`P`) speed in tokens/sec |
+| **Speculation** | Tokens per decode pass when speculative decoding is active |
+| **Context** | Highest context-pressure percentage across open chat tabs; the cockpit ends here |
 | **Memory pressure** | Shown when memory pressure is warning or critical (macOS `host_statistics64` + kernel pressure sysctl, Linux PSI, Windows `GlobalMemoryStatusEx`) |
 
-Clicking the cockpit jumps to the Server tab. On narrower layouts the GPU and sparkline chips collapse first, then the context chip.
+Clicking the cockpit jumps to the Server tab. It sizes to its contents without a trailing graph or horizontal scrolling. On narrower layouts the speculation chip collapses and the remaining chips wrap when necessary; context stays visible. GPU temperature and speed-history graphs live in the Server dashboard.
 
 ### Capability popover
 
@@ -80,6 +86,10 @@ The Server tab is the main monitoring dashboard. It combines llama.cpp inference
 
 The metric strip is registry-driven: llama.cpp and Rapid-MLX feed the same cards through a normalized snapshot, so the layout no longer swaps when the backend changes.
 
+Sparkline history belongs to the active backend, session, and endpoint. Switching targets or detaching clears all card histories and the speed sampling throttle, so a new target's first sample never joins the previous target's graph. Speed samples are limited to one per second and each history retains up to 300 samples; idle preserves the current target's speed history.
+
+Live llama.cpp rate windows rebase when a slot's task changes, active slots join or leave, or per-request token counters decrease. Idle slots' retained output counts are excluded from the live total. Decode and prefill baselines reset together, while the last measured positive rates remain available at idle; their age only resets when a fresh measurement is reported.
+
 ![Server Tab](../screenshots/neutral--settings-server-tab.png)
 
 ### Fine-grained metrics
@@ -102,6 +112,30 @@ Additional metrics and indicators shown on the Server tab when data is available
 - **Activity rail**: A timeline bar of recent requests, color-coded by prompt vs. generation phases.
 - **Recent task strip**: Summarizes the last completed task (task ID, output tokens, duration, estimated t/s).
 - **Request stats**: Total completed requests and average duration over the last 10 minutes.
+
+### llama.cpp efficiency and runtime facts
+
+The llama.cpp Server dashboard places two compact efficiency cards below the shared performance grid. They describe accumulated **server totals**, not individual requests, chat sessions, or draft positions. The shared Speed card remains the source of measured prefill and decode throughput.
+
+| Measure | Calculation and meaning |
+| ------- | ----------------------- |
+| **Prompt cache reuse** | `cached / (cached + processed)` using `prompt_tokens_cached_total` and `prompt_tokens_processed_total`; cached and newly processed token counts appear alongside the percentage |
+| **Draft acceptance** | `accepted / drafted` using `speculative_accepted_tokens_total` and `speculative_draft_tokens_total`; the percentage describes accepted draft tokens |
+| **Tokens / verification** | `1 + accepted / verification_steps` using `speculative_verification_steps_total`; the leading one represents the ordinary token produced by a verification step |
+
+`prompt_tokens_processed_total` preserves availability for the upstream `llamacpp:prompt_tokens_total` counter; `prompt_tokens_cached_total` comes from `llamacpp:prompt_tokens_cached_total`. The speculative totals come from `llamacpp:spec_decode_num_accepted_tokens_total`, `llamacpp:spec_decode_num_draft_tokens_total`, and `llamacpp:spec_decode_num_drafts_total` (verification steps). Missing samples remain null through ingestion and rendering.
+
+Tokens / verification is a token yield, **not a speedup multiplier**. It does not account for draft-model cost, verification latency, hardware, or batching. Neither acceptance nor cache reuse measures wall-clock speedup.
+
+Missing counters are unavailable, not zero. Prompt cache reuse requires both cache counters. Speculative effectiveness requires enabled speculation and the counters for at least one supported ratio; unsupported submetrics remain hidden. Explicitly disabled speculation hides that card even if historical speculative counters exist. Present zero counters remain visible with their zero counts; a zero denominator displays an em dash and **Awaiting activity** rather than a fabricated percentage. A measured zero numerator with a positive denominator displays a real zero ratio (or a token yield of one). Cards disappear when their required counters are withdrawn.
+
+The Server header identifies the attached model. A **Runtime** card in the hardware grid shows a compact summary: the model name, quantization, parameter count, short server build, and up to four supported capability badges (Vision, Video, Tools, and Reasoning). Model and metadata lines truncate visually when needed; full values remain available in **Details**. Unsupported capabilities and empty adapter lists are omitted from the summary, while loaded adapters have a count indicator. The **Details** button opens a dismissible popover with the full build, readable capability flags including unsupported ones, and adapter names/scales. This overlay does not expand the card or resize neighbouring hardware cards. It spans two hardware-card columns on desktop, flows naturally into available grid space, and takes the full grid width on narrow screens. Parameter counts use compact labels such as **8B**. The primary model readout uses the basename of the server-reported model file, not its API alias. Details lists **Model** and **Alias** separately. If no model file is reported, an available alias is explicitly labelled **Alias**, never presented as a model filename. Its whitelist contains model name, parameter count, quantization, server build, recognized capabilities, and adapter identity/scale metadata when reported. Model and adapter names use basenames, not filesystem paths. Arbitrary properties, raw prompts, chat templates, context/slot internals, and command-line arguments are not runtime facts on this surface. Missing facts are omitted rather than inferred from a preset.
+
+Runtime metadata comes from the attached llama.cpp endpoint's `/props` and `/v1/models` surfaces, with optional `/lora-adapters` reads only when the server explicitly reports that it is awake. Adapter discovery does not wake a sleeping server. These low-frequency reads use an endpoint-scoped cache, independently of fast-changing performance counters; failed or unsupported reads are throttled too and degrade to absent facts instead of retaining an old model indefinitely. Changing the endpoint, API credentials, or inference session resets the metadata cache. Switching endpoint or session also clears retained dashboard runtime facts and efficiency values, and changing backend or detaching hides the llama.cpp-only surfaces. Server counter resets change the accumulated ratios; the dashboard does not reinterpret them as per-request measurements.
+
+Metadata refresh attempts are limited to once per 60 seconds per active target. Each optional HTTP exchange has a two-second deadline and a 1 MiB response limit; adapter lists are capped at 64 entries. Sampled telemetry carries session and endpoint source tags so the frontend can reject a frame assembled across a target switch. Endpoints with embedded URL credentials, query strings, or fragments use opaque SHA-256 tags shared by the telemetry source and WebSocket target, preserving telemetry without including those secrets in the tags. Both source tags must match; untagged default snapshots are unavailable. Clearing optional facts preserves the attribution of retained legacy metrics.
+
+Deterministic renderer coverage uses the `dashboard-llama-cpp-efficiency` screenshot scenario: a dark overview, dark and light hardware grids with the full real-world capability list, an open Details popover, separate 430px reduced-motion runtime and efficiency crops, awaiting activity, and cache-only states. The fixtures do not attach a model and do not establish live-inference performance.
 
 ### Tuning panel
 
@@ -408,7 +442,7 @@ The Context Window card has two toggleable views:
 Behavior:
 
 - When llama.cpp exposes live KV-cache tokens, the card uses that.
-- When it does not, the card derives context pressure from chat message history (cumulative output tokens plus last request's input tokens vs. capacity).
+- When it does not, the card derives context pressure from the latest completed request's prompt plus completion tokens, not cumulative outputs across turns. History edits, deletions, regeneration, and compaction invalidate measured occupancy; until fresh usage arrives, estimates reflect the current retained history.
 - Chats unchanged for 7+ days are dimmed and labeled "stale."
 - If a smaller model is loaded and one or more chats exceed its context window, a warning toast appears with per-chat "Compact now" buttons.
 

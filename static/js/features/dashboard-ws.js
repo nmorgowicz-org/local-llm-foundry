@@ -53,6 +53,7 @@ import Router from './router.js';
 import { showToast, showToastWithActions } from './toast.js';
 import { loadPresets, syncSelectedPresetSelection } from './presets.js';
 import { updateStateCard, updateMetricCards } from './metric-cards.js';
+import { renderLlamaCppDetails, isLlamaTelemetryForTarget } from './llama-cpp-details.js';
 
 // ── Cached DOM elements (populated at init time to avoid repeated queries) ──
 let cachedElements = null;
@@ -627,13 +628,19 @@ function updateAttachDetach(d) {
 
     const isSpawn = d.session_mode === 'spawn';
     const isAttach = d.session_mode === 'attach' && d.active_session_endpoint;
+    const endpointLabel = document.getElementById('server-endpoint-label');
+    if (endpointLabel) endpointLabel.style.display = isSpawn ? 'none' : '';
 
     // Welcome screen running-server banner
     _updateSetupRunningStrip(isSpawn && d.server_running, d.active_session_endpoint);
 
     if (isSpawn) {
-        // Spawn mode: server header is irrelevant — URL is implicit from config
-        if (serverHeader) serverHeader.style.display = 'none';
+        // Spawn endpoints have no attach controls, but llama.cpp identity/facts remain visible.
+        const hasLlamaIdentity = d.backend === 'llama_cpp' && d.active_session_id
+            && (d.active_session_model_identity
+                || (isLlamaTelemetryForTarget(d.llama, d.active_session_id,
+                    d.active_session_endpoint_tag ?? d.active_session_endpoint) && d.llama?.runtime_facts));
+        if (serverHeader) serverHeader.style.display = hasLlamaIdentity ? '' : 'none';
         btnAttach.style.display = 'none';
         btnDetach.style.display = 'none';
         if (btnDetachTop) btnDetachTop.style.display = 'none';
@@ -739,12 +746,26 @@ function updateServerState(d) {
     if (btnSwitchModel) btnSwitchModel.style.display = (d.local_server_running || false) ? '' : 'none';
 
     setLastServerState(d.server_running);
-    setLastLlamaMetrics(d.llama);
+    const llamaMetrics = d.backend === 'llama_cpp' && d.active_session_id
+        && isLlamaTelemetryForTarget(d.llama, d.active_session_id,
+            d.active_session_endpoint_tag ?? d.active_session_endpoint)
+        ? (d.llama ?? null) : null;
+    setLastLlamaMetrics(llamaMetrics);
+    // Run before monitor/overlay early returns so switching clears hidden stale facts too.
+    renderLlamaCppDetails({
+        backend: d.backend,
+        attached: !!d.active_session_id,
+        sessionId: d.active_session_id,
+        endpoint: d.active_session_endpoint,
+        endpointTag: d.active_session_endpoint_tag,
+        attachedModel: d.active_session_model_identity,
+        metrics: llamaMetrics,
+    });
     setLastRapidMlxMetrics(d.backend === 'rapid_mlx' ? (d.inference ?? null) : null);
     // Normalize context capacity to the actual loaded limit.
     // KV-only reports can be stale; prefer reported capacity, then KV max, then a
     // safe default so context-pressure math is consistent across telemetry and chat.
-    const l = d.llama;
+    const l = llamaMetrics;
     let capacity = l?.context_capacity_tokens || l?.kv_cache_max || 0;
     if (capacity <= 0) capacity = l?.context_size || 0;
     capacity = Math.max(0, Math.min(capacity, 2_097_152));
@@ -858,6 +879,8 @@ function updateInferenceMetrics(d) {
     const view = {
         backend,
         attached: hasActiveEndpoint,
+        sessionId: d.active_session_id ?? null,
+        endpointTag: d.active_session_endpoint_tag ?? d.active_session_endpoint ?? null,
         state: sessionError ? 'error' : generationActive ? 'generating' : reading ? 'reading' : 'idle',
         queued,
         running: slotsProcessing || rapidRunning,

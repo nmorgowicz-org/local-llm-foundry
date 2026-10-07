@@ -51,6 +51,7 @@ import scenarioSpawnWizardRapidCatalog from './scenarios/wizard-rapidmlx/spawn-w
 import scenarioRapidMlxRuntime from './scenarios/features/rapid-mlx-runtime.mjs';
 import scenarioRapidMlxLive from './scenarios/validation/rapid-mlx-live.mjs';
 import scenarioDashboardRapidMlx from './scenarios/features/dashboard-rapid-mlx.mjs';
+import scenarioDashboardLlamaCppEfficiency from './scenarios/features/dashboard-llama-cpp-efficiency.mjs';
 import scenarioSettings from './scenarios/config/settings.mjs';
 import scenarioAppHomeMigration from './scenarios/config/app-home-migration.mjs';
 import scenarioAppearancePalette from './scenarios/config/appearance-palette.mjs';
@@ -139,6 +140,7 @@ Scenarios:
     panels           Chat config panels (behavior, model, style, debug)
     dashboard        Server tab, GPU section
     dashboard-rapid-mlx  Deterministic Rapid-MLX telemetry cards (dark and light)
+    dashboard-llama-cpp-efficiency  Deterministic llama.cpp efficiency + runtime facts (no attach; dark/light/narrow)
 
    Setup wizard
      spawn-wizard           3-step wizard: model & profiles, hardware & VRAM, launch summary/spawn
@@ -191,6 +193,7 @@ Examples:
    SCREENSHOT_PORT=8900 node tests/ui/capture.mjs --scenario tune-panel
    SCREENSHOT_PORT=8901 node tests/ui/capture.mjs --scenario llama-updater
   SCREENSHOT_PORT=8902 node tests/ui/capture.mjs --scenario chat-history-qa
+  SCREENSHOT_PORT=8903 node tests/ui/capture/index.mjs --scenario dashboard-llama-cpp-efficiency --no-attach
    RUNNING_PORT=8080 node tests/ui/capture.mjs --scenario dashboard
    RUNNING_PORT=8080 node tests/ui/capture.mjs --scenario gifs --gpu-only
    SCREENSHOT_PORT=8910 node tests/ui/capture.mjs --scenario rapid-mlx-live
@@ -307,6 +310,26 @@ export const SCENARIOS = {
     // Synthetic DOM-only telemetry cards are intentionally cross-platform; they
     // do not query platform-info or launch a Rapid executable.
     'dashboard-rapid-mlx': { run: scenarioDashboardRapidMlx, category: 'features', runtime: 'rapidmlx-local' },
+    'dashboard-llama-cpp-efficiency': {
+        run: scenarioDashboardLlamaCppEfficiency, category: 'features', runtime: 'llamacpp-local',
+        contract: {
+            intent: 'Capture llama.cpp server-total efficiency and whitelisted runtime facts with deterministic production-renderer fixtures and held WebSocket transport.',
+            expectedOutputs: [
+                'dashboard-llama-cpp-efficiency--llamacpp-local--dark-overview.png',
+                'dashboard-llama-cpp-efficiency--llamacpp-local--dark-runtime-card.png',
+                'dashboard-llama-cpp-efficiency--llamacpp-local--runtime-details.png',
+                'dashboard-llama-cpp-efficiency--llamacpp-local--model-badge.png',
+                'dashboard-llama-cpp-efficiency--llamacpp-local--loaded-model.png',
+                'dashboard-llama-cpp-efficiency--llamacpp-local--compact-cockpit.png',
+                'dashboard-llama-cpp-efficiency--llamacpp-local--narrow-cockpit.png',
+                'dashboard-llama-cpp-efficiency--llamacpp-local--light-runtime-card.png',
+                'dashboard-llama-cpp-efficiency--llamacpp-local--narrow-runtime-reduced-motion.png',
+                'dashboard-llama-cpp-efficiency--llamacpp-local--narrow-efficiency-reduced-motion.png',
+                'dashboard-llama-cpp-efficiency--llamacpp-local--awaiting-activity.png',
+                'dashboard-llama-cpp-efficiency--llamacpp-local--cache-only.png',
+            ],
+        },
+    },
     'spawn-wizard': {
         run: scenarioSpawnWizard, category: 'wizard-llamacpp', runtime: 'llamacpp-local',
         contract: {

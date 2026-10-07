@@ -124,10 +124,10 @@
                         <div class="agent-tooltip-details" id="agent-tooltip-details"></div>
                     </div>
                 </div>
-                <div id="engine-indicator" class="engine-indicator" style="display:none;" data-tooltip="Active local engine and model">
+                <button id="engine-indicator" class="engine-indicator" type="button" style="display:none;" popovertarget="engine-model-popover" aria-label="View loaded model" data-tooltip="View loaded model">
                     <span class="engine-indicator-label"></span>
                     <span class="engine-indicator-dot"></span>
-                </div>
+                </button>
                 <button class="nav-monitoring-chip" id="nav-monitoring-chip" type="button" aria-pressed="false" title="Dashboard monitoring active — click to pause telemetry" style="display:none;">
                     <span class="status-dot ok" id="nav-monitoring-dot"></span>
                     <span id="nav-monitoring-label">Monitoring</span>
@@ -180,8 +180,6 @@
                 <span class="nav-cockpit-chip nav-cockpit-throughput" id="nav-cockpit-throughput" title="Generation and prompt throughput">G &mdash; &middot; P &mdash;</span>
                 <span class="nav-cockpit-chip nav-cockpit-spec hidden" id="nav-cockpit-spec" title="Speculative decoding efficiency — tokens accepted per decode pass"></span>
                 <span class="nav-cockpit-chip nav-cockpit-context" id="nav-cockpit-context" title="Highest chat context pressure">Ctx &mdash;</span>
-                <span class="nav-cockpit-chip nav-cockpit-gpu" id="nav-cockpit-gpu" title="Hottest GPU temperature">GPU &mdash;</span>
-                <svg class="metric-sparkline nav-cockpit-spark" id="nav-cockpit-spark" viewBox="0 0 120 28" preserveAspectRatio="none" aria-hidden="true"></svg>
             </div>
         </div>
         <div class="nav-right">
@@ -572,8 +570,9 @@
                 <div class="page active" id="page-server">
             <div class="dashboard-grid">
                 <div class="dashboard-header" id="server-header">
-                    <div>
+                    <div class="server-identity">
                         <h2>Server</h2>
+                        <div class="server-model-identity" id="server-model-identity" hidden></div>
                     </div>
                     <div class="dashboard-header-actions">
                         <label class="num-sm" id="server-endpoint-label">
@@ -791,7 +790,72 @@
                             <div class="state-progress" id="state-progress"><div class="state-progress__bar" id="state-bar" style="width:0%"></div></div>
                         </div>
                         <!-- Registry-driven metric cards (built by metric-cards.js) -->
-                        <div class="metrics-grid" id="metrics-grid"></div>
+                        <div class="metrics-grid" id="metrics-grid">
+                            <article class="mcard llama-runtime-card" id="llama-runtime-card" aria-labelledby="llama-runtime-heading" hidden>
+                                <div class="llama-runtime-head">
+                                    <h4 class="mcard__label" id="llama-runtime-heading">Runtime</h4>
+                                    <button type="button" class="llama-runtime-details-button" id="llama-runtime-details-button" popovertarget="llama-runtime-popover" aria-label="View full runtime details">Details</button>
+                                </div>
+                                <div class="llama-runtime-model" id="llama-runtime-model"></div>
+                                <div class="llama-runtime-meta" id="llama-runtime-meta"></div>
+                                <div class="llama-runtime-badges" id="llama-runtime-badges"></div>
+                            </article>
+                        </div>
+                        <section class="llama-runtime-popover" id="llama-runtime-popover" popover aria-labelledby="llama-runtime-popover-heading">
+                            <div class="llama-runtime-head">
+                                <h3 id="llama-runtime-popover-heading">Runtime details</h3>
+                                <button type="button" class="llama-runtime-details-button" popovertarget="llama-runtime-popover" popovertargetaction="hide" aria-label="Close runtime details">Close</button>
+                            </div>
+                            <dl class="llama-runtime-facts" id="llama-runtime-facts"></dl>
+                        </section>
+                        <section class="inference-efficiency" id="inference-efficiency" aria-labelledby="efficiency-heading" hidden>
+                            <h3 class="dashboard-section-title" id="efficiency-heading">Inference efficiency</h3>
+                            <div class="efficiency-grid" id="efficiency-grid">
+                                <article class="mcard efficiency-card" id="prompt-cache-reuse" aria-labelledby="cache-reuse-heading" hidden>
+                                    <div class="efficiency-card__head">
+                                        <h4 class="mcard__label" id="cache-reuse-heading">Prompt cache reuse</h4>
+                                        <span class="efficiency-scope">Server totals</span>
+                                    </div>
+                                    <div class="efficiency-card__body">
+                                        <div class="efficiency-readout">
+                                            <span class="mcard__value" id="cache-reuse-value">&mdash;</span>
+                                            <span class="efficiency-status" id="cache-reuse-status"></span>
+                                        </div>
+                                        <div class="efficiency-breakdown">
+                                            <div class="efficiency-bar" id="cache-reuse-bar" role="progressbar" aria-label="Cached share of prompt tokens" aria-valuemin="0" aria-valuemax="100">
+                                                <div class="efficiency-bar__fill" id="cache-reuse-fill"></div>
+                                            </div>
+                                            <div class="efficiency-counts">
+                                                <span id="cache-reuse-cached"></span>
+                                                <span id="cache-reuse-processed"></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </article>
+                                <article class="mcard efficiency-card" id="speculative-effectiveness" aria-labelledby="spec-effectiveness-heading" hidden>
+                                    <div class="efficiency-card__head">
+                                        <h4 class="mcard__label" id="spec-effectiveness-heading">Speculative effectiveness</h4>
+                                        <span class="efficiency-scope">Server totals</span>
+                                    </div>
+                                    <div class="efficiency-card__body">
+                                        <div class="efficiency-readout" id="spec-acceptance-metric">
+                                            <span class="mcard__value" id="spec-acceptance-value">&mdash;</span>
+                                            <span class="efficiency-status">Draft acceptance</span>
+                                        </div>
+                                        <div class="efficiency-readout" id="spec-verification-metric">
+                                            <span class="mcard__value" id="spec-tokens-per-verification">&mdash;</span>
+                                            <span class="efficiency-status">Tokens / verification</span>
+                                        </div>
+                                    </div>
+                                    <div class="efficiency-bar efficiency-bar--acceptance" id="spec-acceptance-bar" role="progressbar" aria-label="Accepted share of drafted tokens" aria-valuemin="0" aria-valuemax="100" hidden>
+                                        <div class="efficiency-bar__fill" id="spec-acceptance-fill"></div>
+                                    </div>
+                                    <div class="efficiency-status" id="spec-effectiveness-status"></div>
+                                    <div class="efficiency-counts" id="spec-effectiveness-counts"></div>
+                                    <p class="efficiency-note">Not a speedup measurement</p>
+                                </article>
+                            </div>
+                        </section>
                         <div class="widget-card widget-metric widget-context" style="display:none;">
                             <div class="metric-card-topline">
                                 <div class="context-topline-main">
@@ -7725,5 +7789,12 @@
         </div>
     </div>
 </div>
+<section id="engine-model-popover" class="engine-model-popover" popover aria-labelledby="engine-model-heading">
+    <div class="engine-model-header">
+        <h2 id="engine-model-heading">Loaded model</h2>
+        <button type="button" popovertarget="engine-model-popover" popovertargetaction="hide" aria-label="Close loaded model details">Close</button>
+    </div>
+    <dl id="engine-model-facts"></dl>
+</section>
 </body>
 </html>

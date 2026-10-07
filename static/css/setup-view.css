@@ -913,8 +913,10 @@
     font-size: 0.7rem;
   }
 
-  .content-area {
+  .content-area,
+  body.sidebar-collapsed .content-area {
     margin-left: 0;
+    width: 100%;
   }
 
   .page,

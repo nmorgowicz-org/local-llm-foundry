@@ -475,9 +475,12 @@ test.describe('inference metric rendering', () => {
     await expect(page.locator('#m-speculative-chip')).toContainText('Speculative · ngram_map_k · n_max 48');
     await expect(page.locator('#m-sampler-params-inline')).toContainText('top_k');
     await expect(page.locator('#m-sampler-params-inline')).toContainText('top_p');
-    await expect(page.locator('#m-activity-rail .activity-segment.active')).toBeVisible();
-    await expect(page.locator('#m-activity-rail .activity-phase.prompt')).toBeVisible();
-    await expect(page.locator('#m-activity-rail .activity-phase.generation')).toBeVisible();
+    // HEAD retains these renderers inside the hidden inference-detail-grid.
+    // Assert their DOM output without reviving the excluded request/slot UI.
+    await expect(page.locator('#m-activity-rail .activity-segment.active')).toHaveCount(1);
+    await expect(page.locator('#m-activity-rail .activity-phase.prompt')).toHaveCount(1);
+    await expect(page.locator('#m-activity-rail .activity-phase.generation')).toHaveCount(1);
+    await expect(page.locator('#m-activity-rail')).toBeHidden();
   });
 
   test('request rail leaves completion markers for finished tasks', async ({ page }) => {
@@ -492,8 +495,9 @@ test.describe('inference metric rendering', () => {
       renderActivityRail(false);
     });
 
-    await expect(page.locator('#m-activity-rail .activity-segment.complete')).toBeVisible();
-    await expect(page.locator('#m-activity-rail .activity-marker')).toBeVisible();
+    await expect(page.locator('#m-activity-rail .activity-segment.complete')).toHaveCount(1);
+    await expect(page.locator('#m-activity-rail .activity-marker')).toHaveCount(1);
+    await expect(page.locator('#m-activity-rail')).toBeHidden();
   });
 
   test('smooths live output estimate across recent polling samples', async ({ page }) => {
