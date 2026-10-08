@@ -1218,40 +1218,13 @@ pub fn run() -> Result<()> {
     let shutdown_sessions_path = state.sessions_path.clone();
     let shutdown_state = state.clone();
 
-    // Run tray on the main thread when a desktop session is available.
-    // Headless Linux servers still keep the web UI/API running.
-    #[cfg(feature = "native-tray")]
-    {
-        if should_start_tray(&args) {
-            match crate::tray::run_tray(state, port, app_config.config_dir.clone()) {
-                Ok(()) => {
-                    // A normal tray-loop return means the user selected Quit.
-                    // Do not leave the API server parked alive with only its
-                    // tray icon gone.
-                    std::process::exit(0);
-                }
-                Err(e) => {
-                    eprintln!("[warn] Tray unavailable: {e}");
-                    eprintln!("[info] Continuing in headless mode with web/API server");
-                }
-            }
-        } else {
-            println!("[info] Tray disabled (no graphical session)");
-            park_forever();
-        }
-    }
-
-    #[cfg(not(feature = "native-tray"))]
-    {
-        let _ = state;
-        println!("[info] Tray disabled in this build");
-    }
-
-    // Graceful shutdown handler
+    // Graceful shutdown handler. This MUST be registered before the tray block below: that block
+    // never returns (the tray loop or `park_forever`), so a handler placed after it was
+    // unreachable and Ctrl+C killed the app without stopping the inference backend.
     {
         let chat_storage = shutdown_chat_storage;
         let sessions_path = shutdown_sessions_path;
-        let state = shutdown_state;
+        let state = shutdown_state.clone();
         runtime.spawn(async move {
             // Wait for shutdown signal (platform-specific)
             #[cfg(unix)]
@@ -1305,6 +1278,40 @@ pub fn run() -> Result<()> {
             println!("[info] Shutdown complete");
             std::process::exit(0);
         });
+    }
+
+    // Run tray on the main thread when a desktop session is available.
+    // Headless Linux servers still keep the web UI/API running.
+    #[cfg(feature = "native-tray")]
+    {
+        if should_start_tray(&args) {
+            match crate::tray::run_tray(state, port, app_config.config_dir.clone()) {
+                Ok(()) => {
+                    // A normal tray-loop return means the user selected Quit.
+                    // Do not leave the API server parked alive with only its
+                    // tray icon gone. Stop the backend first: it has its own
+                    // process group and would otherwise outlive the app.
+                    let _ = runtime.block_on(tokio::time::timeout(
+                        std::time::Duration::from_secs(15),
+                        crate::llama::server::stop_server(&shutdown_state),
+                    ));
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("[warn] Tray unavailable: {e}");
+                    eprintln!("[info] Continuing in headless mode with web/API server");
+                }
+            }
+        } else {
+            println!("[info] Tray disabled (no graphical session)");
+            park_forever();
+        }
+    }
+
+    #[cfg(not(feature = "native-tray"))]
+    {
+        let _ = state;
+        println!("[info] Tray disabled in this build");
     }
 
     // Park main thread (tray or headless)
