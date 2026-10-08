@@ -28,24 +28,50 @@ function el(tag, className, text) {
     return node;
 }
 
+const infoCache = new Map();
+
 /**
- * Attach the download row + Start interception to a launch card.
+ * Resolve a Rapid-MLX source (catalog alias or owner/repo) to its repo, size, quantization
+ * label and cache state via /api/rapid-mlx/model-status. Memoized per source; the cache is
+ * dropped on failure and after a download completes so state never goes stale.
+ */
+export function rapidModelInfo(source) {
+    const src = String(source || '').trim();
+    if (!src || isLocalPath(src)) return Promise.resolve(null);
+    if (!infoCache.has(src)) {
+        const pending = fetch(`/api/rapid-mlx/model-status?source=${encodeURIComponent(src)}`, { headers: headers() })
+            .then(resp => (resp.ok ? resp.json() : null))
+            .then(info => {
+                if (!info || !info.ok) infoCache.delete(src);
+                return info && info.ok ? info : null;
+            })
+            .catch(() => {
+                infoCache.delete(src);
+                return null;
+            });
+        infoCache.set(src, pending);
+    }
+    return infoCache.get(src);
+}
+
+/**
+ * Decorate a Rapid-MLX launch card: add the quantization chip (the MLX analogue of a
+ * GGUF Q4_K_M tag) and, when the model isn't in a usable cache, the download row.
  * @param {HTMLElement} card
  * @param {string} source catalog alias or `owner/repo`
  */
 export async function attachRapidDownloadState(card, source) {
     const src = String(source || '').trim();
-    if (!src || isLocalPath(src)) return;
+    const status = await rapidModelInfo(src);
+    if (!status || !document.contains(card)) return;
 
-    let status;
-    try {
-        const resp = await fetch(`/api/rapid-mlx/model-status?source=${encodeURIComponent(src)}`, { headers: headers() });
-        if (!resp.ok) return;
-        status = await resp.json();
-    } catch {
-        return;
+    if (status.quant && !card.querySelector('.launch-chip--quant')) {
+        const chip = el('span', 'launch-chip launch-chip--quant', status.quant);
+        chip.title = `Quantization: ${status.quant}`;
+        const chips = card.querySelector('.launch-card-chips');
+        if (chips) chips.insertBefore(chip, chips.children[2] || null);
     }
-    if (!status || !status.ok || status.cached || !document.contains(card)) return;
+    if (status.cached) return;
 
     const repoId = status.repo_id;
     const row = el('div', 'launch-card-dl');
@@ -104,6 +130,7 @@ export async function attachRapidDownloadState(card, source) {
             }
             if (job.state === 'complete') {
                 showToast(`Downloaded ${repoId}`, 'success');
+                infoCache.delete(src);
                 finish('complete');
                 return;
             }

@@ -2187,6 +2187,9 @@ fn model_status_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
                         && !source.contains('/')
                         && model_cache::alias_launch_hub(&models_dir, &repo_id).is_some();
                     let cached = in_app_cache || in_system_cache;
+                    let mut hubs = vec![model_cache::app_hub_dir(&models_dir)];
+                    hubs.extend(model_cache::system_hub_dir());
+                    let quant = model_cache::quant_label(&hubs, &repo_id, &source);
                     Ok(Box::new(warp::reply::json(&serde_json::json!({
                         "ok": true,
                         "source": source,
@@ -2194,6 +2197,7 @@ fn model_status_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
                         "cached": cached,
                         "in_system_cache": in_system_cache,
                         "size_bytes": size_bytes,
+                        "quant": quant,
                     }))) as ApiReply)
                 }
             },

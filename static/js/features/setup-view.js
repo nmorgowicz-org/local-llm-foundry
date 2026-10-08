@@ -11,7 +11,7 @@ import { showToast, showConfirmDialog, showPromptDialog } from './toast.js';
 import Router from './router.js';
 import { buildEstimateBody, rapidEstimatePolicyFromConfig } from './vram-estimate.js';
 import { openBundleDrawer } from './preset-bundle-drawer.js';
-import { attachRapidDownloadState } from './rapid-model-download.js';
+import { attachRapidDownloadState, rapidModelInfo } from './rapid-model-download.js';
 import { engineDescriptor, engineHueStyle, renderEngineTag } from '../core/engine-descriptor.js';
 
 // ── Model / preset classification (from GGUF-derived metadata) ────────────────
@@ -1357,9 +1357,17 @@ async function _fetchCardVramEstimates(availBytes, availRamBytes, isUnified, bud
 
     const estimateCard = async (card) => {
         const preset = presets.find(p => p.id === card.dataset.presetId);
-        const modelPath = presetModelSource(preset);
+        let modelPath = presetModelSource(preset);
         if (!modelPath) return;
         const isRapidMlx = preset?.backend === 'rapid_mlx';
+        let rapidSizeBytes = 0;
+        if (isRapidMlx && !/[/\\]/.test(modelPath)) {
+            // Bare catalog alias: the estimator needs the real HF repo (and its size).
+            const info = await rapidModelInfo(modelPath);
+            if (!info || !info.repo_id) return;
+            modelPath = info.repo_id;
+            rapidSizeBytes = info.size_bytes || 0;
+        }
         const vramEl = card.querySelector('.launch-card-vram');
         if (!vramEl) return;
 
@@ -1373,6 +1381,7 @@ async function _fetchCardVramEstimates(availBytes, availRamBytes, isUnified, bud
                 ubatch_size: preset.ubatch_size || 1024,
                 ctk: isRapidMlx ? undefined : (preset.ctk || 'q8_0'),
                 ctv: isRapidMlx ? undefined : (preset.ctv || 'q8_0'),
+                ...(rapidSizeBytes ? { hf_repo_id: modelPath, model_size_bytes: rapidSizeBytes } : {}),
                 n_cpu_moe: preset.n_cpu_moe || 0,
                 gpu_layers: preset.gpu_layers ?? -1,
                 available_vram_bytes: availBytes,
@@ -1984,6 +1993,11 @@ export async function initLaunchFilters() {
     }
     bar.style.display = '';
 
+    // initLaunchFilters can run more than once (view init + first grid render):
+    // rebuild generated pills from scratch so they never duplicate, and wire
+    // static controls (All pills, tags, sort, group) by assignment so repeats are no-ops.
+    bar.querySelectorAll('.launch-filter-pills .launch-filter-pill:not([data-filter$="-all"])').forEach(b => b.remove());
+
     // Engine pills (GGUF/MLX etc.) come from the descriptor registry and only
     // show when the saved presets span more than one engine.
     const engineGroup = document.getElementById('setup-filter-engine-group');
@@ -1991,11 +2005,12 @@ export async function initLaunchFilters() {
     if (engineGroup && engineContainer) {
         const engineIds = [...new Set(userPresets.map(p => p.backend || 'llama_cpp'))];
         engineGroup.style.display = engineIds.length > 1 ? '' : 'none';
-        engineContainer.querySelector('[data-filter="engine-all"]')?.addEventListener('click', () => {
+        const engineAll = engineContainer.querySelector('[data-filter="engine-all"]');
+        if (engineAll) engineAll.onclick = () => {
             launchFilters.engine = null;
             updateFilterPillActive(engineContainer, 'engine-all');
             renderLaunchGrid();
-        });
+        };
         for (const id of engineIds) {
             const d = engineDescriptor(id);
             const btn = document.createElement('button');
@@ -2025,11 +2040,11 @@ export async function initLaunchFilters() {
     if (familyContainer) {
         // Keep "All" button
         const allBtn = familyContainer.querySelector('[data-filter="family-all"]');
-        if (allBtn) allBtn.addEventListener('click', () => {
+        if (allBtn) allBtn.onclick = () => {
             launchFilters.family = null;
             updateFilterPillActive(familyContainer, 'family-all');
             renderLaunchGrid();
-        });
+        };
         for (const fam of families) {
             const btn = document.createElement('button');
             btn.className = 'launch-filter-pill';
@@ -2050,11 +2065,11 @@ export async function initLaunchFilters() {
     if (sizeContainer) {
         const sizes = ['tiny', 'small', 'medium', 'large'];
         const allBtn = sizeContainer.querySelector('[data-filter="size-all"]');
-        if (allBtn) allBtn.addEventListener('click', () => {
+        if (allBtn) allBtn.onclick = () => {
             launchFilters.size = null;
             updateFilterPillActive(sizeContainer, 'size-all');
             renderLaunchGrid();
-        });
+        };
         for (const s of sizes) {
             const btn = document.createElement('button');
             btn.className = 'launch-filter-pill';
