@@ -72,6 +72,7 @@ pub enum RapidMlxSetting {
     PrefillBatchSize,
     CompletionBatchSize,
     ContextLength,
+    DefaultReasoningEffort,
     ReasoningMode,
     MllmVision,
     Embeddings,
@@ -93,6 +94,7 @@ impl RapidMlxSetting {
             Self::PrefillBatchSize => "prefill_batch_size",
             Self::CompletionBatchSize => "completion_batch_size",
             Self::ContextLength => "context_length",
+            Self::DefaultReasoningEffort => "default_reasoning_effort",
             Self::ReasoningMode => "reasoning_mode",
             Self::MllmVision => "mllm_vision",
             Self::Embeddings => "embeddings",
@@ -116,6 +118,7 @@ impl RapidMlxSetting {
             Self::PrefillBatchSize => has_flag("--prefill-batch-size"),
             Self::CompletionBatchSize => has_flag("--completion-batch-size"),
             Self::ContextLength => has_flag("--context-length"),
+            Self::DefaultReasoningEffort => has_flag("--default-reasoning-effort"),
             Self::ReasoningMode => has_flag("--reasoning"),
             Self::MllmVision => {
                 matches!(
@@ -151,6 +154,8 @@ impl RapidMlxSetting {
             Self::CompletionBatchSize => serde_json::json!(null),
             // Unset lets the runtime size the window from available memory.
             Self::ContextLength => serde_json::json!(null),
+            // Unset sends no flag, so the model template decides its own thinking depth.
+            Self::DefaultReasoningEffort => serde_json::json!(null),
             Self::ReasoningMode => serde_json::json!("auto"),
             Self::MllmVision => serde_json::json!("auto"),
             Self::Embeddings => serde_json::json!("auto"),
@@ -211,6 +216,17 @@ impl RapidMlxSetting {
                 }
                 Ok(())
             }
+            Self::DefaultReasoningEffort => match value.as_str() {
+                None | Some("") => Ok(()),
+                Some(effort) if super::command::REASONING_EFFORTS.contains(&effort) => Ok(()),
+                Some(effort) => invalid(
+                    format!(
+                        "default_reasoning_effort must be one of [{}], got '{effort}'",
+                        super::command::REASONING_EFFORTS.join(", ")
+                    ),
+                    "invalid_reasoning_effort",
+                ),
+            },
             Self::ContextLength => {
                 if let Some(n) = value.as_u64()
                     && !(512..=4_194_304).contains(&n)
@@ -330,6 +346,12 @@ impl RapidMlxSetting {
                     args.push(n.to_string());
                 }
             }
+            Self::DefaultReasoningEffort => {
+                if let Some(effort) = value.as_str().filter(|e| !e.is_empty()) {
+                    args.push("--default-reasoning-effort".into());
+                    args.push(effort.to_string());
+                }
+            }
             Self::GpuMemoryUtilization => {
                 if let Some(f) = value.as_f64()
                     && f != 0.9
@@ -425,6 +447,7 @@ pub fn all_settings() -> &'static [RapidMlxSetting] {
         RapidMlxSetting::PrefillBatchSize,
         RapidMlxSetting::CompletionBatchSize,
         RapidMlxSetting::ContextLength,
+        RapidMlxSetting::DefaultReasoningEffort,
         RapidMlxSetting::ReasoningMode,
         RapidMlxSetting::MllmVision,
         RapidMlxSetting::Embeddings,
@@ -865,6 +888,7 @@ mod tests {
                         RapidMlxSetting::PrefillBatchSize
                             | RapidMlxSetting::CompletionBatchSize
                             | RapidMlxSetting::ContextLength
+                            | RapidMlxSetting::DefaultReasoningEffort
                     )
             );
         }

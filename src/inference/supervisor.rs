@@ -372,12 +372,20 @@ pub fn redacted_spawn_command(launch: &SupervisedLaunch) -> String {
 /// every few seconds (or that LAN clients poll, like `/v1/models`). They bury everything else in the log view; failures and all other
 /// requests still pass through.
 fn is_monitoring_poll_noise(line: &str) -> bool {
-    const POLLED: [&str; 5] = [
+    // Rapid-MLX per-step chatter: periodic Metal memory samples and the request
+    // disconnect guard's poll counter. Neither carries information on success.
+    if line.contains("rapid_mlx.scheduler:[Metal memory] active=")
+        || line.contains("rapid_mlx.service.helpers:[disconnect_guard] poll #")
+    {
+        return true;
+    }
+    const POLLED: [&str; 6] = [
         "/health",
         "/health/ready",
         "/v1/status",
         "/v1/cache/stats",
         "/v1/models",
+        "/metrics",
     ];
     let Some(rest) = line.split("\"GET ").nth(1) else {
         return false;
@@ -397,8 +405,11 @@ mod tests {
             r#"INFO:     127.0.0.1:57672 - "GET /v1/cache/stats HTTP/1.1" 200 OK"#,
             r#"INFO:     127.0.0.1:57672 - "GET /health HTTP/1.1" 200 OK"#,
             r#"INFO:     127.0.0.1:57673 - "GET /v1/status HTTP/1.1" 200 OK"#,
+            "INFO:rapid_mlx.scheduler:[Metal memory] active=18.1GB peak=19.1GB cache=0.0GB step=1280 running=1 waiting=0",
+            "INFO:rapid_mlx.service.helpers:[disconnect_guard] poll #70 disconnected=False elapsed=35.1s",
             r#"INFO:     [::1]:50000 - "GET /health/ready HTTP/1.1" 200 OK"#,
             r#"INFO:     203.0.113.7:40000 - "GET /v1/models HTTP/1.1" 200 OK"#,
+            r#"INFO:     203.0.113.7:40000 - "GET /metrics HTTP/1.1" 200 OK"#,
         ] {
             assert!(is_monitoring_poll_noise(noise), "{noise}");
         }
@@ -406,6 +417,9 @@ mod tests {
             r#"INFO:     127.0.0.1:1 - "POST /v1/chat/completions HTTP/1.1" 200 OK"#,
             r#"INFO:     127.0.0.1:1 - "GET /health HTTP/1.1" 503 Service Unavailable"#,
             r#"INFO:     127.0.0.1:1 - "GET /v1/models/foo HTTP/1.1" 200 OK"#,
+            r#"INFO:     203.0.113.7:40000 - "GET /metrics HTTP/1.1" 500 Internal Server Error"#,
+            "INFO:rapid_mlx.scheduler:[Metal memory] OOM guard tripped",
+            "INFO:rapid_mlx.service.helpers:[disconnect_guard] client disconnected",
             "Error: something broke",
         ] {
             assert!(!is_monitoring_poll_noise(keep), "{keep}");

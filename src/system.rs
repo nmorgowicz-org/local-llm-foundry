@@ -1,6 +1,46 @@
 #[cfg(target_os = "macos")]
 use crate::gpu::mactop_cache;
+use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
 use sysinfo::System;
+
+/// CPU usage is a delta between samples. Keep both sysinfo's counters and the
+/// last valid load across requests; refreshing a new System twice immediately
+/// never provides a meaningful sampling interval.
+struct SystemSampler {
+    sys: System,
+    last_cpu_refresh: Instant,
+    cpu_load: u32,
+}
+
+impl SystemSampler {
+    fn new() -> Self {
+        let mut sys = System::new();
+        // Prime the counters, but do not publish sysinfo's first-sample usage.
+        sys.refresh_cpu_all();
+        Self {
+            sys,
+            last_cpu_refresh: Instant::now(),
+            cpu_load: 0,
+        }
+    }
+
+    fn refresh_cpu_if_due(&mut self, now: Instant) {
+        if !cpu_refresh_due(self.last_cpu_refresh, now) {
+            return;
+        }
+        self.sys.refresh_cpu_all();
+        self.cpu_load = get_cpu_load(&self.sys);
+        self.last_cpu_refresh = Instant::now();
+    }
+}
+
+fn cpu_refresh_due(previous: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(previous) >= sysinfo::MINIMUM_CPU_UPDATE_INTERVAL
+}
+
+static SYSTEM_SAMPLER: LazyLock<Mutex<SystemSampler>> =
+    LazyLock::new(|| Mutex::new(SystemSampler::new()));
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SystemMetrics {
@@ -161,13 +201,25 @@ impl Default for SystemMetrics {
 }
 
 pub fn get_system_metrics() -> SystemMetrics {
-    let mut sys = sysinfo::System::new_all();
-    sys.refresh_all();
+    let (sampled_cpu_load, sampled_cpu_clock_mhz, cpu_temp, cpu_temp_available, ram_info) = {
+        let mut sampler = SYSTEM_SAMPLER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        sampler.refresh_cpu_if_due(Instant::now());
+        sampler.sys.refresh_memory();
+        let (cpu_temp, cpu_temp_available) = get_cpu_temp(&sampler.sys);
+        (
+            sampler.cpu_load,
+            get_cpu_clock(&sampler.sys),
+            cpu_temp,
+            cpu_temp_available,
+            get_ram_info(&sampler.sys),
+        )
+    }; // Release the shared sampler before unrelated platform queries.
 
     let cpu_name = get_cpu_name();
-    let (cpu_temp, cpu_temp_available) = get_cpu_temp(&sys);
 
-    // On Apple Silicon, use mactop cache for accurate real-time clock, load, and power.
+    // On Apple Silicon, use mactop cache for real-time clock and power, not load.
     // The GPU poller populates this every ~500ms, so data is fresh.
     let (
         cpu_load,
@@ -188,7 +240,7 @@ pub fn get_system_metrics() -> SystemMetrics {
                 // Real utilization from sysinfo (average across all cores) —
                 // mactop's cluster_active is a frequency/residency ratio, not
                 // load: the S cluster reads 100% even while the machine idles.
-                let cpu_load = get_cpu_load(&sys);
+                let cpu_load = sampled_cpu_load;
 
                 // Use P-cluster frequency as the "main" clock (it's the one doing heavy work)
                 let cpu_clock_mhz = cache.p_cluster_freq_mhz;
@@ -207,8 +259,8 @@ pub fn get_system_metrics() -> SystemMetrics {
                 )
             } else {
                 // Cache not yet populated — fallback to sysinfo
-                let cpu_load = get_cpu_load(&sys);
-                let cpu_clock_mhz = get_cpu_clock(&sys);
+                let cpu_load = sampled_cpu_load;
+                let cpu_clock_mhz = sampled_cpu_clock_mhz;
                 (
                     cpu_load,
                     cpu_clock_mhz,
@@ -227,8 +279,8 @@ pub fn get_system_metrics() -> SystemMetrics {
         #[cfg(not(target_os = "macos"))]
         {
             (
-                get_cpu_load(&sys),
-                get_cpu_clock(&sys),
+                sampled_cpu_load,
+                sampled_cpu_clock_mhz,
                 0.0,
                 0.0,
                 0.0,
@@ -242,7 +294,7 @@ pub fn get_system_metrics() -> SystemMetrics {
         }
     };
 
-    let (ram_total_gb, ram_used_gb, ram_available_gb) = get_ram_info(&sys);
+    let (ram_total_gb, ram_used_gb, ram_available_gb) = ram_info;
     let memory_pressure = get_memory_pressure(ram_total_gb, ram_available_gb);
     let motherboard = get_motherboard();
     let (p_cores, s_cores, e_cores, p_cluster_name, secondary_cluster_name) = get_core_counts();
@@ -1698,5 +1750,38 @@ full avg10=2.50 avg60=0.50 avg300=0.05 total=45\n";
         let (some, full) = parse_linux_psi(text);
         assert!((some - 12.34).abs() < 1e-9);
         assert!((full - 2.50).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod cpu_sampling_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn cpu_refresh_respects_minimum_interval_without_sleeping() {
+        let previous = Instant::now();
+        let interval = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL;
+        assert!(!cpu_refresh_due(previous, previous));
+        assert!(!cpu_refresh_due(
+            previous,
+            previous + interval.saturating_sub(Duration::from_nanos(1))
+        ));
+        assert!(cpu_refresh_due(previous, previous + interval));
+        assert!(cpu_refresh_due(previous, previous + interval * 2));
+    }
+
+    #[test]
+    fn first_sample_is_placeholder_and_rapid_requests_preserve_history() {
+        let mut sampler = SystemSampler::new();
+        assert_eq!(sampler.cpu_load, 0);
+        // A cached valid sample must survive calls before the next interval.
+        sampler.cpu_load = 42;
+        let previous = sampler.last_cpu_refresh;
+        let cpu_count = sampler.sys.cpus().len();
+        sampler.refresh_cpu_if_due(previous);
+        assert_eq!(sampler.cpu_load, 42);
+        assert_eq!(sampler.last_cpu_refresh, previous);
+        assert_eq!(sampler.sys.cpus().len(), cpu_count);
     }
 }

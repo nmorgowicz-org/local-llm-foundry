@@ -81,6 +81,7 @@ pub fn parse_nvidia_csv(csv: &str) -> Result<BTreeMap<String, GpuMetrics>> {
                 sclk_mhz,
                 mclk_mhz,
                 metal_gpu_limit_mb: None,
+                ..GpuMetrics::default()
             },
         );
     }

@@ -20,6 +20,7 @@
 --default-frequency-penalty
 --default-min-p
 --default-presence-penalty
+--default-reasoning-effort
 --default-repetition-penalty
 --default-temperature
 --default-top-k

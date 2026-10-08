@@ -86,10 +86,10 @@ const METRIC_DEFS = [
             const prefill = view.prefillTps;
             setPairValue('decode', decode, 't/s');
             setValue('mv-prefill', prefill, fmtSpeed);
-            const decodeSub = view.state === 'generating' ? 'Decode now'
-                : decode != null ? 'Decode last measured' : 'Decode';
-            const prefillSub = view.state === 'reading' ? 'Prefill now'
-                : prefill != null ? 'Prefill last measured' : 'Prefill';
+            const decodeSub = view.decodeScope ? `Decode ${view.decodeScope}`
+                : decode != null ? 'Decode last measured' : 'Decode unavailable';
+            const prefillSub = view.prefillScope ? `Prefill ${view.prefillScope}`
+                : prefill != null ? 'Prefill last measured' : 'Prefill unavailable';
             setText('ms-decode', decodeSub);
             setText('ms-prefill', prefillSub);
             const svg = document.getElementById('mc-card-speed');
@@ -112,7 +112,7 @@ const METRIC_DEFS = [
         pick: (v) => v.waiting,
         unit: '',
         max: null,
-        sub: (v) => (v.running ? `${fmtNum(v.running)} running` : 'waiting requests'),
+        sub: (v) => (v.running == null ? 'Running count unavailable' : v.running ? `${fmtNum(v.running)} running` : 'waiting requests'),
     },
     {
         key: 'gpu',
@@ -121,22 +121,21 @@ const METRIC_DEFS = [
         pick: (v) => (v.gpu ? v.gpu.load : null),
         unit: '%',
         max: 100,
-        sub: (v) => (v.gpu ? v.gpu.name : ''),
+        sub: (v) => (v.gpu ? v.gpu.loadNote || v.gpu.name : ''),
     },
     {
         key: 'vram',
         label: 'VRAM',
         icon: 'layers',
-        pick: (v) => (v.gpu && v.gpu.unifiedTotal ? v.gpu.vramUsed / v.gpu.unifiedTotal : null),
+        pick: (v) => (v.gpu?.vramUsed != null && v.gpu.unifiedTotal > 0 ? v.gpu.vramUsed / v.gpu.unifiedTotal : null),
         unit: '',
         max: 1,
         value: (v) => (v.gpu ? `${fmtGb(v.gpu.vramUsed)}` : null),
-        // Apple Silicon memory is drawn from the whole unified pool, so the
-        // denominator is the pool size; the Metal wired-limit cap (the real
-        // ceiling for GPU-resident weights) goes in the sub-label.
+        // Hardware residency and wired limits are not runtime allocations/caps.
+        // Keep the physical pool denominator; runtime memory is shown separately.
         unitText: (v) => (v.gpu?.metalUnified ? `of ${fmtGb(v.gpu.unifiedTotal)} GB` : (v.gpu && v.gpu.vramTotal ? `/ ${fmtGb(v.gpu.vramTotal)} GB` : 'GB')),
         sub: (v) => (v.gpu?.metalUnified
-            ? `Metal cap ${fmtGb(v.gpu.vramTotal)} GB`
+            ? `Hardware Metal wired cap ${fmtGb(v.gpu.vramTotal)} GB`
             : (v.gpu ? v.gpu.name : '')),
     },
     {
@@ -151,11 +150,11 @@ const METRIC_DEFS = [
     },
     {
         key: 'power',
-        label: 'Power',
+        label: 'GPU power',
         icon: 'bolt',
         pick: (v) => (v.gpu ? v.gpu.power : null),
         unit: 'W',
-        sub: (v) => (v.gpu && v.gpu.powerLimit ? `of ${fmtNum(v.gpu.powerLimit)} W limit` : ''),
+        sub: (v) => (v.gpu && v.gpu.powerLimit ? `of ${fmtNum(v.gpu.powerLimit)} W limit` : 'GPU only; not CPU / SoC power'),
     },
     {
         key: 'cpu',
@@ -262,9 +261,14 @@ export function updateMetricCards(view) {
                 && nowMs - (speedLastPush || 0) >= 1000
             ) {
                 speedLastPush = nowMs;
-                const decoding = view.state === 'generating';
-                pushHistory('decode', decoding ? (view.decodeTps ?? 0) : 0);
-                pushHistory('prefill', decoding ? 0 : (view.prefillTps ?? 0));
+                // An inactive phase may plot zero; an active phase without a
+                // current rate is missing data and must not fabricate a zero.
+                const decodeActive = view.decodeActive ?? view.state === 'generating';
+                const prefillActive = view.prefillActive ?? view.state === 'reading';
+                if (!decodeActive) pushHistory('decode', 0);
+                else if (view.decodeCurrent) pushHistory('decode', view.decodeTps);
+                if (!prefillActive) pushHistory('prefill', 0);
+                else if (view.prefillCurrent) pushHistory('prefill', view.prefillTps);
             }
             m.update(view);
             continue;
@@ -275,7 +279,9 @@ export function updateMetricCards(view) {
         card.classList.toggle('mcard--na', na);
         if (na) {
             setValue(`mv-${m.key}`, null, String);
-            setText(`ms-${m.key}`, 'not available for this backend');
+            setText(`ms-${m.key}`, m.key === 'gpu' && view.gpu?.loadNote
+                ? view.gpu.loadNote : 'unavailable');
+            setText(`mu-${m.key}`, m.unit || '');
             const svg = card.querySelector('.mcard__spark');
             if (svg) {
                 drawPaths(svg.querySelector('.mcard__spark-line'), svg.querySelector('.mcard__spark-area'), []);

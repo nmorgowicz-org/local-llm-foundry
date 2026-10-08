@@ -2081,6 +2081,7 @@ export function openPresetModal(mode, section, seedPreset = null) {
         if (document.getElementById('modal-rapid-reasoning-mode')) {
             document.getElementById('modal-rapid-reasoning-mode').checked = reasoningModeChecked;
         }
+        setOpt('modal-rapid-reasoning-effort', p.rapid_mlx?.default_reasoning_effort || '');
         // Load Rapid-MLX sampling defaults into shared form fields
         if (p.rapid_mlx?.default_temperature != null) numOrEmpty('modal-temperature', p.rapid_mlx.default_temperature);
         if (p.rapid_mlx?.default_top_p != null) numOrEmpty('modal-top-p', p.rapid_mlx.default_top_p);
@@ -2136,6 +2137,12 @@ export function openPresetModal(mode, section, seedPreset = null) {
         setOpt('modal-llama-reasoning-effort', 'default');
         setOpt('modal-llama-reasoning-format', '');
         setOpt('modal-llama-reasoning-preserve', '');
+        // Only new presets get the single-stream default. A seeded explicit Auto
+        // (null/'') or sequence count remains an override.
+        const seedRapid = newPresetSeed?.rapid_mlx;
+        const seedMaxNumSeqs = seedRapid && Object.prototype.hasOwnProperty.call(seedRapid, 'max_num_seqs')
+            ? seedRapid.max_num_seqs : 1;
+        setOpt('modal-rapid-max-num-seqs', seedMaxNumSeqs == null ? '' : String(seedMaxNumSeqs));
         const workloadWrap = document.getElementById('modal-workload-policy-wrap');
         if (workloadWrap) workloadWrap.style.display = newPresetSeed?.bundle ? '' : 'none';
         setOpt('modal-workload-policy', newPresetSeed?.bundle?.workload_policy || 'general_chat');
@@ -3313,6 +3320,7 @@ function _buildFormPreset(existing) {
                     out.sampling_mode = samplingMode && samplingMode !== 'auto' ? samplingMode : null;
                     if (rmInput) out.reasoning_mode = rmInput.checked ? 'on' : 'off';
                     out.no_thinking = rmInput ? !rmInput.checked : false;
+                    out.default_reasoning_effort = strVal('modal-rapid-reasoning-effort') || null;
                     out.auto_tool_choice = !!document.getElementById('modal-rapid-auto-tool-choice')?.checked;
                     const specEnabled = !!document.getElementById('modal-rapid-speculative-enabled')?.checked;
                     const specSource = strVal('modal-rapid-speculative-source') || 'embedded';
@@ -3512,7 +3520,7 @@ const CHANGE_LABELS = {
 // a user could change reusable prompt storage or speculative decoding and be shown nothing.
 const RAPID_CHANGE_LABELS = {
     port: 'Port', model_source: 'Model', enable_thinking: 'Thinking Mode',
-    context_length: 'Context Length', host: 'Bind Host', served_model_name: 'Served Name',
+    context_length: 'Context Length', default_reasoning_effort: 'Default Reasoning Effort', host: 'Bind Host', served_model_name: 'Served Name',
     chat_template_file: 'Chat Template',
     reasoning_mode: 'Reasoning Mode', reasoning_parser: 'Reasoning Parser',
     tool_call_parser: 'Tool-call Parser', sampling_mode: 'Sampling Mode',

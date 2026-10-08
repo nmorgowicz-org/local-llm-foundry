@@ -808,6 +808,41 @@
                                 <div class="llama-runtime-badges" id="llama-runtime-badges"></div>
                             </article>
                         </div>
+                        <div class="dashboard-memory-health">
+                            <p class="efficiency-note" id="dashboard-memory-summary">Host memory pressure and swap telemetry unavailable</p>
+                            <p class="dashboard-memory-warning" id="dashboard-memory-warning" role="status" hidden></p>
+                        </div>
+                        <section class="rapid-dashboard-details" id="rapid-dashboard-details" aria-labelledby="rapid-dashboard-heading" hidden>
+                            <h3 class="dashboard-section-title" id="rapid-dashboard-heading">Rapid-MLX telemetry</h3>
+                            <p class="efficiency-note" id="rapid-telemetry-status">Telemetry unavailable</p>
+                            <div class="rapid-dashboard-grid">
+                                <article class="mcard" aria-labelledby="rapid-cache-heading">
+                                    <h4 class="mcard__label" id="rapid-cache-heading">Prefix &amp; multimodal cache · reported totals</h4>
+                                    <dl class="rapid-dashboard-facts" id="rapid-cache-facts"></dl>
+                                </article>
+                                <article class="mcard" aria-labelledby="rapid-outcome-heading">
+                                    <h4 class="mcard__label" id="rapid-outcome-heading">MTP &amp; request outcomes · reported totals</h4>
+                                    <dl class="rapid-dashboard-facts" id="rapid-outcome-facts"></dl>
+                                    <p class="efficiency-note">Acceptance is not a speedup measurement. Missing outcomes are not zero failures.</p>
+                                </article>
+                                <article class="mcard" aria-labelledby="rapid-memory-heading">
+                                    <h4 class="mcard__label" id="rapid-memory-heading">Runtime memory · current snapshot</h4>
+                                    <dl class="rapid-dashboard-facts" id="rapid-memory-facts"></dl>
+                                    <p class="efficiency-note">Allocator cache is reclaimable. Peak usage and hardware wired limits are not runtime allocation caps.</p>
+                                </article>
+                            </div>
+                            <div class="rapid-request-panel">
+                                <h4 class="mcard__label" id="rapid-requests-heading">Active request details</h4>
+                                <p class="efficiency-note" id="rapid-request-summary"></p>
+                                <div class="rapid-request-scroll" role="region" aria-labelledby="rapid-requests-heading" tabindex="0">
+                                    <table class="rapid-request-table">
+                                        <caption>Reported per-request fields; unavailable values are not inferred from aggregate throughput</caption>
+                                        <thead><tr><th scope="col">Request</th><th scope="col">Phase / status</th><th scope="col">Prompt tokens</th><th scope="col">Output / limit</th><th scope="col">Cached tokens</th><th scope="col">t/s</th><th scope="col">TTFT (s)</th><th scope="col">Elapsed (s)</th><th scope="col">Cache hit</th></tr></thead>
+                                        <tbody id="rapid-request-rows"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </section>
                         <section class="llama-runtime-popover" id="llama-runtime-popover" popover aria-labelledby="llama-runtime-popover-heading">
                             <div class="llama-runtime-head">
                                 <h3 id="llama-runtime-popover-heading">Runtime details</h3>
@@ -979,7 +1014,7 @@
                         </div>
                     </div>
                     <div class="viz-switcher-row">
-                        <div class="viz-switcher-label">Power</div>
+                        <div class="viz-switcher-label">GPU power</div>
                         <div class="viz-switcher-options" data-card="gpu" data-metric="power">
                             <button class="viz-option active" data-style="bar" title="Bar"><span class="viz-thumb viz-thumb-bar"></span>Bar</button>
                             <button class="viz-option" data-style="ring" title="Ring"><span class="viz-thumb viz-thumb-ring"></span>Ring</button>
@@ -3309,15 +3344,6 @@
                                          <option value="false">off</option>
                                      </select>
                                  </div>
-                                 <div class="pe-field">
-                                     <label class="pe-label" for="modal-rapid-reasoning-effort" title="Default sent as reasoning_effort on every chat request that doesn't override it.">Reasoning Effort</label>
-                                     <select class="pe-select" id="modal-rapid-reasoning-effort">
-                                         <option value="">(unset)</option>
-                                         <option value="low">low</option>
-                                         <option value="medium">medium</option>
-                                         <option value="high">high</option>
-                                     </select>
-                                 </div>
                              </div>
                               <div class="pe-field pe-row-rapid-prefix-cache" id="pe-row-rapid-cache-mode" style="display:none;">
                                   <label class="pe-label" for="modal-rapid-cache-mode" title="Auto uses the measured single-user coding-agent recommendation (8 GiB, 16 entries). Off disables the retained cache. Custom uses the fields below as configured.">Prompt Cache Mode</label>
@@ -3402,6 +3428,19 @@
                                            <input type="checkbox" class="pe-toggle-input" id="modal-rapid-reasoning-mode">
                                            <span class="pe-toggle-slider"></span>
                                        </div>
+                                   </div>
+                                   <div class="pe-field">
+                                       <label class="pe-label" for="modal-rapid-reasoning-effort" title="Reasoning effort applied to requests that send no reasoning setting of their own (--default-reasoning-effort). Auto sends nothing; Rapid-MLX then turns thinking off for plain chat requests from clients that don't ask for it.">Default reasoning effort</label>
+                                       <select class="pe-select" id="modal-rapid-reasoning-effort">
+                                           <option value="">Auto — model default</option>
+                                           <option value="none">none</option>
+                                           <option value="minimal">minimal</option>
+                                           <option value="low">low</option>
+                                           <option value="medium">medium</option>
+                                           <option value="high">high</option>
+                                           <option value="xhigh">xhigh</option>
+                                       </select>
+                                       <div class="pe-hint">For clients that send no reasoning setting. Set it to keep thinking on for every client.</div>
                                    </div>
                                </div>
                                 <!-- Web UI group (D26/A44) — Advanced only -->
@@ -3549,13 +3588,13 @@
                                 <div class="pe-field">
                                     <label class="pe-label" for="modal-rapid-max-num-seqs" title="Maximum sequences the scheduler batches at once.">Max batched sequences</label>
                                     <select class="pe-select" id="modal-rapid-max-num-seqs">
-                                        <option value="" selected>Auto — runtime default</option>
-                                        <option value="1">1 — single stream</option>
+                                        <option value="">Auto — runtime default</option>
+                                        <option value="1" selected>1 — single stream (new preset default)</option>
                                         <option value="4">4</option>
                                         <option value="8">8</option>
                                         <option value="16">16 — high concurrency</option>
                                     </select>
-                                    <div class="pe-field-hint">Range 1–256. Cannot be combined with speculative decoding.</div>
+                                    <div class="pe-field-hint">Range 1–256. New presets default to 1; Auto leaves scheduling to the runtime. MTP eligibility depends on the runtime, model, and request.</div>
                                 </div>
                                 <div class="pe-field">
                                     <label class="pe-label" for="modal-rapid-max-concurrent-requests" title="Maximum in-flight requests the server accepts.">Max concurrent requests</label>
@@ -4308,13 +4347,13 @@
                                  <div class="hardware-field">
                                      <label for="spawn-rapid-max-num-seqs" title="Maximum sequences the scheduler batches at once.">Max batched sequences</label>
                                      <select id="spawn-rapid-max-num-seqs">
-                                         <option value="" selected>Auto — runtime default</option>
-                                         <option value="1">1 — single stream</option>
+                                         <option value="">Auto — runtime default</option>
+                                         <option value="1" selected>1 — single stream (new preset default)</option>
                                          <option value="4">4</option>
                                          <option value="8">8</option>
                                          <option value="16">16 — high concurrency</option>
                                      </select>
-                                     <div class="field-hint">Range 1–256. Cannot be combined with speculative decoding, which owns its own scheduling.</div>
+                                     <div class="field-hint">Range 1–256. New presets default to 1; Auto leaves scheduling to the runtime. MTP eligibility depends on the runtime, model, and request.</div>
                                  </div>
                                  <div class="hardware-field">
                                      <label for="spawn-rapid-max-concurrent-requests" title="Maximum in-flight requests the server accepts.">Max concurrent requests</label>
@@ -4396,6 +4435,18 @@
                                         <span class="kv-unified-text">Allow thinking</span>
                                     </label>
                                 </div>
+                                 <div class="kv-inline-field">
+                                     <label for="spawn-rapid-reasoning-effort" title="Reasoning effort applied to requests that send no reasoning setting of their own (--default-reasoning-effort). Auto sends nothing; Rapid-MLX then turns thinking off for plain chat requests from clients that don't ask for it.">Default reasoning effort</label>
+                                     <select id="spawn-rapid-reasoning-effort">
+                                         <option value="">Auto — model default</option>
+                                         <option value="none">none</option>
+                                         <option value="minimal">minimal</option>
+                                         <option value="low">low</option>
+                                         <option value="medium">medium</option>
+                                         <option value="high">high</option>
+                                         <option value="xhigh">xhigh</option>
+                                     </select>
+                                 </div>
                                  <div class="kv-inline-field" style="flex:999 1 320px;">
                                       <div class="field-hint" style="margin:0;">The reasoning quality profile always pins active KV to int8. Turning this off adds <code>--no-thinking</code> without disabling that quality profile.</div>
                                  </div>

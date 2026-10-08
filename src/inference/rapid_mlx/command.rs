@@ -12,6 +12,9 @@ use std::path::PathBuf;
 /// the command line. Values reach the runtime as single argv entries, so the
 /// dangerous cases are option injection (a leading `-`) and whitespace or
 /// control characters that split or disguise the token.
+/// Values `rapid-mlx serve --default-reasoning-effort` accepts.
+pub(crate) const REASONING_EFFORTS: [&str; 6] = ["none", "minimal", "low", "medium", "high", "xhigh"];
+
 fn validate_launch_argument(argument: &str) -> Result<()> {
     if argument.is_empty() {
         anyhow::bail!("model launch argument must not be empty");
@@ -83,6 +86,7 @@ pub struct RapidMlxCommandBuilder {
     prefill_batch_size: Option<u64>,
     completion_batch_size: Option<u64>,
     context_length: Option<u32>,
+    default_reasoning_effort: Option<String>,
     prefill_step_size: Option<u32>,
     // Phase 7: reasoning/speculative
     reasoning_mode: Option<String>,
@@ -142,6 +146,7 @@ impl RapidMlxCommandBuilder {
             prefill_batch_size: None,
             completion_batch_size: None,
             context_length: None,
+            default_reasoning_effort: None,
             prefill_step_size: None,
             reasoning_mode: None,
             speculative_config: None,
@@ -266,6 +271,11 @@ impl RapidMlxCommandBuilder {
     }
     pub fn completion_batch_size(mut self, size: Option<u64>) -> Self {
         self.completion_batch_size = size;
+        self
+    }
+
+    pub fn default_reasoning_effort(mut self, effort: Option<String>) -> Self {
+        self.default_reasoning_effort = effort;
         self
     }
 
@@ -632,6 +642,21 @@ impl RapidMlxCommandBuilder {
             capabilities.require("--context-length")?;
             args.push("--context-length".to_string());
             args.push(tokens.to_string());
+        }
+        if let Some(effort) = self
+            .default_reasoning_effort
+            .as_deref()
+            .filter(|effort| !effort.is_empty())
+        {
+            if !REASONING_EFFORTS.contains(&effort) {
+                anyhow::bail!(
+                    "default_reasoning_effort must be one of {}; got {effort:?}",
+                    REASONING_EFFORTS.join(", ")
+                );
+            }
+            capabilities.require("--default-reasoning-effort")?;
+            args.push("--default-reasoning-effort".to_string());
+            args.push(effort.to_string());
         }
         if let Some(size) = self.prefill_step_size {
             if !(1..=2048).contains(&size) {
@@ -1155,6 +1180,33 @@ mod tests {
                 .iter()
                 .any(|a| a == "--tool-call-parser")
         );
+    }
+
+    #[test]
+    fn default_reasoning_effort_is_forwarded_validated_and_fails_closed() {
+        let build = |caps: &ServeCapabilities, effort: Option<&str>| {
+            RapidMlxCommandBuilder::new(
+                ResolvedRapidMlxLaunchModel::validated_alias("model").unwrap(),
+            )
+            .default_reasoning_effort(effort.map(String::from))
+            .build("rapid-mlx".into(), caps)
+        };
+        let supported = ServeCapabilities::from_help(
+            "--host --port --log-level --served-model-name --timeout --enable-prefix-cache --disable-prefix-cache --cache-memory-mb --hybrid-cache-entries --kv-disk-checkpoint-interval --tool-call-parser --reasoning-parser --enable-auto-tool-choice --no-thinking --reasoning --force-hybrid --no-hybrid --prefill-step-size --pflash --speculative-config --default-reasoning-effort",
+        );
+        let baseline = ServeCapabilities::verified_baseline();
+        let launch = build(&supported, Some("high")).unwrap();
+        assert!(
+            args(&launch)
+                .windows(2)
+                .any(|pair| pair == ["--default-reasoning-effort", "high"])
+        );
+        for unset in [None, Some("")] {
+            let launch = build(&baseline, unset).unwrap();
+            assert!(!args(&launch).iter().any(|a| a == "--default-reasoning-effort"));
+        }
+        assert!(build(&baseline, Some("high")).is_err());
+        assert!(build(&supported, Some("extreme")).is_err());
     }
 
     #[test]

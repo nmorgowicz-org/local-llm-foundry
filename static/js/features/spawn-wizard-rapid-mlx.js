@@ -554,6 +554,9 @@ export function applyReasoningModeLock() {
 
 export function applyRapidMlxDefaults() {
   const h = wizardState.hardware;
+  // Replay state, not a fallback: Auto ('') must survive profile refreshes and engine switches.
+  if (dom.maxNumSeqsSelect) dom.maxNumSeqsSelect.value = h.maxNumSeqs ?? '';
+  if (dom.maxConcurrentRequestsSelect) dom.maxConcurrentRequestsSelect.value = h.maxConcurrentRequests ?? '';
 
   if (!h.kvCacheDtype) {
     h.kvCacheDtype = 'int4';
@@ -671,6 +674,8 @@ if (dom.speculativeModelInput && !dom.speculativeModelInput.dataset.sidecarOverr
      wizardState.hardware.autoToolChoiceTouched = true;
    });
    dom.speculativeSourceSelect?.addEventListener('change', syncRapidSpeculativeFields);
+
+    bindSel(dom.reasoningEffortSelect, 'reasoningEffort');
 
     if (dom.reasoningModeCheck && !dom.reasoningModeCheck.dataset.bound) {
      dom.reasoningModeCheck.dataset.bound = '1';
@@ -1108,6 +1113,7 @@ export function buildRapidMlxConfig(h, m) {
     // vram-estimate.js — and it steers the wizard's own KV-dtype and context choices,
     // which do get sent. Left over from the workload-profile picker removed in 712c261.
     reasoning_mode: h.rapidReasoningMode || 'on',
+    default_reasoning_effort: h.reasoningEffort || null,
     ...(h.speculativeEnabled && {
       speculative_config: {
         method: 'mtp',

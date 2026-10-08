@@ -253,6 +253,11 @@ pub struct RapidMlxConfig {
     /// `None` lets the runtime size it from available memory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_length: Option<u32>,
+    /// Reasoning effort applied to requests that send no reasoning setting, passed as
+    /// `--default-reasoning-effort`. `None` sends no flag. Without it the runtime turns
+    /// thinking off for casual chat requests that carry no reasoning intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_effort: Option<String>,
     /// Prompt chunk processed per prefill step. The generic text default is 512;
     /// the UI raises this to 1536 for a verified native vision model profile.
     #[serde(default = "default_prefill_step_size")]
@@ -503,6 +508,7 @@ impl Default for RapidMlxConfig {
             prefill_batch_size: None,
             completion_batch_size: None,
             context_length: None,
+            default_reasoning_effort: None,
             prefill_step_size: default_prefill_step_size(),
             // Phase 7: reasoning/speculative
             reasoning_mode: None,
@@ -612,6 +618,7 @@ pub struct RapidMlxAdapter {
     pub prefill_batch_size: Option<u64>,
     pub completion_batch_size: Option<u64>,
     pub context_length: Option<u32>,
+    pub default_reasoning_effort: Option<String>,
     pub prefill_step_size: u32,
     pub reasoning_mode: Option<String>,
     pub speculative_config: Option<RapidMlxSpeculativeConfig>,
@@ -688,6 +695,7 @@ impl RapidMlxAdapter {
             prefill_batch_size: None,
             completion_batch_size: None,
             context_length: None,
+            default_reasoning_effort: None,
             prefill_step_size: default_prefill_step_size(),
             reasoning_mode: None,
             speculative_config: None,
@@ -756,6 +764,7 @@ impl RapidMlxAdapter {
         self.prefill_batch_size = config.prefill_batch_size;
         self.completion_batch_size = config.completion_batch_size;
         self.context_length = config.context_length;
+        self.default_reasoning_effort = config.default_reasoning_effort.clone();
         self.prefill_step_size = config.prefill_step_size;
         self.reasoning_mode = config.reasoning_mode.clone();
         self.speculative_config = config.speculative_config.clone();
@@ -1248,6 +1257,7 @@ pub(crate) fn apply_phase7_adapter_config(
         .prefill_batch_size(adapter.prefill_batch_size)
         .completion_batch_size(adapter.completion_batch_size)
         .context_length(adapter.context_length)
+        .default_reasoning_effort(adapter.default_reasoning_effort.clone())
         .prefill_step_size(Some(adapter.prefill_step_size))
         .reasoning_mode(adapter.reasoning_mode.clone())
         .speculative_config(speculative_config)

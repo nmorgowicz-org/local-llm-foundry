@@ -50,7 +50,6 @@ import scenarioSpawnWizardRapidMlxGif from './scenarios/wizard-rapidmlx/spawn-wi
 import scenarioSpawnWizardRapidCatalog from './scenarios/wizard-rapidmlx/spawn-wizard-rapid-catalog.mjs';
 import scenarioRapidMlxRuntime from './scenarios/features/rapid-mlx-runtime.mjs';
 import scenarioRapidMlxLive from './scenarios/validation/rapid-mlx-live.mjs';
-import scenarioDashboardRapidMlx from './scenarios/features/dashboard-rapid-mlx.mjs';
 import scenarioDashboardLlamaCppEfficiency from './scenarios/features/dashboard-llama-cpp-efficiency.mjs';
 import scenarioSettings from './scenarios/config/settings.mjs';
 import scenarioAppHomeMigration from './scenarios/config/app-home-migration.mjs';
@@ -139,7 +138,6 @@ Scenarios:
     model-browser    Intent-aware model picker from the Spawn Wizard (Rapid-MLX and llama.cpp)
     panels           Chat config panels (behavior, model, style, debug)
     dashboard        Server tab, GPU section
-    dashboard-rapid-mlx  Deterministic Rapid-MLX telemetry cards (dark and light)
     dashboard-llama-cpp-efficiency  Deterministic llama.cpp efficiency + runtime facts (no attach; dark/light/narrow)
 
    Setup wizard
@@ -307,9 +305,6 @@ export const SCENARIOS = {
     'panels': { run: scenarioPanels, setup: () => ({ extraArgs: seedModelsDirFixture() }), category: 'core', runtime: 'neutral' },
     'models': { run: scenarioModels, setup: () => ({ extraArgs: seedModelsDirFixture() }), category: 'models', runtime: 'neutral' },
     'dashboard': { run: scenarioDashboard, source: 'remote', category: 'core', runtime: 'neutral' },
-    // Synthetic DOM-only telemetry cards are intentionally cross-platform; they
-    // do not query platform-info or launch a Rapid executable.
-    'dashboard-rapid-mlx': { run: scenarioDashboardRapidMlx, category: 'features', runtime: 'rapidmlx-local' },
     'dashboard-llama-cpp-efficiency': {
         run: scenarioDashboardLlamaCppEfficiency, category: 'features', runtime: 'llamacpp-local',
         contract: {
