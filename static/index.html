@@ -454,6 +454,12 @@
                         <!-- Preset filter bar -->
                         <div class="launch-filter-bar" id="setup-filter-bar">
                             <div class="launch-filter-bar-left">
+                                <div class="launch-filter-group" id="setup-filter-engine-group" style="display:none;">
+                                    <span class="launch-filter-label">Engine</span>
+                                    <div class="launch-filter-pills" id="setup-filter-engine-pills">
+                                        <button class="launch-filter-pill" data-filter="engine-all" type="button">All</button>
+                                    </div>
+                                </div>
                                 <div class="launch-filter-group">
                                     <span class="launch-filter-label">Family</span>
                                     <div class="launch-filter-pills" id="setup-filter-family-pills">
@@ -572,6 +578,7 @@
                 <div class="dashboard-header" id="server-header">
                     <div class="server-identity">
                         <h2>Server</h2>
+                        <div id="server-engine-tag" hidden></div>
                         <div class="server-model-identity" id="server-model-identity" hidden></div>
                     </div>
                     <div class="dashboard-header-actions">

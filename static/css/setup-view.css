@@ -4334,3 +4334,7 @@ body.setup-active .sidebar-nav {
 [data-theme="light"] .launch-card[data-engine][style*="--engine-hue"] {
   background: linear-gradient(150deg, #fff, #f5f8ff);
 }
+
+/* Dashboard header engine tag reuses .engine-tag; accent comes from inline --engine-hue. */
+#server-engine-tag { --engine-accent: hsl(var(--engine-hue, 0) 70% 68%); --engine-accent-soft: hsl(var(--engine-hue, 0) 70% 60% / 0.14); --engine-accent-edge: hsl(var(--engine-hue, 0) 70% 62% / 0.45); }
+#server-engine-tag[hidden] { display: none; }

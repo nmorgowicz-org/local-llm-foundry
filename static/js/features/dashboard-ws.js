@@ -10,6 +10,7 @@
 
 import { formatMetricAge, formatMetricNumber, escapeHtml } from '../core/format.js';
 import { setHtml } from '../core/set-html.js';
+import { engineDescriptor, engineHueStyle, renderEngineTag } from '../core/engine-descriptor.js';
 import { deriveTelemetryGrade, gradeLabel, gradeStatusClass, gradeActionCopy } from '../features/telemetry-grade.js';
 import {
   sessionState,
@@ -752,6 +753,20 @@ function updateServerState(d) {
         ? (d.llama ?? null) : null;
     setLastLlamaMetrics(llamaMetrics);
     // Run before monitor/overlay early returns so switching clears hidden stale facts too.
+    {
+        const tagEl = document.getElementById('server-engine-tag');
+        if (tagEl) {
+            const attached = !!(d.active_session_id || d.session_mode === 'spawn');
+            const desc = engineDescriptor(d.backend);
+            const key = attached ? desc.id : '';
+            if (tagEl.dataset.engine !== key) {
+                tagEl.dataset.engine = key;
+                tagEl.hidden = !attached;
+                tagEl.style.cssText = attached ? engineHueStyle(desc) : '';
+                setHtml(tagEl, attached ? renderEngineTag(desc, escapeHtml) : '');
+            }
+        }
+    }
     renderLlamaCppDetails({
         backend: d.backend,
         attached: !!d.active_session_id,
