@@ -116,6 +116,9 @@ impl Supervisor {
         tokio::spawn(async move {
             let mut reader = BufReader::new(stream).lines();
             while let Ok(Some(line)) = reader.next_line().await {
+                if is_monitoring_poll_noise(&line) {
+                    continue;
+                }
                 let mut lines = buffer.lock().unwrap();
                 lines.push(line.clone());
                 if lines.len() > 200 {
@@ -365,8 +368,42 @@ pub fn redacted_spawn_command(launch: &SupervisedLaunch) -> String {
     parts.join(" \\\n  ")
 }
 
+/// True for a uvicorn access-log line recording a successful GET of an endpoint this app polls
+/// every few seconds. They bury everything else in the log view; failures and all other
+/// requests still pass through.
+fn is_monitoring_poll_noise(line: &str) -> bool {
+    const POLLED: [&str; 3] = ["/health", "/v1/status", "/v1/cache/stats"];
+    let Some(rest) = line.split("\"GET ").nth(1) else {
+        return false;
+    };
+    let Some((target, tail)) = rest.split_once(" HTTP/") else {
+        return false;
+    };
+    let path = target.split('?').next().unwrap_or(target);
+    POLLED.contains(&path) && tail.contains("\" 200")
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn poll_access_lines_are_filtered_but_other_traffic_is_kept() {
+        for noise in [
+            r#"INFO:     127.0.0.1:57672 - "GET /v1/cache/stats HTTP/1.1" 200 OK"#,
+            r#"INFO:     127.0.0.1:57672 - "GET /health HTTP/1.1" 200 OK"#,
+            r#"INFO:     127.0.0.1:57673 - "GET /v1/status HTTP/1.1" 200 OK"#,
+        ] {
+            assert!(is_monitoring_poll_noise(noise), "{noise}");
+        }
+        for keep in [
+            r#"INFO:     127.0.0.1:1 - "POST /v1/chat/completions HTTP/1.1" 200 OK"#,
+            r#"INFO:     127.0.0.1:1 - "GET /health HTTP/1.1" 503 Service Unavailable"#,
+            r#"INFO:     127.0.0.1:1 - "GET /v1/models HTTP/1.1" 200 OK"#,
+            "Error: something broke",
+        ] {
+            assert!(!is_monitoring_poll_noise(keep), "{keep}");
+        }
+    }
+
     use super::*;
 
     #[test]
