@@ -1279,6 +1279,19 @@ pub fn run() -> Result<()> {
 
             println!("\n[info] Shutdown signal received, finalizing...");
 
+            // The backend runs in its own process group, so the terminal's Ctrl+C never
+            // reaches it. Stop it here or it outlives the app and keeps its port.
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                crate::llama::server::stop_server(&state),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => eprintln!("[warn] Failed to stop inference backend: {}", e),
+                Err(_) => eprintln!("[warn] Timed out stopping inference backend"),
+            }
+
             // Checkpoint WAL
             if let Err(e) = chat_storage.checkpoint() {
                 eprintln!("[warn] Final checkpoint failed: {}", e);
