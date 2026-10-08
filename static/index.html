@@ -4109,6 +4109,32 @@
                         <p>Rapid-MLX owns Metal placement, cache blocks, and batching for this launch. These runtime controls remain separate from llama.cpp configuration.</p>
                         <div class="rapid-hardware-note">No llama.cpp GPU-layer, KV quantization, mmap, or speculative-decoding flags will be included.</div>
 
+                        <!-- Rapid-MLX model download (shown only when the model isn't in the launch cache) -->
+                        <div class="hf-download-panel" id="rapid-dl-panel" style="display:none;">
+                            <div id="rapid-dlp-idle">
+                                <div class="hf-dlp-dest-row">
+                                    <span class="hf-dlp-dest-label">Model:</span>
+                                    <span class="hf-dlp-dest-path" id="rapid-dlp-repo">—</span>
+                                </div>
+                                <div class="hf-dlp-warn" id="rapid-dlp-note"></div>
+                                <div class="hf-dlp-actions">
+                                    <button type="button" class="btn-wizard-primary" id="rapid-dlp-download-btn">Download to models folder</button>
+                                </div>
+                            </div>
+                            <div id="rapid-dlp-progress" style="display:none;">
+                                <div class="hf-dlp-progress-label">
+                                    <span id="rapid-dlp-progress-file"></span>
+                                    <span id="rapid-dlp-progress-pct"></span>
+                                </div>
+                                <div class="hf-dlp-bar-wrap"><div class="hf-dlp-bar" id="rapid-dlp-bar" style="width:0%"></div></div>
+                                <div class="hf-dlp-stats" id="rapid-dlp-stats"></div>
+                                <button type="button" class="btn-wizard-secondary" id="rapid-dlp-cancel-btn">Cancel download</button>
+                            </div>
+                            <div id="rapid-dlp-complete" style="display:none;" class="hf-dlp-complete-box">
+                                Downloaded — model ready. Click Next to continue.
+                            </div>
+                        </div>
+
                          <!-- Phase 7: Rapid-MLX advanced controls (moved here from wizard-main so they're visible) -->
                          <div class="rapid-only" id="spawn-rapid-advanced-fields" style="display:none;">
                              <div class="wizard-section-title" style="margin-top:16px;">Rapid-MLX advanced</div>

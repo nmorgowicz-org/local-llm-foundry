@@ -68,6 +68,7 @@ import {
   _applyScopeDefaultForEngine,
 } from './spawn-wizard-hf-browse.js';
 import { bindHfDownloadPanel } from './spawn-wizard-hf-download.js';
+import { bindRapidDownloadPanel, refreshRapidModelDownload, isRapidModelMissing } from './spawn-wizard-rapid-download.js';
 import {
   _openHwTagPicker,
   resetTagsRowOrigin,
@@ -825,6 +826,7 @@ export function initSpawnWizard() {
   initHfBrowseWidgets();
 
   bindHfDownloadPanel();
+  bindRapidDownloadPanel();
   bindSidebarTipsToggle();
   initSidebarColumnResizers();
 
@@ -2383,6 +2385,9 @@ function getStepGuardState(step = wizardState.currentStep) {
     // Workload/use-case is now chosen on page 1 and auto-applied with a sane
     // default (Phase 7B2's dedicated step-3 picker + confirmation gate was
     // redundant with it and has been removed).
+    if (isRapidModelMissing()) {
+      return error('Download the model above before continuing. Rapid-MLX serves it from your models folder.');
+    }
     if (wizardState.engine.selected === 'rapid_mlx') {
       return info('Rapid-MLX backend controls remain isolated from llama.cpp memory and speculation flags.');
     }
@@ -2608,6 +2613,7 @@ export function showStep(index) {
     // capability may populate an explicit recommendation; otherwise leave the
     // control unset and let the server-owned safe default apply.
     if (!rapid) _updateSpecHint(dom.specTypeSelect?.value || '');
+    if (rapid) void refreshRapidModelDownload();
     // Trigger download panel now (moved from file-select to hardware step entry)
     const dlPanel = document.getElementById('hf-download-panel');
     if (wizardState.model.source === 'hf' && wizardState.model.hfFile) {

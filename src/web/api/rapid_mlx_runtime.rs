@@ -2180,10 +2180,13 @@ fn model_status_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
                             }
                         }
                     };
-                    let cached = model_cache::repo_cached(&model_cache::app_hub_dir(&models_dir), &repo_id);
-                    let in_system_cache = !cached
-                        && model_cache::system_hub_dir()
-                            .is_some_and(|hub| model_cache::repo_cached(&hub, &repo_id));
+                    let in_app_cache =
+                        model_cache::repo_cached(&model_cache::app_hub_dir(&models_dir), &repo_id);
+                    // Catalog aliases may launch from a complete global-cache copy.
+                    let in_system_cache = !in_app_cache
+                        && !source.contains('/')
+                        && model_cache::alias_launch_hub(&models_dir, &repo_id).is_some();
+                    let cached = in_app_cache || in_system_cache;
                     Ok(Box::new(warp::reply::json(&serde_json::json!({
                         "ok": true,
                         "source": source,

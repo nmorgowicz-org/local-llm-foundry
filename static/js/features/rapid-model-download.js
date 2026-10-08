@@ -52,9 +52,7 @@ export async function attachRapidDownloadState(card, source) {
     const label = el('div', 'launch-card-dl-label');
     const sizeText = status.size_bytes ? ` · ${fmtGiB(status.size_bytes)}` : '';
     label.textContent = `Not downloaded${sizeText}`;
-    label.title = status.in_system_cache
-        ? `${repoId} exists in your global HuggingFace cache, but this app launches from its own models folder.`
-        : repoId;
+    label.title = repoId;
     const bar = el('div', 'launch-card-dl-bar');
     const fill = el('div', 'launch-card-dl-fill');
     bar.appendChild(fill);

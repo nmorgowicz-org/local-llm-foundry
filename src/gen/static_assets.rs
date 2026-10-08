@@ -208,6 +208,8 @@ pub const FEATURES_SPAWN_WIZARD_MTP_DRAFT_JS: &str =
     include_str!("../../static/js/features/spawn-wizard-mtp-draft.js");
 pub const FEATURES_SPAWN_WIZARD_RAPID_CATALOG_JS: &str =
     include_str!("../../static/js/features/spawn-wizard-rapid-catalog.js");
+pub const FEATURES_SPAWN_WIZARD_RAPID_DOWNLOAD_JS: &str =
+    include_str!("../../static/js/features/spawn-wizard-rapid-download.js");
 pub const FEATURES_SPAWN_WIZARD_RAPID_MLX_JS: &str =
     include_str!("../../static/js/features/spawn-wizard-rapid-mlx.js");
 pub const FEATURES_SPAWN_WIZARD_REVIEW_STEP_JS: &str =

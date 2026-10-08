@@ -23,6 +23,17 @@ pub fn system_hub_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache/huggingface/hub"))
 }
 
+/// Hub to launch from for a catalog alias: the app hub when it holds the model, else the
+/// user's global hub if it does. New downloads always land in the app hub, so this only
+/// lets already-downloaded global copies be reused without a duplicate download.
+pub fn alias_launch_hub(models_dir: &Path, repo_id: &str) -> Option<PathBuf> {
+    let app = app_hub_dir(models_dir);
+    if repo_cached(&app, repo_id) {
+        return Some(app);
+    }
+    system_hub_dir().filter(|hub| repo_cached(hub, repo_id))
+}
+
 /// True when `repo_id` (`owner/name`) has a complete snapshot in `hub`: a snapshot
 /// directory with `config.json` and at least one weight file, and no partial blobs.
 pub fn repo_cached(hub: &Path, repo_id: &str) -> bool {
@@ -86,6 +97,14 @@ mod tests {
         std::fs::create_dir_all(&blobs).unwrap();
         std::fs::write(blobs.join("deadbeef.incomplete"), b"x").unwrap();
         assert!(!repo_cached(t.path(), "o/m"));
+    }
+
+    #[test]
+    fn alias_prefers_app_hub_when_complete() {
+        let models = tempfile::tempdir().unwrap();
+        let hub = app_hub_dir(models.path());
+        snapshot(&hub, &["config.json", "model.safetensors"]);
+        assert_eq!(alias_launch_hub(models.path(), "o/m"), Some(hub));
     }
 
     #[test]
