@@ -369,10 +369,16 @@ pub fn redacted_spawn_command(launch: &SupervisedLaunch) -> String {
 }
 
 /// True for a uvicorn access-log line recording a successful GET of an endpoint this app polls
-/// every few seconds. They bury everything else in the log view; failures and all other
+/// every few seconds (or that LAN clients poll, like `/v1/models`). They bury everything else in the log view; failures and all other
 /// requests still pass through.
 fn is_monitoring_poll_noise(line: &str) -> bool {
-    const POLLED: [&str; 3] = ["/health", "/v1/status", "/v1/cache/stats"];
+    const POLLED: [&str; 5] = [
+        "/health",
+        "/health/ready",
+        "/v1/status",
+        "/v1/cache/stats",
+        "/v1/models",
+    ];
     let Some(rest) = line.split("\"GET ").nth(1) else {
         return false;
     };
@@ -391,13 +397,15 @@ mod tests {
             r#"INFO:     127.0.0.1:57672 - "GET /v1/cache/stats HTTP/1.1" 200 OK"#,
             r#"INFO:     127.0.0.1:57672 - "GET /health HTTP/1.1" 200 OK"#,
             r#"INFO:     127.0.0.1:57673 - "GET /v1/status HTTP/1.1" 200 OK"#,
+            r#"INFO:     127.0.0.1:58098 - "GET /health/ready HTTP/1.1" 200 OK"#,
+            r#"INFO:     192.168.10.70:59088 - "GET /v1/models HTTP/1.1" 200 OK"#,
         ] {
             assert!(is_monitoring_poll_noise(noise), "{noise}");
         }
         for keep in [
             r#"INFO:     127.0.0.1:1 - "POST /v1/chat/completions HTTP/1.1" 200 OK"#,
             r#"INFO:     127.0.0.1:1 - "GET /health HTTP/1.1" 503 Service Unavailable"#,
-            r#"INFO:     127.0.0.1:1 - "GET /v1/models HTTP/1.1" 200 OK"#,
+            r#"INFO:     127.0.0.1:1 - "GET /v1/models/foo HTTP/1.1" 200 OK"#,
             "Error: something broke",
         ] {
             assert!(!is_monitoring_poll_noise(keep), "{keep}");
