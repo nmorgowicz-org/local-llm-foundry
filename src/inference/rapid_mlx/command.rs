@@ -504,6 +504,13 @@ impl RapidMlxCommandBuilder {
 
         // Diagnostic fix flags — not guarded by capability checks since they are
         // only activated by the diagnostics panel, never by default.
+        if self.auto_tool_choice && self.tool_call_parser.is_none() {
+            return Err(anyhow::anyhow!(
+                "Auto tool choice needs a tool-call parser: Rapid-MLX refuses \
+                 --enable-auto-tool-choice without --tool-call-parser. Pick a parser \
+                 (for example qwen3_coder_xml for Qwen 3.x) or turn auto tool choice off."
+            ));
+        }
         if let Some(parser) = self.tool_call_parser {
             capabilities.require("--tool-call-parser")?;
             args.push("--tool-call-parser".to_string());
@@ -1126,6 +1133,21 @@ mod tests {
     }
 
     #[test]
+    fn auto_tool_choice_without_parser_is_rejected_before_spawn() {
+        let build = |parser: Option<&str>| {
+            RapidMlxCommandBuilder::new(
+                ResolvedRapidMlxLaunchModel::validated_alias("model").unwrap(),
+            )
+            .auto_tool_choice(true)
+            .tool_call_parser(parser.map(String::from))
+            .build("rapid-mlx".into(), &ServeCapabilities::verified_baseline())
+        };
+        let err = build(None).unwrap_err().to_string();
+        assert!(err.contains("tool-call parser"), "{err}");
+        assert!(build(Some("qwen3_coder_xml")).is_ok());
+    }
+
+    #[test]
     fn context_length_is_forwarded_and_fails_closed_without_runtime_support() {
         let build = |caps: &ServeCapabilities, tokens: Option<u32>| {
             RapidMlxCommandBuilder::new(
@@ -1152,7 +1174,10 @@ mod tests {
             assert!(!args(&launch).iter().any(|arg| arg == "--context-length"));
         }
         let error = build(&baseline, Some(200_000)).unwrap_err();
-        assert!(error.to_string().contains("--context-length"), "got: {error}");
+        assert!(
+            error.to_string().contains("--context-length"),
+            "got: {error}"
+        );
     }
 
     #[test]

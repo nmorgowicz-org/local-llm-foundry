@@ -3314,6 +3314,11 @@ function _buildFormPreset(existing) {
                     if (rmInput) out.reasoning_mode = rmInput.checked ? 'on' : 'off';
                     out.no_thinking = rmInput ? !rmInput.checked : false;
                     out.auto_tool_choice = !!document.getElementById('modal-rapid-auto-tool-choice')?.checked;
+                    if (out.auto_tool_choice && !out.tool_call_parser) {
+                        // The runtime exits at startup on this combination.
+                        out.auto_tool_choice = false;
+                        showToast('Auto tool choice turned off', 'warning', 'It needs a tool-call parser. Pick one, then enable it again.');
+                    }
                     const specEnabled = !!document.getElementById('modal-rapid-speculative-enabled')?.checked;
                     const specSource = strVal('modal-rapid-speculative-source') || 'embedded';
                     const specModel = strVal('modal-rapid-speculative-model').trim();

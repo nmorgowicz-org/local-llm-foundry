@@ -687,7 +687,7 @@ function _applyUnifiedProfileRecommendations() {
   }
 
   // Apply tool_format recommendation if not already set by user
-  if (rec.tool_format && wizardState.hardware.toolCallParser == null) {
+  if (rec.tool_format && !wizardState.hardware.toolCallParser) {
     wizardState.hardware.toolCallParser = rec.tool_format;
     if (dom.toolCallParserInput) {
       dom.toolCallParserInput.value = rec.tool_format;
@@ -756,6 +756,12 @@ function _renderRapidMlxProfileHints() {
   if (profile.tool_format && !wizardState.hardware.autoToolChoice && !wizardState.hardware.autoToolChoiceTouched) {
     wizardState.hardware.autoToolChoice = true;
     if (dom.autoToolChoiceCheck) dom.autoToolChoiceCheck.checked = true;
+  }
+  // The runtime refuses --enable-auto-tool-choice without --tool-call-parser, so the
+  // two must travel together.
+  if (profile.tool_format && wizardState.hardware.autoToolChoice && !wizardState.hardware.toolCallParser) {
+    wizardState.hardware.toolCallParser = profile.tool_format;
+    if (dom.toolCallParserInput) dom.toolCallParserInput.value = profile.tool_format;
   }
 
   // Tool format + reasoning parser row
@@ -1028,7 +1034,7 @@ export function buildRapidMlxConfig(h, m) {
     ...(h.enableThinking != null && { enable_thinking: h.enableThinking }),
     ...(h.toolCallParser && { tool_call_parser: h.toolCallParser }),
     ...(h.reasoningParser && { reasoning_parser: h.reasoningParser }),
-    auto_tool_choice: !!h.autoToolChoice,
+    auto_tool_choice: !!h.autoToolChoice && !!h.toolCallParser,
     no_thinking: h.rapidReasoningMode === 'off',
     hybrid_mode: h.hybridMode || 'auto',
     // Per-request window the user chose on the hardware step -> --context-length.
