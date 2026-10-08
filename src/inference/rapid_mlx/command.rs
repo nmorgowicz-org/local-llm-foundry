@@ -504,14 +504,15 @@ impl RapidMlxCommandBuilder {
 
         // Diagnostic fix flags — not guarded by capability checks since they are
         // only activated by the diagnostics panel, never by default.
-        if self.auto_tool_choice && self.tool_call_parser.is_none() {
-            return Err(anyhow::anyhow!(
-                "Auto tool choice needs a tool-call parser: Rapid-MLX refuses \
-                 --enable-auto-tool-choice without --tool-call-parser. Pick a parser \
-                 (for example qwen3_coder_xml for Qwen 3.x) or turn auto tool choice off."
-            ));
-        }
-        if let Some(parser) = self.tool_call_parser {
+        // The runtime exits with "--enable-auto-tool-choice requires --tool-call-parser" when
+        // the parser is missing. "Auto" in the UI stores no parser, so ask the runtime to
+        // detect it from the alias profile (`--tool-call-parser auto`).
+        let tool_call_parser = match self.tool_call_parser {
+            Some(parser) => Some(parser),
+            None if self.auto_tool_choice => Some("auto".to_string()),
+            None => None,
+        };
+        if let Some(parser) = tool_call_parser {
             capabilities.require("--tool-call-parser")?;
             args.push("--tool-call-parser".to_string());
             args.push(parser);
@@ -1133,18 +1134,27 @@ mod tests {
     }
 
     #[test]
-    fn auto_tool_choice_without_parser_is_rejected_before_spawn() {
-        let build = |parser: Option<&str>| {
+    fn auto_tool_choice_without_parser_asks_runtime_to_detect_it() {
+        let build = |parser: Option<&str>, auto: bool| {
             RapidMlxCommandBuilder::new(
                 ResolvedRapidMlxLaunchModel::validated_alias("model").unwrap(),
             )
-            .auto_tool_choice(true)
+            .auto_tool_choice(auto)
             .tool_call_parser(parser.map(String::from))
             .build("rapid-mlx".into(), &ServeCapabilities::verified_baseline())
+            .unwrap()
         };
-        let err = build(None).unwrap_err().to_string();
-        assert!(err.contains("tool-call parser"), "{err}");
-        assert!(build(Some("qwen3_coder_xml")).is_ok());
+        let has = |l: &_, pair: [&str; 2]| args(l).windows(2).any(|w| w == pair);
+        assert!(has(&build(None, true), ["--tool-call-parser", "auto"]));
+        assert!(has(
+            &build(Some("qwen3_coder_xml"), true),
+            ["--tool-call-parser", "qwen3_coder_xml"]
+        ));
+        assert!(
+            !args(&build(None, false))
+                .iter()
+                .any(|a| a == "--tool-call-parser")
+        );
     }
 
     #[test]

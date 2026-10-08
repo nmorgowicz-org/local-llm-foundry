@@ -1034,7 +1034,7 @@ export function buildRapidMlxConfig(h, m) {
     ...(h.enableThinking != null && { enable_thinking: h.enableThinking }),
     ...(h.toolCallParser && { tool_call_parser: h.toolCallParser }),
     ...(h.reasoningParser && { reasoning_parser: h.reasoningParser }),
-    auto_tool_choice: !!h.autoToolChoice && !!h.toolCallParser,
+    auto_tool_choice: !!h.autoToolChoice,
     no_thinking: h.rapidReasoningMode === 'off',
     hybrid_mode: h.hybridMode || 'auto',
     // Per-request window the user chose on the hardware step -> --context-length.
