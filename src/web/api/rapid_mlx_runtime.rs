@@ -576,6 +576,8 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
     status_route(ctx.clone(), state.clone())
         .or(catalog_route(ctx.clone(), state.clone()))
         .unify()
+        .or(model_status_route(ctx.clone(), state.clone()))
+        .unify()
         .or(releases_route(ctx.clone(), state.clone()))
         .unify()
         .or(changelog_route(ctx.clone(), state.clone()))
@@ -2124,6 +2126,75 @@ fn releases_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
                 }
             }
         })
+        .boxed()
+}
+
+/// GET /api/rapid-mlx/model-status?source=<alias|owner/repo> — is the model complete in
+/// the cache the launch environment uses? Drives the wizard/card download affordance.
+fn model_status_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
+    use crate::inference::rapid_mlx::model_cache;
+    warp::path!("api" / "rapid-mlx" / "model-status")
+        .and(warp::get())
+        .and(warp::header::optional::<String>("authorization"))
+        .and(warp::query::<std::collections::HashMap<String, String>>())
+        .and_then(
+            move |auth: Option<String>, query: std::collections::HashMap<String, String>| {
+                let ctx = ctx.clone();
+                let state = state.clone();
+                async move {
+                    if !check_api_token(&auth, &ctx.config) {
+                        return Ok::<ApiReply, warp::Rejection>(unauthorized_api_token());
+                    }
+                    let source = query.get("source").map(|s| s.trim().to_string()).unwrap_or_default();
+                    if source.is_empty() || source.len() > 256 {
+                        return Ok(json_error(StatusCode::BAD_REQUEST, "source is required"));
+                    }
+                    let models_dir = super::models::get_effective_models_dir(&ctx.state)
+                        .unwrap_or_else(|| ctx.config.default_models_dir.clone());
+                    let (repo_id, size_bytes) = if source.contains('/') {
+                        if !validate_model_download_repo(&source) {
+                            return Ok(json_error(StatusCode::BAD_REQUEST, "Invalid repo id"));
+                        }
+                        (source.clone(), None)
+                    } else {
+                        let managed = managed_executable(&state).await;
+                        let binary = match Discovery::resolve_binary(None, managed.as_deref()).await {
+                            Ok((binary, _)) => binary,
+                            Err(_) => {
+                                return Ok(json_error(
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    "Rapid-MLX is not installed",
+                                ));
+                            }
+                        };
+                        match crate::inference::rapid_mlx::info_query::resolve_alias_repo(&binary, &source).await {
+                            Ok(Some(found)) => found,
+                            Ok(None) => {
+                                return Ok(json_error(StatusCode::NOT_FOUND, "Unknown Rapid-MLX alias"));
+                            }
+                            Err(e) => {
+                                return Ok(json_error(
+                                    StatusCode::BAD_GATEWAY,
+                                    format!("Catalog query failed: {e}"),
+                                ));
+                            }
+                        }
+                    };
+                    let cached = model_cache::repo_cached(&model_cache::app_hub_dir(&models_dir), &repo_id);
+                    let in_system_cache = !cached
+                        && model_cache::system_hub_dir()
+                            .is_some_and(|hub| model_cache::repo_cached(&hub, &repo_id));
+                    Ok(Box::new(warp::reply::json(&serde_json::json!({
+                        "ok": true,
+                        "source": source,
+                        "repo_id": repo_id,
+                        "cached": cached,
+                        "in_system_cache": in_system_cache,
+                        "size_bytes": size_bytes,
+                    }))) as ApiReply)
+                }
+            },
+        )
         .boxed()
 }
 

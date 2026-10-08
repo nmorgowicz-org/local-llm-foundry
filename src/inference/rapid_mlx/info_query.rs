@@ -232,6 +232,27 @@ pub async fn fetch_model_list(binary: &Path) -> Result<Vec<ModelListEntry>> {
 
 /// One entry of `rapid-mlx recipe`: upstream's tier recommendation for this
 /// exact machine ("Smart"/"Fast" picks), pinned atop the catalog picker.
+/// Resolve a catalog alias to its `(hf_repo, size_bytes)` via the stable
+/// `rapid-mlx models --json` output. `None` when the alias is not in the catalog.
+pub async fn resolve_alias_repo(binary: &Path, alias: &str) -> Result<Option<(String, Option<u64>)>> {
+    let output = run_query(binary, &["models", "--json"], Duration::from_secs(15), 4 * 1024 * 1024).await?;
+    let value: serde_json::Value =
+        serde_json::from_str(&output.stdout).context("rapid-mlx models --json was not valid JSON")?;
+    let Some(groups) = value.as_object() else {
+        return Ok(None);
+    };
+    for entries in groups.values().filter_map(|v| v.as_array()) {
+        for entry in entries {
+            if entry.get("alias").and_then(|v| v.as_str()) == Some(alias) {
+                let repo = entry.get("hf_path").and_then(|v| v.as_str());
+                let size = entry.get("size_bytes").and_then(|v| v.as_u64());
+                return Ok(repo.map(|r| (r.to_string(), size)));
+            }
+        }
+    }
+    Ok(None)
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RecipeRecommendation {
     /// 1-based rank as printed by upstream.

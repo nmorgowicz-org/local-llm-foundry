@@ -11,6 +11,7 @@ import { showToast, showConfirmDialog, showPromptDialog } from './toast.js';
 import Router from './router.js';
 import { buildEstimateBody, rapidEstimatePolicyFromConfig } from './vram-estimate.js';
 import { openBundleDrawer } from './preset-bundle-drawer.js';
+import { attachRapidDownloadState } from './rapid-model-download.js';
 import { engineDescriptor, engineHueStyle, renderEngineTag } from '../core/engine-descriptor.js';
 
 // ── Model / preset classification (from GGUF-derived metadata) ────────────────
@@ -1339,6 +1340,10 @@ function _buildLaunchCard(preset, activePresetId) {
                 import('./attach-detach.js').then(({ doStartFromSetup }) => doStartFromSetup({ expectedRevision }));
             });
         });
+    }
+
+    if (!isExample && isRapidMlx && hasModel && !bundleView) {
+        attachRapidDownloadState(card, modelSource);
     }
 
     return card;

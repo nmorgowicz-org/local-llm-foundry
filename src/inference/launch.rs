@@ -601,6 +601,35 @@ pub async fn construct_adapter(
                         "python3"
                     })
                 });
+            // Fail fast when the launch cache lacks the model: `rapid-mlx serve` would
+            // otherwise block on an interactive download prompt that nothing can answer.
+            {
+                use crate::inference::rapid_mlx::model_cache;
+                use crate::inference::rapid_mlx::model_resolver::RapidMlxModelSource;
+                let repo = match &model_source {
+                    RapidMlxModelSource::HuggingFaceRepo { repo_id, .. } => Some((repo_id.clone(), None)),
+                    RapidMlxModelSource::Alias { value } => {
+                        crate::inference::rapid_mlx::info_query::resolve_alias_repo(
+                            &runtime.executable_path,
+                            value,
+                        )
+                        .await
+                        .ok()
+                        .flatten()
+                    }
+                    _ => None,
+                };
+                if let Some((repo_id, size)) = repo
+                    && !model_cache::repo_cached(&model_cache::app_hub_dir(&models_dir), &repo_id)
+                {
+                    let size = size
+                        .map(|b| format!(" (~{:.1} GiB)", b as f64 / 1_073_741_824.0))
+                        .unwrap_or_default();
+                    anyhow::bail!(
+                        "Model not downloaded: {repo_id}{size}. Download it from the preset card or the Models page, then start again."
+                    );
+                }
+            }
             let resolved_model = crate::inference::rapid_mlx::model_resolver::resolve(
                 model_source,
                 &crate::inference::rapid_mlx::model_resolver::RapidMlxResolveContext {

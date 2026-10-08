@@ -156,6 +156,8 @@ pub const FEATURES_RAPID_MLX_PROTOCOL_DOCS_JS: &str =
     include_str!("../../static/js/features/rapid-mlx-protocol-docs.js");
 pub const FEATURES_RAPID_MLX_UPDATER_JS: &str =
     include_str!("../../static/js/features/rapid-mlx-updater.js");
+pub const FEATURES_RAPID_MODEL_DOWNLOAD_JS: &str =
+    include_str!("../../static/js/features/rapid-model-download.js");
 pub const FEATURES_REMOTE_AGENT_JS: &str = include_str!("../../static/js/features/remote-agent.js");
 pub const FEATURES_ROUTER_JS: &str = include_str!("../../static/js/features/router.js");
 pub const FEATURES_RUNTIME_UNINSTALL_JS: &str =

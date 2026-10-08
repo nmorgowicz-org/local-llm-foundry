@@ -4338,3 +4338,14 @@ body.setup-active .sidebar-nav {
 /* Dashboard header engine tag reuses .engine-tag; accent comes from inline --engine-hue. */
 #server-engine-tag { --engine-accent: hsl(var(--engine-hue, 0) 70% 68%); --engine-accent-soft: hsl(var(--engine-hue, 0) 70% 60% / 0.14); --engine-accent-edge: hsl(var(--engine-hue, 0) 70% 62% / 0.45); }
 #server-engine-tag[hidden] { display: none; }
+
+/* Rapid-MLX model download row on preset cards */
+.launch-card-dl { display:flex; flex-direction:column; gap:6px; padding:10px 12px; border-radius:12px; background:var(--engine-accent-soft, rgba(255,255,255,0.05)); border:1px dashed var(--engine-accent-edge, rgba(255,255,255,0.18)); }
+.launch-card-dl-label { font-size:12px; color:var(--text-muted, #8b949e); }
+.launch-card-dl-bar { height:4px; border-radius:2px; background:rgba(255,255,255,0.08); overflow:hidden; }
+.launch-card-dl-bar[hidden] { display:none; }
+.launch-card-dl-fill { height:100%; width:0; background:var(--engine-accent, #a78bfa); transition:width .4s ease; }
+.launch-card-dl-actions { display:flex; gap:8px; }
+.launch-card-dl-btn, .launch-card-dl-cancel { font-size:12px; font-weight:600; padding:4px 12px; border-radius:8px; cursor:pointer; border:1px solid var(--engine-accent-edge, rgba(255,255,255,0.2)); background:transparent; color:var(--engine-accent, inherit); }
+.launch-card-dl-btn:disabled, .launch-card-dl-cancel:disabled { opacity:.5; cursor:default; }
+.launch-card-dl-cancel[hidden] { display:none; }

@@ -6,6 +6,7 @@ pub mod discovery;
 pub mod escape_hatch;
 pub mod info_query;
 pub mod mlx_meta;
+pub mod model_cache;
 pub mod model_resolver;
 pub mod poller;
 pub mod repair;
