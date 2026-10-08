@@ -397,8 +397,8 @@ mod tests {
             r#"INFO:     127.0.0.1:57672 - "GET /v1/cache/stats HTTP/1.1" 200 OK"#,
             r#"INFO:     127.0.0.1:57672 - "GET /health HTTP/1.1" 200 OK"#,
             r#"INFO:     127.0.0.1:57673 - "GET /v1/status HTTP/1.1" 200 OK"#,
-            r#"INFO:     127.0.0.1:58098 - "GET /health/ready HTTP/1.1" 200 OK"#,
-            r#"INFO:     192.168.10.70:59088 - "GET /v1/models HTTP/1.1" 200 OK"#,
+            r#"INFO:     [::1]:50000 - "GET /health/ready HTTP/1.1" 200 OK"#,
+            r#"INFO:     203.0.113.7:40000 - "GET /v1/models HTTP/1.1" 200 OK"#,
         ] {
             assert!(is_monitoring_poll_noise(noise), "{noise}");
         }
