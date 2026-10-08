@@ -909,6 +909,16 @@ impl RapidMlxAdapter {
         self.hybrid_mode
     }
 
+    /// Whether `rapid-mlx info` reports a hybrid architecture for an alias or repo launch
+    /// argument. Directory launches (and any lookup failure) answer false; those are covered
+    /// by the local `config.json` check in `resolve_hybrid_mode`.
+    async fn profile_is_hybrid(&self) -> bool {
+        fetch_rapid_mlx_profile(self.resolved_model.launch_argument.trim())
+            .await
+            .and_then(|profile| profile.architecture)
+            .is_some_and(|arch| arch.to_ascii_lowercase().contains("hybrid"))
+    }
+
     pub async fn build_launch(&self) -> Result<SupervisedLaunch> {
         let hybrid_mode = self.resolve_hybrid_mode();
         let (argv_builder, overlay_warning) = build_launch_argv(self);
@@ -921,10 +931,32 @@ impl RapidMlxAdapter {
             builder
         };
 
+        // rapid-mlx refuses to start with --kv-cache-dtype int8/int4 on hybrid
+        // (GatedDeltaNet / Mamba ArraysCache) models: "the loaded model is incompatible:
+        // ArraysCache". The wizard's reasoning profile pins int8, so presets saved for hybrid
+        // aliases carry a value that can never launch. Serve bf16 (the runtime default)
+        // instead and say so.
+        let mut kv_warning = None;
+        let builder = if matches!(
+            self.kv_cache_dtype,
+            Some(KvCacheConfig::Int8 | KvCacheConfig::Int4)
+        ) && (hybrid_mode == RapidMlxHybridMode::Force || self.profile_is_hybrid().await)
+        {
+            kv_warning = Some(
+                "This model is hybrid-attention; Rapid-MLX cannot quantize its KV cache, so the \
+                 saved KV cache dtype was ignored and bf16 is used."
+                    .to_string(),
+            );
+            builder.kv_cache_dtype(None)
+        } else {
+            builder
+        };
+
         let mut launch = builder.build(
             self.runtime.executable_path.clone(),
             &self.compatibility.capabilities,
         )?;
+        launch.warnings.extend(kv_warning);
         launch.redacted_summary.push_str(&format!(
             " ({}, {})",
             self.compatibility.version,
