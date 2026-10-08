@@ -1069,7 +1069,7 @@ impl AppState {
         };
 
         if is_important {
-            eprintln!("[llama-monitor] {line}");
+            eprintln!("[local-llm-foundry] {line}");
         }
 
         let mut logs = self.server_logs.lock().unwrap();

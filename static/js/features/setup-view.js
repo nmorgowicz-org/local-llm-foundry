@@ -10,6 +10,7 @@ import { showToast, showConfirmDialog, showPromptDialog } from './toast.js';
 import Router from './router.js';
 import { buildEstimateBody, rapidEstimatePolicyFromConfig } from './vram-estimate.js';
 import { openBundleDrawer } from './preset-bundle-drawer.js';
+import { engineDescriptor, engineHueStyle, renderEngineTag } from '../core/engine-descriptor.js';
 
 // ── Model / preset classification (from GGUF-derived metadata) ────────────────
 // No name-based guessing: labels come from preset.family and preset.size_class
@@ -1102,6 +1103,10 @@ function _buildLaunchCard(preset, activePresetId) {
     const isExample = preset.id.startsWith('default-');
     const card = document.createElement('div');
     card.className = 'launch-card';
+    const engineDesc = engineDescriptor(preset.backend);
+    card.dataset.engine = engineDesc.id;
+    if (engineHueStyle(engineDesc)) card.style.cssText = engineHueStyle(engineDesc);
+    const engineTagHtml = renderEngineTag(engineDesc, escapeHtml);
     card.dataset.presetId = preset.id;
     if (isExample) card.classList.add('launch-card--example');
 
@@ -1162,6 +1167,7 @@ function _buildLaunchCard(preset, activePresetId) {
         // Example card: dimmed, no edit button, use-wizard CTA only
         // eslint-disable-next-line no-unsanitized/property -- content sanitized via escapeHtml
         card.innerHTML = `
+            ${engineTagHtml}
             <div class="launch-card-top">
                 <div class="launch-card-name" title="${escapeHtml(preset.name)}">${escapeHtml(preset.name)}</div>
                 <span class="launch-card-example-badge">Example</span>
@@ -1170,7 +1176,6 @@ function _buildLaunchCard(preset, activePresetId) {
             <div class="launch-card-chips">
                 <span class="launch-chip">${ctxDisplay}</span>
                 <span class="launch-chip">${ctkDisplay}</span>
-                ${preset.backend === 'rapid_mlx' ? '<span class="launch-chip launch-chip--accent">Rapid-MLX</span>' : ''}
             </div>
             <div class="launch-card-actions">
                 <button class="launch-card-btn-start launch-card-btn-start--configure" type="button"
@@ -1216,6 +1221,7 @@ function _buildLaunchCard(preset, activePresetId) {
 
         // eslint-disable-next-line no-unsanitized/property -- content sanitized via escapeHtml
         card.innerHTML = `
+            ${engineTagHtml}
             <div class="launch-card-top">
                 <div class="launch-card-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</div>
                 ${isRunning ? '<span class="launch-card-running-badge">● Running</span>' : ''}

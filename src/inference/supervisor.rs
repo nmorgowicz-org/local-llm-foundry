@@ -135,6 +135,7 @@ impl Supervisor {
         crate::inference::process_tree::configure_process_group(&mut cmd);
         cmd.args(&launch.args);
         cmd.envs(launch.env);
+        cmd.stdin(std::process::Stdio::null()); // child has its own process group: an inherited tty stdin would SIGTTIN-stop it
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         if let Some(cwd) = &launch.cwd {

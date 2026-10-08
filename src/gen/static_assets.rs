@@ -74,6 +74,8 @@ pub const BOOTSTRAP_JS: &str = include_str!("../../static/js/bootstrap.js");
 pub const COMPACT_JS: &str = include_str!("../../static/js/compact.js");
 pub const COMPAT_GLOBALS_JS: &str = include_str!("../../static/js/compat/globals.js");
 pub const CORE_APP_STATE_JS: &str = include_str!("../../static/js/core/app-state.js");
+pub const CORE_ENGINE_DESCRIPTOR_JS: &str =
+    include_str!("../../static/js/core/engine-descriptor.js");
 pub const CORE_FORMAT_JS: &str = include_str!("../../static/js/core/format.js");
 pub const CORE_IDENTITY_JS: &str = include_str!("../../static/js/core/identity.js");
 pub const CORE_PLATFORM_INFO_JS: &str = include_str!("../../static/js/core/platform-info.js");

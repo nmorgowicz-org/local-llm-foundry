@@ -501,9 +501,28 @@ pub async fn construct_adapter(
                 eprintln!("[warn] rapid-mlx launch: {warning}");
             }
 
+            // Server-owned managed runtime (the one the wizard installs/activates)
+            // takes precedence over PATH when the preset carries no explicit path.
+            let managed_fallback = if config.executable_path.is_none()
+                && config.managed_runtime_path.is_none()
+            {
+                let config_dir = app_config.config_dir.clone();
+                tokio::task::spawn_blocking(move || {
+                    crate::inference::rapid_mlx::updater::RapidMlxRuntimeManager::new(&config_dir)
+                        .ok()
+                        .and_then(|manager| manager.status().ok())
+                        .and_then(|status| status.active)
+                        .map(|active| active.executable_path)
+                })
+                .await
+                .ok()
+                .flatten()
+            } else {
+                None
+            };
             let (executable_path, source) = Discovery::resolve_binary(
                 config.executable_path.as_deref(),
-                config.managed_runtime_path.as_deref(),
+                config.managed_runtime_path.as_deref().or(managed_fallback.as_deref()),
             )
             .await
             .with_context(|| {

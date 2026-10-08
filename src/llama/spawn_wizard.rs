@@ -1178,7 +1178,7 @@ pub async fn introspect_model(
             Err(e) => {
                 // Log and fall through to subprocess
                 eprintln!(
-                    "[llama-monitor] GGUF direct read failed for '{model_path}': {e}; falling back to llama-server"
+                    "[local-llm-foundry] GGUF direct read failed for '{model_path}': {e}; falling back to llama-server"
                 );
             }
         }

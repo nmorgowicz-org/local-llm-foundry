@@ -4290,3 +4290,47 @@ body.setup-active .sidebar-nav {
 }
 .setup-logo svg.brand-token-ingot { display: block !important; width: 32px; height: 32px; border-radius: 8px; }
 .setup-logo img[hidden] { display: none !important; }
+
+/* ── Engine identity (descriptor-driven; --engine-hue set per card) ───────── */
+.launch-card[data-engine] {
+  --engine-accent: hsl(var(--engine-hue, 0) 70% 68%);
+  --engine-accent-soft: hsl(var(--engine-hue, 0) 70% 60% / 0.14);
+  --engine-accent-edge: hsl(var(--engine-hue, 0) 70% 62% / 0.45);
+}
+/* Whole-card treatment: tinted wash + accent edge. If too loud, scope the
+   background/box-shadow lines below to `.engine-tag` only (header-only variant). */
+.launch-card[data-engine][style*="--engine-hue"] {
+  border-color: var(--engine-accent-edge);
+  background:
+    radial-gradient(circle at top left, var(--engine-accent-soft), transparent 55%),
+    radial-gradient(circle at top right, var(--acc-08), transparent 50%),
+    linear-gradient(150deg, rgba(28, 34, 48, 0.92), rgba(18, 22, 34, 0.97));
+  box-shadow: inset 3px 0 0 var(--engine-accent-edge);
+}
+.engine-tag {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 7px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted, #8b949e);
+}
+.engine-tag-glyph {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--engine-accent, var(--text-muted, #8b949e));
+  background: var(--engine-accent-soft, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--engine-accent-edge, rgba(255, 255, 255, 0.12));
+}
+.engine-tag-sep { opacity: 0.5; }
+[data-theme="light"] .launch-card[data-engine][style*="--engine-hue"] {
+  background: linear-gradient(150deg, #fff, #f5f8ff);
+}

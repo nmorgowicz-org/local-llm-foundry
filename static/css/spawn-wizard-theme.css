@@ -5846,7 +5846,7 @@
    a design choice. Only the llama.cpp-specific wizard-main children are hidden;
    rapid-hardware-panel now lives inside .wizard-main (Phase 0.2 re-parent) so it
    must be excluded from this rule instead of the whole column being hidden. */
-.engine-rapid-mlx #wizard-step-1 > .wizard-main > :not(.rapid-hardware-panel):not(.all-settings-drawer):not(.pro-layout) { display:none; }
+.engine-rapid-mlx #wizard-step-1 > .wizard-main > :not(.rapid-hardware-panel):not(.all-settings-drawer):not(.pro-layout):not(#hw-decision-ctx) { display:none; }
 .engine-rapid-mlx .rapid-hardware-panel { width:auto; margin:0; }
 /* Step 2: Rapid-MLX owns Metal placement and KV precision, so the llama.cpp-only
    controls (GPU-layer offload, KV unified pool, the q8_0/f16/q4_0 KV quant pair)

@@ -444,7 +444,7 @@ pub async fn cleanup_old_binaries(binaries_dir: &Path) -> Result<()> {
 
     if removed > 0 {
         eprintln!(
-            "[llama-monitor] cleaned up {} old llama.cpp artifact(s) in {:?}",
+            "[local-llm-foundry] cleaned up {} old llama.cpp artifact(s) in {:?}",
             removed, binaries_dir
         );
     }
