@@ -232,6 +232,13 @@ export function presetModelSource(preset) {
     return preset?.model_path || preset?.hf_repo || '';
 }
 
+// Context window for a preset. Rapid-MLX keeps it on rapid_mlx.context_length (what
+// --context-length receives); top-level context_size mirrors it for shared readers.
+export function presetContextSize(preset) {
+    const rapid = preset?.backend === 'rapid_mlx' ? Number(preset.rapid_mlx?.context_length) : 0;
+    return rapid > 0 ? rapid : (Number(preset?.context_size) || 0);
+}
+
 // Same lookup `savePreset`/`_buildFormPreset` use to find the preset currently
 // loaded in the modal — needed so VRAM estimates route to the right backend.
 function _currentModalPreset() {
@@ -1063,7 +1070,7 @@ function buildPresetChips(p) {
     }
 
     // Context chip
-    const ctx = p.context_size;
+    const ctx = presetContextSize(p);
     if (ctx != null && ctx > 0) {
         let ctxLabel;
         if (ctx <= 1000) {
@@ -1879,7 +1886,7 @@ export function openPresetModal(mode, section, seedPreset = null) {
   setOpt('modal-load-mode', p.load_mode || (p.no_mmap ? 'none' : 'mmap'));
         setChk('modal-mlock', p.mlock);
         // Context & KV
-        setVal('modal-context-size', p.context_size || 128000);
+        setVal('modal-context-size', presetContextSize(p) || 128000);
         setVal('modal-ctk', p.ctk || 'q8_0');
         const pillsContainer = document.getElementById('preset-context-pills'); if (pillsContainer) pillsContainer.style.display = 'flex';
         _renderContextPills(mode, section);
@@ -2012,10 +2019,10 @@ export function openPresetModal(mode, section, seedPreset = null) {
         setVal('modal-mmproj', p.mmproj || '');
         setOpt('modal-mmproj-offload', p.mmproj_offload == null ? '' : String(p.mmproj_offload));
         _toggleVisionTokens(!!p.mmproj);
-        setVal('modal-chat-template-file', p.chat_template_file || '');
+        setVal('modal-chat-template-file', (p.backend === 'rapid_mlx' && p.rapid_mlx?.chat_template_file) || p.chat_template_file || '');
         updatePresetChatTemplateStatusLine();
         // Advanced
-        setOpt('modal-bind-host', p.bind_host || '');
+        setOpt('modal-bind-host', (p.backend === 'rapid_mlx' && p.rapid_mlx?.host) || p.bind_host || '');
         numOrEmpty('modal-port', p.backend === 'rapid_mlx' ? p.rapid_mlx?.port : p.port);
         setOpt('modal-rapid-enable-thinking', p.rapid_mlx?.enable_thinking == null ? '' : String(!!p.rapid_mlx.enable_thinking));
         // reasoning_effort removed: config field exists but argv builder does not emit --reasoning-effort.
@@ -2031,6 +2038,8 @@ export function openPresetModal(mode, section, seedPreset = null) {
         // Phase 7: Rapid-MLX advanced controls (D6 catalog IDs).
         setOpt('modal-rapid-kv-cache-dtype', p.rapid_mlx?.kv_cache_dtype || '');
         setOpt('modal-rapid-prefill-step-size', String(p.rapid_mlx?.prefill_step_size || 512));
+        setOpt('modal-rapid-hybrid-mode', p.rapid_mlx?.hybrid_mode || 'auto');
+        setVal('modal-rapid-served-name', p.rapid_mlx?.served_model_name || '');
         const speculative = p.rapid_mlx?.speculative_config || null;
         const speculativeEnabled = !!speculative;
         const speculativeSource = speculative?.model ? 'external' : 'embedded';
@@ -2117,7 +2126,7 @@ export function openPresetModal(mode, section, seedPreset = null) {
         setVal('modal-name', newPresetSeed?.name || '');
         setVal('modal-model-path', presetModelSource(newPresetSeed));
         document.getElementById('modal-model-path').title = presetModelSource(newPresetSeed);
-        setVal('modal-context-size', 128000);
+        setVal('modal-context-size', presetContextSize(newPresetSeed) || 128000);
         setVal('modal-ctk', 'q8_0');
         setVal('modal-ctv', 'f16');
         setVal('modal-batch-size', 2048);
@@ -2280,7 +2289,7 @@ function _renderPresetsPanel() {
         } else if (preset.model_path) metaParts.push(preset.model_path.split(/[/\\]/).pop() || preset.model_path);
         else if (preset.hf_repo) metaParts.push(preset.hf_repo);
         if (preset.bind_host === '0.0.0.0') metaParts.push('LAN');
-        if (preset.context_size) metaParts.push(`${Math.round(preset.context_size / 1024)}k context`);
+        if (presetContextSize(preset)) metaParts.push(`${Math.round(presetContextSize(preset) / 1024)}k context`);
         const ctk = preset.ctk || 'q8_0';
         const ctv = preset.ctv || 'q8_0';
         const kvText = `KV cache: ${ctk}/${ctv}`;
@@ -2570,6 +2579,8 @@ function _configureBackendPresetEditor(preset) {
     const advancedNavLabel = modal?.querySelector('.preset-nav-item[data-section="advanced"] .pni-label');
     const advancedTitle = advancedSection?.querySelector('.pe-section-title');
     const advancedDescription = advancedSection?.querySelector('.pe-section-desc');
+    const ctxLabel = document.querySelector('label[for="modal-context-size"]');
+    if (ctxLabel) ctxLabel.textContent = isRapid ? 'Context Length (--context-length)' : 'Context Size (-c)';
     if (modelTitle) modelTitle.textContent = isRapid ? 'Rapid-MLX Model' : 'Model & Memory';
     if (modelDescription) {
         modelDescription.textContent = isRapid
@@ -3015,7 +3026,6 @@ function _renderSpeculativePinStatus() {
     // Determine if this is a local sidecar (no revision sha or revision is a hash)
     const isLocalSidecar = !_speculativeTrustState.revision || _speculativeTrustState.revision.length > 12;
 
-    let parts = [];
     /* Build with DOM APIs — repo ids, paths, and messages stay text nodes. */
     const span = (color, text) => {
         const node = document.createElement('span');
@@ -3239,10 +3249,16 @@ function _buildFormPreset(existing) {
     updateBundleSelectionFromEditor();
     if (existing.backend === 'rapid_mlx') {
         const rapidPort = intOrNull('modal-port');
+        const rapidContext = parseInt(document.getElementById('modal-context-size')?.value, 10);
+        const rapidContextSize = rapidContext > 0 ? rapidContext : null;
         return {
             ...existing,
             name: strVal('modal-name'),
             port: rapidPort,
+            // Top-level mirrors keep shared readers (cards, estimates) in agreement.
+            ...(rapidContextSize && { context_size: rapidContextSize }),
+            bind_host: strVal('modal-bind-host') || null,
+            api_key: strVal('modal-api-key') || null,
             rapid_mlx: existing.rapid_mlx ? {
                 ...existing.rapid_mlx,
                 // model_source preserved via spread above; input is display-only for Rapid-MLX.
@@ -3261,6 +3277,15 @@ function _buildFormPreset(existing) {
                     out.prefix_cache_enabled = retainedCacheEnabled;
                     out.retained_cache_mib = retainedCacheEnabled ? cacheMib : null;
                     out.disk_checkpoint_interval = 0;
+                    // Parity with the wizard payload (buildRapidMlxConfig). Vision (mllm_vision) is a
+                    // property of the checkpoint, so it is preserved from the stored config, never edited.
+                    // Every key below writes
+                    // unconditionally so choosing "auto"/empty clears a previously saved value.
+                    out.context_length = rapidContextSize;
+                    out.hybrid_mode = strVal('modal-rapid-hybrid-mode') || 'auto';
+                    out.served_model_name = strVal('modal-rapid-served-name') || null;
+                    out.chat_template_file = strVal('modal-chat-template-file') || null;
+                    out.host = strVal('modal-bind-host') || '127.0.0.1';
                     // Entry count is meaningless with the cache off, so it follows the toggle
                     // rather than persisting a number that would never reach the runtime --
                     // the argv builder emits --hybrid-cache-entries on the field alone, without
@@ -3487,6 +3512,8 @@ const CHANGE_LABELS = {
 // a user could change reusable prompt storage or speculative decoding and be shown nothing.
 const RAPID_CHANGE_LABELS = {
     port: 'Port', model_source: 'Model', enable_thinking: 'Thinking Mode',
+    context_length: 'Context Length', host: 'Bind Host', served_model_name: 'Served Name',
+    chat_template_file: 'Chat Template',
     reasoning_mode: 'Reasoning Mode', reasoning_parser: 'Reasoning Parser',
     tool_call_parser: 'Tool-call Parser', sampling_mode: 'Sampling Mode',
     kv_cache_dtype: 'KV Cache Type', turboquant_mode: 'Reusable Prompt Storage',

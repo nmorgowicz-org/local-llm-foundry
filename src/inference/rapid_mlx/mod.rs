@@ -249,6 +249,10 @@ pub struct RapidMlxConfig {
     /// Completion batch size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_batch_size: Option<u64>,
+    /// Per-request context window (prompt plus output) passed as `--context-length`.
+    /// `None` lets the runtime size it from available memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u32>,
     /// Prompt chunk processed per prefill step. The generic text default is 512;
     /// the UI raises this to 1536 for a verified native vision model profile.
     #[serde(default = "default_prefill_step_size")]
@@ -498,6 +502,7 @@ impl Default for RapidMlxConfig {
             max_concurrent_requests: None,
             prefill_batch_size: None,
             completion_batch_size: None,
+            context_length: None,
             prefill_step_size: default_prefill_step_size(),
             // Phase 7: reasoning/speculative
             reasoning_mode: None,
@@ -606,6 +611,7 @@ pub struct RapidMlxAdapter {
     pub max_concurrent_requests: Option<u64>,
     pub prefill_batch_size: Option<u64>,
     pub completion_batch_size: Option<u64>,
+    pub context_length: Option<u32>,
     pub prefill_step_size: u32,
     pub reasoning_mode: Option<String>,
     pub speculative_config: Option<RapidMlxSpeculativeConfig>,
@@ -681,6 +687,7 @@ impl RapidMlxAdapter {
             max_concurrent_requests: None,
             prefill_batch_size: None,
             completion_batch_size: None,
+            context_length: None,
             prefill_step_size: default_prefill_step_size(),
             reasoning_mode: None,
             speculative_config: None,
@@ -748,6 +755,7 @@ impl RapidMlxAdapter {
         self.max_concurrent_requests = config.max_concurrent_requests;
         self.prefill_batch_size = config.prefill_batch_size;
         self.completion_batch_size = config.completion_batch_size;
+        self.context_length = config.context_length;
         self.prefill_step_size = config.prefill_step_size;
         self.reasoning_mode = config.reasoning_mode.clone();
         self.speculative_config = config.speculative_config.clone();
@@ -1207,6 +1215,7 @@ pub(crate) fn apply_phase7_adapter_config(
         .max_concurrent_requests(adapter.max_concurrent_requests)
         .prefill_batch_size(adapter.prefill_batch_size)
         .completion_batch_size(adapter.completion_batch_size)
+        .context_length(adapter.context_length)
         .prefill_step_size(Some(adapter.prefill_step_size))
         .reasoning_mode(adapter.reasoning_mode.clone())
         .speculative_config(speculative_config)

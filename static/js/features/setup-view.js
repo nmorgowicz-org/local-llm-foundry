@@ -4,7 +4,7 @@
 import { setupViewState, chat, sessionState } from '../core/app-state.js';
 import { getPlatformInfo } from '../core/platform-info.js';
 import { doAttachFromSetup } from './attach-detach.js';
-import { presetModelSource } from './presets.js';
+import { presetModelSource, presetContextSize } from './presets.js';
 import { escapeHtml } from '../core/format.js';
 import { setHtml } from '../core/set-html.js';
 import { showToast, showConfirmDialog, showPromptDialog } from './toast.js';
@@ -1085,11 +1085,7 @@ function _bundleCardView(preset) {
         q8_0_q4_0: 'q8_0/q4_0',
     };
     const kvDisplay = kvPolicyDisplay[sel.kv_policy] || (sel.kv_policy || (preset.ctk || 'q8_0') + '/' + (preset.ctv || 'f16'));
-    const ctxDisplay = preset.context_size
-        ? (Math.round(preset.context_size / 1024) >= 1000
-            ? `${(Math.round(preset.context_size / 1024) / 1024).toFixed(1)}M context`
-            : `${Math.round(preset.context_size / 1024)}k context`)
-        : '128k context';
+    const ctxDisplay = formatContextChip(presetContextSize(preset));
     const quantDisplay = (selected.quantization && selected.quantization.value) ? selected.quantization.value.toUpperCase() : '';
     return {
         identity: bundle.identity || null,
@@ -1101,6 +1097,14 @@ function _bundleCardView(preset) {
         selected,
         degraded: !(selected && selected.local_path),
     };
+}
+
+// "200k" for a 200000-token window the user typed or picked, "128k" for 131072: whole-thousand
+// values read as thousands, binary sizes as KiB tokens, so the chip matches the number chosen.
+function formatContextChip(tokens) {
+    const n = Number(tokens) > 0 ? Number(tokens) : 128 * 1024;
+    const k = n % 1024 === 0 ? n / 1024 : n % 1000 === 0 ? n / 1000 : Math.round(n / 1024);
+    return k >= 1000 ? `${(k / 1024).toFixed(1)}M context` : `${k}k context`;
 }
 
 function _buildLaunchCard(preset, activePresetId) {
@@ -1138,8 +1142,7 @@ function _buildLaunchCard(preset, activePresetId) {
     // A bundle card leads with the tune's display name, not the preset's stored name.
     const displayName = (bundleView && bundleView.identity?.display_name) || preset.name;
 
-    const ctxK = preset.context_size ? Math.round(preset.context_size / 1024) : 128;
-    let ctxDisplay = ctxK >= 1000 ? `${(ctxK / 1024).toFixed(1)}M context` : `${ctxK}k context`;
+    let ctxDisplay = formatContextChip(presetContextSize(preset));
     const isRapidMlx = preset.backend === 'rapid_mlx';
     let ctkDisplay;
     if (isRapidMlx) {
@@ -1376,7 +1379,7 @@ async function _fetchCardVramEstimates(availBytes, availRamBytes, isUnified, bud
             const body = buildEstimateBody({
                 backend: isRapidMlx ? 'rapid_mlx' : 'llama_cpp',
                 model_path: modelPath,
-                n_ctx: preset.context_size || 131072,
+                n_ctx: presetContextSize(preset) || 131072,
                 parallel_slots: preset.parallel_slots || 1,
                 ubatch_size: preset.ubatch_size || 1024,
                 ctk: isRapidMlx ? undefined : (preset.ctk || 'q8_0'),

@@ -71,6 +71,7 @@ pub enum RapidMlxSetting {
     MaxConcurrentRequests,
     PrefillBatchSize,
     CompletionBatchSize,
+    ContextLength,
     ReasoningMode,
     MllmVision,
     Embeddings,
@@ -91,6 +92,7 @@ impl RapidMlxSetting {
             Self::MaxConcurrentRequests => "max_concurrent_requests",
             Self::PrefillBatchSize => "prefill_batch_size",
             Self::CompletionBatchSize => "completion_batch_size",
+            Self::ContextLength => "context_length",
             Self::ReasoningMode => "reasoning_mode",
             Self::MllmVision => "mllm_vision",
             Self::Embeddings => "embeddings",
@@ -113,6 +115,7 @@ impl RapidMlxSetting {
             Self::MaxConcurrentRequests => has_flag("--max-concurrent-requests"),
             Self::PrefillBatchSize => has_flag("--prefill-batch-size"),
             Self::CompletionBatchSize => has_flag("--completion-batch-size"),
+            Self::ContextLength => has_flag("--context-length"),
             Self::ReasoningMode => has_flag("--reasoning"),
             Self::MllmVision => {
                 matches!(
@@ -146,6 +149,8 @@ impl RapidMlxSetting {
             Self::MaxConcurrentRequests => serde_json::json!(16),
             Self::PrefillBatchSize => serde_json::json!(null),
             Self::CompletionBatchSize => serde_json::json!(null),
+            // Unset lets the runtime size the window from available memory.
+            Self::ContextLength => serde_json::json!(null),
             Self::ReasoningMode => serde_json::json!("auto"),
             Self::MllmVision => serde_json::json!("auto"),
             Self::Embeddings => serde_json::json!("auto"),
@@ -202,6 +207,17 @@ impl RapidMlxSetting {
                     return invalid(
                         "hybrid_cache_entries exceeds maximum 65536".into(),
                         "hybrid_cache_entries_too_high",
+                    );
+                }
+                Ok(())
+            }
+            Self::ContextLength => {
+                if let Some(n) = value.as_u64()
+                    && !(512..=4_194_304).contains(&n)
+                {
+                    return invalid(
+                        "context_length must be in range [512, 4194304]".into(),
+                        "context_length_out_of_range",
                     );
                 }
                 Ok(())
@@ -308,6 +324,12 @@ impl RapidMlxSetting {
                     args.push(n.to_string());
                 }
             }
+            Self::ContextLength => {
+                if let Some(n) = value.as_u64() {
+                    args.push("--context-length".into());
+                    args.push(n.to_string());
+                }
+            }
             Self::GpuMemoryUtilization => {
                 if let Some(f) = value.as_f64()
                     && f != 0.9
@@ -402,6 +424,7 @@ pub fn all_settings() -> &'static [RapidMlxSetting] {
         RapidMlxSetting::MaxConcurrentRequests,
         RapidMlxSetting::PrefillBatchSize,
         RapidMlxSetting::CompletionBatchSize,
+        RapidMlxSetting::ContextLength,
         RapidMlxSetting::ReasoningMode,
         RapidMlxSetting::MllmVision,
         RapidMlxSetting::Embeddings,
@@ -839,7 +862,9 @@ mod tests {
                 !default.is_null()
                     || matches!(
                         setting,
-                        RapidMlxSetting::PrefillBatchSize | RapidMlxSetting::CompletionBatchSize
+                        RapidMlxSetting::PrefillBatchSize
+                            | RapidMlxSetting::CompletionBatchSize
+                            | RapidMlxSetting::ContextLength
                     )
             );
         }

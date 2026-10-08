@@ -12,7 +12,7 @@ const SECTION_COPY = {
     llama: ['Generation', 'Generation & Sampling', 'Sampling parameters, reasoning controls, and output limits'],
   },
   context: {
-    mlx: ['Cache & Performance', 'Cache & Performance', 'Active KV, retained prompts, scheduling, and prefill policy'],
+    mlx: ['Cache & Performance', 'Cache & Performance', 'Context window, active KV, retained prompts, scheduling, and prefill policy'],
     llama: ['Context', 'Context & KV Cache', 'Context window size, KV cache quantization, and VRAM fitting'],
   },
   advanced: {
@@ -36,6 +36,11 @@ const GROUPS = [
     section: 'generation', id: 'output', title: 'Output limit',
     description: 'Cap each response without changing the model context window.',
     rows: ['pe-row-max-tokens-seed'],
+  },
+  {
+    section: 'context', id: 'context-window', title: 'Context window',
+    description: 'Per-request window (prompt plus output). Larger windows reserve more active memory.',
+    rows: ['pe-row-context-size'],
   },
   {
     section: 'context', id: 'active-memory', title: 'Active memory',

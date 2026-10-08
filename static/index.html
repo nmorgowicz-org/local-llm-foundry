@@ -2714,7 +2714,7 @@
                             </div>
                         </div>
                         <div class="pe-section-body">
-                            <div class="pe-row pe-row-3" style="margin-bottom: 12px;">
+                            <div class="pe-row pe-row-3" id="pe-row-context-size" style="margin-bottom: 12px;">
                                 <div class="pe-field" style="flex: 1;">
                                     <label class="pe-label" for="modal-context-size" title="Native model context in tokens. Larger values use more memory. Context extension requires separately qualified advanced controls.">Context Size (-c)</label>
                                     <div id="preset-context-pills" class="preset-context-pills" style="display:none;"></div>
@@ -2723,7 +2723,8 @@
                                         <input type="number" class="pe-input" id="modal-context-size" value="128000" style="flex: 1;">
                                         <button type="button" class="btn-sm btn-preset" id="preset-vram-auto-size" title="Auto-calculate optimal context and KV quantization for available VRAM" style="white-space: nowrap; height: 32px;">Auto-size</button>
                                     </div>
-                                    <div class="pe-field-hint">On Apple Silicon a dense 27–30B drops from ~17 t/s at short context to ~7 t/s at 16k tokens. Don't over-allocate — use Auto-size or match the context you actually need.</div>
+                                    <div class="pe-field-hint pe-rapid-only-hint">Per-request window (prompt plus output), passed to Rapid-MLX as <code>--context-length</code> and capped by the model's declared limit. The memory estimate updates as you change it.</div>
+                                    <div class="pe-field-hint pe-llama-only-hint">On Apple Silicon a dense 27–30B drops from ~17 t/s at short context to ~7 t/s at 16k tokens. Don't over-allocate — use Auto-size or match the context you actually need.</div>
                                 </div>
                             </div>
                             <!-- Performance advisor: config-time hints (dense vs MoE, KV, MTP) -->
@@ -3294,6 +3295,10 @@
                                     <label class="pe-label" for="modal-api-key" title="API key required by clients to connect to this server. Leave empty for no authentication.">API Key</label>
                                     <input type="text" class="pe-input" id="modal-api-key" placeholder="(none)">
                                 </div>
+                                <div class="pe-field pe-rapid-only-field">
+                                    <label class="pe-label" for="modal-rapid-served-name" title="Model name clients see in /v1/models. Empty uses the model's resolved name.">Served model name</label>
+                                    <input type="text" class="pe-input" id="modal-rapid-served-name" placeholder="e.g. qwen3-27b">
+                                </div>
                             </div>
                              <div class="pe-row" id="pe-row-rapid-reasoning">
                                  <div class="pe-field">
@@ -3429,8 +3434,8 @@
                                     <div class="pe-field-hint">Explicit overrides are intended for misdetected finetunes.</div>
                                 </div>
                                 <div class="pe-field">
-                                    <button type="button" class="pe-action-btn" data-open-protocol-docs>Validate protocol…</button>
-                                    <div class="pe-field-hint">Compare the detected protocol against the RapidMLX model-families docs.</div>
+                                    <button type="button" class="pe-action-btn" data-open-protocol-docs>Validate model alias…</button>
+                                    <div class="pe-field-hint">Compare this alias's detected tool-call and reasoning parsers with the Rapid-MLX model-families docs.</div>
                                 </div>
                             </div>
                             <div class="pe-row pe-row-rapid-advanced" id="pe-row-rapid-architecture-overrides" style="display:none;">
@@ -4205,8 +4210,8 @@
                                      <div class="field-hint">Override only when a modified finetune is misdetected.</div>
                                  </div>
                                  <div class="hardware-field">
-                                     <button type="button" class="hw-action-btn" data-open-protocol-docs>Validate protocol…</button>
-                                     <div class="field-hint">Compare the detected tool/reasoning protocol against the RapidMLX model-families docs — useful when auto-detection can't see a modified finetune.</div>
+                                     <button type="button" class="hw-action-btn" data-open-protocol-docs>Validate model alias…</button>
+                                     <div class="field-hint">Compare this alias's detected tool-call and reasoning parsers with the Rapid-MLX model-families docs. Useful when auto-detection can't see a modified finetune.</div>
                                  </div>
                                  <div class="hardware-field">
                                      <label for="spawn-rapid-prefill-step-size">Prefill step size</label>

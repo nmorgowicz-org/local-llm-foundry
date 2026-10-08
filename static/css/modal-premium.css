@@ -2356,7 +2356,7 @@
 #preset-modal.preset-editor--rapid-mlx .preset-editor-section[data-section="model"] .preset-memory-warning,
 #preset-modal.preset-editor--rapid-mlx .preset-editor-section[data-section="context"] > .pe-section-body > :not(.mlx-native-group),
 #preset-modal.preset-editor--rapid-mlx .preset-editor-section[data-section="advanced"] > .pe-section-body > :not(.pe-row:has(#modal-port)):not(.mlx-native-group),
-#preset-modal.preset-editor--rapid-mlx .preset-editor-section[data-section="advanced"] .pe-field:not(:has(#modal-port)):not(:has(#modal-rapid-enable-thinking)):not(:has(#modal-rapid-reasoning-effort)):not(:has(#modal-rapid-prefix-cache-enabled)):not(:has(#modal-rapid-kv-cache-dtype)):not(:has(#modal-rapid-turboquant-mode)):not(:has(#modal-rapid-reasoning-mode)):not(:has(#modal-rapid-sampling-mode)):not(:has(#modal-rapid-frequency-penalty)):not(:has(#modal-rapid-tool-call-parser)):not(:has(#modal-rapid-reasoning-parser)):not(:has(#modal-rapid-hybrid-mode)):not(:has(#modal-rapid-prefill-step-size)):not(:has(#modal-rapid-speculative-enabled)):not(:has(#modal-rapid-speculative-source)):not(:has(#modal-rapid-speculative-model)):not(:has(#modal-rapid-speculative-tokens)):not(:has(#modal-rapid-speculative-disable-auto-k)):not(:has(#modal-rapid-auto-tool-choice)):not(:has(#modal-rapid-cache-memory-mib)):not(:has(#modal-rapid-hybrid-cache-entries)):not(:has(#modal-rapid-prefill-batch-size)):not(:has(#modal-rapid-completion-batch-size)):not(:has(#modal-rapid-gpu-memory-utilization)):not(:has(#modal-rapid-max-num-seqs)):not(:has(#modal-rapid-max-concurrent-requests)):not(:has(#modal-rapid-pflash-policy)):not(:has(#modal-rapid-speculative-trust-consent)):not(:has(#modal-max-tokens)),
+#preset-modal.preset-editor--rapid-mlx .preset-editor-section[data-section="advanced"] .pe-field:not(:has(#modal-port)):not(:has(#modal-rapid-enable-thinking)):not(:has(#modal-rapid-reasoning-effort)):not(:has(#modal-rapid-prefix-cache-enabled)):not(:has(#modal-rapid-kv-cache-dtype)):not(:has(#modal-rapid-turboquant-mode)):not(:has(#modal-rapid-reasoning-mode)):not(:has(#modal-rapid-sampling-mode)):not(:has(#modal-rapid-frequency-penalty)):not(:has(#modal-rapid-tool-call-parser)):not(:has(#modal-rapid-reasoning-parser)):not(:has(#modal-rapid-hybrid-mode)):not(:has(#modal-rapid-prefill-step-size)):not(:has(#modal-rapid-speculative-enabled)):not(:has(#modal-rapid-speculative-source)):not(:has(#modal-rapid-speculative-model)):not(:has(#modal-rapid-speculative-tokens)):not(:has(#modal-rapid-speculative-disable-auto-k)):not(:has(#modal-rapid-auto-tool-choice)):not(:has(#modal-rapid-cache-memory-mib)):not(:has(#modal-rapid-hybrid-cache-entries)):not(:has(#modal-rapid-prefill-batch-size)):not(:has(#modal-rapid-completion-batch-size)):not(:has(#modal-rapid-gpu-memory-utilization)):not(:has(#modal-rapid-max-num-seqs)):not(:has(#modal-rapid-max-concurrent-requests)):not(:has(#modal-rapid-pflash-policy)):not(:has(#modal-rapid-speculative-trust-consent)):not(:has(#modal-max-tokens)):not(:has(#modal-bind-host)):not(:has(#modal-api-key)):not(:has(#modal-rapid-served-name)),
 #preset-modal.preset-editor--rapid-mlx .preset-editor-section[data-section="generation"] > .pe-section-body > .pe-field:not(:has(#modal-temperature)):not(:has(#modal-top-p)):not(:has(#modal-top-k)):not(:has(#modal-min-p)):not(:has(#modal-repeat-penalty)):not(:has(#modal-presence-penalty)):not(:has(#modal-max-tokens)),
 #preset-modal.preset-editor--rapid-mlx [data-mlx-group="output"] .pe-field:not(:has(#modal-max-tokens)),
 #preset-modal.preset-editor--rapid-mlx #preset-browse-model-btn {
@@ -3222,3 +3222,39 @@ details.mlx-native-group:not([open]) > .mlx-native-group-header {
     .preset-bundle-add-row { grid-template-columns: 1fr; }
     .preset-bundle-artifact { align-items: flex-start; }
 }
+
+
+/* Action buttons inside editor/wizard fields (e.g. "Validate model alias…") */
+.pe-action-btn,
+.hw-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  align-self: flex-start;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent, #ec4899) 45%, transparent);
+  background: color-mix(in srgb, var(--accent, #ec4899) 10%, transparent);
+  color: var(--text-primary, #e6edf3);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .1s ease;
+}
+.pe-action-btn:hover,
+.hw-action-btn:hover {
+  background: color-mix(in srgb, var(--accent, #ec4899) 20%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #ec4899) 70%, transparent);
+}
+.pe-action-btn:active,
+.hw-action-btn:active { transform: translateY(1px); }
+.pe-action-btn:focus-visible,
+.hw-action-btn:focus-visible { outline: 2px solid var(--accent, #ec4899); outline-offset: 2px; }
+
+/* Engine-specific hints in the shared context field */
+#preset-modal:not(.preset-editor--rapid-mlx) .pe-rapid-only-hint,
+#preset-modal:not(.preset-editor--rapid-mlx) .pe-rapid-only-field { display: none; }
+#preset-modal.preset-editor--rapid-mlx .pe-llama-only-hint { display: none; }

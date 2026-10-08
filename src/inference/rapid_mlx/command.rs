@@ -82,6 +82,7 @@ pub struct RapidMlxCommandBuilder {
     max_concurrent_requests: Option<u64>,
     prefill_batch_size: Option<u64>,
     completion_batch_size: Option<u64>,
+    context_length: Option<u32>,
     prefill_step_size: Option<u32>,
     // Phase 7: reasoning/speculative
     reasoning_mode: Option<String>,
@@ -140,6 +141,7 @@ impl RapidMlxCommandBuilder {
             max_concurrent_requests: None,
             prefill_batch_size: None,
             completion_batch_size: None,
+            context_length: None,
             prefill_step_size: None,
             reasoning_mode: None,
             speculative_config: None,
@@ -264,6 +266,11 @@ impl RapidMlxCommandBuilder {
     }
     pub fn completion_batch_size(mut self, size: Option<u64>) -> Self {
         self.completion_batch_size = size;
+        self
+    }
+
+    pub fn context_length(mut self, tokens: Option<u32>) -> Self {
+        self.context_length = tokens;
         self
     }
     pub fn prefill_step_size(mut self, size: Option<u32>) -> Self {
@@ -612,6 +619,11 @@ impl RapidMlxCommandBuilder {
             capabilities.require("--completion-batch-size")?;
             args.push("--completion-batch-size".to_string());
             args.push(size.to_string());
+        }
+        if let Some(tokens) = self.context_length.filter(|tokens| *tokens > 0) {
+            capabilities.require("--context-length")?;
+            args.push("--context-length".to_string());
+            args.push(tokens.to_string());
         }
         if let Some(size) = self.prefill_step_size {
             if !(1..=2048).contains(&size) {
@@ -1111,6 +1123,36 @@ mod tests {
                 .any(|(name, value)| { name == "RAPID_MLX_API_KEY" && value == "do-not-log" })
         );
         assert!(!launch.redacted_summary.contains("do-not-log"));
+    }
+
+    #[test]
+    fn context_length_is_forwarded_and_fails_closed_without_runtime_support() {
+        let build = |caps: &ServeCapabilities, tokens: Option<u32>| {
+            RapidMlxCommandBuilder::new(
+                ResolvedRapidMlxLaunchModel::validated_alias("model").unwrap(),
+            )
+            .context_length(tokens)
+            .build("rapid-mlx".into(), caps)
+        };
+        // Baseline flags plus the one under test.
+        let supported = ServeCapabilities::from_help(
+            "--host --port --log-level --served-model-name --timeout --enable-prefix-cache --disable-prefix-cache --cache-memory-mb --hybrid-cache-entries --kv-disk-checkpoint-interval --tool-call-parser --reasoning-parser --enable-auto-tool-choice --no-thinking --reasoning --force-hybrid --no-hybrid --prefill-step-size --pflash --speculative-config --context-length",
+        );
+        let launch = build(&supported, Some(200_000)).unwrap();
+        assert!(
+            args(&launch)
+                .windows(2)
+                .any(|pair| pair == ["--context-length", "200000"])
+        );
+
+        // Unset or zero never emits the flag, so older runtimes keep launching.
+        let baseline = ServeCapabilities::verified_baseline();
+        for unset in [None, Some(0)] {
+            let launch = build(&baseline, unset).unwrap();
+            assert!(!args(&launch).iter().any(|arg| arg == "--context-length"));
+        }
+        let error = build(&baseline, Some(200_000)).unwrap_err();
+        assert!(error.to_string().contains("--context-length"), "got: {error}");
     }
 
     #[test]

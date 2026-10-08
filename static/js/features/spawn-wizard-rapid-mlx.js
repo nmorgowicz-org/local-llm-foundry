@@ -1031,6 +1031,8 @@ export function buildRapidMlxConfig(h, m) {
     auto_tool_choice: !!h.autoToolChoice,
     no_thinking: h.rapidReasoningMode === 'off',
     hybrid_mode: h.hybridMode || 'auto',
+    // Per-request window the user chose on the hardware step -> --context-length.
+    ...(Number(h.contextSize) > 0 && { context_length: Number(h.contextSize) }),
         prefill_step_size: Number(h.prefillStepSize || rapidMlxPrefillStepSizeDefault(m.rapidMlxProfile)),
     ...(escapeHatchFlags.length > 0 && { escape_hatch_flags: escapeHatchFlags }),
     // Phase 7: KV/cache policy (D6 catalog IDs)
