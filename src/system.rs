@@ -7,21 +7,35 @@ use sysinfo::System;
 /// CPU usage is a delta between samples. Keep both sysinfo's counters and the
 /// last valid load across requests; refreshing a new System twice immediately
 /// never provides a meaningful sampling interval.
+///
+/// `cpu_load` stays `None` until a refresh at least `MINIMUM_CPU_UPDATE_INTERVAL`
+/// after the priming read has produced a real delta; callers must report that
+/// as "unavailable" rather than as 0% load.
+///
+/// The sampler deliberately owns a scoped `System::new()` (CPU + memory only).
+/// Everything read from it — `cpus()` for load/clock/temperature guards and the
+/// memory totals — is refreshed here; nothing needs the process/disk/network
+/// tables that `System::new_all()` used to populate.
 struct SystemSampler {
     sys: System,
     last_cpu_refresh: Instant,
-    cpu_load: u32,
+    cpu_load: Option<u32>,
 }
 
 impl SystemSampler {
     fn new() -> Self {
+        Self::new_at(Instant::now())
+    }
+
+    /// `now` is the injectable clock reading used for the priming refresh.
+    fn new_at(now: Instant) -> Self {
         let mut sys = System::new();
         // Prime the counters, but do not publish sysinfo's first-sample usage.
         sys.refresh_cpu_all();
         Self {
             sys,
-            last_cpu_refresh: Instant::now(),
-            cpu_load: 0,
+            last_cpu_refresh: now,
+            cpu_load: None,
         }
     }
 
@@ -31,7 +45,7 @@ impl SystemSampler {
         }
         self.sys.refresh_cpu_all();
         self.cpu_load = get_cpu_load(&self.sys);
-        self.last_cpu_refresh = Instant::now();
+        self.last_cpu_refresh = now;
     }
 }
 
@@ -52,6 +66,11 @@ pub struct SystemMetrics {
     pub cpu_temp_available: bool,
     #[serde(default)]
     pub cpu_load: u32,
+    /// Explicit false means `cpu_load` is only a compatibility placeholder
+    /// (no real CPU sample exists yet). None retains the legacy behavior for
+    /// older agents/snapshots that do not report availability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_load_available: Option<bool>,
     #[serde(default)]
     pub cpu_clock_mhz: u32,
     #[serde(default)]
@@ -159,6 +178,7 @@ impl Default for SystemMetrics {
             cpu_temp: 0.0,
             cpu_temp_available: false,
             cpu_load: 0,
+            cpu_load_available: None,
             cpu_clock_mhz: 0,
             ram_total_gb: 0.0,
             ram_used_gb: 0.0,
@@ -201,7 +221,14 @@ impl Default for SystemMetrics {
 }
 
 pub fn get_system_metrics() -> SystemMetrics {
-    let (sampled_cpu_load, sampled_cpu_clock_mhz, cpu_temp, cpu_temp_available, ram_info) = {
+    let (
+        sampled_cpu_load,
+        cpu_load_available,
+        sampled_cpu_clock_mhz,
+        cpu_temp,
+        cpu_temp_available,
+        ram_info,
+    ) = {
         let mut sampler = SYSTEM_SAMPLER
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -209,7 +236,8 @@ pub fn get_system_metrics() -> SystemMetrics {
         sampler.sys.refresh_memory();
         let (cpu_temp, cpu_temp_available) = get_cpu_temp(&sampler.sys);
         (
-            sampler.cpu_load,
+            sampler.cpu_load.unwrap_or(0),
+            sampler.cpu_load.is_some(),
             get_cpu_clock(&sampler.sys),
             cpu_temp,
             cpu_temp_available,
@@ -304,6 +332,7 @@ pub fn get_system_metrics() -> SystemMetrics {
         cpu_temp,
         cpu_temp_available,
         cpu_load,
+        cpu_load_available: Some(cpu_load_available),
         cpu_clock_mhz,
         ram_total_gb,
         ram_used_gb,
@@ -538,12 +567,13 @@ fn get_cpu_temp(sys: &System) -> (f32, bool) {
     }
 }
 
-fn get_cpu_load(sys: &System) -> u32 {
+/// Average utilization across cores, or `None` when no CPUs are enumerable.
+fn get_cpu_load(sys: &System) -> Option<u32> {
     if sys.cpus().is_empty() {
-        return 0;
+        return None;
     }
 
-    (sys.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / sys.cpus().len() as f32) as _
+    Some((sys.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / sys.cpus().len() as f32) as _)
 }
 
 #[cfg(target_os = "linux")]
@@ -1772,16 +1802,66 @@ mod cpu_sampling_tests {
     }
 
     #[test]
-    fn first_sample_is_placeholder_and_rapid_requests_preserve_history() {
-        let mut sampler = SystemSampler::new();
-        assert_eq!(sampler.cpu_load, 0);
-        // A cached valid sample must survive calls before the next interval.
-        sampler.cpu_load = 42;
-        let previous = sampler.last_cpu_refresh;
-        let cpu_count = sampler.sys.cpus().len();
-        sampler.refresh_cpu_if_due(previous);
-        assert_eq!(sampler.cpu_load, 42);
-        assert_eq!(sampler.last_cpu_refresh, previous);
-        assert_eq!(sampler.sys.cpus().len(), cpu_count);
+    fn first_sample_is_placeholder_until_a_real_interval_elapses() {
+        let start = Instant::now();
+        let interval = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL;
+        let mut sampler = SystemSampler::new_at(start);
+        assert_eq!(sampler.cpu_load, None, "priming read is not a sample");
+        assert_eq!(sampler.last_cpu_refresh, start);
+
+        // Inside the first interval nothing is published and nothing is re-read.
+        sampler.refresh_cpu_if_due(start + interval.saturating_sub(Duration::from_nanos(1)));
+        assert_eq!(sampler.cpu_load, None);
+        assert_eq!(sampler.last_cpu_refresh, start);
+
+        // Exactly one interval later the refresh path runs and publishes a value.
+        let first = start + interval;
+        sampler.refresh_cpu_if_due(first);
+        let load = sampler
+            .cpu_load
+            .expect("a refresh after the interval publishes a real sample");
+        assert!(load <= 100, "average utilization is a percentage: {load}");
+        assert_eq!(sampler.last_cpu_refresh, first);
+    }
+
+    #[test]
+    fn rapid_requests_reuse_cached_sample_and_next_interval_replaces_it() {
+        let start = Instant::now();
+        let interval = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL;
+        let mut sampler = SystemSampler::new_at(start);
+        let first = start + interval;
+        sampler.refresh_cpu_if_due(first);
+        assert!(sampler.cpu_load.is_some());
+
+        // Sentinel above 100% proves reuse (no recompute) and later replacement.
+        sampler.cpu_load = Some(1000);
+        for offset_ms in [0_u64, 1, 50] {
+            sampler.refresh_cpu_if_due(first + Duration::from_millis(offset_ms));
+            assert_eq!(sampler.cpu_load, Some(1000));
+            assert_eq!(sampler.last_cpu_refresh, first);
+        }
+
+        let second = first + interval;
+        sampler.refresh_cpu_if_due(second);
+        assert!(matches!(sampler.cpu_load, Some(load) if load <= 100));
+        assert_eq!(sampler.last_cpu_refresh, second);
+    }
+
+    #[test]
+    fn unavailable_cpu_load_serializes_explicit_availability() {
+        let placeholder = SystemMetrics {
+            cpu_load_available: Some(false),
+            ..SystemMetrics::default()
+        };
+        let json = serde_json::to_value(&placeholder).unwrap();
+        assert_eq!(json["cpu_load"], 0);
+        assert_eq!(json["cpu_load_available"], false);
+
+        // Legacy payloads (older agents) omit the flag and stay "unknown".
+        let legacy: SystemMetrics = serde_json::from_str(r#"{"cpu_load": 12}"#).unwrap();
+        assert_eq!(legacy.cpu_load, 12);
+        assert_eq!(legacy.cpu_load_available, None);
+        let json = serde_json::to_value(&legacy).unwrap();
+        assert!(json.get("cpu_load_available").is_none());
     }
 }
