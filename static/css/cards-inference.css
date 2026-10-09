@@ -2955,6 +2955,8 @@
 .state-pill.active[data-s="reading"] { background: color-mix(in srgb, var(--color-info) 16%, transparent); color: var(--color-info); border-color: transparent; }
 .state-pill.active[data-s="generating"] { background: var(--accent-soft-bg-strong); color: var(--color-accent); border-color: transparent; }
 .state-pill.active[data-s="queued"] { background: color-mix(in srgb, var(--color-warning) 16%, transparent); color: var(--color-warning); border-color: transparent; }
+.state-pill.active[data-s="busy"] { background: color-mix(in srgb, var(--color-info) 16%, transparent); color: var(--color-info); border-color: transparent; }
+.state-pill.active[data-s="unavailable"] { background: color-mix(in srgb, var(--color-warning) 16%, transparent); color: var(--color-warning); border-color: transparent; }
 .state-pill.active[data-s="error"] { background: color-mix(in srgb, var(--color-error) 16%, transparent); color: var(--color-error); border-color: transparent; }
 
 .state-card__row {
@@ -2997,6 +2999,27 @@
 .state-progress[data-tone="danger"] .state-progress__bar { background: var(--color-error); }
 .state-progress--hidden { visibility: hidden; }
 
+.state-progress[data-indeterminate="true"] .state-progress__bar {
+    width: 30%;
+    animation: state-reading-activity 1.6s ease-in-out infinite;
+    transition: none;
+}
+@keyframes state-reading-activity {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(340%); }
+}
+@media (prefers-reduced-motion: reduce) {
+    /* No fraction is known: a short static segment would read as ~30% done.
+       Show the whole track at low opacity instead. */
+    .state-progress[data-indeterminate="true"] .state-progress__bar {
+        animation: none;
+        transform: none;
+        width: 100%;
+        opacity: 0.35;
+    }
+    .state-progress__bar { transition: none; }
+}
+
 .metrics-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -3019,6 +3042,14 @@
 .mcard:hover { border-color: var(--border-emphasis); }
 
 .mcard--na { opacity: 0.45; }
+.mcard[hidden] { display: none; }
+/* Wide fact cards span two columns and lay their facts out side by side. */
+.mcard--wide { grid-column: span 2; }
+.mcard--wide .mcard__facts { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 16px; }
+@media (max-width: 520px) {
+    .mcard--wide { grid-column: auto; }
+    .mcard--wide .mcard__facts { grid-template-columns: minmax(0, 1fr); }
+}
 .mcard--na .mcard__value { visibility: hidden; }
 
 .mcard__label {
@@ -3280,29 +3311,27 @@
 }
 .rapid-dashboard-details[hidden],
 .dashboard-memory-warning[hidden] { display: none; }
-.rapid-dashboard-details > .dashboard-section-title { margin: 10px 0; }
-.rapid-dashboard-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 12px;
-    margin-top: 12px;
-}
-.rapid-dashboard-facts {
+.mcard__facts {
     display: grid;
     gap: 8px;
     margin: 6px 0;
     font-size: 12px;
     font-variant-numeric: tabular-nums;
 }
-.rapid-dashboard-facts > div {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-between;
-    gap: 4px 12px;
+.mcard__note {
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--color-text-muted);
+    overflow-wrap: anywhere;
 }
-.rapid-dashboard-facts dt { color: var(--color-text-muted); }
-.rapid-dashboard-facts dd { margin: 0; color: var(--color-text-secondary); overflow-wrap: anywhere; }
-.rapid-dashboard-grid .mcard__label { margin: 0; line-height: 1.5; }
+.mcard__note:empty { display: none; }
+.mcard__facts > div {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--color-text-secondary);
+    line-height: 1.4;
+}
 .rapid-request-panel {
     margin-top: 12px;
     padding: 14px 16px;
@@ -3314,12 +3343,34 @@
 .rapid-request-panel h4 { margin: 0 0 8px; }
 .rapid-request-scroll { overflow-x: auto; max-height: 360px; margin-top: 8px; }
 .rapid-request-scroll:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-.rapid-request-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.rapid-request-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.rapid-request-table[data-columns="2"] { min-width: 160px; }
+.rapid-request-table[data-columns="3"] { min-width: 240px; }
+.rapid-request-table[data-columns="4"] { min-width: 320px; }
+.rapid-request-table[data-columns="5"] { min-width: 400px; }
+.rapid-request-table[data-columns="6"] { min-width: 480px; }
+.rapid-request-table[data-columns="7"] { min-width: 560px; }
+.rapid-request-table[data-columns="8"] { min-width: 640px; }
+.rapid-request-table[data-columns="9"] { min-width: 720px; }
+.rapid-request-table[data-columns="10"] { min-width: 800px; }
 .rapid-request-table caption { text-align: left; padding: 8px 0; color: var(--color-text-muted); font-size: 11px; }
 .rapid-request-table th,
 .rapid-request-table td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border-subtle); vertical-align: top; }
-.rapid-request-table th { color: var(--color-text-muted); font-weight: 600; white-space: nowrap; }
-.rapid-request-table td { color: var(--color-text-secondary); min-width: 70px; max-width: 220px; overflow-wrap: anywhere; }
+.rapid-request-table th { color: var(--color-text-muted); font-weight: 600; white-space: normal; overflow-wrap: anywhere; }
+.rapid-request-table td { color: var(--color-text-secondary); overflow-wrap: anywhere; }
+/* Containing block for the visually hidden full ID so it cannot escape or widen the scroll region. */
+.rapid-request-id-cell { position: relative; }
+.rapid-request-id-full {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+}
 .dashboard-memory-warning {
     margin: 8px 0 0;
     padding: 10px 14px;
@@ -3336,9 +3387,3 @@
 }
 [data-theme="light"] .rapid-dashboard-details,
 [data-theme="light"] .dashboard-memory-health { color: var(--color-text-secondary); }
-@media (max-width: 950px) {
-    .rapid-dashboard-grid { grid-template-columns: minmax(0, 1fr); }
-}
-@media (prefers-reduced-motion: reduce) {
-    .rapid-dashboard-grid .mcard { transition: none; }
-}

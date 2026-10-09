@@ -848,8 +848,8 @@ function updateInferenceMetrics(d) {
     const busy = isRapid && rapid.state === 'busy';
     const sessionError = d.active_session_status === 'error';
 
-    // Progress: generating → tokens vs budget (llama slots) or backend
-    // progress (Rapid-MLX); reading has no observable fraction → hidden bar.
+    // Only observed counters define a fraction. Rapid's generic progress has
+    // no prompt-token semantics and is never treated as completion prediction.
     let stateProgress = null;
     let stateTone = null;
     let stateLabel = 'Idle';
@@ -859,17 +859,16 @@ function updateInferenceMetrics(d) {
         stateTone = 'danger';
     } else if (generationActive) {
         stateLabel = 'Generating';
-        const generated = isRapid ? 0 : l?.slot_generation_tokens || 0;
-        const remaining = isRapid ? 0 : l?.slot_generation_remaining || 0;
-        const slotLimit = isRapid ? 0 : getPrimarySlot(l)?.output_limit || 0;
-        const total = isRapid ? 0 : l?.slot_generation_limit || slotLimit || (generated + remaining);
-        if (total > 0) {
-            stateProgress = generated / total;
-            stateDetail = `${formatMetricNumber(generated)} / ${formatMetricNumber(total)} tokens`;
-        } else {
-            const ratio = rapid.progress;
-            stateProgress = ratio;
-            stateDetail = ratio != null ? `${Math.round(ratio * 100)}%` : '';
+        const generated = isRapid ? rapid.outputTokens : metricNumber(l?.slot_generation_tokens);
+        const remaining = isRapid ? null : metricNumber(l?.slot_generation_remaining);
+        const slotLimit = isRapid ? null : metricNumber(getPrimarySlot(l)?.output_limit);
+        const total = isRapid ? rapid.outputLimit
+            : metricNumber(l?.slot_generation_limit) || slotLimit || (generated != null && remaining != null ? generated + remaining : null);
+        stateProgress = isRapid ? rapid.outputBudget : generated != null && total > 0 ? generated / total : null;
+        if (stateProgress != null) {
+            stateDetail = `${formatMetricNumber(generated)} / ${formatMetricNumber(total)} tokens · output budget used${isRapid && rapid.generatingCount > 1 ? ' (reported generating requests)' : ''}`;
+        } else if (generated != null) {
+            stateDetail = `${formatMetricNumber(generated)} output tokens · output limit unavailable`;
         }
         if (genDisplay != null) stateDetail += `${stateDetail ? ' · ' : ''}${fmtTps(genDisplay)} t/s${isRapid ? ' aggregate reported' : ''}`;
         if (isRapid && rapid.readingCount) stateDetail += ` · ${rapid.readingCount} reading`;
@@ -878,10 +877,20 @@ function updateInferenceMetrics(d) {
         stateLabel = 'Reading';
         stateTone = 'reading';
         const parts = [];
-        if (!isRapid && l?.slot_prompt_total > 0 && l?.slot_prompt_processed > 0) {
-            parts.push(`${formatMetricNumber(l.slot_prompt_processed)} / ${formatMetricNumber(l.slot_prompt_total)} prompt tokens`);
-            stateProgress = Math.min(1, l.slot_prompt_processed / l.slot_prompt_total);
+        const processingSlots = Array.isArray(l?.slots) ? l.slots.filter(slot => slot.is_processing) : [];
+        // The legacy aggregate is a zero-default integer. When per-slot
+        // availability exists, every processing slot must report its counter.
+        const processedAvailable = !processingSlots.length
+            || processingSlots.every(slot => metricNumber(slot.prompt_tokens_processed) != null);
+        const processed = isRapid || !processedAvailable ? null : metricNumber(l?.slot_prompt_processed);
+        const promptTotal = isRapid ? rapid.promptTokens : metricNumber(l?.slot_prompt_total);
+        if (processed != null && promptTotal > 0 && processed <= promptTotal) {
+            parts.push(`${formatMetricNumber(processed)} / ${formatMetricNumber(promptTotal)} prompt tokens`);
+            stateProgress = processed / promptTotal;
+        } else if (promptTotal != null) {
+            parts.push(`${formatMetricNumber(promptTotal)} prompt tokens`);
         }
+        if (isRapid && rapid.elapsed != null) parts.push(`${rapid.elapsed.toFixed(1)}s elapsed`);
         if (promptDisplay != null) parts.push(`${fmtTps(promptDisplay)} t/s prefill${isRapid ? ' · aggregate reported' : ''}`);
         stateDetail = parts.join(' · ');
         if (isRapid && rapid.readingCount > 1) stateDetail += ` · ${rapid.readingCount} reading`;
@@ -922,6 +931,7 @@ function updateInferenceMetrics(d) {
         stateDetail,
         stateProgress,
         stateTone,
+        rapid: isRapid && hasActiveEndpoint ? rapid : null,
         gpu: buildGpuView(d),
         sys: buildSysView(d),
     };
@@ -930,6 +940,7 @@ function updateInferenceMetrics(d) {
     updateMetricCards(view);
     renderRapidDashboard(isRapid && hasActiveEndpoint ? rm : null, {
         attached: hasActiveEndpoint, backend,
+        sessionId: view.sessionId, endpointTag: view.endpointTag,
         hostSystem: d.host_metrics_available === true && d.capabilities?.system ? lastSystemMetrics : null,
         gpu: view.gpu,
     });
@@ -1003,7 +1014,9 @@ function buildSysView(d) {
     if (!sys || d.host_metrics_available !== true || !d.capabilities?.system) return null;
     return {
         // sysinfo CPU utilization is independent of mactop CPU power availability.
-        cpu: metricNumber(sys.cpu_load),
+        // cpu_load_available=false: first sampling interval, 0 is a placeholder.
+        // Absent (older agents) keeps the legacy "load is real" behavior.
+        cpu: sys.cpu_load_available === false ? null : metricNumber(sys.cpu_load),
         cpuName: sys.cpu_name || '',
         ramUsed: metricNumber(sys.ram_used_gb),
         ramTotal: metricNumber(sys.ram_total_gb),

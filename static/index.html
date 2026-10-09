@@ -790,11 +790,13 @@
                                     <span class="state-pill" data-s="reading">Reading</span>
                                     <span class="state-pill" data-s="generating">Generating</span>
                                     <span class="state-pill" data-s="queued">Queued</span>
+                                    <span class="state-pill" data-s="busy">Processing</span>
+                                    <span class="state-pill" data-s="unavailable">Unavailable</span>
                                     <span class="state-pill" data-s="error">Error</span>
                                 </span>
                             </div>
-                            <div class="state-card__row"><span id="state-label">Waiting for a request</span><span class="state-detail" id="state-detail"></span></div>
-                            <div class="state-progress" id="state-progress"><div class="state-progress__bar" id="state-bar" style="width:0%"></div></div>
+                            <div class="state-card__row"><span id="state-label" aria-live="polite" aria-atomic="true">Waiting for a request</span><span class="state-detail" id="state-detail"></span></div>
+                            <div class="state-progress state-progress--hidden" id="state-progress" role="progressbar" aria-label="Output budget used" aria-valuemin="0" aria-valuemax="100" aria-hidden="true"><div class="state-progress__bar" id="state-bar" style="width:0%"></div></div>
                         </div>
                         <!-- Registry-driven metric cards (built by metric-cards.js) -->
                         <div class="metrics-grid" id="metrics-grid">
@@ -812,32 +814,14 @@
                             <p class="efficiency-note" id="dashboard-memory-summary">Host memory pressure and swap telemetry unavailable</p>
                             <p class="dashboard-memory-warning" id="dashboard-memory-warning" role="status" hidden></p>
                         </div>
-                        <section class="rapid-dashboard-details" id="rapid-dashboard-details" aria-labelledby="rapid-dashboard-heading" hidden>
-                            <h3 class="dashboard-section-title" id="rapid-dashboard-heading">Rapid-MLX telemetry</h3>
-                            <p class="efficiency-note" id="rapid-telemetry-status">Telemetry unavailable</p>
-                            <div class="rapid-dashboard-grid">
-                                <article class="mcard" aria-labelledby="rapid-cache-heading">
-                                    <h4 class="mcard__label" id="rapid-cache-heading">Prefix &amp; multimodal cache · reported totals</h4>
-                                    <dl class="rapid-dashboard-facts" id="rapid-cache-facts"></dl>
-                                </article>
-                                <article class="mcard" aria-labelledby="rapid-outcome-heading">
-                                    <h4 class="mcard__label" id="rapid-outcome-heading">MTP &amp; request outcomes · reported totals</h4>
-                                    <dl class="rapid-dashboard-facts" id="rapid-outcome-facts"></dl>
-                                    <p class="efficiency-note">Acceptance is not a speedup measurement. Missing outcomes are not zero failures.</p>
-                                </article>
-                                <article class="mcard" aria-labelledby="rapid-memory-heading">
-                                    <h4 class="mcard__label" id="rapid-memory-heading">Runtime memory · current snapshot</h4>
-                                    <dl class="rapid-dashboard-facts" id="rapid-memory-facts"></dl>
-                                    <p class="efficiency-note">Allocator cache is reclaimable. Peak usage and hardware wired limits are not runtime allocation caps.</p>
-                                </article>
-                            </div>
+                        <section class="rapid-dashboard-details" id="rapid-dashboard-details" aria-labelledby="rapid-requests-heading" hidden>
                             <div class="rapid-request-panel">
                                 <h4 class="mcard__label" id="rapid-requests-heading">Active request details</h4>
                                 <p class="efficiency-note" id="rapid-request-summary"></p>
                                 <div class="rapid-request-scroll" role="region" aria-labelledby="rapid-requests-heading" tabindex="0">
                                     <table class="rapid-request-table">
                                         <caption>Reported per-request fields; unavailable values are not inferred from aggregate throughput</caption>
-                                        <thead><tr><th scope="col">Request</th><th scope="col">Phase / status</th><th scope="col">Prompt tokens</th><th scope="col">Output / limit</th><th scope="col">Cached tokens</th><th scope="col">t/s</th><th scope="col">TTFT (s)</th><th scope="col">Elapsed (s)</th><th scope="col">Cache hit</th></tr></thead>
+                                        <thead><tr id="rapid-request-columns"><th scope="col">Request</th><th scope="col">Phase / status</th></tr></thead>
                                         <tbody id="rapid-request-rows"></tbody>
                                     </table>
                                 </div>
@@ -7881,7 +7865,7 @@
 <section id="engine-model-popover" class="engine-model-popover" popover aria-labelledby="engine-model-heading">
     <div class="engine-model-header">
         <h2 id="engine-model-heading">Loaded model</h2>
-        <button type="button" popovertarget="engine-model-popover" popovertargetaction="hide" aria-label="Close loaded model details">Close</button>
+        <button type="button" class="btn btn-secondary" popovertarget="engine-model-popover" popovertargetaction="hide" aria-label="Close loaded model details">Close</button>
     </div>
     <dl id="engine-model-facts"></dl>
 </section>

@@ -51,6 +51,7 @@ import scenarioSpawnWizardRapidCatalog from './scenarios/wizard-rapidmlx/spawn-w
 import scenarioRapidMlxRuntime from './scenarios/features/rapid-mlx-runtime.mjs';
 import scenarioRapidMlxLive from './scenarios/validation/rapid-mlx-live.mjs';
 import scenarioDashboardLlamaCppEfficiency from './scenarios/features/dashboard-llama-cpp-efficiency.mjs';
+import scenarioDashboardRapidMlxTelemetry from './scenarios/features/dashboard-rapid-mlx-telemetry.mjs';
 import scenarioSettings from './scenarios/config/settings.mjs';
 import scenarioAppHomeMigration from './scenarios/config/app-home-migration.mjs';
 import scenarioAppearancePalette from './scenarios/config/appearance-palette.mjs';
@@ -139,6 +140,7 @@ Scenarios:
     panels           Chat config panels (behavior, model, style, debug)
     dashboard        Server tab, GPU section
     dashboard-llama-cpp-efficiency  Deterministic llama.cpp efficiency + runtime facts (no attach; dark/light/narrow)
+    dashboard-rapid-mlx-telemetry   Synthetic Rapid telemetry via held WS (no attach; dark/light/activity/unavailable/partial/narrow)
 
    Setup wizard
      spawn-wizard           3-step wizard: model & profiles, hardware & VRAM, launch summary/spawn
@@ -322,6 +324,21 @@ export const SCENARIOS = {
                 'dashboard-llama-cpp-efficiency--llamacpp-local--narrow-efficiency-reduced-motion.png',
                 'dashboard-llama-cpp-efficiency--llamacpp-local--awaiting-activity.png',
                 'dashboard-llama-cpp-efficiency--llamacpp-local--cache-only.png',
+            ],
+        },
+    },
+    'dashboard-rapid-mlx-telemetry': {
+        run: scenarioDashboardRapidMlxTelemetry, category: 'features', runtime: 'rapidmlx-local',
+        contract: {
+            intent: 'Capture synthetic Rapid-MLX telemetry through held WebSocket production integration: shared MTP/runtime/cache cards, reading activity, observed output budget, active request table, telemetry-unavailable, and partial-report states. Not real telemetry or performance evidence; no runtime connection or inference.',
+            expectedOutputs: [
+                'dashboard-rapid-mlx-telemetry--rapidmlx-local--dark-overview.png',
+                'dashboard-rapid-mlx-telemetry--rapidmlx-local--reading-indeterminate.png',
+                'dashboard-rapid-mlx-telemetry--rapidmlx-local--generation-observed-output.png',
+                'dashboard-rapid-mlx-telemetry--rapidmlx-local--telemetry-unavailable.png',
+                'dashboard-rapid-mlx-telemetry--rapidmlx-local--partial-card.png',
+                'dashboard-rapid-mlx-telemetry--rapidmlx-local--light-overview.png',
+                'dashboard-rapid-mlx-telemetry--rapidmlx-local--narrow-table-reduced-motion.png',
             ],
         },
     },
