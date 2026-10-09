@@ -28,30 +28,71 @@ function el(tag, className, text) {
     return node;
 }
 
+// Memoized model-status lookups: { promise, at }. Entries expire after INFO_TTL_MS (the
+// cache can change outside this page, e.g. a CLI download) and are dropped on failure and
+// whenever any surface in this page finishes a download (notifyRapidModelDownloaded).
+const INFO_TTL_MS = 60_000;
 const infoCache = new Map();
+
+// repo_id -> job_id for downloads started from this page, so a re-rendered card or a wizard
+// step change resumes the running job instead of orphaning it and offering a duplicate start.
+const activeJobs = new Map();
+export const RAPID_MODEL_DOWNLOADED_EVENT = 'rapid-model-downloaded';
+
+export function trackRapidDownloadJob(repoId, jobId) {
+    if (repoId && jobId) activeJobs.set(repoId, jobId);
+}
+
+export function untrackRapidDownloadJob(repoId, jobId) {
+    if (!repoId) return;
+    if (jobId == null || activeJobs.get(repoId) === jobId) activeJobs.delete(repoId);
+}
+
+export function activeRapidDownloadJob(repoId) {
+    return activeJobs.get(repoId) || null;
+}
+
+/** Drop memoized model-status lookups (one source, or all when omitted). */
+export function invalidateRapidModelInfo(source) {
+    const src = String(source || '').trim();
+    if (src) infoCache.delete(src);
+    else infoCache.clear();
+}
+
+/**
+ * Announce that a Rapid-MLX model finished downloading from any surface (card or wizard):
+ * invalidates memoized status and lets other cards for the same repo drop their download row.
+ */
+export function notifyRapidModelDownloaded(repoId) {
+    activeJobs.delete(repoId);
+    infoCache.clear();
+    window.dispatchEvent(new CustomEvent(RAPID_MODEL_DOWNLOADED_EVENT, { detail: { repoId } }));
+}
 
 /**
  * Resolve a Rapid-MLX source (catalog alias or owner/repo) to its repo, size, quantization
- * label and cache state via /api/rapid-mlx/model-status. Memoized per source; the cache is
- * dropped on failure and after a download completes so state never goes stale.
+ * label and cache state via /api/rapid-mlx/model-status. Memoized per source with a TTL; the
+ * entry is dropped on failure and when a download completes so state never goes stale.
  */
 export function rapidModelInfo(source) {
     const src = String(source || '').trim();
     if (!src || isLocalPath(src)) return Promise.resolve(null);
-    if (!infoCache.has(src)) {
-        const pending = fetch(`/api/rapid-mlx/model-status?source=${encodeURIComponent(src)}`, { headers: headers() })
-            .then(resp => (resp.ok ? resp.json() : null))
-            .then(info => {
-                if (!info || !info.ok) infoCache.delete(src);
-                return info && info.ok ? info : null;
-            })
-            .catch(() => {
-                infoCache.delete(src);
-                return null;
-            });
-        infoCache.set(src, pending);
-    }
-    return infoCache.get(src);
+    const existing = infoCache.get(src);
+    if (existing && Date.now() - existing.at < INFO_TTL_MS) return existing.promise;
+    const entry = { at: Date.now(), promise: null };
+    const drop = () => { if (infoCache.get(src) === entry) infoCache.delete(src); };
+    entry.promise = fetch(`/api/rapid-mlx/model-status?source=${encodeURIComponent(src)}`, { headers: headers() })
+        .then(resp => (resp.ok ? resp.json() : null))
+        .then(info => {
+            if (!info || !info.ok) drop();
+            return info && info.ok ? info : null;
+        })
+        .catch(() => {
+            drop();
+            return null;
+        });
+    infoCache.set(src, entry);
+    return entry.promise;
 }
 
 /**
@@ -98,9 +139,21 @@ export async function attachRapidDownloadState(card, source) {
     card.dataset.modelMissing = '1';
     let jobId = null;
     let busy = false;
+    let alive = true;
+    let pollTimer = null;
+
+    // Stops this card's poll loop and listener. Does not cancel the job: it keeps running
+    // server-side and stays tracked, so a re-rendered card for the same repo resumes it.
+    const teardown = () => {
+        alive = false;
+        clearTimeout(pollTimer);
+        pollTimer = null;
+        window.removeEventListener(RAPID_MODEL_DOWNLOADED_EVENT, onDownloaded);
+    };
 
     const finish = (state) => {
         busy = false;
+        jobId = null;
         cancelBtn.hidden = true;
         cancelBtn.disabled = false;
         dlBtn.disabled = false;
@@ -111,11 +164,27 @@ export async function attachRapidDownloadState(card, source) {
         }
     };
 
-    const poll = async () => {
-        if (!jobId) return;
+    // Another surface (wizard or another card) finished downloading this repo.
+    function onDownloaded(event) {
+        if (!alive || event.detail?.repoId !== repoId) return;
+        teardown();
+        finish('complete');
+    }
+    window.addEventListener(RAPID_MODEL_DOWNLOADED_EVENT, onDownloaded);
+
+    const schedule = (ms) => {
+        clearTimeout(pollTimer);
+        pollTimer = setTimeout(poll, ms);
+    };
+
+    async function poll() {
+        if (!alive || !jobId) return;
+        if (!document.contains(card)) { teardown(); return; }
+        const polledJob = jobId;
         try {
-            const resp = await fetch(`/api/models/downloads/${encodeURIComponent(jobId)}`, { headers: headers() });
+            const resp = await fetch(`/api/models/downloads/${encodeURIComponent(polledJob)}`, { headers: headers() });
             const data = await resp.json().catch(() => ({}));
+            if (!alive || jobId !== polledJob) return;
             const job = data.job || {};
             if (job.state === 'running') {
                 if (job.bytes_total > 0) {
@@ -125,13 +194,15 @@ export async function attachRapidDownloadState(card, source) {
                 } else {
                     label.textContent = 'Downloading…';
                 }
-                setTimeout(poll, POLL_MS);
+                schedule(POLL_MS);
                 return;
             }
+            untrackRapidDownloadJob(repoId, polledJob);
             if (job.state === 'complete') {
                 showToast(`Downloaded ${repoId}`, 'success');
-                infoCache.delete(src);
+                teardown();
                 finish('complete');
+                notifyRapidModelDownloaded(repoId);
                 return;
             }
             if (job.state === 'cancelled') {
@@ -144,9 +215,9 @@ export async function attachRapidDownloadState(card, source) {
             dlBtn.textContent = 'Retry';
             finish('idle');
         } catch {
-            setTimeout(poll, POLL_MS * 2);
+            if (alive && jobId === polledJob) schedule(POLL_MS * 2);
         }
-    };
+    }
 
     const start = async () => {
         if (busy) return;
@@ -168,6 +239,8 @@ export async function attachRapidDownloadState(card, source) {
                 finish('idle');
                 return;
             }
+            trackRapidDownloadJob(repoId, data.job_id);
+            if (!alive) return; // card was re-rendered mid-request; the tracked job is resumed by its replacement
             jobId = data.job_id;
             cancelBtn.hidden = false;
             poll();
@@ -183,14 +256,32 @@ export async function attachRapidDownloadState(card, source) {
     });
     cancelBtn.addEventListener('click', async (event) => {
         event.stopPropagation();
+        if (!jobId) return; // nothing to cancel (no job yet, or it already ended)
+        const cancelling = jobId;
         cancelBtn.disabled = true;
         try {
-            await fetch(`/api/models/downloads/${encodeURIComponent(jobId)}/cancel`, {
+            await fetch(`/api/models/downloads/${encodeURIComponent(cancelling)}/cancel`, {
                 method: 'POST',
                 headers: headers(),
             });
-        } catch { /* the next poll reports the real state */ }
+        } catch {
+            // The next poll reports the real state; let the user retry the cancel.
+            if (jobId === cancelling) cancelBtn.disabled = false;
+        }
     });
+
+    // Resume a download already running for this repo (card re-rendered, or started from
+    // the wizard / another card) instead of offering a second start.
+    const running = activeRapidDownloadJob(repoId);
+    if (running) {
+        busy = true;
+        jobId = running;
+        dlBtn.disabled = true;
+        bar.hidden = false;
+        label.textContent = 'Downloading…';
+        cancelBtn.hidden = false;
+        poll();
+    }
 
     // Start on a card whose model is missing downloads instead of failing at launch.
     // Capture phase on the card runs before the Start button's own handler.

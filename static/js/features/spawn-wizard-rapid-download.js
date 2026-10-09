@@ -7,11 +7,24 @@
 // interactive "Continue? [Y/n]" prompt.
 import { showToast } from './toast.js';
 import { wizardState, refreshStepGuardrails } from './spawn-wizard.js';
+import {
+  activeRapidDownloadJob,
+  notifyRapidModelDownloaded,
+  trackRapidDownloadJob,
+  untrackRapidDownloadJob,
+} from './rapid-model-download.js';
 
 const POLL_MS = 1500;
+// The download this panel is currently attached to: { source, info, id }. `id` is null
+// while the start request is in flight. Every async continuation compares against the
+// object it captured, so a stale job can never touch the panel or wizardState after the
+// user moved to another model.
 let currentJob = null;
 let pollTimer = null;
 let checkSeq = 0;
+// repo_id of a download this panel detached from because the source changed; the job keeps
+// running server-side (and stays tracked), the panel says so instead of silently dropping it.
+let detachedRepo = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -64,19 +77,57 @@ function showIdle(info, note) {
   const size = info.size_bytes ? ` (${fmtGiB(info.size_bytes)})` : '';
   $('rapid-dlp-repo').textContent = `${info.repo_id}${size}`;
   const noteEl = $('rapid-dlp-note');
-  noteEl.textContent = note || 'Download the model to your models folder before starting the server.';
+  const base = note || 'Download the model to your models folder before starting the server.';
+  noteEl.textContent = detachedRepo && detachedRepo !== info.repo_id
+    ? `${base} Download of ${detachedRepo} continues in the background.`
+    : base;
   const btn = $('rapid-dlp-download-btn');
   btn.disabled = false;
+}
+
+/** Progress view for a running (or starting) download; Download stays disabled. */
+function showProgress(job, text) {
+  const panel = $('rapid-dl-panel');
+  if (!panel) return;
+  panel.style.display = '';
+  setView('progress');
+  $('rapid-dlp-download-btn').disabled = true;
+  $('rapid-dlp-bar').style.width = '0%';
+  $('rapid-dlp-progress-pct').textContent = '';
+  $('rapid-dlp-progress-file').textContent = job.info.repo_id;
+  $('rapid-dlp-stats').textContent = text || 'Starting\u2026';
+}
+
+/** Stop polling and release the current job without cancelling it; it keeps running. */
+function detachCurrentJob() {
+  stopPolling();
+  if (currentJob) {
+    detachedRepo = currentJob.info?.repo_id || null;
+    currentJob = null;
+  }
 }
 
 /** Re-check the selected model; show the download panel only when it is missing. */
 export async function refreshRapidModelDownload() {
   const panel = $('rapid-dl-panel');
   if (!panel) return;
-  stopPolling();
   const seq = ++checkSeq;
   const source = wizardState.engine.selected === 'rapid_mlx' ? selectedSource() : '';
-  if (!source || source.startsWith('/') || source.startsWith('~') || source.startsWith('.')) {
+  const local = !source || source.startsWith('/') || source.startsWith('~') || source.startsWith('.');
+
+  // Same source with a download already running/starting: keep it. Re-checking would flip
+  // the panel to idle and invite a duplicate start while the first job keeps running.
+  if (currentJob && !local && currentJob.source === source) {
+    setMissing(currentJob.info);
+    panel.style.display = '';
+    setView('progress');
+    $('rapid-dlp-download-btn').disabled = true;
+    if (currentJob.id) void poll(currentJob); // no-op while a poll chain is already live
+    return;
+  }
+  // Source changed (or became local / non-Rapid): detach explicitly rather than orphaning.
+  detachCurrentJob();
+  if (local) {
     panel.style.display = 'none';
     setMissing(null);
     return;
@@ -91,7 +142,17 @@ export async function refreshRapidModelDownload() {
       return;
     }
     setMissing({ missing: true, repo_id: info.repo_id, size_bytes: info.size_bytes });
-    showIdle(wizardState.model.rapidDownload);
+    const missing = wizardState.model.rapidDownload;
+    // A download for this repo may already be running (started here earlier, or on a card).
+    const running = activeRapidDownloadJob(missing.repo_id);
+    if (running) {
+      if (detachedRepo === missing.repo_id) detachedRepo = null;
+      currentJob = { source, info: missing, id: running };
+      showProgress(currentJob, 'Resuming\u2026');
+      void poll(currentJob);
+      return;
+    }
+    showIdle(missing);
   } catch {
     if (seq !== checkSeq) return;
     // Status unavailable: don't trap the user; launch still fails fast with a clear message.
@@ -100,45 +161,60 @@ export async function refreshRapidModelDownload() {
   }
 }
 
-async function poll() {
-  if (!currentJob) return;
+async function poll(job, fromTimer = false) {
+  if (currentJob !== job || !job.id) return;
+  if (job.polling && !fromTimer) return; // one poll chain per job
+  job.polling = true;
+  stopPolling();
+  let rescheduled = false;
+  const again = (ms) => {
+    rescheduled = true;
+    pollTimer = setTimeout(() => poll(job, true), ms);
+  };
   try {
-    const resp = await fetch(`/api/models/downloads/${encodeURIComponent(currentJob)}`, { headers: headers() });
-    const job = (await resp.json().catch(() => ({}))).job || {};
-    const info = wizardState.model.rapidDownload;
-    if (job.state === 'running') {
-      const pct = job.bytes_total > 0 ? Math.min(100, Math.round((job.bytes_done / job.bytes_total) * 100)) : 0;
+    const resp = await fetch(`/api/models/downloads/${encodeURIComponent(job.id)}`, { headers: headers() });
+    const data = await resp.json().catch(() => ({}));
+    // Stale guard: the user switched model/source (or restarted) while this was in flight.
+    if (currentJob !== job || selectedSource() !== job.source) return;
+    const status = data.job || {};
+    if (status.state === 'running') {
+      const pct = status.bytes_total > 0 ? Math.min(100, Math.round((status.bytes_done / status.bytes_total) * 100)) : 0;
       $('rapid-dlp-bar').style.width = `${pct}%`;
-      $('rapid-dlp-progress-pct').textContent = job.bytes_total > 0 ? `${pct}%` : '';
-      $('rapid-dlp-progress-file').textContent = job.current_file || info?.repo_id || '';
-      $('rapid-dlp-stats').textContent = job.bytes_total > 0
-        ? `${fmtGiB(job.bytes_done)} / ${fmtGiB(job.bytes_total)}${job.stalled ? ' \u00b7 stalled, resuming\u2026' : ''}`
+      $('rapid-dlp-progress-pct').textContent = status.bytes_total > 0 ? `${pct}%` : '';
+      $('rapid-dlp-progress-file').textContent = status.current_file || job.info.repo_id || '';
+      $('rapid-dlp-stats').textContent = status.bytes_total > 0
+        ? `${fmtGiB(status.bytes_done)} / ${fmtGiB(status.bytes_total)}${status.stalled ? ' \u00b7 stalled, resuming\u2026' : ''}`
         : 'Starting\u2026';
-      pollTimer = setTimeout(poll, POLL_MS);
+      again(POLL_MS);
       return;
     }
     currentJob = null;
-    if (job.state === 'complete') {
+    untrackRapidDownloadJob(job.info.repo_id, job.id);
+    if (status.state === 'complete') {
       setView('complete');
+      $('rapid-dlp-download-btn').disabled = false;
       setMissing(null);
-      showToast(`Downloaded ${info?.repo_id || 'model'}`, 'success');
+      notifyRapidModelDownloaded(job.info.repo_id);
+      showToast(`Downloaded ${job.info.repo_id || 'model'}`, 'success');
       return;
     }
-    if (info) {
-      showIdle(info, job.state === 'cancelled'
-        ? 'Download cancelled. Finished files are kept; download again to resume.'
-        : `Download failed${job.error ? `: ${job.error}` : ''}. Try again.`);
-    }
+    showIdle(job.info, status.state === 'cancelled'
+      ? 'Download cancelled. Finished files are kept; download again to resume.'
+      : `Download failed${status.error ? `: ${status.error}` : ''}. Try again.`);
   } catch {
-    pollTimer = setTimeout(poll, POLL_MS * 2);
+    if (currentJob === job) again(POLL_MS * 2);
+  } finally {
+    if (!rescheduled) job.polling = false;
   }
 }
 
 async function startDownload() {
   const info = wizardState.model.rapidDownload;
-  if (!info?.repo_id) return;
-  const btn = $('rapid-dlp-download-btn');
-  btn.disabled = true;
+  if (!info?.repo_id || currentJob) return; // a download is already running/starting
+  const job = { source: selectedSource(), info, id: null };
+  currentJob = job;
+  detachedRepo = null;
+  showProgress(job);
   try {
     const resp = await fetch('/api/models/downloads', {
       method: 'POST',
@@ -147,32 +223,39 @@ async function startDownload() {
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || !data.ok) {
-      showIdle(info, data.error || 'Download failed to start.');
+      if (currentJob === job) {
+        currentJob = null;
+        showIdle(info, data.error || 'Download failed to start.');
+      }
       return;
     }
-    currentJob = data.job_id;
-    $('rapid-dlp-bar').style.width = '0%';
-    $('rapid-dlp-progress-pct').textContent = '';
-    $('rapid-dlp-progress-file').textContent = info.repo_id;
-    $('rapid-dlp-stats').textContent = 'Starting\u2026';
-    setView('progress');
-    poll();
+    trackRapidDownloadJob(info.repo_id, data.job_id);
+    // The user moved to another model while the request was in flight: the job is tracked,
+    // so returning to this source resumes it; nothing here may touch the new selection.
+    if (currentJob !== job) return;
+    job.id = data.job_id;
+    void poll(job);
   } catch (err) {
-    showIdle(info, `Download request failed: ${err.message || err}`);
+    if (currentJob === job) {
+      currentJob = null;
+      showIdle(info, `Download request failed: ${err.message || err}`);
+    }
   }
 }
 
 export function bindRapidDownloadPanel() {
   $('rapid-dlp-download-btn')?.addEventListener('click', startDownload);
   $('rapid-dlp-cancel-btn')?.addEventListener('click', async () => {
-    if (!currentJob) return;
-    $('rapid-dlp-cancel-btn').disabled = true;
+    const job = currentJob;
+    if (!job?.id) return; // nothing to cancel yet (start request in flight, or already ended)
+    const btn = $('rapid-dlp-cancel-btn');
+    btn.disabled = true;
     try {
-      await fetch(`/api/models/downloads/${encodeURIComponent(currentJob)}/cancel`, {
+      await fetch(`/api/models/downloads/${encodeURIComponent(job.id)}/cancel`, {
         method: 'POST',
         headers: headers(),
       });
     } catch { /* the next poll reports the real state */ }
-    $('rapid-dlp-cancel-btn').disabled = false;
+    btn.disabled = false;
   });
 }
