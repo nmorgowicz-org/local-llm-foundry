@@ -924,6 +924,64 @@ it. The response state is `ready`, `conversion_required`, `unsupported_source`, 
 `invalid`, with warnings and remediation. GGUF returns `unsupported_source` and retains
 the llama.cpp recommendation.
 
+### `GET /api/rapid-mlx/model-status`
+
+Auth: api-token (`Authorization: Bearer <api-token>`).
+
+Checks whether a Rapid-MLX catalog alias or Hugging Face repository is available in
+the cache used for launch. This read-only endpoint does not download or launch a model.
+The required `source` query parameter is a catalog alias (for example, `qwen3.5-27b`)
+or an `owner/repo` identifier. URL-encode the value; leading/trailing whitespace is
+trimmed and the value must be nonempty and at most 256 bytes. Repository identifiers,
+including those returned by the catalog, are validated before cache inspection.
+
+Direct repository sources inspect the app-scoped hub at
+`<models_dir>/cache/huggingface/hub` and do not require an installed runtime.
+Aliases resolve through the selected managed runtime or PATH runtime, prefer a complete
+app-cache snapshot, and may reuse a complete global-cache snapshot. The global hub is
+selected from `HF_HUB_CACHE`, `HF_HOME/hub`, or `~/.cache/huggingface/hub`, in that order.
+A snapshot needs `config.json` and usable weights; when a safetensors index exists,
+every shard named by its weight map must be present. Unrelated partial downloads do
+not invalidate a complete snapshot. Alias catalogs are cached per executable for
+60 seconds with single-flight loading; failed catalog queries are cached for 5 seconds.
+
+Example: `GET /api/rapid-mlx/model-status?source=owner%2Frepo`
+
+```json
+{
+  "ok": true,
+  "source": "owner/repo",
+  "repo_id": "owner/repo",
+  "cached": true,
+  "in_system_cache": false,
+  "size_bytes": 16000000000,
+  "quant": "4-bit"
+}
+```
+
+- `source`: the trimmed query value; `repo_id`: the resolved Hugging Face repository.
+- `cached`: a complete snapshot is available under the launch cache rules above.
+- `in_system_cache`: an alias will reuse the global hub because no complete app-cache
+  copy exists; false for direct repository sources.
+- `size_bytes`: cached weight bytes, otherwise the catalog's size if available;
+  null when unknown. A size estimate alone does not imply `cached: true`.
+- `quant`: quantization label from cached configuration, with repository/alias-name
+  fallback; null when unknown.
+
+Errors use `{ "ok": false, "error": "<message>" }`:
+
+| Status | Condition |
+| --- | --- |
+| 400 | Missing/empty/oversized `source`, or invalid direct repository identifier |
+| 401 | Missing or invalid api-token |
+| 404 | Unknown catalog alias |
+| 502 | Catalog query failed, or the catalog returned an invalid repository identifier |
+| 503 | No Rapid-MLX runtime is available to resolve an alias |
+| 500 | Cache-inspection worker failed |
+
+A valid source with no complete cached snapshot returns 200 with `cached: false`,
+not 404. Error responses do not include local executable/cache paths or runtime stderr.
+
 ### `POST /api/models/downloads`
 
 Auth: api-token.
@@ -931,10 +989,11 @@ Auth: api-token.
 Starts a background snapshot download of a Hugging Face model repository into the
 app-scoped model cache (`<models_dir>/cache/huggingface/hub`). The body is
 `{"repo_id": "owner/repo", "revision": "main", "engine": "rapid-mlx"}`. `revision`
-defaults to `main` and is never pinned by the caller; `engine` (`rapid-mlx` or
-`omlx`, default `rapid-mlx`) is provenance only, since every engine reads the same
-HF cache. Re-posting a repo with a job already in flight returns
-`{"ok": true, "already_running": true}` instead of stacking downloads. Re-posting
+defaults to `main`; callers may supply a validated branch, tag, or commit revision.
+`engine` (`rapid-mlx` or `omlx`, default `rapid-mlx`) is provenance only, since every
+engine reads the same HF cache. Re-posting the same repository and revision while
+its job is in flight returns `{"ok": true, "already_running": true, "job_id": "..."}`
+instead of stacking downloads. Re-posting
 after a failure starts a new job; files the hub already finished are kept.
 
 ### `POST /api/models/downloads/:jobId/cancel`
