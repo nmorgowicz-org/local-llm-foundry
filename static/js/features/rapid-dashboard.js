@@ -88,6 +88,9 @@ function progressRatio(value) {
 }
 
 export function normalizeRapidDashboard(sample) {
+    // Unavailable telemetry can carry a retained snapshot. None of its facts,
+    // request phases or rates describe current activity.
+    if (sample?.telemetry_unavailable) sample = null;
     const requests = Array.isArray(sample?.active_requests)
         ? sample.active_requests.slice(0, 64).filter(request => request && typeof request === 'object' && !Array.isArray(request)) : [];
     const phases = requests.map(requestPhase);
@@ -97,8 +100,8 @@ export function normalizeRapidDashboard(sample) {
     const waiting = metricNumber(sample?.waiting_requests);
     // Running is not proof of decode. Unknown/missing phase remains explicitly busy.
     const busy = running > 0 || phases.includes('unknown');
-    const state = sample?.telemetry_unavailable ? 'unavailable'
-        : generatingCount ? 'generating' : readingCount ? 'reading' : busy ? 'busy'
+    const state = generatingCount ? 'generating'
+        : readingCount ? 'reading' : busy ? 'busy'
             : waiting > 0 || phases.includes('queued') ? 'queued'
                 : running === 0 && waiting === 0 ? 'idle' : 'unavailable';
     const decodeTps = metricNumber(sample?.generation_tokens_per_second);
@@ -120,7 +123,7 @@ export function normalizeRapidDashboard(sample) {
             && generating.every(request => request.max_tokens > 0) ? Math.min(1, outputTokens / outputLimit) : null,
         promptTokens: totalFor(reading, 'prompt_tokens'),
         elapsed: reading.length === 1 ? metricNumber(reading[0].elapsed_s) : null,
-        ...optionalFacts(sample?.telemetry_unavailable ? null : sample),
+        ...optionalFacts(sample),
     };
 }
 
@@ -134,10 +137,9 @@ export function renderRapidDashboard(sample, { attached, backend, hostSystem, gp
     const panel = document.getElementById('rapid-dashboard-details');
     const visible = attached && backend === 'rapid_mlx';
     if (panel) panel.hidden = !visible;
-    if (!visible) sample = null;
+    if (!visible || sample?.telemetry_unavailable) sample = null;
     const normalized = normalizeRapidDashboard(sample);
-    renderRequestTable(sample?.telemetry_unavailable ? [] : normalized.requests,
-        sample?.telemetry_unavailable ? null : sample?.active_requests,
+    renderRequestTable(normalized.requests, sample?.active_requests,
         // Same owner identity the metric-card history uses (dashboard-ws view).
         { backend, attached, sessionId: sessionId ?? null, endpointTag: endpointTag ?? null });
     renderMemoryHealth(visible ? sample : null, hostSystem, gpu);

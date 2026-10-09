@@ -16,6 +16,7 @@ import {
   sessionState,
   prevValues,
   metricSeries,
+  requestActivity,
   setWsData,
   setLastServerState,
   setLastLlamaMetrics,
@@ -31,7 +32,6 @@ import {
   setupViewState,
 } from '../core/app-state.js';
 import {
-  updateLiveOutputEstimate,
   updateRequestActivity,
   renderRecentTask,
   renderActivityRail,
@@ -303,6 +303,17 @@ ws.onmessage = e => {
         d = JSON.parse(e.data);
     } catch {
         return; // malformed frame — ignore rather than kill the socket loop
+    }
+    // Pollers can retain the last successful snapshot on failure. Invalidate it
+    // before storage, normalization or detail rendering (including hidden tabs).
+    if (d.inference_poll_failed === true) {
+        d = { ...d, llama: null, inference: null };
+        setLastLlamaMetrics(null);
+        setLastRapidMlxMetrics(null);
+        // Loss of telemetry is not evidence that an observed task completed.
+        // Drop open segments so legacy activity/rate summaries cannot label it live.
+        requestActivity.splice(0, requestActivity.length,
+            ...requestActivity.filter(segment => segment.endedAtMs));
     }
     // Keep wsData current even when tab is hidden (needed for refresh on show)
     setWsData(d);
@@ -827,6 +838,7 @@ function updateInferenceMetrics(d) {
     const l = lastLlamaMetrics;
     const rm = getLastRapidMlxMetrics();
     const hasActiveEndpoint = !!d.active_session_id;
+    const pollFailed = hasActiveEndpoint && d.inference_poll_failed === true;
     const backend = d.backend || (rm ? 'rapid_mlx' : (l ? 'llama_cpp' : 'unknown'));
 
     // Normalized snapshot: llama.cpp and Rapid-MLX (and remote agents) feed
@@ -839,7 +851,7 @@ function updateInferenceMetrics(d) {
     const promptDisplay = isRapid ? rapid.prefillTps : promptRate > 0 ? promptRate : metricNumber(l?.last_prompt_tokens_per_sec);
     const genDisplay = isRapid ? rapid.decodeTps : genRate > 0 ? genRate : metricNumber(l?.last_generation_tokens_per_sec);
 
-    const slotsProcessing = metricNumber(l?.slots_processing) ?? 0;
+    const slotsProcessing = metricNumber(l?.slots_processing) ?? (pollFailed ? null : 0);
     const slotGenTokens = metricNumber(l?.slot_generation_tokens) ?? 0;
     const promptOnly = slotsProcessing > 0 && slotGenTokens === 0;
     const generationActive = isRapid ? rapid.state === 'generating' : (genRate > 0 || slotsProcessing > 0) && !promptOnly;
@@ -857,6 +869,9 @@ function updateInferenceMetrics(d) {
     if (sessionError) {
         stateLabel = 'Error';
         stateTone = 'danger';
+    } else if (pollFailed) {
+        stateLabel = 'Telemetry unavailable';
+        stateDetail = 'Inference poll failed · waiting for fresh telemetry';
     } else if (generationActive) {
         stateLabel = 'Generating';
         const generated = isRapid ? rapid.outputTokens : metricNumber(l?.slot_generation_tokens);
@@ -905,7 +920,7 @@ function updateInferenceMetrics(d) {
         stateLabel = 'Processing';
         stateDetail = 'Request phase unavailable · running does not imply decoding';
     }
-    if (isRapid && hasActiveEndpoint && rapid.state === 'unavailable' && !sessionError) {
+    if (isRapid && hasActiveEndpoint && rapid.state === 'unavailable' && !sessionError && !pollFailed) {
         stateLabel = 'Telemetry unavailable';
         stateDetail = 'Request activity has not been reported';
     }
@@ -915,7 +930,7 @@ function updateInferenceMetrics(d) {
         attached: hasActiveEndpoint,
         sessionId: d.active_session_id ?? null,
         endpointTag: d.active_session_endpoint_tag ?? d.active_session_endpoint ?? null,
-        state: sessionError ? 'error' : isRapid ? rapid.state : generationActive ? 'generating' : reading ? 'reading' : queued > 0 ? 'queued' : 'idle',
+        state: sessionError ? 'error' : pollFailed ? 'unavailable' : isRapid ? rapid.state : generationActive ? 'generating' : reading ? 'reading' : queued > 0 ? 'queued' : 'idle',
         queued,
         running: isRapid ? rapid.running : slotsProcessing,
         waiting: queued,
