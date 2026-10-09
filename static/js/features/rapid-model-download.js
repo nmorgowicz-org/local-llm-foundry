@@ -37,7 +37,7 @@ const infoCache = new Map();
 // repo_id -> job_id for downloads started from this page, so a re-rendered card or a wizard
 // step change resumes the running job instead of orphaning it and offering a duplicate start.
 const activeJobs = new Map();
-export const RAPID_MODEL_DOWNLOADED_EVENT = 'rapid-model-downloaded';
+const RAPID_MODEL_DOWNLOADED_EVENT = 'rapid-model-downloaded';
 
 export function trackRapidDownloadJob(repoId, jobId) {
     if (repoId && jobId) activeJobs.set(repoId, jobId);
@@ -50,13 +50,6 @@ export function untrackRapidDownloadJob(repoId, jobId) {
 
 export function activeRapidDownloadJob(repoId) {
     return activeJobs.get(repoId) || null;
-}
-
-/** Drop memoized model-status lookups (one source, or all when omitted). */
-export function invalidateRapidModelInfo(source) {
-    const src = String(source || '').trim();
-    if (src) infoCache.delete(src);
-    else infoCache.clear();
 }
 
 /**

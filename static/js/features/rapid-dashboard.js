@@ -1,6 +1,6 @@
 // Optional Rapid telemetry stays optional: no inferred request outcomes or caps.
 
-export const REQUEST_ROW_LIMIT = 32;
+const REQUEST_ROW_LIMIT = 32;
 export const metricNumber = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 const ratio = value => {
     const number = metricNumber(value);
@@ -71,7 +71,7 @@ function optionalFacts(sample) {
     };
 }
 
-export function requestPhase(request) {
+function requestPhase(request) {
     const phase = boundedText(request?.phase || request?.status).trim().toLowerCase().replace(/[ -]/g, '_');
     if (['reading', 'prefill', 'prefilling', 'prompt', 'prompt_processing', 'processing_prompt'].includes(phase)) return 'reading';
     if (['generating', 'generation', 'decode', 'decoding'].includes(phase)) return 'generating';
@@ -79,7 +79,7 @@ export function requestPhase(request) {
     return 'unknown';
 }
 
-export function progressRatio(value) {
+function progressRatio(value) {
     const direct = ratio(value);
     if (direct != null) return direct;
     const current = metricNumber(value?.current);
@@ -314,7 +314,7 @@ function renderRequestTable(requests, rawRequests, owner) {
             : `${rows.length} reported requests · unreported columns hidden; missing fields are unavailable`);
 }
 
-export function memoryHealthMessages(sample, system, gpu) {
+function memoryHealthMessages(sample, system, gpu) {
     const messages = [];
     let danger = false;
     const level = boundedText(system?.memory_pressure_level).toLowerCase();

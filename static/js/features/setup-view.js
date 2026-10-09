@@ -1172,7 +1172,7 @@ function _buildLaunchCard(preset, activePresetId) {
 
     if (isExample) {
         // Example card: dimmed, no edit button, use-wizard CTA only
-         
+
         setHtml(card, `
             ${engineTagHtml}
             <div class="launch-card-top">
@@ -1226,7 +1226,7 @@ function _buildLaunchCard(preset, activePresetId) {
             ? '<button class="launch-card-btn-configure" type="button">Configure</button>'
             : '';
 
-         
+
         setHtml(card, `
             ${engineTagHtml}
             <div class="launch-card-top">
@@ -1561,7 +1561,7 @@ function _renderCardVram(el, data, availBytes, availRamBytes, isUnified, budgetI
     // read the fit verdict was computed against, so a stale card is visibly stale.
     if (_memState.readAt) el.dataset.availabilityReadAt = _memState.readAt;
     else delete el.dataset.availabilityReadAt;
-     
+
     setHtml(el, `
         <div class="launch-card-memory-bars">
             <div class="launch-card-memory-row">
@@ -1586,7 +1586,7 @@ function _renderCardVram(el, data, availBytes, availRamBytes, isUnified, budgetI
 function _buildNewConfigCard(isPrimary = false) {
     const card = document.createElement('div');
     card.className = 'launch-card launch-card--new' + (isPrimary ? ' launch-card--new-primary' : '');
-     
+
         setHtml(card, `
         <div class="launch-card-new-icon">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>

@@ -307,12 +307,14 @@ ws.onmessage = function(e) {
         }
 
     const sys = d.system || {};
-    const cpuLoad = sys.cpu_load || 0;
+    // cpu_load_available=false: first sampling interval, 0 is a placeholder (absent = real value).
+    const cpuLoadKnown = sys.cpu_load_available !== false && Number.isFinite(sys.cpu_load);
+    const cpuLoad = cpuLoadKnown ? sys.cpu_load : 0;
     const cpuLoadSeverity = getSeverity(cpuLoad, 100);
     const cpuLoadBar = document.getElementById('cpu-load-bar');
     cpuLoadBar.className = 'metric-bar cpu' + (cpuLoadSeverity ? ' severity-' + cpuLoadSeverity : '');
     setBar('cpu-load-bar', cpuLoad, 100);
-    document.getElementById('cpu-load').textContent = cpuLoad > 0 ? cpuLoad + '%' : '—';
+    document.getElementById('cpu-load').textContent = cpuLoadKnown ? cpuLoad + '%' : '—';
 
     if (sys.cpu_temp_available && sys.cpu_temp > 0) {
         const severity = getSeverity(sys.cpu_temp, 120);
