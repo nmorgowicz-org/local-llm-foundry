@@ -109,26 +109,32 @@ test.describe('TLS / Certificates settings', () => {
     await expect(tlsStatusText).toBeVisible({ timeout: 15000 });
     await expect(page.locator('#tls-status-text')).toContainText(/^\s*TLS:/);
 
-    // Helper to switch cert mode using authoritative settings function
+    // Exercise the mode pills as well as the action buttons with real clicks.
     const setCertMode = (mode) =>
-      page.evaluate(async (m) => {
-        const mod = await import('/js/features/settings.js');
-        mod.setActiveCertMode(m);
-      }, mode);
+      page.locator(`#cert-mode-pills .cert-mode-pill[data-mode="${mode}"]`).click();
 
     // Select "No HTTPS" mode and click "Disable TLS"
     await setCertMode('none');
     const disableBtn = page.locator('#btn-disable-tls');
     await expect(disableBtn).toBeVisible();
-    await disableBtn.click();
-    await expect(tlsStatusText).toBeVisible();
+    // Observe the refresh applying, even when the status was already disabled.
+    const statusRefreshed = page.evaluate(() => new Promise(resolve => {
+      const status = document.getElementById('tls-status-text');
+      const observer = new MutationObserver(() => {
+        observer.disconnect();
+        resolve();
+      });
+      observer.observe(status, { childList: true, characterData: true, subtree: true });
+    }));
+    await Promise.all([statusRefreshed, disableBtn.click()]);
+    await expect(tlsStatusText).toHaveText('TLS: Disabled (HTTP only)');
 
     // Select "Self-Signed" mode and click "Generate self-signed"
     await setCertMode('self-signed');
     const generateSelfSigned = page.locator('#btn-generate-self-signed');
     await expect(generateSelfSigned).toBeVisible();
     await generateSelfSigned.click();
-    await expect(tlsStatusText).toBeVisible();
+    await expect(tlsStatusText).toHaveText('TLS: Enabled (Self-signed)');
 
     // Select ACME mode and confirm controls exist
     await setCertMode('acme');

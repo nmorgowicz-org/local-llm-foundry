@@ -454,6 +454,12 @@
                         <!-- Preset filter bar -->
                         <div class="launch-filter-bar" id="setup-filter-bar">
                             <div class="launch-filter-bar-left">
+                                <div class="launch-filter-group" id="setup-filter-engine-group" style="display:none;">
+                                    <span class="launch-filter-label">Engine</span>
+                                    <div class="launch-filter-pills" id="setup-filter-engine-pills">
+                                        <button class="launch-filter-pill" data-filter="engine-all" type="button">All</button>
+                                    </div>
+                                </div>
                                 <div class="launch-filter-group">
                                     <span class="launch-filter-label">Family</span>
                                     <div class="launch-filter-pills" id="setup-filter-family-pills">
@@ -572,6 +578,7 @@
                 <div class="dashboard-header" id="server-header">
                     <div class="server-identity">
                         <h2>Server</h2>
+                        <div id="server-engine-tag" hidden></div>
                         <div class="server-model-identity" id="server-model-identity" hidden></div>
                     </div>
                     <div class="dashboard-header-actions">
@@ -783,11 +790,13 @@
                                     <span class="state-pill" data-s="reading">Reading</span>
                                     <span class="state-pill" data-s="generating">Generating</span>
                                     <span class="state-pill" data-s="queued">Queued</span>
+                                    <span class="state-pill" data-s="busy">Processing</span>
+                                    <span class="state-pill" data-s="unavailable">Unavailable</span>
                                     <span class="state-pill" data-s="error">Error</span>
                                 </span>
                             </div>
-                            <div class="state-card__row"><span id="state-label">Waiting for a request</span><span class="state-detail" id="state-detail"></span></div>
-                            <div class="state-progress" id="state-progress"><div class="state-progress__bar" id="state-bar" style="width:0%"></div></div>
+                            <div class="state-card__row"><span id="state-label" aria-live="polite" aria-atomic="true">Waiting for a request</span><span class="state-detail" id="state-detail"></span></div>
+                            <div class="state-progress state-progress--hidden" id="state-progress" role="progressbar" aria-label="Output budget used" aria-valuemin="0" aria-valuemax="100" aria-hidden="true"><div class="state-progress__bar" id="state-bar" style="width:0%"></div></div>
                         </div>
                         <!-- Registry-driven metric cards (built by metric-cards.js) -->
                         <div class="metrics-grid" id="metrics-grid">
@@ -801,6 +810,23 @@
                                 <div class="llama-runtime-badges" id="llama-runtime-badges"></div>
                             </article>
                         </div>
+                        <div class="dashboard-memory-health">
+                            <p class="efficiency-note" id="dashboard-memory-summary">Host memory pressure and swap telemetry unavailable</p>
+                            <p class="dashboard-memory-warning" id="dashboard-memory-warning" role="status" hidden></p>
+                        </div>
+                        <section class="rapid-dashboard-details" id="rapid-dashboard-details" aria-labelledby="rapid-requests-heading" hidden>
+                            <div class="rapid-request-panel">
+                                <h4 class="mcard__label" id="rapid-requests-heading">Active request details</h4>
+                                <p class="efficiency-note" id="rapid-request-summary"></p>
+                                <div class="rapid-request-scroll" role="region" aria-labelledby="rapid-requests-heading" tabindex="0">
+                                    <table class="rapid-request-table">
+                                        <caption>Reported per-request fields; unavailable values are not inferred from aggregate throughput</caption>
+                                        <thead><tr id="rapid-request-columns"><th scope="col">Request</th><th scope="col">Phase / status</th></tr></thead>
+                                        <tbody id="rapid-request-rows"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </section>
                         <section class="llama-runtime-popover" id="llama-runtime-popover" popover aria-labelledby="llama-runtime-popover-heading">
                             <div class="llama-runtime-head">
                                 <h3 id="llama-runtime-popover-heading">Runtime details</h3>
@@ -972,7 +998,7 @@
                         </div>
                     </div>
                     <div class="viz-switcher-row">
-                        <div class="viz-switcher-label">Power</div>
+                        <div class="viz-switcher-label">GPU power</div>
                         <div class="viz-switcher-options" data-card="gpu" data-metric="power">
                             <button class="viz-option active" data-style="bar" title="Bar"><span class="viz-thumb viz-thumb-bar"></span>Bar</button>
                             <button class="viz-option" data-style="ring" title="Ring"><span class="viz-thumb viz-thumb-ring"></span>Ring</button>
@@ -2707,7 +2733,7 @@
                             </div>
                         </div>
                         <div class="pe-section-body">
-                            <div class="pe-row pe-row-3" style="margin-bottom: 12px;">
+                            <div class="pe-row pe-row-3" id="pe-row-context-size" style="margin-bottom: 12px;">
                                 <div class="pe-field" style="flex: 1;">
                                     <label class="pe-label" for="modal-context-size" title="Native model context in tokens. Larger values use more memory. Context extension requires separately qualified advanced controls.">Context Size (-c)</label>
                                     <div id="preset-context-pills" class="preset-context-pills" style="display:none;"></div>
@@ -2716,7 +2742,8 @@
                                         <input type="number" class="pe-input" id="modal-context-size" value="128000" style="flex: 1;">
                                         <button type="button" class="btn-sm btn-preset" id="preset-vram-auto-size" title="Auto-calculate optimal context and KV quantization for available VRAM" style="white-space: nowrap; height: 32px;">Auto-size</button>
                                     </div>
-                                    <div class="pe-field-hint">On Apple Silicon a dense 27–30B drops from ~17 t/s at short context to ~7 t/s at 16k tokens. Don't over-allocate — use Auto-size or match the context you actually need.</div>
+                                    <div class="pe-field-hint pe-rapid-only-hint">Per-request window (prompt plus output), passed to Rapid-MLX as <code>--context-length</code> and capped by the model's declared limit. The memory estimate updates as you change it.</div>
+                                    <div class="pe-field-hint pe-llama-only-hint">On Apple Silicon a dense 27–30B drops from ~17 t/s at short context to ~7 t/s at 16k tokens. Don't over-allocate — use Auto-size or match the context you actually need.</div>
                                 </div>
                             </div>
                             <!-- Performance advisor: config-time hints (dense vs MoE, KV, MTP) -->
@@ -3287,6 +3314,10 @@
                                     <label class="pe-label" for="modal-api-key" title="API key required by clients to connect to this server. Leave empty for no authentication.">API Key</label>
                                     <input type="text" class="pe-input" id="modal-api-key" placeholder="(none)">
                                 </div>
+                                <div class="pe-field pe-rapid-only-field">
+                                    <label class="pe-label" for="modal-rapid-served-name" title="Model name clients see in /v1/models. Empty uses the model's resolved name.">Served model name</label>
+                                    <input type="text" class="pe-input" id="modal-rapid-served-name" placeholder="e.g. qwen3-27b">
+                                </div>
                             </div>
                              <div class="pe-row" id="pe-row-rapid-reasoning">
                                  <div class="pe-field">
@@ -3295,15 +3326,6 @@
                                          <option value="">(unset — client decides)</option>
                                          <option value="true">on</option>
                                          <option value="false">off</option>
-                                     </select>
-                                 </div>
-                                 <div class="pe-field">
-                                     <label class="pe-label" for="modal-rapid-reasoning-effort" title="Default sent as reasoning_effort on every chat request that doesn't override it.">Reasoning Effort</label>
-                                     <select class="pe-select" id="modal-rapid-reasoning-effort">
-                                         <option value="">(unset)</option>
-                                         <option value="low">low</option>
-                                         <option value="medium">medium</option>
-                                         <option value="high">high</option>
                                      </select>
                                  </div>
                              </div>
@@ -3391,6 +3413,19 @@
                                            <span class="pe-toggle-slider"></span>
                                        </div>
                                    </div>
+                                   <div class="pe-field">
+                                       <label class="pe-label" for="modal-rapid-reasoning-effort" title="Reasoning effort applied to requests that send no reasoning setting of their own (--default-reasoning-effort). Auto sends nothing; Rapid-MLX then turns thinking off for plain chat requests from clients that don't ask for it.">Default reasoning effort</label>
+                                       <select class="pe-select" id="modal-rapid-reasoning-effort">
+                                           <option value="">Auto — model default</option>
+                                           <option value="none">none</option>
+                                           <option value="minimal">minimal</option>
+                                           <option value="low">low</option>
+                                           <option value="medium">medium</option>
+                                           <option value="high">high</option>
+                                           <option value="xhigh">xhigh</option>
+                                       </select>
+                                       <div class="pe-hint">For clients that send no reasoning setting. Set it to keep thinking on for every client.</div>
+                                   </div>
                                </div>
                                 <!-- Web UI group (D26/A44) — Advanced only -->
                             <div class="pe-row pe-row-rapid-advanced" id="pe-row-rapid-parser-overrides" style="display:none;">
@@ -3422,8 +3457,8 @@
                                     <div class="pe-field-hint">Explicit overrides are intended for misdetected finetunes.</div>
                                 </div>
                                 <div class="pe-field">
-                                    <button type="button" class="pe-action-btn" data-open-protocol-docs>Validate protocol…</button>
-                                    <div class="pe-field-hint">Compare the detected protocol against the RapidMLX model-families docs.</div>
+                                    <button type="button" class="pe-action-btn" data-open-protocol-docs>Validate model alias…</button>
+                                    <div class="pe-field-hint">Compare this alias's detected tool-call and reasoning parsers with the Rapid-MLX model-families docs.</div>
                                 </div>
                             </div>
                             <div class="pe-row pe-row-rapid-advanced" id="pe-row-rapid-architecture-overrides" style="display:none;">
@@ -3537,13 +3572,13 @@
                                 <div class="pe-field">
                                     <label class="pe-label" for="modal-rapid-max-num-seqs" title="Maximum sequences the scheduler batches at once.">Max batched sequences</label>
                                     <select class="pe-select" id="modal-rapid-max-num-seqs">
-                                        <option value="" selected>Auto — runtime default</option>
-                                        <option value="1">1 — single stream</option>
+                                        <option value="">Auto — runtime default</option>
+                                        <option value="1" selected>1 — single stream (new preset default)</option>
                                         <option value="4">4</option>
                                         <option value="8">8</option>
                                         <option value="16">16 — high concurrency</option>
                                     </select>
-                                    <div class="pe-field-hint">Range 1–256. Cannot be combined with speculative decoding.</div>
+                                    <div class="pe-field-hint">Range 1–256. New presets default to 1; Auto leaves scheduling to the runtime. MTP eligibility depends on the runtime, model, and request.</div>
                                 </div>
                                 <div class="pe-field">
                                     <label class="pe-label" for="modal-rapid-max-concurrent-requests" title="Maximum in-flight requests the server accepts.">Max concurrent requests</label>
@@ -4102,6 +4137,32 @@
                         <p>Rapid-MLX owns Metal placement, cache blocks, and batching for this launch. These runtime controls remain separate from llama.cpp configuration.</p>
                         <div class="rapid-hardware-note">No llama.cpp GPU-layer, KV quantization, mmap, or speculative-decoding flags will be included.</div>
 
+                        <!-- Rapid-MLX model download (shown only when the model isn't in the launch cache) -->
+                        <div class="hf-download-panel" id="rapid-dl-panel" style="display:none;">
+                            <div id="rapid-dlp-idle">
+                                <div class="hf-dlp-dest-row">
+                                    <span class="hf-dlp-dest-label">Model:</span>
+                                    <span class="hf-dlp-dest-path" id="rapid-dlp-repo">—</span>
+                                </div>
+                                <div class="hf-dlp-warn" id="rapid-dlp-note"></div>
+                                <div class="hf-dlp-actions">
+                                    <button type="button" class="btn-wizard-primary" id="rapid-dlp-download-btn">Download to models folder</button>
+                                </div>
+                            </div>
+                            <div id="rapid-dlp-progress" style="display:none;">
+                                <div class="hf-dlp-progress-label">
+                                    <span id="rapid-dlp-progress-file"></span>
+                                    <span id="rapid-dlp-progress-pct"></span>
+                                </div>
+                                <div class="hf-dlp-bar-wrap"><div class="hf-dlp-bar" id="rapid-dlp-bar" style="width:0%"></div></div>
+                                <div class="hf-dlp-stats" id="rapid-dlp-stats"></div>
+                                <button type="button" class="btn-wizard-secondary" id="rapid-dlp-cancel-btn">Cancel download</button>
+                            </div>
+                            <div id="rapid-dlp-complete" style="display:none;" class="hf-dlp-complete-box">
+                                Downloaded — model ready. Click Next to continue.
+                            </div>
+                        </div>
+
                          <!-- Phase 7: Rapid-MLX advanced controls (moved here from wizard-main so they're visible) -->
                          <div class="rapid-only" id="spawn-rapid-advanced-fields" style="display:none;">
                              <div class="wizard-section-title" style="margin-top:16px;">Rapid-MLX advanced</div>
@@ -4172,8 +4233,8 @@
                                      <div class="field-hint">Override only when a modified finetune is misdetected.</div>
                                  </div>
                                  <div class="hardware-field">
-                                     <button type="button" class="hw-action-btn" data-open-protocol-docs>Validate protocol…</button>
-                                     <div class="field-hint">Compare the detected tool/reasoning protocol against the RapidMLX model-families docs — useful when auto-detection can't see a modified finetune.</div>
+                                     <button type="button" class="hw-action-btn" data-open-protocol-docs>Validate model alias…</button>
+                                     <div class="field-hint">Compare this alias's detected tool-call and reasoning parsers with the Rapid-MLX model-families docs. Useful when auto-detection can't see a modified finetune.</div>
                                  </div>
                                  <div class="hardware-field">
                                      <label for="spawn-rapid-prefill-step-size">Prefill step size</label>
@@ -4270,13 +4331,13 @@
                                  <div class="hardware-field">
                                      <label for="spawn-rapid-max-num-seqs" title="Maximum sequences the scheduler batches at once.">Max batched sequences</label>
                                      <select id="spawn-rapid-max-num-seqs">
-                                         <option value="" selected>Auto — runtime default</option>
-                                         <option value="1">1 — single stream</option>
+                                         <option value="">Auto — runtime default</option>
+                                         <option value="1" selected>1 — single stream (new preset default)</option>
                                          <option value="4">4</option>
                                          <option value="8">8</option>
                                          <option value="16">16 — high concurrency</option>
                                      </select>
-                                     <div class="field-hint">Range 1–256. Cannot be combined with speculative decoding, which owns its own scheduling.</div>
+                                     <div class="field-hint">Range 1–256. New presets default to 1; Auto leaves scheduling to the runtime. MTP eligibility depends on the runtime, model, and request.</div>
                                  </div>
                                  <div class="hardware-field">
                                      <label for="spawn-rapid-max-concurrent-requests" title="Maximum in-flight requests the server accepts.">Max concurrent requests</label>
@@ -4358,6 +4419,18 @@
                                         <span class="kv-unified-text">Allow thinking</span>
                                     </label>
                                 </div>
+                                 <div class="kv-inline-field">
+                                     <label for="spawn-rapid-reasoning-effort" title="Reasoning effort applied to requests that send no reasoning setting of their own (--default-reasoning-effort). Auto sends nothing; Rapid-MLX then turns thinking off for plain chat requests from clients that don't ask for it.">Default reasoning effort</label>
+                                     <select id="spawn-rapid-reasoning-effort">
+                                         <option value="">Auto — model default</option>
+                                         <option value="none">none</option>
+                                         <option value="minimal">minimal</option>
+                                         <option value="low">low</option>
+                                         <option value="medium">medium</option>
+                                         <option value="high">high</option>
+                                         <option value="xhigh">xhigh</option>
+                                     </select>
+                                 </div>
                                  <div class="kv-inline-field" style="flex:999 1 320px;">
                                       <div class="field-hint" style="margin:0;">The reasoning quality profile always pins active KV to int8. Turning this off adds <code>--no-thinking</code> without disabling that quality profile.</div>
                                  </div>
@@ -7792,7 +7865,7 @@
 <section id="engine-model-popover" class="engine-model-popover" popover aria-labelledby="engine-model-heading">
     <div class="engine-model-header">
         <h2 id="engine-model-heading">Loaded model</h2>
-        <button type="button" popovertarget="engine-model-popover" popovertargetaction="hide" aria-label="Close loaded model details">Close</button>
+        <button type="button" class="btn btn-secondary" popovertarget="engine-model-popover" popovertargetaction="hide" aria-label="Close loaded model details">Close</button>
     </div>
     <dl id="engine-model-facts"></dl>
 </section>

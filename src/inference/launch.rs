@@ -501,9 +501,28 @@ pub async fn construct_adapter(
                 eprintln!("[warn] rapid-mlx launch: {warning}");
             }
 
+            // Server-owned managed runtime (the one the wizard installs/activates)
+            // takes precedence over PATH when the preset carries no explicit path.
+            let managed_fallback = if config.executable_path.is_none()
+                && config.managed_runtime_path.is_none()
+            {
+                let config_dir = app_config.config_dir.clone();
+                tokio::task::spawn_blocking(move || {
+                    crate::inference::rapid_mlx::updater::RapidMlxRuntimeManager::new(&config_dir)
+                        .ok()
+                        .and_then(|manager| manager.status().ok())
+                        .and_then(|status| status.active)
+                        .map(|active| active.executable_path)
+                })
+                .await
+                .ok()
+                .flatten()
+            } else {
+                None
+            };
             let (executable_path, source) = Discovery::resolve_binary(
                 config.executable_path.as_deref(),
-                config.managed_runtime_path.as_deref(),
+                config.managed_runtime_path.as_deref().or(managed_fallback.as_deref()),
             )
             .await
             .with_context(|| {
@@ -582,6 +601,50 @@ pub async fn construct_adapter(
                         "python3"
                     })
                 });
+            // Fail fast when no usable cache holds the model: `rapid-mlx serve` would
+            // otherwise block on an interactive download prompt nothing can answer.
+            // Catalog aliases may reuse a complete copy in the global HuggingFace cache;
+            // explicit repo sources must live in the app cache (downloads go there).
+            let mut global_hub: Option<PathBuf> = None;
+            {
+                use crate::inference::rapid_mlx::model_cache;
+                use crate::inference::rapid_mlx::model_resolver::RapidMlxModelSource;
+                let (repo, is_alias) = match &model_source {
+                    RapidMlxModelSource::HuggingFaceRepo { repo_id, .. } => {
+                        (Some((repo_id.clone(), None)), false)
+                    }
+                    RapidMlxModelSource::Alias { value } => (
+                        crate::inference::rapid_mlx::info_query::resolve_alias_repo(
+                            &runtime.executable_path,
+                            value,
+                        )
+                        .await
+                        .ok()
+                        .flatten(),
+                        true,
+                    ),
+                    _ => (None, false),
+                };
+                if let Some((repo_id, size)) = repo {
+                    let app_hub = model_cache::app_hub_dir(&models_dir);
+                    if !model_cache::repo_cached(&app_hub, &repo_id) {
+                        match is_alias
+                            .then(|| model_cache::alias_launch_hub(&models_dir, &repo_id))
+                            .flatten()
+                        {
+                            Some(hub) => global_hub = Some(hub),
+                            None => {
+                                let size = size
+                                    .map(|b| format!(" (~{:.1} GiB)", b as f64 / 1_073_741_824.0))
+                                    .unwrap_or_default();
+                                anyhow::bail!(
+                                    "Model not downloaded: {repo_id}{size}. Download it from the setup wizard or the preset card, then start again."
+                                );
+                            }
+                        }
+                    }
+                }
+            }
             let resolved_model = crate::inference::rapid_mlx::model_resolver::resolve(
                 model_source,
                 &crate::inference::rapid_mlx::model_resolver::RapidMlxResolveContext {
@@ -594,6 +657,12 @@ pub async fn construct_adapter(
                 },
             )
             .await?;
+            let mut resolved_model = resolved_model;
+            if let Some(hub) = global_hub {
+                resolved_model
+                    .environment
+                    .insert("HF_HUB_CACHE".into(), hub.into_os_string());
+            }
             let resolved_display_name = resolved_model.display_name.clone();
             if let Err(invalid) = crate::inference::rapid_mlx::escape_hatch::validate_escape_flags(
                 &config.escape_hatch_flags,

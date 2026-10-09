@@ -499,7 +499,41 @@ export function syncRapidSpeculativeFields() {
   _updateSpawnTrustUI(h, enabled);
 }
 
+// Hybrid (GatedDeltaNet / Mamba ArraysCache) models cannot quantize KV: the runtime exits at
+// startup with "the loaded model is incompatible: ArraysCache". `rapid-mlx info` reports them
+// as "hybrid" and the unified profile recommends hybrid_mode "force".
+export function rapidModelIsHybrid() {
+  const arch = wizardState.model.rapidMlxProfile?.architecture;
+  if (typeof arch === 'string' && arch.toLowerCase().includes('hybrid')) return true;
+  return wizardState.model.rapidMlxUnifiedProfile?.recommended?.hybrid_mode === 'force';
+}
+
+function applyHybridKvLock() {
+  wizardState.hardware.kvCacheDtype = 'bf16';
+  if (!dom.kvCacheDtypeSelect) return;
+  dom.kvCacheDtypeSelect.value = 'bf16';
+  for (const opt of dom.kvCacheDtypeSelect.options) {
+    if (opt.value !== 'bf16') {
+      opt.disabled = true;
+      opt.setAttribute('data-disabled-by', 'hybrid');
+    }
+  }
+  dom.kvCacheDtypeSelect.classList.add('kv-dtype-locked');
+  dom.kvCacheDtypeSelect.title = 'Hybrid-attention model: Rapid-MLX cannot quantize its KV cache, so it serves bf16';
+}
+
 export function applyReasoningModeLock() {
+  if (rapidModelIsHybrid()) {
+    applyHybridKvLock();
+    return;
+  }
+  // Switching from a hybrid model to a non-hybrid one: release the hybrid-only lock.
+  for (const opt of dom.kvCacheDtypeSelect?.options || []) {
+    if (opt.getAttribute('data-disabled-by') === 'hybrid') {
+      opt.disabled = false;
+      opt.removeAttribute('data-disabled-by');
+    }
+  }
   // The Rapid reasoning quality profile is always enabled and pins active KV to int8.
   // The checkbox independently controls whether thinking output is allowed.
   if (!dom.kvCacheDtypeSelect) return;
@@ -520,6 +554,10 @@ export function applyReasoningModeLock() {
 
 export function applyRapidMlxDefaults() {
   const h = wizardState.hardware;
+  // Replay state, not a fallback: Auto ('') must survive profile refreshes and engine switches.
+  if (dom.maxNumSeqsSelect) dom.maxNumSeqsSelect.value = h.maxNumSeqs ?? '';
+  if (dom.maxConcurrentRequestsSelect) dom.maxConcurrentRequestsSelect.value = h.maxConcurrentRequests ?? '';
+  if (dom.reasoningEffortSelect) dom.reasoningEffortSelect.value = h.reasoningEffort ?? '';
 
   if (!h.kvCacheDtype) {
     h.kvCacheDtype = 'int4';
@@ -638,6 +676,8 @@ if (dom.speculativeModelInput && !dom.speculativeModelInput.dataset.sidecarOverr
    });
    dom.speculativeSourceSelect?.addEventListener('change', syncRapidSpeculativeFields);
 
+    bindSel(dom.reasoningEffortSelect, 'reasoningEffort');
+
     if (dom.reasoningModeCheck && !dom.reasoningModeCheck.dataset.bound) {
      dom.reasoningModeCheck.dataset.bound = '1';
      dom.reasoningModeCheck.addEventListener('change', () => {
@@ -687,7 +727,7 @@ function _applyUnifiedProfileRecommendations() {
   }
 
   // Apply tool_format recommendation if not already set by user
-  if (rec.tool_format && wizardState.hardware.toolCallParser == null) {
+  if (rec.tool_format && !wizardState.hardware.toolCallParser) {
     wizardState.hardware.toolCallParser = rec.tool_format;
     if (dom.toolCallParserInput) {
       dom.toolCallParserInput.value = rec.tool_format;
@@ -756,6 +796,12 @@ function _renderRapidMlxProfileHints() {
   if (profile.tool_format && !wizardState.hardware.autoToolChoice && !wizardState.hardware.autoToolChoiceTouched) {
     wizardState.hardware.autoToolChoice = true;
     if (dom.autoToolChoiceCheck) dom.autoToolChoiceCheck.checked = true;
+  }
+  // The runtime refuses --enable-auto-tool-choice without --tool-call-parser, so the
+  // two must travel together.
+  if (profile.tool_format && wizardState.hardware.autoToolChoice && !wizardState.hardware.toolCallParser) {
+    wizardState.hardware.toolCallParser = profile.tool_format;
+    if (dom.toolCallParserInput) dom.toolCallParserInput.value = profile.tool_format;
   }
 
   // Tool format + reasoning parser row
@@ -949,6 +995,8 @@ async function _fetchRapidMlxModelProfile(modelId) {
       ? 'Rapid-MLX model profile'
       : 'Rapid-MLX profile unavailable; safe defaults retained';
 
+    // The reasoning lock pins int8 before the profile arrives; hybrid models must override it.
+    applyReasoningModeLock();
     _renderRapidMlxProfileHints();
   } catch {
     wizardState.model.rapidMlxProfile = null;
@@ -1031,10 +1079,14 @@ export function buildRapidMlxConfig(h, m) {
     auto_tool_choice: !!h.autoToolChoice,
     no_thinking: h.rapidReasoningMode === 'off',
     hybrid_mode: h.hybridMode || 'auto',
+    // Per-request window the user chose on the hardware step -> --context-length.
+    ...(Number(h.contextSize) > 0 && { context_length: Number(h.contextSize) }),
         prefill_step_size: Number(h.prefillStepSize || rapidMlxPrefillStepSizeDefault(m.rapidMlxProfile)),
     ...(escapeHatchFlags.length > 0 && { escape_hatch_flags: escapeHatchFlags }),
     // Phase 7: KV/cache policy (D6 catalog IDs)
-    ...(h.kvCacheDtype && h.kvCacheDtype !== 'int4' && { kv_cache_dtype: h.kvCacheDtype }),
+    ...(rapidModelIsHybrid()
+      ? { kv_cache_dtype: 'bf16' }
+      : h.kvCacheDtype && h.kvCacheDtype !== 'int4' && { kv_cache_dtype: h.kvCacheDtype }),
     ...(h.turboquantMode && h.turboquantMode !== 'none' && h.turboquantMode !== 'auto' && { turboquant_mode: h.turboquantMode }),
     // '' means omit: an absent flag and an explicit runtime default are different states.
     ...(h.gpuMemoryUtilization && { gpu_memory_utilization: Number(h.gpuMemoryUtilization) }),
@@ -1062,6 +1114,7 @@ export function buildRapidMlxConfig(h, m) {
     // vram-estimate.js — and it steers the wizard's own KV-dtype and context choices,
     // which do get sent. Left over from the workload-profile picker removed in 712c261.
     reasoning_mode: h.rapidReasoningMode || 'on',
+    default_reasoning_effort: h.reasoningEffort || null,
     ...(h.speculativeEnabled && {
       speculative_config: {
         method: 'mtp',

@@ -351,6 +351,17 @@
   }
 }
 
+/* Security card decorations must not intercept certificate controls. */
+#settings-security .widget-card::before,
+#settings-security .widget-card::after {
+  pointer-events: none;
+}
+
+/* Keep interactive Security controls stationary while the card is hovered. */
+#settings-security .widget-card:hover {
+  animation: none;
+}
+
 /* --- Universal Widget-Card Treatment for ALL Settings Fields --- */
 
 #settings-modal .settings-pane > .modal-field {

@@ -10,11 +10,13 @@
 
 import { formatMetricAge, formatMetricNumber, escapeHtml } from '../core/format.js';
 import { setHtml } from '../core/set-html.js';
+import { engineDescriptor, engineHueStyle, renderEngineTag } from '../core/engine-descriptor.js';
 import { deriveTelemetryGrade, gradeLabel, gradeStatusClass, gradeActionCopy } from '../features/telemetry-grade.js';
 import {
   sessionState,
   prevValues,
   metricSeries,
+  requestActivity,
   setWsData,
   setLastServerState,
   setLastLlamaMetrics,
@@ -30,7 +32,6 @@ import {
   setupViewState,
 } from '../core/app-state.js';
 import {
-  updateLiveOutputEstimate,
   updateRequestActivity,
   renderRecentTask,
   renderActivityRail,
@@ -54,6 +55,7 @@ import { showToast, showToastWithActions } from './toast.js';
 import { loadPresets, syncSelectedPresetSelection } from './presets.js';
 import { updateStateCard, updateMetricCards } from './metric-cards.js';
 import { renderLlamaCppDetails, isLlamaTelemetryForTarget } from './llama-cpp-details.js';
+import { metricNumber, normalizeRapidDashboard, renderRapidDashboard } from './rapid-dashboard.js';
 
 // ── Cached DOM elements (populated at init time to avoid repeated queries) ──
 let cachedElements = null;
@@ -301,6 +303,17 @@ ws.onmessage = e => {
         d = JSON.parse(e.data);
     } catch {
         return; // malformed frame — ignore rather than kill the socket loop
+    }
+    // Pollers can retain the last successful snapshot on failure. Invalidate it
+    // before storage, normalization or detail rendering (including hidden tabs).
+    if (d.inference_poll_failed === true) {
+        d = { ...d, llama: null, inference: null };
+        setLastLlamaMetrics(null);
+        setLastRapidMlxMetrics(null);
+        // Loss of telemetry is not evidence that an observed task completed.
+        // Drop open segments so legacy activity/rate summaries cannot label it live.
+        requestActivity.splice(0, requestActivity.length,
+            ...requestActivity.filter(segment => segment.endedAtMs));
     }
     // Keep wsData current even when tab is hidden (needed for refresh on show)
     setWsData(d);
@@ -752,6 +765,20 @@ function updateServerState(d) {
         ? (d.llama ?? null) : null;
     setLastLlamaMetrics(llamaMetrics);
     // Run before monitor/overlay early returns so switching clears hidden stale facts too.
+    {
+        const tagEl = document.getElementById('server-engine-tag');
+        if (tagEl) {
+            const attached = !!(d.active_session_id || d.session_mode === 'spawn');
+            const desc = engineDescriptor(d.backend);
+            const key = attached ? desc.id : '';
+            if (tagEl.dataset.engine !== key) {
+                tagEl.dataset.engine = key;
+                tagEl.hidden = !attached;
+                tagEl.style.cssText = attached ? engineHueStyle(desc) : '';
+                setHtml(tagEl, attached ? renderEngineTag(desc, escapeHtml) : '');
+            }
+        }
+    }
     renderLlamaCppDetails({
         backend: d.backend,
         attached: !!d.active_session_id,
@@ -811,31 +838,30 @@ function updateInferenceMetrics(d) {
     const l = lastLlamaMetrics;
     const rm = getLastRapidMlxMetrics();
     const hasActiveEndpoint = !!d.active_session_id;
+    const pollFailed = hasActiveEndpoint && d.inference_poll_failed === true;
     const backend = d.backend || (rm ? 'rapid_mlx' : (l ? 'llama_cpp' : 'unknown'));
 
     // Normalized snapshot: llama.cpp and Rapid-MLX (and remote agents) feed
     // the same card registry, so the dashboard no longer swaps card sets.
-    const promptRate = l?.prompt_tokens_per_sec || 0;
-    const genRate = l?.generation_tokens_per_sec || 0;
-    const promptDisplay = promptRate > 0 ? promptRate : (l?.last_prompt_tokens_per_sec || 0)
-        || (Number.isFinite(rm?.prompt_tokens_per_second) ? rm.prompt_tokens_per_second : null);
-    const genDisplay = genRate > 0 ? genRate : (l?.last_generation_tokens_per_sec || 0)
-        || (Number.isFinite(rm?.generation_tokens_per_second) ? rm.generation_tokens_per_second : null);
+    const isRapid = backend === 'rapid_mlx';
+    const rapid = normalizeRapidDashboard(isRapid && hasActiveEndpoint ? rm : null);
+    const promptRate = metricNumber(l?.prompt_tokens_per_sec);
+    const genRate = metricNumber(l?.generation_tokens_per_sec);
+    // Never let legacy llama values override the active Rapid source.
+    const promptDisplay = isRapid ? rapid.prefillTps : promptRate > 0 ? promptRate : metricNumber(l?.last_prompt_tokens_per_sec);
+    const genDisplay = isRapid ? rapid.decodeTps : genRate > 0 ? genRate : metricNumber(l?.last_generation_tokens_per_sec);
 
-    const slotsProcessing = (l?.slots_processing || 0);
-    const rapidRunning = Number(rm?.running_requests) || 0;
-    // Classify by whether any token has been decoded this request — rate
-    // fields lag one poll and can hold stale values while a new prompt is
-    // still prefilling, which made the state flip Reading ↔ Generating.
-    const slotGenTokens = l?.slot_generation_tokens || 0;
+    const slotsProcessing = metricNumber(l?.slots_processing) ?? (pollFailed ? null : 0);
+    const slotGenTokens = metricNumber(l?.slot_generation_tokens) ?? 0;
     const promptOnly = slotsProcessing > 0 && slotGenTokens === 0;
-    const generationActive = (genRate > 0 || slotsProcessing > 0 || rapidRunning > 0) && !promptOnly;
-    const reading = !generationActive && (promptRate > 0 || promptOnly);
-    const queued = Number(l?.waiting_requests) || Number(rm?.waiting_requests) || 0;
+    const generationActive = isRapid ? rapid.state === 'generating' : (genRate > 0 || slotsProcessing > 0) && !promptOnly;
+    const reading = isRapid ? rapid.state === 'reading' : !generationActive && (promptRate > 0 || promptOnly);
+    const queued = isRapid ? rapid.waiting : metricNumber(l?.waiting_requests);
+    const busy = isRapid && rapid.state === 'busy';
     const sessionError = d.active_session_status === 'error';
 
-    // Progress: generating → tokens vs budget (llama slots) or backend
-    // progress (Rapid-MLX); reading has no observable fraction → hidden bar.
+    // Only observed counters define a fraction. Rapid's generic progress has
+    // no prompt-token semantics and is never treated as completion prediction.
     let stateProgress = null;
     let stateTone = null;
     let stateLabel = 'Idle';
@@ -843,37 +869,60 @@ function updateInferenceMetrics(d) {
     if (sessionError) {
         stateLabel = 'Error';
         stateTone = 'danger';
+    } else if (pollFailed) {
+        stateLabel = 'Telemetry unavailable';
+        stateDetail = 'Inference poll failed · waiting for fresh telemetry';
     } else if (generationActive) {
         stateLabel = 'Generating';
-        const generated = l?.slot_generation_tokens || 0;
-        const remaining = l?.slot_generation_remaining || 0;
-        const slotLimit = getPrimarySlot(l)?.output_limit || 0;
-        const total = l?.slot_generation_limit || slotLimit || (generated + remaining);
-        if (total > 0) {
-            stateProgress = generated / total;
-            stateDetail = `${formatMetricNumber(generated)} / ${formatMetricNumber(total)} tokens`;
-        } else {
-            const ratio = normalizedProgressRatio(rm?.backend_details?.progress);
-            stateProgress = ratio;
-            stateDetail = ratio != null ? `${Math.round(ratio * 100)}%` : '';
+        const generated = isRapid ? rapid.outputTokens : metricNumber(l?.slot_generation_tokens);
+        const remaining = isRapid ? null : metricNumber(l?.slot_generation_remaining);
+        const slotLimit = isRapid ? null : metricNumber(getPrimarySlot(l)?.output_limit);
+        const total = isRapid ? rapid.outputLimit
+            : metricNumber(l?.slot_generation_limit) || slotLimit || (generated != null && remaining != null ? generated + remaining : null);
+        stateProgress = isRapid ? rapid.outputBudget : generated != null && total > 0 ? generated / total : null;
+        if (stateProgress != null) {
+            stateDetail = `${formatMetricNumber(generated)} / ${formatMetricNumber(total)} tokens · output budget used${isRapid && rapid.generatingCount > 1 ? ' (reported generating requests)' : ''}`;
+        } else if (generated != null) {
+            stateDetail = `${formatMetricNumber(generated)} output tokens · output limit unavailable`;
         }
-        if (genDisplay) stateDetail += `${stateDetail ? ' · ' : ''}${fmtTps(genDisplay)} t/s`;
+        if (genDisplay != null) stateDetail += `${stateDetail ? ' · ' : ''}${fmtTps(genDisplay)} t/s${isRapid ? ' aggregate reported' : ''}`;
+        if (isRapid && rapid.readingCount) stateDetail += ` · ${rapid.readingCount} reading`;
         stateTone = 'generating';
     } else if (reading) {
         stateLabel = 'Reading';
         stateTone = 'reading';
         const parts = [];
-        if (l?.slot_prompt_total > 0 && l?.slot_prompt_processed > 0) {
-            parts.push(`${formatMetricNumber(l.slot_prompt_processed)} / ${formatMetricNumber(l.slot_prompt_total)} prompt tokens`);
-            stateProgress = Math.min(1, l.slot_prompt_processed / l.slot_prompt_total);
+        const processingSlots = Array.isArray(l?.slots) ? l.slots.filter(slot => slot.is_processing) : [];
+        // The legacy aggregate is a zero-default integer. When per-slot
+        // availability exists, every processing slot must report its counter.
+        const processedAvailable = !processingSlots.length
+            || processingSlots.every(slot => metricNumber(slot.prompt_tokens_processed) != null);
+        const processed = isRapid || !processedAvailable ? null : metricNumber(l?.slot_prompt_processed);
+        const promptTotal = isRapid ? rapid.promptTokens : metricNumber(l?.slot_prompt_total);
+        if (processed != null && promptTotal > 0 && processed <= promptTotal) {
+            parts.push(`${formatMetricNumber(processed)} / ${formatMetricNumber(promptTotal)} prompt tokens`);
+            stateProgress = processed / promptTotal;
+        } else if (promptTotal != null) {
+            parts.push(`${formatMetricNumber(promptTotal)} prompt tokens`);
         }
-        if (promptDisplay) parts.push(`${fmtTps(promptDisplay)} t/s prefill`);
+        if (isRapid && rapid.elapsed != null) parts.push(`${rapid.elapsed.toFixed(1)}s elapsed`);
+        if (promptDisplay != null) parts.push(`${fmtTps(promptDisplay)} t/s prefill${isRapid ? ' · aggregate reported' : ''}`);
         stateDetail = parts.join(' · ');
+        if (isRapid && rapid.readingCount > 1) stateDetail += ` · ${rapid.readingCount} reading`;
     } else if (!hasActiveEndpoint) {
+        stateDetail = '';
         stateLabel = 'Waiting for a request';
-    } else if (queued > 0) {
+    } else if (queued > 0 || (isRapid && rapid.state === 'queued')) {
         stateLabel = 'Queued';
-        stateDetail = `${queued} waiting`;
+        stateDetail = queued != null ? `${queued} waiting` : 'Queued in reported details · total unavailable';
+    }
+    if (busy && !sessionError) {
+        stateLabel = 'Processing';
+        stateDetail = 'Request phase unavailable · running does not imply decoding';
+    }
+    if (isRapid && hasActiveEndpoint && rapid.state === 'unavailable' && !sessionError && !pollFailed) {
+        stateLabel = 'Telemetry unavailable';
+        stateDetail = 'Request activity has not been reported';
     }
 
     const view = {
@@ -881,22 +930,35 @@ function updateInferenceMetrics(d) {
         attached: hasActiveEndpoint,
         sessionId: d.active_session_id ?? null,
         endpointTag: d.active_session_endpoint_tag ?? d.active_session_endpoint ?? null,
-        state: sessionError ? 'error' : generationActive ? 'generating' : reading ? 'reading' : 'idle',
+        state: sessionError ? 'error' : pollFailed ? 'unavailable' : isRapid ? rapid.state : generationActive ? 'generating' : reading ? 'reading' : queued > 0 ? 'queued' : 'idle',
         queued,
-        running: slotsProcessing || rapidRunning,
+        running: isRapid ? rapid.running : slotsProcessing,
         waiting: queued,
-        decodeTps: genDisplay || null,
-        prefillTps: promptDisplay || null,
+        decodeTps: genDisplay,
+        prefillTps: promptDisplay,
+        decodeScope: isRapid ? rapid.decodeScope : genDisplay == null ? 'unavailable' : genRate > 0 ? 'current aggregate' : 'last measured',
+        prefillScope: isRapid ? rapid.prefillScope : promptDisplay == null ? 'unavailable' : promptRate > 0 ? 'current aggregate' : 'last measured',
+        decodeCurrent: isRapid ? rapid.decodeCurrent : generationActive && genRate > 0,
+        prefillCurrent: isRapid ? rapid.prefillCurrent : reading && promptRate > 0,
+        decodeActive: isRapid ? rapid.generatingCount > 0 : generationActive,
+        prefillActive: isRapid ? rapid.readingCount > 0 : reading,
         stateLabel,
         stateDetail,
         stateProgress,
         stateTone,
+        rapid: isRapid && hasActiveEndpoint ? rapid : null,
         gpu: buildGpuView(d),
         sys: buildSysView(d),
     };
 
     updateStateCard(view);
     updateMetricCards(view);
+    renderRapidDashboard(isRapid && hasActiveEndpoint ? rm : null, {
+        attached: hasActiveEndpoint, backend,
+        sessionId: view.sessionId, endpointTag: view.endpointTag,
+        hostSystem: d.host_metrics_available === true && d.capabilities?.system ? lastSystemMetrics : null,
+        gpu: view.gpu,
+    });
 
     // Loader-specific detail panels below the strip (unchanged behavior).
     if (backend !== 'rapid_mlx') {
@@ -924,35 +986,41 @@ function updateInferenceMetrics(d) {
     setMetricSectionVisibility('system-card', hostMetricsVisible && !!d.capabilities?.system, 'system-section');
 }
 
-function normalizedProgressRatio(value) {
-    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > 1) return null;
-    return value;
-}
 
 function fmtTps(v) {
     return v >= 100 ? Math.round(v).toLocaleString() : v.toFixed(1);
 }
 
 function buildGpuView(d) {
+    if (d.host_metrics_available !== true || !d.capabilities?.gpu) return null;
     const entries = Object.entries(d.gpu || {});
     if (!entries.length) return null;
     const [name, m] = entries[0];
-    // GpuMetrics reports MiB; the dashboard cards work in bytes.
-    const toBytes = (x) => (Number(x) || 0) * 1024 * 1024;
-    // On Apple Silicon the meaningful ceiling is the Metal wired-limit cap;
-    // vram_used/vram_total describe the unified memory pool.
+    // GpuMetrics reports MiB; optional measurements must not become fake zeroes.
+    const toBytes = x => metricNumber(x) == null ? null : x * 1024 * 1024;
     const metalCap = toBytes(m.metal_gpu_limit_mb);
     const unifiedTotal = toBytes(m.vram_total);
+    const isApple = metalCap > 0 || /apple|metal/i.test(name);
+    const source = typeof m.load_source === 'string' ? m.load_source.slice(0, 64) : '';
+    const residency = metricNumber(m.residency_percent);
+    const loadAvailable = m.load_available !== false
+        && (!isApple || m.load_available === true)
+        && !/mactop|residency|unavailable|suspect/i.test(source);
+    const loadNote = [source ? `Source: ${source}${m.load_estimated ? ' (estimate)' : ''}` : isApple ? 'Utilization source unavailable' : name,
+        residency != null && residency <= 100 ? `Residency ${residency.toFixed(1)}% (not utilization)` : ''].filter(Boolean).join(' · ');
+    const power = metricNumber(m.power_consumption);
     return {
         name,
-        load: Number(m.load) || 0,
+        load: loadAvailable ? metricNumber(m.load) : null,
+        loadNote,
         vramUsed: toBytes(m.vram_used),
         vramTotal: metalCap > 0 ? metalCap : unifiedTotal,
         unifiedTotal,
         metalUnified: metalCap > 0,
-        temp: Number(m.temp) || 0,
-        power: Number(m.power_consumption) || 0,
-        powerLimit: Number(m.power_limit) || 0,
+        temp: metricNumber(m.temp) > 0 ? m.temp : null,
+        // Legacy collectors use zero for unavailable power; retain zero only with explicit provenance.
+        power: power != null && (power > 0 || m.power_available === true) ? power : null,
+        powerLimit: metricNumber(m.power_limit),
     };
 }
 
@@ -960,10 +1028,13 @@ function buildSysView(d) {
     const sys = lastSystemMetrics;
     if (!sys || d.host_metrics_available !== true || !d.capabilities?.system) return null;
     return {
-        cpu: Number(sys.cpu_load) || 0,
+        // sysinfo CPU utilization is independent of mactop CPU power availability.
+        // cpu_load_available=false: first sampling interval, 0 is a placeholder.
+        // Absent (older agents) keeps the legacy "load is real" behavior.
+        cpu: sys.cpu_load_available === false ? null : metricNumber(sys.cpu_load),
         cpuName: sys.cpu_name || '',
-        ramUsed: Number(sys.ram_used) || 0,
-        ramTotal: Number(sys.ram_total) || 0,
+        ramUsed: metricNumber(sys.ram_used_gb),
+        ramTotal: metricNumber(sys.ram_total_gb),
     };
 }
 

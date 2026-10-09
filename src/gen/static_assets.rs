@@ -74,6 +74,8 @@ pub const BOOTSTRAP_JS: &str = include_str!("../../static/js/bootstrap.js");
 pub const COMPACT_JS: &str = include_str!("../../static/js/compact.js");
 pub const COMPAT_GLOBALS_JS: &str = include_str!("../../static/js/compat/globals.js");
 pub const CORE_APP_STATE_JS: &str = include_str!("../../static/js/core/app-state.js");
+pub const CORE_ENGINE_DESCRIPTOR_JS: &str =
+    include_str!("../../static/js/core/engine-descriptor.js");
 pub const CORE_FORMAT_JS: &str = include_str!("../../static/js/core/format.js");
 pub const CORE_IDENTITY_JS: &str = include_str!("../../static/js/core/identity.js");
 pub const CORE_PLATFORM_INFO_JS: &str = include_str!("../../static/js/core/platform-info.js");
@@ -146,6 +148,8 @@ pub const FEATURES_PRESET_BUNDLE_DRAWER_JS: &str =
 pub const FEATURES_PRESET_EDITOR_MLX_JS: &str =
     include_str!("../../static/js/features/preset-editor-mlx.js");
 pub const FEATURES_PRESETS_JS: &str = include_str!("../../static/js/features/presets.js");
+pub const FEATURES_RAPID_DASHBOARD_JS: &str =
+    include_str!("../../static/js/features/rapid-dashboard.js");
 pub const FEATURES_RAPID_MLX_CARDS_JS: &str =
     include_str!("../../static/js/features/rapid-mlx-cards.js");
 pub const FEATURES_RAPID_MLX_PREFILL_JS: &str =
@@ -154,6 +158,8 @@ pub const FEATURES_RAPID_MLX_PROTOCOL_DOCS_JS: &str =
     include_str!("../../static/js/features/rapid-mlx-protocol-docs.js");
 pub const FEATURES_RAPID_MLX_UPDATER_JS: &str =
     include_str!("../../static/js/features/rapid-mlx-updater.js");
+pub const FEATURES_RAPID_MODEL_DOWNLOAD_JS: &str =
+    include_str!("../../static/js/features/rapid-model-download.js");
 pub const FEATURES_REMOTE_AGENT_JS: &str = include_str!("../../static/js/features/remote-agent.js");
 pub const FEATURES_ROUTER_JS: &str = include_str!("../../static/js/features/router.js");
 pub const FEATURES_RUNTIME_UNINSTALL_JS: &str =
@@ -204,6 +210,8 @@ pub const FEATURES_SPAWN_WIZARD_MTP_DRAFT_JS: &str =
     include_str!("../../static/js/features/spawn-wizard-mtp-draft.js");
 pub const FEATURES_SPAWN_WIZARD_RAPID_CATALOG_JS: &str =
     include_str!("../../static/js/features/spawn-wizard-rapid-catalog.js");
+pub const FEATURES_SPAWN_WIZARD_RAPID_DOWNLOAD_JS: &str =
+    include_str!("../../static/js/features/spawn-wizard-rapid-download.js");
 pub const FEATURES_SPAWN_WIZARD_RAPID_MLX_JS: &str =
     include_str!("../../static/js/features/spawn-wizard-rapid-mlx.js");
 pub const FEATURES_SPAWN_WIZARD_REVIEW_STEP_JS: &str =

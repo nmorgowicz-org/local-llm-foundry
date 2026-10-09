@@ -6,6 +6,7 @@ pub mod discovery;
 pub mod escape_hatch;
 pub mod info_query;
 pub mod mlx_meta;
+pub mod model_cache;
 pub mod model_resolver;
 pub mod poller;
 pub mod repair;
@@ -248,6 +249,15 @@ pub struct RapidMlxConfig {
     /// Completion batch size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_batch_size: Option<u64>,
+    /// Per-request context window (prompt plus output) passed as `--context-length`.
+    /// `None` lets the runtime size it from available memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u32>,
+    /// Reasoning effort applied to requests that send no reasoning setting, passed as
+    /// `--default-reasoning-effort`. `None` sends no flag. Without it the runtime turns
+    /// thinking off for casual chat requests that carry no reasoning intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_effort: Option<String>,
     /// Prompt chunk processed per prefill step. The generic text default is 512;
     /// the UI raises this to 1536 for a verified native vision model profile.
     #[serde(default = "default_prefill_step_size")]
@@ -497,6 +507,8 @@ impl Default for RapidMlxConfig {
             max_concurrent_requests: None,
             prefill_batch_size: None,
             completion_batch_size: None,
+            context_length: None,
+            default_reasoning_effort: None,
             prefill_step_size: default_prefill_step_size(),
             // Phase 7: reasoning/speculative
             reasoning_mode: None,
@@ -605,6 +617,8 @@ pub struct RapidMlxAdapter {
     pub max_concurrent_requests: Option<u64>,
     pub prefill_batch_size: Option<u64>,
     pub completion_batch_size: Option<u64>,
+    pub context_length: Option<u32>,
+    pub default_reasoning_effort: Option<String>,
     pub prefill_step_size: u32,
     pub reasoning_mode: Option<String>,
     pub speculative_config: Option<RapidMlxSpeculativeConfig>,
@@ -680,6 +694,8 @@ impl RapidMlxAdapter {
             max_concurrent_requests: None,
             prefill_batch_size: None,
             completion_batch_size: None,
+            context_length: None,
+            default_reasoning_effort: None,
             prefill_step_size: default_prefill_step_size(),
             reasoning_mode: None,
             speculative_config: None,
@@ -747,6 +763,8 @@ impl RapidMlxAdapter {
         self.max_concurrent_requests = config.max_concurrent_requests;
         self.prefill_batch_size = config.prefill_batch_size;
         self.completion_batch_size = config.completion_batch_size;
+        self.context_length = config.context_length;
+        self.default_reasoning_effort = config.default_reasoning_effort.clone();
         self.prefill_step_size = config.prefill_step_size;
         self.reasoning_mode = config.reasoning_mode.clone();
         self.speculative_config = config.speculative_config.clone();
@@ -900,6 +918,26 @@ impl RapidMlxAdapter {
         self.hybrid_mode
     }
 
+    /// Whether `rapid-mlx info` reports a hybrid architecture for an alias or repo launch
+    /// argument. Directory launches (and any lookup failure) answer false; those are covered
+    /// by the local `config.json` check in `resolve_hybrid_mode`.
+    async fn profile_is_hybrid(&self) -> bool {
+        let profile = tokio::time::timeout(
+            Duration::from_secs(10),
+            info_query::fetch_model_profile(
+                &self.runtime.executable_path,
+                self.resolved_model.launch_argument.trim(),
+            ),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten();
+        profile
+            .and_then(|profile| profile.architecture)
+            .is_some_and(|arch| arch.to_ascii_lowercase().contains("hybrid"))
+    }
+
     pub async fn build_launch(&self) -> Result<SupervisedLaunch> {
         let hybrid_mode = self.resolve_hybrid_mode();
         let (argv_builder, overlay_warning) = build_launch_argv(self);
@@ -912,10 +950,33 @@ impl RapidMlxAdapter {
             builder
         };
 
+        // rapid-mlx refuses to start with --kv-cache-dtype int8/int4 on hybrid
+        // (GatedDeltaNet / Mamba ArraysCache) models: "the loaded model is incompatible:
+        // ArraysCache". The wizard's reasoning profile pins int8, so presets saved for hybrid
+        // aliases carry a value that can never launch. Serve bf16 (the runtime default)
+        // instead and say so.
+        let mut kv_warning = None;
+        let builder = if matches!(
+            self.kv_cache_dtype,
+            Some(KvCacheConfig::Int8 | KvCacheConfig::Int4)
+        ) && (hybrid_mode == RapidMlxHybridMode::Force
+            || self.profile_is_hybrid().await)
+        {
+            kv_warning = Some(
+                "This model is hybrid-attention; Rapid-MLX cannot quantize its KV cache, so the \
+                 saved KV cache dtype was ignored and bf16 is used."
+                    .to_string(),
+            );
+            builder.kv_cache_dtype(None)
+        } else {
+            builder
+        };
+
         let mut launch = builder.build(
             self.runtime.executable_path.clone(),
             &self.compatibility.capabilities,
         )?;
+        launch.warnings.extend(kv_warning);
         launch.redacted_summary.push_str(&format!(
             " ({}, {})",
             self.compatibility.version,
@@ -1206,6 +1267,8 @@ pub(crate) fn apply_phase7_adapter_config(
         .max_concurrent_requests(adapter.max_concurrent_requests)
         .prefill_batch_size(adapter.prefill_batch_size)
         .completion_batch_size(adapter.completion_batch_size)
+        .context_length(adapter.context_length)
+        .default_reasoning_effort(adapter.default_reasoning_effort.clone())
         .prefill_step_size(Some(adapter.prefill_step_size))
         .reasoning_mode(adapter.reasoning_mode.clone())
         .speculative_config(speculative_config)
@@ -1530,6 +1593,78 @@ mod tests {
         let other = adapter.poller_for(8001).unwrap();
         assert!(std::sync::Arc::ptr_eq(&first, &second));
         assert!(!std::sync::Arc::ptr_eq(&first, &other));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_hybrid_launch_uses_selected_binary_without_path_discovery() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const CHILD_ENV: &str = "LLF_MANAGED_HYBRID_REGRESSION_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // Isolate PATH without racing other tests that use process-wide discovery.
+            let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "inference::rapid_mlx::tests::managed_hybrid_launch_uses_selected_binary_without_path_discovery",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .env("PATH", "")
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "isolated regression failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let binary = tmp.path().join("managed-rapid-mlx");
+        let queried = tmp.path().join("queried");
+        std::fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = '--version' ]; then\n\
+                   printf 'rapid-mlx 0.15.4\\n'\n\
+                 elif [ \"$1\" = 'info' ] && [ \"$2\" = 'managed-hybrid' ]; then\n\
+                   printf 'queried' > '{}'\n\
+                   printf '│ Architecture: Hybrid GatedDeltaNet │\\n'\n\
+                 else\n\
+                   exit 1\n\
+                 fi\n",
+                queried.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut adapter = RapidMlxAdapter::from_resolved(
+            RuntimeMetadata {
+                executable_path: binary.clone(),
+                source: RuntimeSource::Managed,
+                ..Default::default()
+            },
+            ResolvedRapidMlxLaunchModel::validated_alias("managed-hybrid").unwrap(),
+        );
+        for dtype in [KvCacheConfig::Int8, KvCacheConfig::Int4] {
+            adapter.kv_cache_dtype = Some(dtype);
+            let launch = adapter.build_launch().await.unwrap();
+            assert_eq!(launch.program, binary);
+            assert!(!launch.args.iter().any(|arg| arg == "--kv-cache-dtype"));
+            assert!(
+                launch
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("bf16"))
+            );
+            assert_eq!(std::fs::read_to_string(&queried).unwrap(), "queried");
+        }
     }
 
     #[test]

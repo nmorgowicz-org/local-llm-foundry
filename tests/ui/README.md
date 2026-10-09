@@ -107,8 +107,7 @@ Rapid wizard stills belong in `artifacts/wizard-rapidmlx`; llama.cpp wizard stil
 | `rapid-preset` | Rapid-MLX welcome cards and preset editor with legacy and typed model-source fixtures |
 | `settings` | Settings modal, performance tab, advanced tab, user preferences, persona, models, shortcuts |
 | `panels` | Behavior, model, style, and prompt-debug surfaces |
-| `dashboard` | Server tab and GPU section |
-| `dashboard-rapid-mlx` | Deterministic Rapid-MLX telemetry cards rendered by production frontend modules |
+| `dashboard` | Shared performance dashboard, Server tab, and GPU section |
 | `dashboard-llama-cpp-efficiency` | Deterministic llama.cpp server totals and hardware-grid Runtime card; dark/light, 430px reduced-motion, zero activity, and cache-only states; no model attachment |
 | `sparkline` | Sparkline validation stills and clipped metric captures |
 | `gifs` | Animated inference and GPU/system captures |
@@ -146,7 +145,7 @@ SCREENSHOT_PORT=8899 node tests/ui/capture/index.mjs --scenario appearance-palet
 # Chat configuration panels
 SCREENSHOT_PORT=8896 node tests/ui/capture/index.mjs --scenario panels
 
-# Server tab and GPU section
+# Shared performance dashboard, Server tab, and GPU section
 SCREENSHOT_PORT=8897 node tests/ui/capture/index.mjs --scenario dashboard
 
 # Deterministic llama.cpp efficiency and runtime facts (no live model required)

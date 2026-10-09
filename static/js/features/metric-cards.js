@@ -6,35 +6,39 @@
 // The registry decouples presentation from the runtime loader: every card
 // declares a `pick(view)` reader over the NORMALIZED snapshot built by
 // dashboard-ws.js, so llama.cpp, Rapid-MLX, and remote agents feed the same
-// cards. A card whose source has no data for the active loader renders dimmed
-// dimmed ("n/a") instead of disappearing.
+// cards. Generic cards render dimmed ("n/a") when unavailable; optional Rapid
+// cards hide immediately and clear their contents when their source is absent.
 
 import { setHtml } from '../core/set-html.js';
+import { formatRuntimeBytes, metricNumber } from './rapid-dashboard.js';
 
-// 300 samples at the ~1s dashboard push ≈ a 5-minute window per sparkline.
-// Pushes slow down when the tab is hidden or in low-power mode, so the wall
-// clock span can stretch — the sample budget stays fixed.
+// Every key accepts at most one sample per HISTORY_SAMPLE_MS (time-based, not
+// per-update: dashboard pushes arrive up to ~4/s), so HISTORY_LIMIT samples
+// cover at most ~5 minutes of observed updates. Samples are appended only when
+// an update arrives: while the tab is hidden or pushes slow down, the series
+// simply gains fewer points, so its wall-clock span can exceed 5 minutes.
 const HISTORY_LIMIT = 300;
+const HISTORY_SAMPLE_MS = 1000;
 const history = new Map();
-// Timestamp of the last speed-card sample: throttled to one per second so
-// HISTORY_LIMIT samples span a true 5 minutes.
-let speedLastPush = 0;
+const historyLastPush = new Map();
 let historyOwner = null;
 
 function selectHistoryOwner(view) {
     // Counters belong to an inference target, not the lifetime of this module.
     // Detach and backend changes also replace the owner, clearing every plot
-    // and the speed throttle before the first sample from the new target.
+    // and every per-key throttle before the first sample from the new target.
     const owner = JSON.stringify([view.backend ?? null, view.sessionId ?? null, view.endpointTag ?? null, view.attached ?? null]);
     if (owner === historyOwner) return;
     historyOwner = owner;
     history.clear();
-    speedLastPush = 0;
+    historyLastPush.clear();
 }
 
-
-function pushHistory(key, value) {
+function pushHistory(key, value, now = Date.now()) {
     if (!Number.isFinite(value)) return;
+    const last = historyLastPush.get(key);
+    if (last != null && now - last < HISTORY_SAMPLE_MS && now >= last) return;
+    historyLastPush.set(key, now);
     let series = history.get(key);
     if (!series) {
         series = [];
@@ -64,6 +68,101 @@ const fmtGb = (bytes) => {
 
 const fmtSpeed = (v) => (v >= 100 ? fmtNum(v, 0) : fmtNum(v, 1));
 
+// Optional fact cards only expose backend-reported fields. In particular, do
+// not sum overlapping outcome totals or infer a runtime cap from hardware/peak.
+const reportedRatio = (value) => {
+    const number = metricNumber(value);
+    return number != null && number <= 1 ? number : null;
+};
+const reportedCount = (value) => value == null ? 'Unavailable' : fmtNum(value);
+// Runtime bytes are binary: GiB, or MiB for non-zero values under 1 GiB.
+const reportedBytes = (value) => {
+    const parts = formatRuntimeBytes(value);
+    return parts ? `${parts.value} ${parts.unit}` : 'Unavailable';
+};
+const reportedPercent = (value) => value == null ? 'Unavailable' : `${fmtNum(value * 100, 1)}%`;
+
+function factCard(key, label, icon, read, opts = {}) {
+    return {
+        key, label, icon, optional: true, wide: Boolean(opts.wide),
+        build() {
+            return `<div class="mcard__values"><span class="mcard__value" id="mv-${key}">–</span><span class="mcard__unit" id="mu-${key}"></span></div>` +
+                `<div class="mcard__facts" id="ms-${key}"></div>` +
+                `<div class="mcard__note" id="mn-${key}"></div>`;
+        },
+        update(view, card) {
+            const data = read(view.rapid);
+            card.hidden = !data.present;
+            // Explanatory copy is visible compact text (a title tooltip is
+            // unreachable by touch and keyboard); it stays one muted line.
+            if (card.hasAttribute('title')) card.removeAttribute('title');
+            card.classList.toggle('mcard--na', !data.present);
+            // Always replace every field, even when hidden: a previous reported
+            // zero is data, but must never survive a missing snapshot/source.
+            const hasValue = data.present && data.value != null;
+            setValue(`mv-${key}`, hasValue ? data.value : null, String);
+            // A unit with no headline value ("% hit rate" next to "–") is noise.
+            setText(`mu-${key}`, hasValue ? data.unit || '' : '');
+            setText(`mn-${key}`, data.present ? data.note || '' : '');
+            const facts = document.getElementById(`ms-${key}`);
+            const rows = data.present ? data.rows : [];
+            const signature = JSON.stringify(rows);
+            if (facts && facts.dataset.signature !== signature) {
+                facts.dataset.signature = signature;
+                facts.replaceChildren(...rows.map(text => {
+                    const row = document.createElement('div');
+                    row.textContent = text;
+                    return row;
+                }));
+            }
+        },
+    };
+}
+
+const RAPID_DEFS = [
+    factCard('mtp', 'MTP acceptance', 'gauge', (sample) => {
+        const rate = reportedRatio(sample?.acceptance);
+        return { present: rate != null, value: rate == null ? null : fmtNum(rate * 100, 1),
+            unit: '%', rows: ['Backend-reported speculative acceptance', 'Not a speedup measurement'] };
+    }),
+    factCard('runtime-memory', 'Runtime memory', 'ram', (sample) => {
+        const active = metricNumber(sample?.memory?.active);
+        const peak = metricNumber(sample?.memory?.peak);
+        const cache = metricNumber(sample?.memory?.cache);
+        const cap = metricNumber(sample?.memory?.limit);
+        const activeParts = formatRuntimeBytes(active);
+        return {
+            present: [active, peak, cache, cap].some(value => value != null),
+            value: activeParts?.value ?? null, unit: activeParts ? `${activeParts.unit} active` : '',
+            // A cap row appears only when the backend actually reports one.
+            rows: [`Peak (not a cap): ${reportedBytes(peak)}`,
+                `Reclaimable allocator cache: ${reportedBytes(cache)}`,
+                ...(cap == null ? [] : [`Explicit runtime cap: ${cap === 0 ? '0.0 GiB reported; usable cap unavailable' : reportedBytes(cap)}`])],
+            note: 'Runtime allocations are separate from hardware residency and wired limits.',
+        };
+    }, { wide: true }),
+    factCard('cache', 'Prefix / multimodal cache', 'layers', (sample) => {
+        const cache = sample?.cache;
+        const hits = metricNumber(cache?.hits);
+        const misses = metricNumber(cache?.misses);
+        const rate = reportedRatio(cache?.hitRate);
+        const entries = metricNumber(cache?.entries);
+        const memory = metricNumber(cache?.memoryBytes);
+        const kinds = Array.isArray(cache?.kinds)
+            ? cache.kinds.slice(0, 8)
+                .filter(value => typeof value === 'string')
+                .map(value => value.slice(0, 128).trim()).filter(Boolean) : [];
+        return {
+            present: [hits, misses, rate, entries, memory].some(value => value != null) || kinds.length > 0,
+            value: rate == null ? null : fmtNum(rate * 100, 1), unit: '% hit rate',
+            rows: [`Hit rate: ${reportedPercent(rate)}`, `Hits: ${reportedCount(hits)}`,
+                `Misses: ${reportedCount(misses)}`, `Entries: ${reportedCount(entries)}`,
+                `Prefix cache memory: ${reportedBytes(memory)}`,
+                `Multimodal kinds: ${kinds.join(', ') || 'Unavailable'}`],
+        };
+    }),
+];
+
 const METRIC_DEFS = [
     {
         key: 'speed',
@@ -86,10 +185,10 @@ const METRIC_DEFS = [
             const prefill = view.prefillTps;
             setPairValue('decode', decode, 't/s');
             setValue('mv-prefill', prefill, fmtSpeed);
-            const decodeSub = view.state === 'generating' ? 'Decode now'
-                : decode != null ? 'Decode last measured' : 'Decode';
-            const prefillSub = view.state === 'reading' ? 'Prefill now'
-                : prefill != null ? 'Prefill last measured' : 'Prefill';
+            const decodeSub = view.decodeScope ? `Decode ${view.decodeScope}`
+                : decode != null ? 'Decode last measured' : 'Decode unavailable';
+            const prefillSub = view.prefillScope ? `Prefill ${view.prefillScope}`
+                : prefill != null ? 'Prefill last measured' : 'Prefill unavailable';
             setText('ms-decode', decodeSub);
             setText('ms-prefill', prefillSub);
             const svg = document.getElementById('mc-card-speed');
@@ -112,7 +211,7 @@ const METRIC_DEFS = [
         pick: (v) => v.waiting,
         unit: '',
         max: null,
-        sub: (v) => (v.running ? `${fmtNum(v.running)} running` : 'waiting requests'),
+        sub: (v) => (v.running == null ? 'Running count unavailable' : v.running ? `${fmtNum(v.running)} running` : 'waiting requests'),
     },
     {
         key: 'gpu',
@@ -121,22 +220,21 @@ const METRIC_DEFS = [
         pick: (v) => (v.gpu ? v.gpu.load : null),
         unit: '%',
         max: 100,
-        sub: (v) => (v.gpu ? v.gpu.name : ''),
+        sub: (v) => (v.gpu ? v.gpu.loadNote || v.gpu.name : ''),
     },
     {
         key: 'vram',
         label: 'VRAM',
         icon: 'layers',
-        pick: (v) => (v.gpu && v.gpu.unifiedTotal ? v.gpu.vramUsed / v.gpu.unifiedTotal : null),
+        pick: (v) => (v.gpu?.vramUsed != null && v.gpu.unifiedTotal > 0 ? v.gpu.vramUsed / v.gpu.unifiedTotal : null),
         unit: '',
         max: 1,
         value: (v) => (v.gpu ? `${fmtGb(v.gpu.vramUsed)}` : null),
-        // Apple Silicon memory is drawn from the whole unified pool, so the
-        // denominator is the pool size; the Metal wired-limit cap (the real
-        // ceiling for GPU-resident weights) goes in the sub-label.
+        // Hardware residency and wired limits are not runtime allocations/caps.
+        // Keep the physical pool denominator; runtime memory is shown separately.
         unitText: (v) => (v.gpu?.metalUnified ? `of ${fmtGb(v.gpu.unifiedTotal)} GB` : (v.gpu && v.gpu.vramTotal ? `/ ${fmtGb(v.gpu.vramTotal)} GB` : 'GB')),
         sub: (v) => (v.gpu?.metalUnified
-            ? `Metal cap ${fmtGb(v.gpu.vramTotal)} GB`
+            ? `Hardware Metal wired cap ${fmtGb(v.gpu.vramTotal)} GB`
             : (v.gpu ? v.gpu.name : '')),
     },
     {
@@ -151,11 +249,11 @@ const METRIC_DEFS = [
     },
     {
         key: 'power',
-        label: 'Power',
+        label: 'GPU power',
         icon: 'bolt',
         pick: (v) => (v.gpu ? v.gpu.power : null),
         unit: 'W',
-        sub: (v) => (v.gpu && v.gpu.powerLimit ? `of ${fmtNum(v.gpu.powerLimit)} W limit` : ''),
+        sub: (v) => (v.gpu && v.gpu.powerLimit ? `of ${fmtNum(v.gpu.powerLimit)} W limit` : 'GPU only; not CPU / SoC power'),
     },
     {
         key: 'cpu',
@@ -166,6 +264,7 @@ const METRIC_DEFS = [
         max: 100,
         sub: (v) => (v.sys ? v.sys.cpuName : ''),
     },
+    ...RAPID_DEFS,
 ];
 
 // ── Shell rendering ─────────────────────────────────────────────────────────────
@@ -194,7 +293,7 @@ export function initMetricCards() {
     // Markup is built entirely from the static registry below — no user data.
     setHtml(grid, METRIC_DEFS.map((m) => {
         if (m.build) {
-            return `<div class="mcard" id="mc-card-${m.key}"><div class="mcard__label">${iconSvg(m.icon)}${m.label}</div>${m.build()}</div>`;
+            return `<div class="mcard${m.wide ? ' mcard--wide' : ''}" id="mc-card-${m.key}"${m.optional ? ' hidden' : ''}><div class="mcard__label">${iconSvg(m.icon)}${m.label}</div>${m.build()}</div>`;
         }
         return `<div class="mcard" id="mc-card-${m.key}"><div class="mcard__label">${iconSvg(m.icon)}${m.label}</div>` +
             `<div class="mcard__values"><span class="mcard__value" id="mv-${m.key}">–</span><span class="mcard__unit" id="mu-${m.key}">${m.unit || ''}</span></div>` +
@@ -245,6 +344,9 @@ function drawPaths(line, area, values, max) {
 export function updateMetricCards(view) {
     initMetricCards();
     selectHistoryOwner(view);
+    // Optional facts belong only to the attached Rapid target. Gating here
+    // also clears stale normalized facts if a caller switches the backend.
+    const cardView = { ...view, rapid: view.backend === 'rapid_mlx' && view.attached ? view.rapid : null };
     for (const m of METRIC_DEFS) {
         const card = document.getElementById(`mc-card-${m.key}`);
         if (!card) continue;
@@ -253,29 +355,34 @@ export function updateMetricCards(view) {
             // inactive phase plots 0 (the line drops to the baseline the
             // moment the phase ends), and Idle appends nothing — the whole
             // card freezes once the request completes.
-            // Samples are throttled to one per second: pushes arrive up to
-            // ~4/s, which burned the whole 300-sample window in under two
-            // minutes. One sample per second makes it a true 5 minutes.
-            const nowMs = Date.now();
-            if (
-                (view.state === 'generating' || view.state === 'reading')
-                && nowMs - (speedLastPush || 0) >= 1000
-            ) {
-                speedLastPush = nowMs;
-                const decoding = view.state === 'generating';
-                pushHistory('decode', decoding ? (view.decodeTps ?? 0) : 0);
-                pushHistory('prefill', decoding ? 0 : (view.prefillTps ?? 0));
+            // pushHistory throttles each series to one sample per second.
+            if (view.state === 'generating' || view.state === 'reading') {
+                // An inactive phase may plot zero; an active phase without a
+                // current rate is missing data and must not fabricate a zero.
+                const decodeActive = view.decodeActive ?? view.state === 'generating';
+                const prefillActive = view.prefillActive ?? view.state === 'reading';
+                if (!decodeActive) pushHistory('decode', 0);
+                else if (view.decodeCurrent) pushHistory('decode', view.decodeTps);
+                if (!prefillActive) pushHistory('prefill', 0);
+                else if (view.prefillCurrent) pushHistory('prefill', view.prefillTps);
             }
-            m.update(view);
+            m.update(cardView, card);
+            continue;
+        }
+        // Custom registry cards are not restricted to the dual-rate speed card.
+        if (m.update) {
+            m.update(cardView, card);
             continue;
         }
         const raw = m.pick(view);
-        pushHistory(m.key, m.max === 1 ? raw : raw);
+        pushHistory(m.key, raw);
         const na = raw == null;
         card.classList.toggle('mcard--na', na);
         if (na) {
             setValue(`mv-${m.key}`, null, String);
-            setText(`ms-${m.key}`, 'not available for this backend');
+            setText(`ms-${m.key}`, m.key === 'gpu' && view.gpu?.loadNote
+                ? view.gpu.loadNote : 'unavailable');
+            setText(`mu-${m.key}`, m.unit || '');
             const svg = card.querySelector('.mcard__spark');
             if (svg) {
                 drawPaths(svg.querySelector('.mcard__spark-line'), svg.querySelector('.mcard__spark-area'), []);
@@ -305,30 +412,61 @@ export function updateMetricCards(view) {
 
 // ── Model state card ────────────────────────────────────────────────────────────
 
-const STATE_PILLS = ['idle', 'reading', 'generating', 'queued', 'error'];
+// Every view.state maps to exactly one pill. Unknown states fall back to
+// "unavailable" rather than leaving the strip with no active pill.
+const STATE_PILLS = ['idle', 'reading', 'generating', 'queued', 'busy', 'unavailable', 'error'];
+
+function activePillFor(view) {
+    // Nothing attached: the strip reads as idle, not as a telemetry fault.
+    if (view.attached === false) return 'idle';
+    return STATE_PILLS.includes(view.state) ? view.state : 'unavailable';
+}
 
 export function updateStateCard(view) {
     const card = document.getElementById('state-card');
     if (!card) return;
+    const activePill = activePillFor(view);
     for (const s of STATE_PILLS) {
         const pill = card.querySelector(`.state-pill[data-s="${s}"]`);
         if (!pill) continue;
-        pill.classList.toggle('active', view.state === s || (s === 'queued' && view.queued > 0));
+        pill.classList.toggle('active', activePill === s || (s === 'queued' && view.queued > 0));
     }
     const queuedPill = card.querySelector('.state-pill[data-s="queued"]');
     if (queuedPill) {
         queuedPill.classList.toggle('counted', !!view.queued);
-        queuedPill.textContent = view.queued > 0 ? `Queued · ${view.queued}` : 'Queued';
+        const queuedText = view.queued > 0 ? `Queued · ${view.queued}` : 'Queued';
+        if (queuedPill.textContent !== queuedText) queuedPill.textContent = queuedText;
     }
+    // #state-label is aria-live=polite and only changes on a state transition;
+    // #state-detail changes every tick and is deliberately not live.
     setText('state-label', view.stateLabel || 'Waiting for a request');
     setText('state-detail', view.stateDetail || '');
     const bar = document.getElementById('state-bar');
     const prog = document.getElementById('state-progress');
     if (bar && prog) {
-        const pct = view.stateProgress != null ? Math.min(100, Math.max(0, view.stateProgress * 100)) : 0;
-        bar.style.width = `${pct}%`;
+        const determinate = typeof view.stateProgress === 'number' && Number.isFinite(view.stateProgress);
+        const indeterminate = view.state === 'reading' && !determinate;
+        const pct = determinate ? Math.min(100, Math.max(0, view.stateProgress * 100)) : 0;
+        const hidden = !determinate && !indeterminate;
+        // Indeterminate width belongs to CSS (animated segment, or the static
+        // full-width bar under reduced motion); clear any inline determinate width.
+        const width = indeterminate ? '' : `${pct}%`;
+        if (bar.style.width !== width) bar.style.width = width;
         if (view.stateTone) prog.dataset.tone = view.stateTone;
         else delete prog.dataset.tone;
-        prog.classList.toggle('state-progress--hidden', view.stateProgress == null);
+        if (indeterminate) prog.dataset.indeterminate = 'true';
+        else delete prog.dataset.indeterminate;
+        prog.classList.toggle('state-progress--hidden', hidden);
+        // role/valuemin/valuemax are static in index.html; only dynamic ARIA here.
+        prog.setAttribute('aria-hidden', String(hidden));
+        prog.setAttribute('aria-label', view.state === 'reading' ? 'Prompt tokens processed' : 'Output budget used');
+        if (determinate) {
+            prog.setAttribute('aria-valuenow', String(Math.round(pct)));
+            prog.setAttribute('aria-valuetext', `${pct.toFixed(1)}% ${view.state === 'reading' ? 'of prompt tokens processed' : 'of output budget used; not predicted completion'}`);
+        } else {
+            prog.removeAttribute('aria-valuenow');
+            if (indeterminate) prog.setAttribute('aria-valuetext', 'Reading activity; processed prompt tokens unavailable');
+            else prog.removeAttribute('aria-valuetext');
+        }
     }
 }

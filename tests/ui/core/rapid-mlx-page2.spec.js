@@ -162,7 +162,7 @@ test.describe('Rapid-MLX page-2 layout and protocol reference', () => {
     await expect.poll(() => sidecarHint(page)).toContain('rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX');
   });
 
-  test('@in-memory-test Validate protocol opens the in-app reference modal', async ({ page }) => {
+  test('@in-memory-test Validate model alias opens the in-app reference modal', async ({ page }) => {
     await openHardwarePage(page);
     await expandAllSettings(page);
     await page.click('#spawn-rapid-advanced-fields [data-open-protocol-docs]');

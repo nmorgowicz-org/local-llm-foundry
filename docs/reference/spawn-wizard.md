@@ -508,7 +508,7 @@ When Rapid-MLX is selected, the wizard adapts the Model and Hardware step UI:
     remains for both engines.
   - A Rapid-MLX-specific panel (rapid-hardware-panel) is shown for backend-specific
     configuration, keeping its settings isolated from llama.cpp flags.
-  - Model protocol: a "Validate protocol…" action (wizard All settings drawer and the
+  - Model protocol: a "Validate model alias…" action (wizard All settings drawer and the
     preset editor's Model protocol row) opens an in-app reference modal mirroring the
     RapidMLX model-families documentation (for example Qwen 3.8: tool parser
     `qwen3_coder_xml`, reasoning parser `qwen3`, hybrid flag) with a deep link to the

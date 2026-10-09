@@ -1308,7 +1308,9 @@ function renderSystemCard(sys, visible, grade) {
     }
 
     // Push history
-    if (sys.cpu_load > 0) pushSysHistory('cpuLoad', sys.cpu_load);
+    // cpu_load_available=false: first sampling interval, 0 is a placeholder (absent = real value).
+    var cpuLoadKnown = sys.cpu_load_available !== false && Number.isFinite(sys.cpu_load);
+    if (cpuLoadKnown) pushSysHistory('cpuLoad', sys.cpu_load);
     var ramPct = sys.ram_total_gb > 0 ? (sys.ram_used_gb / sys.ram_total_gb) * 100 : 0;
     if (sys.ram_total_gb > 0) pushSysHistory('ramPct', ramPct);
 
@@ -1316,14 +1318,14 @@ function renderSystemCard(sys, visible, grade) {
     var loadViz = document.getElementById('sys-load-viz');
     var loadVal = document.getElementById('sys-load-value');
     var loadStyle = vizPrefs.system.load;
-    var cpuLoad = sys.cpu_load || 0;
+    var cpuLoad = cpuLoadKnown ? sys.cpu_load : 0;
     var loadTone = getMetricTone('load');
     var loadColor = loadTone.line;
     if (loadStyle === 'ring') renderHwRing(loadViz, cpuLoad, loadTone, false);
     else if (loadStyle === 'sparkline') renderHwSparkline(loadViz, sysHistory.cpuLoad, loadColor);
     else renderHwBar(loadViz, cpuLoad, loadTone, false);
     renderHwMetricSparkline('sys-load-spark', sysHistory.cpuLoad, loadColor, loadStyle !== 'sparkline');
-    if (loadVal) loadVal.textContent = cpuLoad > 0 ? cpuLoad + '%' : '\u2014';
+    if (loadVal) loadVal.textContent = cpuLoadKnown ? cpuLoad + '%' : '\u2014';
 
     // RAM
     var ramViz = document.getElementById('sys-ram-viz');

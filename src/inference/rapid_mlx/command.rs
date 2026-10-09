@@ -12,6 +12,10 @@ use std::path::PathBuf;
 /// the command line. Values reach the runtime as single argv entries, so the
 /// dangerous cases are option injection (a leading `-`) and whitespace or
 /// control characters that split or disguise the token.
+/// Values `rapid-mlx serve --default-reasoning-effort` accepts.
+pub(crate) const REASONING_EFFORTS: [&str; 6] =
+    ["none", "minimal", "low", "medium", "high", "xhigh"];
+
 fn validate_launch_argument(argument: &str) -> Result<()> {
     if argument.is_empty() {
         anyhow::bail!("model launch argument must not be empty");
@@ -82,6 +86,8 @@ pub struct RapidMlxCommandBuilder {
     max_concurrent_requests: Option<u64>,
     prefill_batch_size: Option<u64>,
     completion_batch_size: Option<u64>,
+    context_length: Option<u32>,
+    default_reasoning_effort: Option<String>,
     prefill_step_size: Option<u32>,
     // Phase 7: reasoning/speculative
     reasoning_mode: Option<String>,
@@ -140,6 +146,8 @@ impl RapidMlxCommandBuilder {
             max_concurrent_requests: None,
             prefill_batch_size: None,
             completion_batch_size: None,
+            context_length: None,
+            default_reasoning_effort: None,
             prefill_step_size: None,
             reasoning_mode: None,
             speculative_config: None,
@@ -264,6 +272,16 @@ impl RapidMlxCommandBuilder {
     }
     pub fn completion_batch_size(mut self, size: Option<u64>) -> Self {
         self.completion_batch_size = size;
+        self
+    }
+
+    pub fn default_reasoning_effort(mut self, effort: Option<String>) -> Self {
+        self.default_reasoning_effort = effort;
+        self
+    }
+
+    pub fn context_length(mut self, tokens: Option<u32>) -> Self {
+        self.context_length = tokens;
         self
     }
     pub fn prefill_step_size(mut self, size: Option<u32>) -> Self {
@@ -497,7 +515,15 @@ impl RapidMlxCommandBuilder {
 
         // Diagnostic fix flags — not guarded by capability checks since they are
         // only activated by the diagnostics panel, never by default.
-        if let Some(parser) = self.tool_call_parser {
+        // The runtime exits with "--enable-auto-tool-choice requires --tool-call-parser" when
+        // the parser is missing. "Auto" in the UI stores no parser, so ask the runtime to
+        // detect it from the alias profile (`--tool-call-parser auto`).
+        let tool_call_parser = match self.tool_call_parser {
+            Some(parser) => Some(parser),
+            None if self.auto_tool_choice => Some("auto".to_string()),
+            None => None,
+        };
+        if let Some(parser) = tool_call_parser {
             capabilities.require("--tool-call-parser")?;
             args.push("--tool-call-parser".to_string());
             args.push(parser);
@@ -612,6 +638,26 @@ impl RapidMlxCommandBuilder {
             capabilities.require("--completion-batch-size")?;
             args.push("--completion-batch-size".to_string());
             args.push(size.to_string());
+        }
+        if let Some(tokens) = self.context_length.filter(|tokens| *tokens > 0) {
+            capabilities.require("--context-length")?;
+            args.push("--context-length".to_string());
+            args.push(tokens.to_string());
+        }
+        if let Some(effort) = self
+            .default_reasoning_effort
+            .as_deref()
+            .filter(|effort| !effort.is_empty())
+        {
+            if !REASONING_EFFORTS.contains(&effort) {
+                anyhow::bail!(
+                    "default_reasoning_effort must be one of {}; got {effort:?}",
+                    REASONING_EFFORTS.join(", ")
+                );
+            }
+            capabilities.require("--default-reasoning-effort")?;
+            args.push("--default-reasoning-effort".to_string());
+            args.push(effort.to_string());
         }
         if let Some(size) = self.prefill_step_size {
             if !(1..=2048).contains(&size) {
@@ -1111,6 +1157,94 @@ mod tests {
                 .any(|(name, value)| { name == "RAPID_MLX_API_KEY" && value == "do-not-log" })
         );
         assert!(!launch.redacted_summary.contains("do-not-log"));
+    }
+
+    #[test]
+    fn auto_tool_choice_without_parser_asks_runtime_to_detect_it() {
+        let build = |parser: Option<&str>, auto: bool| {
+            RapidMlxCommandBuilder::new(
+                ResolvedRapidMlxLaunchModel::validated_alias("model").unwrap(),
+            )
+            .auto_tool_choice(auto)
+            .tool_call_parser(parser.map(String::from))
+            .build("rapid-mlx".into(), &ServeCapabilities::verified_baseline())
+            .unwrap()
+        };
+        let has = |l: &_, pair: [&str; 2]| args(l).windows(2).any(|w| w == pair);
+        assert!(has(&build(None, true), ["--tool-call-parser", "auto"]));
+        assert!(has(
+            &build(Some("qwen3_coder_xml"), true),
+            ["--tool-call-parser", "qwen3_coder_xml"]
+        ));
+        assert!(
+            !args(&build(None, false))
+                .iter()
+                .any(|a| a == "--tool-call-parser")
+        );
+    }
+
+    #[test]
+    fn default_reasoning_effort_is_forwarded_validated_and_fails_closed() {
+        let build = |caps: &ServeCapabilities, effort: Option<&str>| {
+            RapidMlxCommandBuilder::new(
+                ResolvedRapidMlxLaunchModel::validated_alias("model").unwrap(),
+            )
+            .default_reasoning_effort(effort.map(String::from))
+            .build("rapid-mlx".into(), caps)
+        };
+        let supported = ServeCapabilities::from_help(
+            "--host --port --log-level --served-model-name --timeout --enable-prefix-cache --disable-prefix-cache --cache-memory-mb --hybrid-cache-entries --kv-disk-checkpoint-interval --tool-call-parser --reasoning-parser --enable-auto-tool-choice --no-thinking --reasoning --force-hybrid --no-hybrid --prefill-step-size --pflash --speculative-config --default-reasoning-effort",
+        );
+        let baseline = ServeCapabilities::verified_baseline();
+        let launch = build(&supported, Some("high")).unwrap();
+        assert!(
+            args(&launch)
+                .windows(2)
+                .any(|pair| pair == ["--default-reasoning-effort", "high"])
+        );
+        for unset in [None, Some("")] {
+            let launch = build(&baseline, unset).unwrap();
+            assert!(
+                !args(&launch)
+                    .iter()
+                    .any(|a| a == "--default-reasoning-effort")
+            );
+        }
+        assert!(build(&baseline, Some("high")).is_err());
+        assert!(build(&supported, Some("extreme")).is_err());
+    }
+
+    #[test]
+    fn context_length_is_forwarded_and_fails_closed_without_runtime_support() {
+        let build = |caps: &ServeCapabilities, tokens: Option<u32>| {
+            RapidMlxCommandBuilder::new(
+                ResolvedRapidMlxLaunchModel::validated_alias("model").unwrap(),
+            )
+            .context_length(tokens)
+            .build("rapid-mlx".into(), caps)
+        };
+        // Baseline flags plus the one under test.
+        let supported = ServeCapabilities::from_help(
+            "--host --port --log-level --served-model-name --timeout --enable-prefix-cache --disable-prefix-cache --cache-memory-mb --hybrid-cache-entries --kv-disk-checkpoint-interval --tool-call-parser --reasoning-parser --enable-auto-tool-choice --no-thinking --reasoning --force-hybrid --no-hybrid --prefill-step-size --pflash --speculative-config --context-length",
+        );
+        let launch = build(&supported, Some(200_000)).unwrap();
+        assert!(
+            args(&launch)
+                .windows(2)
+                .any(|pair| pair == ["--context-length", "200000"])
+        );
+
+        // Unset or zero never emits the flag, so older runtimes keep launching.
+        let baseline = ServeCapabilities::verified_baseline();
+        for unset in [None, Some(0)] {
+            let launch = build(&baseline, unset).unwrap();
+            assert!(!args(&launch).iter().any(|arg| arg == "--context-length"));
+        }
+        let error = build(&baseline, Some(200_000)).unwrap_err();
+        assert!(
+            error.to_string().contains("--context-length"),
+            "got: {error}"
+        );
     }
 
     #[test]
