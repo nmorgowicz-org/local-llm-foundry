@@ -1291,10 +1291,7 @@ pub fn run() -> Result<()> {
                     // Do not leave the API server parked alive with only its
                     // tray icon gone. Stop the backend first: it has its own
                     // process group and would otherwise outlive the app.
-                    let _ = runtime.block_on(tokio::time::timeout(
-                        std::time::Duration::from_secs(15),
-                        crate::llama::server::stop_server(&shutdown_state),
-                    ));
+                    stop_backend_for_tray_quit(&runtime, &shutdown_state);
                     std::process::exit(0);
                 }
                 Err(e) => {
@@ -1429,6 +1426,19 @@ pub fn should_start_tray(_args: &cli::AppArgs) -> bool {
     false
 }
 
+/// Run Quit cleanup from the synchronous tray thread before the caller exits.
+#[cfg(any(feature = "native-tray", test))]
+fn stop_backend_for_tray_quit(runtime: &tokio::runtime::Runtime, state: &state::AppState) {
+    let _ = runtime.block_on(async {
+        // Construct the timer only after block_on has entered the runtime.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            crate::llama::server::stop_server(state),
+        )
+        .await
+    });
+}
+
 fn park_forever() -> ! {
     loop {
         std::thread::park();
@@ -1438,6 +1448,43 @@ fn park_forever() -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tray_quit_cleanup_from_non_tokio_thread_awaits_backend_stop() {
+        std::thread::spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            assert!(tokio::runtime::Handle::try_current().is_err());
+
+            // No process or model is needed: real stop_server cleanup must
+            // invalidate startup waiters and clear the backend's running state.
+            let state = state::AppState::default();
+            state
+                .server_generation
+                .store(7, std::sync::atomic::Ordering::Release);
+            *state.server_running.lock().unwrap() = true;
+            *state.local_server_running.lock().unwrap() = true;
+            *state.server_config.lock().unwrap() =
+                Some(crate::inference::llama_cpp::ServerConfig::default());
+
+            stop_backend_for_tray_quit(&runtime, &state);
+
+            assert_eq!(
+                state
+                    .server_generation
+                    .load(std::sync::atomic::Ordering::Acquire),
+                8
+            );
+            assert!(!*state.server_running.lock().unwrap());
+            assert!(!*state.local_server_running.lock().unwrap());
+            assert!(state.server_config.lock().unwrap().is_none());
+            assert!(tokio::runtime::Handle::try_current().is_err());
+        })
+        .join()
+        .expect("tray Quit cleanup must not panic outside a Tokio runtime");
+    }
 
     #[test]
     fn should_start_tray_flag_combinations_disables_tray() {
