@@ -949,7 +949,8 @@ impl RapidMlxAdapter {
         let builder = if matches!(
             self.kv_cache_dtype,
             Some(KvCacheConfig::Int8 | KvCacheConfig::Int4)
-        ) && (hybrid_mode == RapidMlxHybridMode::Force || self.profile_is_hybrid().await)
+        ) && (hybrid_mode == RapidMlxHybridMode::Force
+            || self.profile_is_hybrid().await)
         {
             kv_warning = Some(
                 "This model is hybrid-attention; Rapid-MLX cannot quantize its KV cache, so the \

@@ -234,10 +234,19 @@ pub async fn fetch_model_list(binary: &Path) -> Result<Vec<ModelListEntry>> {
 /// exact machine ("Smart"/"Fast" picks), pinned atop the catalog picker.
 /// Resolve a catalog alias to its `(hf_repo, size_bytes)` via the stable
 /// `rapid-mlx models --json` output. `None` when the alias is not in the catalog.
-pub async fn resolve_alias_repo(binary: &Path, alias: &str) -> Result<Option<(String, Option<u64>)>> {
-    let output = run_query(binary, &["models", "--json"], Duration::from_secs(15), 4 * 1024 * 1024).await?;
-    let value: serde_json::Value =
-        serde_json::from_str(&output.stdout).context("rapid-mlx models --json was not valid JSON")?;
+pub async fn resolve_alias_repo(
+    binary: &Path,
+    alias: &str,
+) -> Result<Option<(String, Option<u64>)>> {
+    let output = run_query(
+        binary,
+        &["models", "--json"],
+        Duration::from_secs(15),
+        4 * 1024 * 1024,
+    )
+    .await?;
+    let value: serde_json::Value = serde_json::from_str(&output.stdout)
+        .context("rapid-mlx models --json was not valid JSON")?;
     let Some(groups) = value.as_object() else {
         return Ok(None);
     };

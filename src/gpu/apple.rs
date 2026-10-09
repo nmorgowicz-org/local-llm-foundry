@@ -130,11 +130,8 @@ impl GpuBackend for AppleBackend {
         // Utilization and power-state residency are distinct signals. In
         // particular, zero ioreg utilization under >5 W is suspect, not proof
         // of idleness or a reason to substitute residency as utilization.
-        let utilization = apple_utilization_metrics(
-            read_ioreg_gpu_utilization(),
-            soc.gpu_power,
-            soc.gpu_active,
-        );
+        let utilization =
+            apple_utilization_metrics(read_ioreg_gpu_utilization(), soc.gpu_power, soc.gpu_active);
         let metrics = GpuMetrics {
             temp: soc.gpu_temp as f32,
             power_consumption: soc.gpu_power as f32,

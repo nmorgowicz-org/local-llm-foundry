@@ -13,7 +13,8 @@ use std::path::PathBuf;
 /// dangerous cases are option injection (a leading `-`) and whitespace or
 /// control characters that split or disguise the token.
 /// Values `rapid-mlx serve --default-reasoning-effort` accepts.
-pub(crate) const REASONING_EFFORTS: [&str; 6] = ["none", "minimal", "low", "medium", "high", "xhigh"];
+pub(crate) const REASONING_EFFORTS: [&str; 6] =
+    ["none", "minimal", "low", "medium", "high", "xhigh"];
 
 fn validate_launch_argument(argument: &str) -> Result<()> {
     if argument.is_empty() {
@@ -1203,7 +1204,11 @@ mod tests {
         );
         for unset in [None, Some("")] {
             let launch = build(&baseline, unset).unwrap();
-            assert!(!args(&launch).iter().any(|a| a == "--default-reasoning-effort"));
+            assert!(
+                !args(&launch)
+                    .iter()
+                    .any(|a| a == "--default-reasoning-effort")
+            );
         }
         assert!(build(&baseline, Some("high")).is_err());
         assert!(build(&supported, Some("extreme")).is_err());
