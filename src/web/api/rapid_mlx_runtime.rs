@@ -170,6 +170,13 @@ fn lock_model_downloads(state: &RuntimeApiState) -> std::sync::MutexGuard<'_, Mo
         .unwrap_or_else(|e| e.into_inner())
 }
 
+/// Unguessable id for a model download job: `mdl-` plus 128 random bits from the OS
+/// CSPRNG. Job ids gate poll/cancel access, so they must not be derivable from the
+/// clock or a counter. There is deliberately no fallback if the RNG fails.
+fn new_model_download_id() -> anyhow::Result<String> {
+    Ok(format!("mdl-{}", random_job_id()?))
+}
+
 /// One Hugging Face owner or repo-name segment: `[A-Za-z0-9._-]`, bounded,
 /// never `.`/`..`, never leading `-` (would read as an option downstream).
 fn valid_hub_segment(segment: &str) -> bool {
@@ -1018,17 +1025,15 @@ fn model_download_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
 
                 let models_dir = super::models::get_effective_models_dir(&ctx.state)
                     .unwrap_or_else(|| ctx.config.default_models_dir.clone());
-                static MODEL_DL_SEQ: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(0);
-                let job_id = {
-                    let nanos = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_nanos() as u64)
-                        .unwrap_or(0);
-                    // Nanoseconds plus a process-wide counter: unique without a CSPRNG,
-                    // which is overkill for an opaque job id.
-                    let seq = MODEL_DL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    format!("mdl-{}-{}", nanos, seq)
+                let job_id = match new_model_download_id() {
+                    Ok(id) => id,
+                    Err(e) => {
+                        eprintln!("[rapid-mlx] model download id generation failed: {e}");
+                        return Ok(json_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Secure download job ID generation is unavailable",
+                        ));
+                    }
                 };
                 let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let job = ModelDownloadJob {
@@ -2200,12 +2205,23 @@ async fn model_status_reply(
             }
         };
         match info_query::resolve_alias_repo(&binary, &source).await {
-            Ok(Some(found)) => found,
-            Ok(None) => return json_error(StatusCode::NOT_FOUND, "Unknown Rapid-MLX alias"),
-            Err(e) => {
+            // The catalog is runtime output, not trusted input: the repo id it names
+            // becomes a cache path component, so it gets the same check as a caller's.
+            Ok(Some(found)) if validate_model_download_repo(&found.0) => found,
+            Ok(Some(_)) => {
+                eprintln!("[rapid-mlx] model-status: catalog alias resolved to an invalid repo id");
                 return json_error(
                     StatusCode::BAD_GATEWAY,
-                    format!("Catalog query failed: {e}"),
+                    "Rapid-MLX catalog returned an invalid model repository",
+                );
+            }
+            Ok(None) => return json_error(StatusCode::NOT_FOUND, "Unknown Rapid-MLX alias"),
+            Err(e) => {
+                // The error text can name the managed binary's absolute path.
+                eprintln!("[rapid-mlx] model-status catalog query failed: {e:#}");
+                return json_error(
+                    StatusCode::BAD_GATEWAY,
+                    "Rapid-MLX catalog is temporarily unavailable",
                 );
             }
         }
@@ -2228,9 +2244,10 @@ async fn model_status_reply(
     let probe = match probe {
         Ok(probe) => probe,
         Err(e) => {
+            eprintln!("[rapid-mlx] model-status cache inspection failed: {e}");
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Model cache inspection failed: {e}"),
+                "Model cache inspection failed",
             );
         }
     };
@@ -4929,5 +4946,124 @@ mod model_status_tests {
         assert_eq!(body["cached"], true);
         assert_eq!(body["in_system_cache"], false);
         assert_eq!(body["size_bytes"], 5);
+    }
+
+    /// A stand-in `rapid-mlx` running an arbitrary shell body.
+    #[cfg(unix)]
+    fn fake_script(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("rapid-mlx");
+        std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn alias_resolving_to_an_invalid_repo_is_502_with_a_fixed_message() {
+        // Raw strings: the JSON `\\` below decodes to a single backslash.
+        for hf_path in [
+            "../../etc/passwd",
+            "o/m/x",
+            r"o\\m",
+            "no-slash",
+            "-o/m",
+            "o/..",
+            "o/bad name",
+        ] {
+            let models = tempfile::tempdir().unwrap();
+            let json = format!(r#"{{"qwen":[{{"alias":"known","hf_path":"{hf_path}"}}]}}"#);
+            let binary = fake_script(models.path(), &format!("cat <<'EOF'\n{json}\nEOF"));
+            let (status, body) = reply(models.path(), "known", Some(binary), None).await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{hf_path}");
+            assert_eq!(body["ok"], false, "{hf_path}");
+            assert_eq!(
+                body["error"], "Rapid-MLX catalog returned an invalid model repository",
+                "{hf_path}"
+            );
+            assert!(body.get("repo_id").is_none(), "{hf_path} was echoed back");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn catalog_failure_returns_a_fixed_message_without_the_binary_path() {
+        let models = tempfile::tempdir().unwrap();
+        let binary = fake_script(models.path(), "echo \"boom from $0\" >&2\nexit 3");
+        let (status, body) = reply(models.path(), "known", Some(binary), None).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            body["error"],
+            "Rapid-MLX catalog is temporarily unavailable"
+        );
+        let text = body.to_string();
+        assert!(!text.contains("boom"), "{text}");
+        assert!(!text.contains(models.path().to_str().unwrap()), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn malformed_catalog_json_is_a_fixed_502_too() {
+        let models = tempfile::tempdir().unwrap();
+        let binary = fake_script(models.path(), "echo 'not json'");
+        let (status, body) = reply(models.path(), "known", Some(binary), None).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            body["error"],
+            "Rapid-MLX catalog is temporarily unavailable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn repeated_alias_requests_reuse_one_catalog_subprocess() {
+        let models = tempfile::tempdir().unwrap();
+        let counter = models.path().join("runs");
+        let binary = fake_script(
+            models.path(),
+            &format!(
+                "echo run >> '{}'\ncat <<'EOF'\n{{\"q\":[{{\"alias\":\"known\",\"hf_path\":\"o/m\"}}]}}\nEOF",
+                counter.display()
+            ),
+        );
+        for _ in 0..5 {
+            let (status, _) = reply(models.path(), "known", Some(binary.clone()), None).await;
+            assert_eq!(status, StatusCode::OK);
+        }
+        let runs = std::fs::read_to_string(&counter).unwrap();
+        assert_eq!(
+            runs.lines().count(),
+            1,
+            "the catalog subprocess must be cached"
+        );
+    }
+}
+
+#[cfg(test)]
+mod download_job_id_tests {
+    use super::*;
+
+    #[test]
+    fn download_job_ids_are_prefixed_random_hex_and_unique() {
+        let ids: Vec<String> = (0..64).map(|_| new_model_download_id().unwrap()).collect();
+        for id in &ids {
+            let hex = id.strip_prefix("mdl-").expect("mdl- prefix is kept");
+            assert_eq!(hex.len(), 32, "{id}");
+            assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+        }
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len());
+    }
+
+    #[test]
+    fn download_job_ids_are_not_a_timestamp_or_counter() {
+        // The old scheme was `mdl-<nanos>-<seq>`: a second dash-separated field and ids
+        // that shared a long time prefix. Random ids have neither.
+        let (a, b) = (
+            new_model_download_id().unwrap(),
+            new_model_download_id().unwrap(),
+        );
+        assert_eq!(a.matches('-').count(), 1, "{a}");
+        assert_ne!(a[4..20], b[4..20], "leading 8 random bytes collided");
     }
 }

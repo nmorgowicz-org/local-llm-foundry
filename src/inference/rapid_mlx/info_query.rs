@@ -1,9 +1,9 @@
 use anyhow::{Context, Result, anyhow};
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
@@ -230,14 +230,125 @@ pub async fn fetch_model_list(binary: &Path) -> Result<Vec<ModelListEntry>> {
     parse_model_list(&output.stdout)
 }
 
-/// One entry of `rapid-mlx recipe`: upstream's tier recommendation for this
-/// exact machine ("Smart"/"Fast" picks), pinned atop the catalog picker.
+/// Parsed `rapid-mlx models --json`: alias → `(hf_repo, size_bytes)`. An alias whose
+/// first catalog row has no `hf_path` maps to `None` (known, but not resolvable).
+pub(crate) type AliasCatalog = HashMap<String, Option<(String, Option<u64>)>>;
+
+/// How long a successfully parsed catalog is reused before the subprocess runs again.
+pub(crate) const ALIAS_CATALOG_TTL: Duration = Duration::from_secs(60);
+/// How long a failed catalog query is remembered, so a crash-looping or hung binary is
+/// not respawned by every request.
+pub(crate) const ALIAS_CATALOG_ERROR_TTL: Duration = Duration::from_secs(5);
+
+enum CatalogLoad {
+    Catalog(Arc<AliasCatalog>),
+    /// The loader's error text; may name the binary path, so it is for server logs only.
+    Failed(String),
+}
+
+struct CatalogSlot {
+    binary: PathBuf,
+    stored_at: Instant,
+    load: CatalogLoad,
+}
+
+/// Most distinct binaries remembered at once. Production has one or two (managed and
+/// PATH); the bound only stops the list growing without limit, and is generous so
+/// parallel tests using many throwaway binaries do not evict each other.
+const MAX_CATALOG_SLOTS: usize = 64;
+
+/// Server-side cache of the alias catalog with single-flight loading: the lock is
+/// held across the load, so concurrent callers wait for one subprocess and then read
+/// its result. One slot per binary path so a runtime switch never reuses a stale
+/// catalog. The clock and the loader are injected so the policy is testable without
+/// a subprocess.
+pub(crate) struct AliasCatalogCache {
+    slots: tokio::sync::Mutex<Vec<CatalogSlot>>,
+}
+
+impl AliasCatalogCache {
+    pub(crate) const fn new() -> Self {
+        Self {
+            slots: tokio::sync::Mutex::const_new(Vec::new()),
+        }
+    }
+
+    pub(crate) async fn lookup<N, F, Fut>(
+        &self,
+        binary: &Path,
+        alias: &str,
+        now: N,
+        load: F,
+    ) -> Result<Option<(String, Option<u64>)>>
+    where
+        N: Fn() -> Instant,
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<AliasCatalog>>,
+    {
+        let mut slots = self.slots.lock().await;
+        let position = slots.iter().position(|cached| cached.binary == binary);
+        let fresh = position.is_some_and(|index| {
+            let cached = &slots[index];
+            let ttl = match cached.load {
+                CatalogLoad::Catalog(_) => ALIAS_CATALOG_TTL,
+                CatalogLoad::Failed(_) => ALIAS_CATALOG_ERROR_TTL,
+            };
+            now().saturating_duration_since(cached.stored_at) < ttl
+        });
+        let index = if fresh {
+            position.unwrap_or_default()
+        } else {
+            let load = match load().await {
+                Ok(catalog) => CatalogLoad::Catalog(Arc::new(catalog)),
+                Err(error) => CatalogLoad::Failed(format!("{error:#}")),
+            };
+            let slot = CatalogSlot {
+                binary: binary.to_path_buf(),
+                stored_at: now(),
+                load,
+            };
+            match position {
+                Some(index) => {
+                    slots[index] = slot;
+                    index
+                }
+                None => {
+                    if slots.len() >= MAX_CATALOG_SLOTS {
+                        let oldest = slots
+                            .iter()
+                            .enumerate()
+                            .min_by_key(|(_, cached)| cached.stored_at)
+                            .map(|(index, _)| index)
+                            .unwrap_or_default();
+                        slots.swap_remove(oldest);
+                    }
+                    slots.push(slot);
+                    slots.len() - 1
+                }
+            }
+        };
+        match &slots[index].load {
+            CatalogLoad::Catalog(catalog) => Ok(catalog.get(alias).cloned().flatten()),
+            CatalogLoad::Failed(message) => Err(anyhow!("{message}")),
+        }
+    }
+}
+
+static ALIAS_CATALOG: AliasCatalogCache = AliasCatalogCache::new();
+
 /// Resolve a catalog alias to its `(hf_repo, size_bytes)` via the stable
 /// `rapid-mlx models --json` output. `None` when the alias is not in the catalog.
+/// The parsed catalog is cached for [`ALIAS_CATALOG_TTL`] and shared by concurrent callers.
 pub async fn resolve_alias_repo(
     binary: &Path,
     alias: &str,
 ) -> Result<Option<(String, Option<u64>)>> {
+    ALIAS_CATALOG
+        .lookup(binary, alias, Instant::now, || fetch_alias_catalog(binary))
+        .await
+}
+
+async fn fetch_alias_catalog(binary: &Path) -> Result<AliasCatalog> {
     let output = run_query(
         binary,
         &["models", "--json"],
@@ -245,23 +356,34 @@ pub async fn resolve_alias_repo(
         4 * 1024 * 1024,
     )
     .await?;
-    let value: serde_json::Value = serde_json::from_str(&output.stdout)
-        .context("rapid-mlx models --json was not valid JSON")?;
+    parse_alias_catalog(&output.stdout)
+}
+
+/// First row per alias wins (groups in key order, rows in listed order).
+fn parse_alias_catalog(output: &str) -> Result<AliasCatalog> {
+    let value: serde_json::Value =
+        serde_json::from_str(output).context("rapid-mlx models --json was not valid JSON")?;
+    let mut catalog = AliasCatalog::new();
     let Some(groups) = value.as_object() else {
-        return Ok(None);
+        return Ok(catalog);
     };
     for entries in groups.values().filter_map(|v| v.as_array()) {
         for entry in entries {
-            if entry.get("alias").and_then(|v| v.as_str()) == Some(alias) {
-                let repo = entry.get("hf_path").and_then(|v| v.as_str());
-                let size = entry.get("size_bytes").and_then(|v| v.as_u64());
-                return Ok(repo.map(|r| (r.to_string(), size)));
-            }
+            let Some(alias) = entry.get("alias").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let repo = entry.get("hf_path").and_then(|v| v.as_str());
+            let size = entry.get("size_bytes").and_then(|v| v.as_u64());
+            catalog
+                .entry(alias.to_string())
+                .or_insert_with(|| repo.map(|r| (r.to_string(), size)));
         }
     }
-    Ok(None)
+    Ok(catalog)
 }
 
+/// One entry of `rapid-mlx recipe`: upstream's tier recommendation for this
+/// exact machine ("Smart"/"Fast" picks), pinned atop the catalog picker.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RecipeRecommendation {
     /// 1-based rank as printed by upstream.
@@ -1207,5 +1329,193 @@ mod tests {
                 model_id
             );
         }
+    }
+
+    // ---- alias catalog cache ----
+
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    fn catalog() -> AliasCatalog {
+        parse_alias_catalog(
+            r#"{"qwen":[{"alias":"known","hf_path":"o/m","size_bytes":42},
+                         {"alias":"other","hf_path":"o/n"}]}"#,
+        )
+        .unwrap()
+    }
+
+    /// A manual clock: `now()` is `base + offset`, advanced by the test.
+    struct FakeClock {
+        base: std::time::Instant,
+        offset_secs: AtomicU64,
+    }
+
+    impl FakeClock {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                base: std::time::Instant::now(),
+                offset_secs: AtomicU64::new(0),
+            })
+        }
+        fn advance(&self, secs: u64) {
+            self.offset_secs.fetch_add(secs, Ordering::SeqCst);
+        }
+        fn reader(self: &Arc<Self>) -> impl Fn() -> std::time::Instant + use<> {
+            let clock = self.clone();
+            move || clock.base + Duration::from_secs(clock.offset_secs.load(Ordering::SeqCst))
+        }
+    }
+
+    async fn lookup(
+        cache: &AliasCatalogCache,
+        binary: &str,
+        alias: &str,
+        clock: &Arc<FakeClock>,
+        loads: &Arc<AtomicUsize>,
+    ) -> Result<Option<(String, Option<u64>)>> {
+        let loads = loads.clone();
+        cache
+            .lookup(Path::new(binary), alias, clock.reader(), || async move {
+                loads.fetch_add(1, Ordering::SeqCst);
+                Ok(catalog())
+            })
+            .await
+    }
+
+    #[tokio::test]
+    async fn alias_catalog_parse_keeps_first_entry_and_size() {
+        let parsed = parse_alias_catalog(
+            r#"{"a":[{"alias":"x","hf_path":"o/first","size_bytes":7}],
+                "b":[{"alias":"x","hf_path":"o/second"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed["x"], Some(("o/first".to_string(), Some(7))));
+        assert!(parse_alias_catalog("not json").is_err());
+        assert!(parse_alias_catalog("[]").unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn alias_catalog_cache_hit_runs_the_subprocess_once() {
+        let cache = AliasCatalogCache::new();
+        let clock = FakeClock::new();
+        let loads = Arc::new(AtomicUsize::new(0));
+        let first = lookup(&cache, "/bin/a", "known", &clock, &loads).await;
+        assert_eq!(first.unwrap(), Some(("o/m".to_string(), Some(42))));
+        // Same alias, a different alias, and an unknown alias are all served from cache.
+        lookup(&cache, "/bin/a", "known", &clock, &loads)
+            .await
+            .unwrap();
+        let other = lookup(&cache, "/bin/a", "other", &clock, &loads).await;
+        assert_eq!(other.unwrap(), Some(("o/n".to_string(), None)));
+        let missing = lookup(&cache, "/bin/a", "nope", &clock, &loads).await;
+        assert_eq!(missing.unwrap(), None);
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn alias_catalog_cache_expires_after_the_ttl() {
+        let cache = AliasCatalogCache::new();
+        let clock = FakeClock::new();
+        let loads = Arc::new(AtomicUsize::new(0));
+        lookup(&cache, "/bin/a", "known", &clock, &loads)
+            .await
+            .unwrap();
+        clock.advance(ALIAS_CATALOG_TTL.as_secs() - 1);
+        lookup(&cache, "/bin/a", "known", &clock, &loads)
+            .await
+            .unwrap();
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "still fresh just before the TTL"
+        );
+        clock.advance(1);
+        lookup(&cache, "/bin/a", "known", &clock, &loads)
+            .await
+            .unwrap();
+        assert_eq!(loads.load(Ordering::SeqCst), 2, "reloaded at the TTL");
+        lookup(&cache, "/bin/a", "known", &clock, &loads)
+            .await
+            .unwrap();
+        assert_eq!(loads.load(Ordering::SeqCst), 2, "and cached again");
+    }
+
+    #[tokio::test]
+    async fn alias_catalog_cache_is_keyed_by_binary() {
+        let cache = AliasCatalogCache::new();
+        let clock = FakeClock::new();
+        let loads = Arc::new(AtomicUsize::new(0));
+        lookup(&cache, "/bin/a", "known", &clock, &loads)
+            .await
+            .unwrap();
+        lookup(&cache, "/bin/b", "known", &clock, &loads)
+            .await
+            .unwrap();
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            2,
+            "a new runtime must not reuse the old catalog"
+        );
+        // Switching back must not reload: one binary never evicts another's catalog.
+        lookup(&cache, "/bin/a", "known", &clock, &loads)
+            .await
+            .unwrap();
+        assert_eq!(loads.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn alias_catalog_concurrent_callers_share_one_subprocess() {
+        let cache = Arc::new(AliasCatalogCache::new());
+        let clock = FakeClock::new();
+        let loads = Arc::new(AtomicUsize::new(0));
+        let calls = (0..16).map(|_| {
+            let (cache, loads, reader) = (cache.clone(), loads.clone(), clock.reader());
+            async move {
+                cache
+                    .lookup(Path::new("/bin/a"), "known", reader, || async move {
+                        loads.fetch_add(1, Ordering::SeqCst);
+                        // Hold the load open so every other caller arrives mid-flight.
+                        for _ in 0..8 {
+                            tokio::task::yield_now().await;
+                        }
+                        Ok(catalog())
+                    })
+                    .await
+            }
+        });
+        for result in futures_util::future::join_all(calls).await {
+            assert_eq!(result.unwrap(), Some(("o/m".to_string(), Some(42))));
+        }
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn alias_catalog_failures_are_briefly_cached_then_retried() {
+        let cache = AliasCatalogCache::new();
+        let clock = FakeClock::new();
+        let loads = Arc::new(AtomicUsize::new(0));
+        let failing = |loads: Arc<AtomicUsize>| async move {
+            loads.fetch_add(1, Ordering::SeqCst);
+            Err::<AliasCatalog, _>(anyhow!("boom at /private/path/rapid-mlx"))
+        };
+        let reader = clock.reader();
+        let first = cache
+            .lookup(Path::new("/bin/a"), "known", &reader, || {
+                failing(loads.clone())
+            })
+            .await;
+        assert!(first.is_err());
+        // A crash-looping binary is not respawned on every request...
+        let second = cache
+            .lookup(Path::new("/bin/a"), "known", &reader, || {
+                failing(loads.clone())
+            })
+            .await;
+        assert!(second.is_err());
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+        // ...but is retried once the short failure window passes.
+        clock.advance(ALIAS_CATALOG_ERROR_TTL.as_secs() + 1);
+        let recovered = lookup(&cache, "/bin/a", "known", &clock, &loads).await;
+        assert_eq!(recovered.unwrap(), Some(("o/m".to_string(), Some(42))));
+        assert_eq!(loads.load(Ordering::SeqCst), 2);
     }
 }

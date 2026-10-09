@@ -371,9 +371,13 @@ enum RedactedModelLocation {
 }
 
 fn redacted_model_location(argument: &str) -> Option<RedactedModelLocation> {
-    let path = std::path::Path::new(argument);
-    for component in path.components() {
-        let part = component.as_os_str().to_string_lossy();
+    // Split on both separators: a Windows-style path reaching a POSIX host (or the
+    // reverse) is one opaque component to `Path`, which would leak the whole path.
+    let mut last = None;
+    for part in argument.split(['/', '\\']) {
+        if part.is_empty() || part == "." || part == ".." {
+            continue;
+        }
         if let Some(rest) = part.strip_prefix("models--")
             && let Some((owner, name)) = rest.split_once("--")
             && !owner.is_empty()
@@ -382,9 +386,9 @@ fn redacted_model_location(argument: &str) -> Option<RedactedModelLocation> {
             let repo = format!("{owner}/{name}");
             return bounded_fact_text(Some(&repo)).map(RedactedModelLocation::HubRepo);
         }
+        last = Some(part);
     }
-    let name = path.file_name()?.to_string_lossy();
-    bounded_fact_text(Some(&name)).map(RedactedModelLocation::Directory)
+    bounded_fact_text(last).map(RedactedModelLocation::Directory)
 }
 
 fn bounded_fact_text(value: Option<&str>) -> Option<String> {
@@ -812,6 +816,34 @@ fn recognized_progress(value: Value) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn directory_name(argument: &str) -> Option<String> {
+        match redacted_model_location(argument) {
+            Some(RedactedModelLocation::Directory(name)) => Some(name),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn redacted_model_location_splits_windows_and_posix_separators() {
+        for (argument, expected) in [
+            (r"C:\Users\alice\models\qwen-4bit", "qwen-4bit"),
+            (r"C:\Users\alice\models\qwen-4bit\", "qwen-4bit"),
+            (r"\\server\share\private\qwen-4bit", "qwen-4bit"),
+            (r"/Users/alice/mixed\qwen-4bit", "qwen-4bit"),
+            ("/Users/alice/models/qwen-4bit", "qwen-4bit"),
+        ] {
+            let name = directory_name(argument).unwrap_or_default();
+            assert_eq!(name, expected, "{argument}");
+            assert!(!name.contains(['\\', '/']), "{argument} leaked a separator");
+        }
+        match redacted_model_location(
+            r"C:\Users\alice\hub\models--owner--real-model\snapshots\abc123",
+        ) {
+            Some(RedactedModelLocation::HubRepo(repo)) => assert_eq!(repo, "owner/real-model"),
+            _ => panic!("a Windows hub snapshot path must reduce to its repo id"),
+        }
+    }
 
     #[test]
     fn launch_facts_preserve_repo_and_served_alias_without_secrets_or_effective_lane() {

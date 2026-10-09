@@ -60,7 +60,7 @@ pub fn alias_launch_hub_in(
 /// GGUF `Q4_K_M` tag. Prefers the `quantization` block in the cached `config.json`
 /// (authoritative) and falls back to tokens in the repo/alias name.
 pub fn quant_label(hubs: &[PathBuf], repo_id: &str, alias: &str) -> Option<String> {
-    if let Some((owner, name)) = repo_id.split_once('/') {
+    if let Some((owner, name)) = safe_repo_parts(repo_id) {
         for hub in hubs {
             let snapshots = hub
                 .join(format!("models--{owner}--{name}"))
@@ -127,6 +127,16 @@ fn quant_from_name(name: &str) -> Option<String> {
     None
 }
 
+/// Split `owner/name`, refusing anything that could escape the hub directory when
+/// formatted into `models--{owner}--{name}`: a path separator or `..` in either part,
+/// or an empty part. Defense in depth; callers validate repo ids at the API edge too.
+fn safe_repo_parts(repo_id: &str) -> Option<(&str, &str)> {
+    let (owner, name) = repo_id.split_once('/')?;
+    let unsafe_part =
+        |part: &str| part.is_empty() || part.contains(['/', '\\']) || part.contains("..");
+    (!unsafe_part(owner) && !unsafe_part(name)).then_some((owner, name))
+}
+
 /// True when `repo_id` (`owner/name`) has a complete snapshot in `hub`: a snapshot
 /// directory with `config.json` and its weights, and no partial blobs.
 ///
@@ -170,7 +180,7 @@ fn is_weight_name(file: &str) -> bool {
 }
 
 fn complete_snapshot(hub: &Path, repo_id: &str) -> Option<PathBuf> {
-    let (owner, name) = repo_id.split_once('/')?;
+    let (owner, name) = safe_repo_parts(repo_id)?;
     let repo_dir = hub.join(format!("models--{owner}--{name}"));
     if let Ok(blobs) = std::fs::read_dir(repo_dir.join("blobs")) {
         for blob in blobs.flatten() {
@@ -530,5 +540,46 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         assert!(!repo_cached(t.path(), "o/m"));
         assert!(!repo_cached(t.path(), "no-slash"));
+    }
+
+    /// Plant a complete, quantized snapshot at `hub/<relative>/snapshots/abc`.
+    fn decoy_snapshot(hub: &Path, relative: &str) {
+        let snap = hub.join(relative).join("snapshots/abc");
+        std::fs::create_dir_all(&snap).unwrap();
+        std::fs::write(snap.join("config.json"), r#"{"quantization":{"bits":4}}"#).unwrap();
+        std::fs::write(snap.join("model.safetensors"), b"x").unwrap();
+    }
+
+    #[test]
+    fn complete_snapshot_rejects_separators_and_dot_dot_in_owner_or_name() {
+        let t = tempfile::tempdir().unwrap();
+        // `o/m/x` would otherwise resolve to the nested `models--o--m/x` directory.
+        decoy_snapshot(t.path(), "models--o--m/x");
+        decoy_snapshot(t.path(), "models--o--a..b");
+        for repo in ["o/m/x", "o/m\\x", "o\\p/m", "o/a..b", "../m", "o/.."] {
+            assert!(!repo_cached(t.path(), repo), "{repo} must not be cached");
+            assert_eq!(cached_weight_bytes(t.path(), repo), None, "{repo}");
+        }
+    }
+
+    #[test]
+    fn quant_label_rejects_separators_and_dot_dot_in_owner_or_name() {
+        let t = tempfile::tempdir().unwrap();
+        decoy_snapshot(t.path(), "models--o--m/x");
+        decoy_snapshot(t.path(), "models--o--a..b");
+        let hubs = [t.path().to_path_buf()];
+        for repo in ["o/m/x", "o/m\\x", "o/a..b", "../m", "o/.."] {
+            assert_eq!(
+                quant_label(&hubs, repo, "plain"),
+                None,
+                "{repo} must not read a config outside its own repo directory"
+            );
+        }
+        // A well-formed repo still reads its config.
+        decoy_snapshot(t.path(), "models--o--ok");
+        assert_eq!(
+            quant_label(&hubs, "o/ok", "plain").as_deref(),
+            Some("4-bit")
+        );
     }
 }
