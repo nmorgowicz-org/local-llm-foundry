@@ -1,4 +1,5 @@
 // spawn-wizard-guided.js — Option A (Guided) decision cards wiring
+import { engineDescriptor } from '../core/engine-descriptor.js';
 import { wizardState } from './spawn-wizard.js';
 import { _mtpUserConfigured } from './spawn-wizard-mtp-draft.js';
 
@@ -237,7 +238,7 @@ export function refreshGuidedCards(event) {
   const modelName = wizardState.model.name || wizardState.model.path || '—';
   setText('hw-sticky-model-name', modelName.split('/').pop() || modelName);
   setText('hw-sticky-quant', wizardState.model.quant || '—');
-  setText('hw-sticky-loader', wizardState.engine?.selected === 'rapid_mlx' ? 'Rapid-MLX' : 'llama.cpp');
+  { const d = engineDescriptor(wizardState.engine?.selected); setText('hw-sticky-loader', d.format ? `${d.engine} · ${d.format}` : d.engine); }
   setText('hw-sticky-usecase', wizardState.useCase || 'General');
   const context = Number(ctx) || 0;
   setText('hw-sticky-ctx', context > 0 ? `ctx ${context >= 1000 ? `${(context / 1000).toFixed(0)}k` : context}` : 'ctx —');

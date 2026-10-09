@@ -27,7 +27,7 @@ struct SocMetrics {
     #[serde(default)]
     gpu_temp: f64,
     #[serde(default)]
-    gpu_active: f64,
+    gpu_active: Option<f64>,
     #[serde(default)]
     cpu_temp: f64,
     #[serde(default)]
@@ -105,7 +105,7 @@ impl GpuBackend for AppleBackend {
             *t = mactop_output.soc_metrics.cpu_temp as f32;
         }
 
-        // Populate shared mactop cache for system.rs to read cluster freq / power / load
+        // Populate shared mactop cache for system.rs to read cluster frequency / power / residency.
         let soc = &mactop_output.soc_metrics;
         mactop_cache::set_cache(MactopCacheEntry {
             power_total_w: soc.total_power as f32,
@@ -127,18 +127,13 @@ impl GpuBackend for AppleBackend {
         // Approximate: MCLK = (dram_bw_gbs * 1000) / 8 / 2 (DDR)
         let mclk_mhz = (soc.dram_read_bw_gbs + soc.dram_write_bw_gbs) * 1000.0 / 16.0;
 
-        // Prefer the IOAccelerator's real "Device Utilization %" — mactop's
-        // gpu_active is a power-state residency ratio that reads 70-90% on an
-        // idle GPU. Only fall back to the power-gated residency (below 5 W an
-        // idle Apple GPU draws 1-4 W) when ioreg is unavailable.
-        let load = match read_ioreg_gpu_utilization() {
-            Some(v) => v,
-            None if soc.gpu_power < 5.0 => 0,
-            None => soc.gpu_active as u32,
-        };
+        // Utilization and power-state residency are distinct signals. In
+        // particular, zero ioreg utilization under >5 W is suspect, not proof
+        // of idleness or a reason to substitute residency as utilization.
+        let utilization =
+            apple_utilization_metrics(read_ioreg_gpu_utilization(), soc.gpu_power, soc.gpu_active);
         let metrics = GpuMetrics {
             temp: soc.gpu_temp as f32,
-            load,
             power_consumption: soc.gpu_power as f32,
             power_limit: 0, // Not available from mactop
             vram_used: vram_used_mb as u64,
@@ -146,6 +141,7 @@ impl GpuBackend for AppleBackend {
             sclk_mhz: soc.gpu_freq_mhz as u32,
             mclk_mhz: mclk_mhz as u32,
             metal_gpu_limit_mb: Some(read_iogpu_wired_limit_mb()),
+            ..utilization
         };
 
         let mut map = BTreeMap::new();
@@ -160,6 +156,30 @@ impl GpuBackend for AppleBackend {
 
     fn name(&self) -> &str {
         "apple"
+    }
+}
+
+/// Populate only the utilization/provenance fields, keeping residency separate.
+/// `load = 0` is a legacy scalar placeholder when availability is false.
+fn apple_utilization_metrics(
+    ioreg_load: Option<u32>,
+    gpu_power: f64,
+    residency: Option<f64>,
+) -> GpuMetrics {
+    let (load, source, available) = match ioreg_load {
+        Some(0) if gpu_power > 5.0 => (0, "ioreg_suspect", false),
+        Some(load) => (load, "ioreg", true),
+        None => (0, "unavailable", false),
+    };
+    GpuMetrics {
+        load,
+        load_source: Some(source.into()),
+        load_estimated: Some(false),
+        load_available: Some(available),
+        residency_percent: residency
+            .filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
+            .map(|value| value as f32),
+        ..GpuMetrics::default()
     }
 }
 
@@ -195,7 +215,7 @@ fn read_ioreg_gpu_utilization() -> Option<u32> {
 
 /// Parse the inline dictionaries emitted by `ioreg -w 0`, not renderer/tiler
 /// counters or similarly named properties. Missing or invalid data stays None
-/// so the caller can retain its existing residency fallback.
+/// so the caller can explicitly report unavailable utilization.
 fn parse_ioreg_gpu_utilization(text: &str) -> Option<u32> {
     text.lines()
         .filter_map(|line| {
@@ -304,6 +324,77 @@ pub fn wired_limit_behavior_notes() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nonzero_ioreg_is_measured_even_with_high_power_or_residency() {
+        let metrics = apple_utilization_metrics(Some(37), 50.0, Some(99.0));
+        assert_eq!(metrics.load, 37);
+        assert_eq!(metrics.load_source.as_deref(), Some("ioreg"));
+        assert_eq!(metrics.load_estimated, Some(false));
+        assert_eq!(metrics.load_available, Some(true));
+        assert_eq!(metrics.residency_percent, Some(99.0));
+    }
+
+    #[test]
+    fn zero_ioreg_with_power_above_five_watts_is_suspect_not_residency() {
+        let metrics = apple_utilization_metrics(Some(0), 5.01, Some(99.0));
+        assert_eq!(metrics.load, 0);
+        assert_eq!(metrics.load_source.as_deref(), Some("ioreg_suspect"));
+        assert_eq!(metrics.load_estimated, Some(false));
+        assert_eq!(metrics.load_available, Some(false));
+        assert_eq!(metrics.residency_percent, Some(99.0));
+    }
+
+    #[test]
+    fn zero_ioreg_at_or_below_five_watts_remains_measured_zero() {
+        for power in [0.0, 4.0, 5.0] {
+            let metrics = apple_utilization_metrics(Some(0), power, Some(85.0));
+            assert_eq!(metrics.load, 0);
+            assert_eq!(metrics.load_source.as_deref(), Some("ioreg"));
+            assert_eq!(metrics.load_available, Some(true));
+        }
+    }
+
+    #[test]
+    fn missing_ioreg_is_unknown_regardless_of_power() {
+        for power in [0.0, 4.0, 5.0, 50.0] {
+            let metrics = apple_utilization_metrics(None, power, Some(99.0));
+            assert_eq!(metrics.load, 0);
+            assert_eq!(metrics.load_source.as_deref(), Some("unavailable"));
+            assert_eq!(metrics.load_available, Some(false));
+            assert_eq!(metrics.residency_percent, Some(99.0));
+        }
+    }
+
+    #[test]
+    fn missing_or_invalid_residency_does_not_become_zero() {
+        for residency in [
+            None,
+            Some(-1.0),
+            Some(101.0),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+        ] {
+            let metrics = apple_utilization_metrics(Some(25), 10.0, residency);
+            assert_eq!(metrics.residency_percent, None);
+            assert_eq!(metrics.load, 25);
+            assert_eq!(metrics.load_available, Some(true));
+        }
+        for residency in [0.0, 100.0] {
+            let metrics = apple_utilization_metrics(None, 0.0, Some(residency));
+            assert_eq!(metrics.residency_percent, Some(residency as f32));
+        }
+    }
+
+    #[test]
+    fn absent_mactop_residency_is_not_fabricated() {
+        let soc: SocMetrics = serde_json::from_str("{}").unwrap();
+        assert_eq!(soc.gpu_active, None);
+        let metrics = apple_utilization_metrics(None, soc.gpu_power, soc.gpu_active);
+        let json = serde_json::to_value(metrics).unwrap();
+        assert!(json.get("residency_percent").is_none());
+        assert_eq!(json["load_available"], false);
+    }
 
     #[test]
     fn ioreg_utilization_parses_real_quoted_statistics_fixture() {

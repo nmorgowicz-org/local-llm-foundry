@@ -1,5 +1,6 @@
 # rapid-mlx serve --help flag inventory.
 # Captured from rapid-mlx rapid-mlx 0.11.1 on 2026-07-31.
+# --context-length added from rapid-mlx 0.15.6 `serve --help` (2026-10-08); the rest is unchanged.
 # Regenerate: rapid-mlx serve --help | grep -oE '^\s+--[a-z0-9-]+' | tr -d ' ' | sort -u
 #
 # Guarded by serve_flag_literals_exist_in_the_real_runtime (settings.rs). Any flag
@@ -14,10 +15,12 @@
 --cloud-model
 --cloud-threshold
 --completion-batch-size
+--context-length
 --cors-origins
 --default-frequency-penalty
 --default-min-p
 --default-presence-penalty
+--default-reasoning-effort
 --default-repetition-penalty
 --default-temperature
 --default-top-k

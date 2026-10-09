@@ -918,7 +918,10 @@ impl TrayState {
         lines.push(format!("{} - {}", local_label, session_mode));
 
         if local_metrics_available {
-            lines.push(format!("CPU: {}%", sys.cpu_load as f32 / 10.0));
+            // A pre-first-sample placeholder 0 is not a measured 0% load.
+            if sys.cpu_load_available != Some(false) {
+                lines.push(format!("CPU: {}%", sys.cpu_load));
+            }
 
             if sys.cpu_temp_available {
                 lines.push(format!("Temp: {:.0}C", sys.cpu_temp));

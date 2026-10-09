@@ -4,12 +4,15 @@
 import { setupViewState, chat, sessionState } from '../core/app-state.js';
 import { getPlatformInfo } from '../core/platform-info.js';
 import { doAttachFromSetup } from './attach-detach.js';
-import { presetModelSource } from './presets.js';
+import { presetModelSource, presetContextSize } from './presets.js';
 import { escapeHtml } from '../core/format.js';
+import { setHtml } from '../core/set-html.js';
 import { showToast, showConfirmDialog, showPromptDialog } from './toast.js';
 import Router from './router.js';
 import { buildEstimateBody, rapidEstimatePolicyFromConfig } from './vram-estimate.js';
 import { openBundleDrawer } from './preset-bundle-drawer.js';
+import { attachRapidDownloadState, rapidModelInfo } from './rapid-model-download.js';
+import { engineDescriptor, engineHueStyle, renderEngineTag } from '../core/engine-descriptor.js';
 
 // ── Model / preset classification (from GGUF-derived metadata) ────────────────
 // No name-based guessing: labels come from preset.family and preset.size_class
@@ -154,6 +157,7 @@ function extractQuantFromFilename(filename) {
 // ── Launch filters state (for filter bar + grouping) ──────────────────────────
 
 const launchFilters = {
+    engine: null,
     family: null,
     size: null,
     tags: [],
@@ -968,10 +972,11 @@ function _sortPresets(presets) {
 
 function _filterPresets(presets) {
     const f = launchFilters;
-    if (!f.family && !f.size && !f.collection && (f.tags || []).length === 0) return presets;
+    if (!f.engine && !f.family && !f.size && !f.collection && (f.tags || []).length === 0) return presets;
 
     return presets.filter(p => {
         const c = classifyPreset(p);
+        if (f.engine && (p.backend || 'llama_cpp') !== f.engine) return false;
         if (f.family && c.family !== f.family) return false;
         if (f.size && c.sizeClass !== f.size) return false;
 
@@ -1080,11 +1085,7 @@ function _bundleCardView(preset) {
         q8_0_q4_0: 'q8_0/q4_0',
     };
     const kvDisplay = kvPolicyDisplay[sel.kv_policy] || (sel.kv_policy || (preset.ctk || 'q8_0') + '/' + (preset.ctv || 'f16'));
-    const ctxDisplay = preset.context_size
-        ? (Math.round(preset.context_size / 1024) >= 1000
-            ? `${(Math.round(preset.context_size / 1024) / 1024).toFixed(1)}M context`
-            : `${Math.round(preset.context_size / 1024)}k context`)
-        : '128k context';
+    const ctxDisplay = formatContextChip(presetContextSize(preset));
     const quantDisplay = (selected.quantization && selected.quantization.value) ? selected.quantization.value.toUpperCase() : '';
     return {
         identity: bundle.identity || null,
@@ -1098,10 +1099,22 @@ function _bundleCardView(preset) {
     };
 }
 
+// "200k" for a 200000-token window the user typed or picked, "128k" for 131072: whole-thousand
+// values read as thousands, binary sizes as KiB tokens, so the chip matches the number chosen.
+function formatContextChip(tokens) {
+    const n = Number(tokens) > 0 ? Number(tokens) : 128 * 1024;
+    const k = n % 1024 === 0 ? n / 1024 : n % 1000 === 0 ? n / 1000 : Math.round(n / 1024);
+    return k >= 1000 ? `${(k / 1024).toFixed(1)}M context` : `${k}k context`;
+}
+
 function _buildLaunchCard(preset, activePresetId) {
     const isExample = preset.id.startsWith('default-');
     const card = document.createElement('div');
     card.className = 'launch-card';
+    const engineDesc = engineDescriptor(preset.backend);
+    card.dataset.engine = engineDesc.id;
+    if (engineHueStyle(engineDesc)) card.style.cssText = engineHueStyle(engineDesc);
+    const engineTagHtml = renderEngineTag(engineDesc, escapeHtml);
     card.dataset.presetId = preset.id;
     if (isExample) card.classList.add('launch-card--example');
 
@@ -1129,8 +1142,7 @@ function _buildLaunchCard(preset, activePresetId) {
     // A bundle card leads with the tune's display name, not the preset's stored name.
     const displayName = (bundleView && bundleView.identity?.display_name) || preset.name;
 
-    const ctxK = preset.context_size ? Math.round(preset.context_size / 1024) : 128;
-    let ctxDisplay = ctxK >= 1000 ? `${(ctxK / 1024).toFixed(1)}M context` : `${ctxK}k context`;
+    let ctxDisplay = formatContextChip(presetContextSize(preset));
     const isRapidMlx = preset.backend === 'rapid_mlx';
     let ctkDisplay;
     if (isRapidMlx) {
@@ -1160,8 +1172,9 @@ function _buildLaunchCard(preset, activePresetId) {
 
     if (isExample) {
         // Example card: dimmed, no edit button, use-wizard CTA only
-        // eslint-disable-next-line no-unsanitized/property -- content sanitized via escapeHtml
-        card.innerHTML = `
+
+        setHtml(card, `
+            ${engineTagHtml}
             <div class="launch-card-top">
                 <div class="launch-card-name" title="${escapeHtml(preset.name)}">${escapeHtml(preset.name)}</div>
                 <span class="launch-card-example-badge">Example</span>
@@ -1170,7 +1183,6 @@ function _buildLaunchCard(preset, activePresetId) {
             <div class="launch-card-chips">
                 <span class="launch-chip">${ctxDisplay}</span>
                 <span class="launch-chip">${ctkDisplay}</span>
-                ${preset.backend === 'rapid_mlx' ? '<span class="launch-chip launch-chip--accent">Rapid-MLX</span>' : ''}
             </div>
             <div class="launch-card-actions">
                 <button class="launch-card-btn-start launch-card-btn-start--configure" type="button"
@@ -1178,7 +1190,7 @@ function _buildLaunchCard(preset, activePresetId) {
                     Use as template →
                 </button>
             </div>
-        `;
+        `);
         card.querySelector('.launch-card-btn-start').addEventListener('click', () => {
             window.__spawnWizardOpts = { templatePreset: preset };
             Router.navigate('/spawn');
@@ -1214,8 +1226,9 @@ function _buildLaunchCard(preset, activePresetId) {
             ? '<button class="launch-card-btn-configure" type="button">Configure</button>'
             : '';
 
-        // eslint-disable-next-line no-unsanitized/property -- content sanitized via escapeHtml
-        card.innerHTML = `
+
+        setHtml(card, `
+            ${engineTagHtml}
             <div class="launch-card-top">
                 <div class="launch-card-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</div>
                 ${isRunning ? '<span class="launch-card-running-badge">● Running</span>' : ''}
@@ -1254,7 +1267,7 @@ function _buildLaunchCard(preset, activePresetId) {
                     </svg>
                 </button>
             </div>
-        `;
+        `);
 
         // Revision handshake lives on the card root: the resolve-and-launch
         // payload and the conflict re-render both key off these attributes.
@@ -1332,6 +1345,10 @@ function _buildLaunchCard(preset, activePresetId) {
         });
     }
 
+    if (!isExample && isRapidMlx && hasModel && !bundleView) {
+        attachRapidDownloadState(card, modelSource);
+    }
+
     return card;
 }
 
@@ -1341,11 +1358,19 @@ async function _fetchCardVramEstimates(availBytes, availRamBytes, isUnified, bud
     const cards = document.querySelectorAll('.launch-card[data-preset-id]');
     const presets = sessionState.presets || [];
 
-    await Promise.all([...cards].map(async (card) => {
+    const estimateCard = async (card) => {
         const preset = presets.find(p => p.id === card.dataset.presetId);
-        const modelPath = presetModelSource(preset);
+        let modelPath = presetModelSource(preset);
         if (!modelPath) return;
         const isRapidMlx = preset?.backend === 'rapid_mlx';
+        let rapidSizeBytes = 0;
+        if (isRapidMlx && !/[/\\]/.test(modelPath)) {
+            // Bare catalog alias: the estimator needs the real HF repo (and its size).
+            const info = await rapidModelInfo(modelPath);
+            if (!info || !info.repo_id) return;
+            modelPath = info.repo_id;
+            rapidSizeBytes = info.size_bytes || 0;
+        }
         const vramEl = card.querySelector('.launch-card-vram');
         if (!vramEl) return;
 
@@ -1354,11 +1379,12 @@ async function _fetchCardVramEstimates(availBytes, availRamBytes, isUnified, bud
             const body = buildEstimateBody({
                 backend: isRapidMlx ? 'rapid_mlx' : 'llama_cpp',
                 model_path: modelPath,
-                n_ctx: preset.context_size || 131072,
+                n_ctx: presetContextSize(preset) || 131072,
                 parallel_slots: preset.parallel_slots || 1,
                 ubatch_size: preset.ubatch_size || 1024,
                 ctk: isRapidMlx ? undefined : (preset.ctk || 'q8_0'),
                 ctv: isRapidMlx ? undefined : (preset.ctv || 'q8_0'),
+                ...(rapidSizeBytes ? { hf_repo_id: modelPath, model_size_bytes: rapidSizeBytes } : {}),
                 n_cpu_moe: preset.n_cpu_moe || 0,
                 gpu_layers: preset.gpu_layers ?? -1,
                 available_vram_bytes: availBytes,
@@ -1394,7 +1420,8 @@ async function _fetchCardVramEstimates(availBytes, availRamBytes, isUnified, bud
         } catch {
             // silently skip — VRAM row stays in loading state
         }
-    }));
+    };
+    await Promise.all([...cards].map(card => estimateCard(card)));
 }
 
 function _renderCardVram(el, data, availBytes, availRamBytes, isUnified, budgetIfPurgedBytes) {
@@ -1534,8 +1561,8 @@ function _renderCardVram(el, data, availBytes, availRamBytes, isUnified, budgetI
     // read the fit verdict was computed against, so a stale card is visibly stale.
     if (_memState.readAt) el.dataset.availabilityReadAt = _memState.readAt;
     else delete el.dataset.availabilityReadAt;
-    // eslint-disable-next-line no-unsanitized/property -- all values are numeric; no user strings
-    el.innerHTML = `
+
+    setHtml(el, `
         <div class="launch-card-memory-bars">
             <div class="launch-card-memory-row">
                 <span class="launch-card-memory-kind">${isUnified ? 'MEM' : 'VRAM'}</span>
@@ -1553,20 +1580,20 @@ function _renderCardVram(el, data, availBytes, availRamBytes, isUnified, budgetI
             ${hintRow}
             ${ramRow}
         </div>
-    `;
+    `);
 }
 
 function _buildNewConfigCard(isPrimary = false) {
     const card = document.createElement('div');
     card.className = 'launch-card launch-card--new' + (isPrimary ? ' launch-card--new-primary' : '');
-    // eslint-disable-next-line no-unsanitized/property -- static HTML, no user data
-        card.innerHTML = `
+
+        setHtml(card, `
         <div class="launch-card-new-icon">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </div>
         <div class="launch-card-new-label">New model</div>
         ${isPrimary ? '<div class="launch-card-new-hint">Set up your first local model</div>' : ''}
-    `;
+        `);
     card.addEventListener('click', () => {
         Router.navigate('/spawn');
     });
@@ -1969,6 +1996,42 @@ export async function initLaunchFilters() {
     }
     bar.style.display = '';
 
+    // initLaunchFilters can run more than once (view init + first grid render):
+    // rebuild generated pills from scratch so they never duplicate, and wire
+    // static controls (All pills, tags, sort, group) by assignment so repeats are no-ops.
+    bar.querySelectorAll('.launch-filter-pills .launch-filter-pill:not([data-filter$="-all"])').forEach(b => b.remove());
+
+    // Engine pills (GGUF/MLX etc.) come from the descriptor registry and only
+    // show when the saved presets span more than one engine.
+    const engineGroup = document.getElementById('setup-filter-engine-group');
+    const engineContainer = document.getElementById('setup-filter-engine-pills');
+    if (engineGroup && engineContainer) {
+        const engineIds = [...new Set(userPresets.map(p => p.backend || 'llama_cpp'))];
+        engineGroup.style.display = engineIds.length > 1 ? '' : 'none';
+        const engineAll = engineContainer.querySelector('[data-filter="engine-all"]');
+        if (engineAll) engineAll.onclick = () => {
+            launchFilters.engine = null;
+            updateFilterPillActive(engineContainer, 'engine-all');
+            renderLaunchGrid();
+        };
+        for (const id of engineIds) {
+            const d = engineDescriptor(id);
+            const btn = document.createElement('button');
+            btn.className = 'launch-filter-pill';
+            btn.dataset.filter = id;
+            btn.type = 'button';
+            btn.textContent = d.format || d.engine;
+            btn.title = d.format ? `${d.engine} · ${d.format}` : d.engine;
+            btn.addEventListener('click', () => {
+                launchFilters.engine = id;
+                updateFilterPillActive(engineContainer, id);
+                renderLaunchGrid();
+            });
+            engineContainer.appendChild(btn);
+        }
+        updateFilterPillActive(engineContainer, 'engine-all');
+    }
+
     // Populate family pills based on available families (from GGUF metadata)
     const families = new Set();
     userPresets.forEach(p => {
@@ -1980,11 +2043,11 @@ export async function initLaunchFilters() {
     if (familyContainer) {
         // Keep "All" button
         const allBtn = familyContainer.querySelector('[data-filter="family-all"]');
-        if (allBtn) allBtn.addEventListener('click', () => {
+        if (allBtn) allBtn.onclick = () => {
             launchFilters.family = null;
             updateFilterPillActive(familyContainer, 'family-all');
             renderLaunchGrid();
-        });
+        };
         for (const fam of families) {
             const btn = document.createElement('button');
             btn.className = 'launch-filter-pill';
@@ -2005,11 +2068,11 @@ export async function initLaunchFilters() {
     if (sizeContainer) {
         const sizes = ['tiny', 'small', 'medium', 'large'];
         const allBtn = sizeContainer.querySelector('[data-filter="size-all"]');
-        if (allBtn) allBtn.addEventListener('click', () => {
+        if (allBtn) allBtn.onclick = () => {
             launchFilters.size = null;
             updateFilterPillActive(sizeContainer, 'size-all');
             renderLaunchGrid();
-        });
+        };
         for (const s of sizes) {
             const btn = document.createElement('button');
             btn.className = 'launch-filter-pill';

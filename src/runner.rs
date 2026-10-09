@@ -1218,40 +1218,13 @@ pub fn run() -> Result<()> {
     let shutdown_sessions_path = state.sessions_path.clone();
     let shutdown_state = state.clone();
 
-    // Run tray on the main thread when a desktop session is available.
-    // Headless Linux servers still keep the web UI/API running.
-    #[cfg(feature = "native-tray")]
-    {
-        if should_start_tray(&args) {
-            match crate::tray::run_tray(state, port, app_config.config_dir.clone()) {
-                Ok(()) => {
-                    // A normal tray-loop return means the user selected Quit.
-                    // Do not leave the API server parked alive with only its
-                    // tray icon gone.
-                    std::process::exit(0);
-                }
-                Err(e) => {
-                    eprintln!("[warn] Tray unavailable: {e}");
-                    eprintln!("[info] Continuing in headless mode with web/API server");
-                }
-            }
-        } else {
-            println!("[info] Tray disabled (no graphical session)");
-            park_forever();
-        }
-    }
-
-    #[cfg(not(feature = "native-tray"))]
-    {
-        let _ = state;
-        println!("[info] Tray disabled in this build");
-    }
-
-    // Graceful shutdown handler
+    // Graceful shutdown handler. This MUST be registered before the tray block below: that block
+    // never returns (the tray loop or `park_forever`), so a handler placed after it was
+    // unreachable and Ctrl+C killed the app without stopping the inference backend.
     {
         let chat_storage = shutdown_chat_storage;
         let sessions_path = shutdown_sessions_path;
-        let state = shutdown_state;
+        let state = shutdown_state.clone();
         runtime.spawn(async move {
             // Wait for shutdown signal (platform-specific)
             #[cfg(unix)]
@@ -1279,6 +1252,19 @@ pub fn run() -> Result<()> {
 
             println!("\n[info] Shutdown signal received, finalizing...");
 
+            // The backend runs in its own process group, so the terminal's Ctrl+C never
+            // reaches it. Stop it here or it outlives the app and keeps its port.
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                crate::llama::server::stop_server(&state),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => eprintln!("[warn] Failed to stop inference backend: {}", e),
+                Err(_) => eprintln!("[warn] Timed out stopping inference backend"),
+            }
+
             // Checkpoint WAL
             if let Err(e) = chat_storage.checkpoint() {
                 eprintln!("[warn] Final checkpoint failed: {}", e);
@@ -1292,6 +1278,37 @@ pub fn run() -> Result<()> {
             println!("[info] Shutdown complete");
             std::process::exit(0);
         });
+    }
+
+    // Run tray on the main thread when a desktop session is available.
+    // Headless Linux servers still keep the web UI/API running.
+    #[cfg(feature = "native-tray")]
+    {
+        if should_start_tray(&args) {
+            match crate::tray::run_tray(state, port, app_config.config_dir.clone()) {
+                Ok(()) => {
+                    // A normal tray-loop return means the user selected Quit.
+                    // Do not leave the API server parked alive with only its
+                    // tray icon gone. Stop the backend first: it has its own
+                    // process group and would otherwise outlive the app.
+                    stop_backend_for_tray_quit(&runtime, &shutdown_state);
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("[warn] Tray unavailable: {e}");
+                    eprintln!("[info] Continuing in headless mode with web/API server");
+                }
+            }
+        } else {
+            println!("[info] Tray disabled (no graphical session)");
+            park_forever();
+        }
+    }
+
+    #[cfg(not(feature = "native-tray"))]
+    {
+        let _ = state;
+        println!("[info] Tray disabled in this build");
     }
 
     // Park main thread (tray or headless)
@@ -1409,6 +1426,19 @@ pub fn should_start_tray(_args: &cli::AppArgs) -> bool {
     false
 }
 
+/// Run Quit cleanup from the synchronous tray thread before the caller exits.
+#[cfg(any(feature = "native-tray", test))]
+fn stop_backend_for_tray_quit(runtime: &tokio::runtime::Runtime, state: &state::AppState) {
+    let _ = runtime.block_on(async {
+        // Construct the timer only after block_on has entered the runtime.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            crate::llama::server::stop_server(state),
+        )
+        .await
+    });
+}
+
 fn park_forever() -> ! {
     loop {
         std::thread::park();
@@ -1418,6 +1448,43 @@ fn park_forever() -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tray_quit_cleanup_from_non_tokio_thread_awaits_backend_stop() {
+        std::thread::spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            assert!(tokio::runtime::Handle::try_current().is_err());
+
+            // No process or model is needed: real stop_server cleanup must
+            // invalidate startup waiters and clear the backend's running state.
+            let state = state::AppState::default();
+            state
+                .server_generation
+                .store(7, std::sync::atomic::Ordering::Release);
+            *state.server_running.lock().unwrap() = true;
+            *state.local_server_running.lock().unwrap() = true;
+            *state.server_config.lock().unwrap() =
+                Some(crate::inference::llama_cpp::ServerConfig::default());
+
+            stop_backend_for_tray_quit(&runtime, &state);
+
+            assert_eq!(
+                state
+                    .server_generation
+                    .load(std::sync::atomic::Ordering::Acquire),
+                8
+            );
+            assert!(!*state.server_running.lock().unwrap());
+            assert!(!*state.local_server_running.lock().unwrap());
+            assert!(state.server_config.lock().unwrap().is_none());
+            assert!(tokio::runtime::Handle::try_current().is_err());
+        })
+        .join()
+        .expect("tray Quit cleanup must not panic outside a Tokio runtime");
+    }
 
     #[test]
     fn should_start_tray_flag_combinations_disables_tray() {

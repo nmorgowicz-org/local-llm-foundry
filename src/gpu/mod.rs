@@ -13,12 +13,26 @@ use anyhow::Result;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct GpuMetrics {
     #[serde(default)]
     pub temp: f32,
     #[serde(default)]
     pub load: u32,
+    /// Origin of utilization, e.g. `ioreg`, `ioreg_suspect`, or `unavailable`.
+    /// Absent for older snapshots and backends retaining legacy load semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_source: Option<String>,
+    /// Whether load is an estimate rather than measured utilization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_estimated: Option<bool>,
+    /// Explicit false means `load` is only a compatibility placeholder.
+    /// None retains the legacy availability behavior for other backends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_available: Option<bool>,
+    /// Power-state residency, not GPU utilization (Apple/mactop).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub residency_percent: Option<f32>,
     #[serde(default)]
     pub power_consumption: f32,
     #[serde(default)]
@@ -132,4 +146,52 @@ fn command_exists(cmd: &str) -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
+}
+
+#[cfg(test)]
+mod metrics_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_metrics_keep_default_availability_and_omit_provenance() {
+        let metrics: GpuMetrics = serde_json::from_str(r#"{"load":37}"#).unwrap();
+        assert_eq!(metrics.load, 37);
+        assert_eq!(metrics.load_source, None);
+        assert_eq!(metrics.load_estimated, None);
+        assert_eq!(metrics.load_available, None);
+        assert_eq!(metrics.residency_percent, None);
+        let json = serde_json::to_value(metrics).unwrap();
+        for key in [
+            "load_source",
+            "load_estimated",
+            "load_available",
+            "residency_percent",
+        ] {
+            assert!(
+                json.get(key).is_none(),
+                "{key} must not change legacy payloads"
+            );
+        }
+    }
+
+    #[test]
+    fn unavailable_load_and_residency_round_trip_without_losing_false() {
+        let metrics = GpuMetrics {
+            load: 0,
+            load_source: Some("ioreg_suspect".into()),
+            load_estimated: Some(false),
+            load_available: Some(false),
+            residency_percent: Some(99.0),
+            ..GpuMetrics::default()
+        };
+        let json = serde_json::to_value(&metrics).unwrap();
+        assert_eq!(json["load"], 0);
+        assert_eq!(json["load_source"], "ioreg_suspect");
+        assert_eq!(json["load_estimated"], false);
+        assert_eq!(json["load_available"], false);
+        assert_eq!(json["residency_percent"], 99.0);
+        let restored: GpuMetrics = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.load_available, Some(false));
+        assert_eq!(restored.residency_percent, Some(99.0));
+    }
 }

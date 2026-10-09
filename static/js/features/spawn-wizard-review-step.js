@@ -814,6 +814,7 @@ export function buildPresetPayload() {
       presence_penalty: h.presencePenalty != null ? h.presencePenalty : null,
       max_tokens: h.maxTokens != null ? h.maxTokens : null,
       seed: h.seed != null ? h.seed : null,
+      ...(Number(h.contextSize) > 0 && { context_size: Number(h.contextSize) }),
     });
   }
   return {

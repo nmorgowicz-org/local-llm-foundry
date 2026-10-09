@@ -170,6 +170,13 @@ fn lock_model_downloads(state: &RuntimeApiState) -> std::sync::MutexGuard<'_, Mo
         .unwrap_or_else(|e| e.into_inner())
 }
 
+/// Unguessable id for a model download job: `mdl-` plus 128 random bits from the OS
+/// CSPRNG. Job ids gate poll/cancel access, so they must not be derivable from the
+/// clock or a counter. There is deliberately no fallback if the RNG fails.
+fn new_model_download_id() -> anyhow::Result<String> {
+    Ok(format!("mdl-{}", random_job_id()?))
+}
+
 /// One Hugging Face owner or repo-name segment: `[A-Za-z0-9._-]`, bounded,
 /// never `.`/`..`, never leading `-` (would read as an option downstream).
 fn valid_hub_segment(segment: &str) -> bool {
@@ -575,6 +582,8 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
 
     status_route(ctx.clone(), state.clone())
         .or(catalog_route(ctx.clone(), state.clone()))
+        .unify()
+        .or(model_status_route(ctx.clone(), state.clone()))
         .unify()
         .or(releases_route(ctx.clone(), state.clone()))
         .unify()
@@ -1016,17 +1025,15 @@ fn model_download_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
 
                 let models_dir = super::models::get_effective_models_dir(&ctx.state)
                     .unwrap_or_else(|| ctx.config.default_models_dir.clone());
-                static MODEL_DL_SEQ: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(0);
-                let job_id = {
-                    let nanos = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_nanos() as u64)
-                        .unwrap_or(0);
-                    // Nanoseconds plus a process-wide counter: unique without a CSPRNG,
-                    // which is overkill for an opaque job id.
-                    let seq = MODEL_DL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    format!("mdl-{}-{}", nanos, seq)
+                let job_id = match new_model_download_id() {
+                    Ok(id) => id,
+                    Err(e) => {
+                        eprintln!("[rapid-mlx] model download id generation failed: {e}");
+                        return Ok(json_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Secure download job ID generation is unavailable",
+                        ));
+                    }
                 };
                 let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let job = ModelDownloadJob {
@@ -1619,6 +1626,8 @@ fn build_effective_policy(config: &RapidMlxConfig) -> serde_json::Value {
         "max_concurrent_requests": config.max_concurrent_requests,
         "prefill_batch_size": config.prefill_batch_size,
         "completion_batch_size": config.completion_batch_size,
+        "context_length": config.context_length,
+        "default_reasoning_effort": config.default_reasoning_effort,
         "reasoning_mode": "on",
         "speculative_config": config.speculative_config,
         "mllm_vision": config.mllm_vision,
@@ -2125,6 +2134,172 @@ fn releases_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
             }
         })
         .boxed()
+}
+
+/// GET /api/rapid-mlx/model-status?source=<alias|owner/repo> — is the model complete in
+/// the cache the launch environment uses? Drives the wizard/card download affordance.
+fn model_status_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
+    warp::path!("api" / "rapid-mlx" / "model-status")
+        .and(warp::get())
+        .and(warp::header::optional::<String>("authorization"))
+        .and(warp::query::<std::collections::HashMap<String, String>>())
+        .and_then(
+            move |auth: Option<String>, query: std::collections::HashMap<String, String>| {
+                let ctx = ctx.clone();
+                let state = state.clone();
+                async move {
+                    if !check_api_token(&auth, &ctx.config) {
+                        return Ok::<ApiReply, warp::Rejection>(unauthorized_api_token());
+                    }
+                    let source = query
+                        .get("source")
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_default();
+                    let models_dir = super::models::get_effective_models_dir(&ctx.state)
+                        .unwrap_or_else(|| ctx.config.default_models_dir.clone());
+                    // Only an alias needs the runtime to resolve it to a repo.
+                    let managed = if source.contains('/') {
+                        None
+                    } else {
+                        managed_executable(&state).await
+                    };
+                    Ok(model_status_reply(
+                        models_dir,
+                        source,
+                        managed,
+                        crate::inference::rapid_mlx::model_cache::system_hub_dir(),
+                    )
+                    .await)
+                }
+            },
+        )
+        .boxed()
+}
+
+/// Everything after auth: validate `source`, resolve an alias through the runtime, then
+/// inspect the caches. `managed` is the managed runtime pointer (aliases only) and
+/// `system_hub` the user's global hub, passed in so callers decide where they come from.
+async fn model_status_reply(
+    models_dir: std::path::PathBuf,
+    source: String,
+    managed: Option<std::path::PathBuf>,
+    system_hub: Option<std::path::PathBuf>,
+) -> ApiReply {
+    if source.is_empty() || source.len() > 256 {
+        return json_error(StatusCode::BAD_REQUEST, "source is required");
+    }
+    let is_alias = !source.contains('/');
+    let (repo_id, catalog_size) = if !is_alias {
+        if !validate_model_download_repo(&source) {
+            return json_error(StatusCode::BAD_REQUEST, "Invalid repo id");
+        }
+        (source.clone(), None)
+    } else {
+        let binary = match Discovery::resolve_binary(None, managed.as_deref()).await {
+            Ok((binary, _)) => binary,
+            Err(_) => {
+                return json_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Rapid-MLX is not installed",
+                );
+            }
+        };
+        match info_query::resolve_alias_repo(&binary, &source).await {
+            // The catalog is runtime output, not trusted input: the repo id it names
+            // becomes a cache path component, so it gets the same check as a caller's.
+            Ok(Some(found)) if validate_model_download_repo(&found.0) => found,
+            Ok(Some(_)) => {
+                eprintln!("[rapid-mlx] model-status: catalog alias resolved to an invalid repo id");
+                return json_error(
+                    StatusCode::BAD_GATEWAY,
+                    "Rapid-MLX catalog returned an invalid model repository",
+                );
+            }
+            Ok(None) => return json_error(StatusCode::NOT_FOUND, "Unknown Rapid-MLX alias"),
+            Err(e) => {
+                // The error text can name the managed binary's absolute path.
+                eprintln!("[rapid-mlx] model-status catalog query failed: {e:#}");
+                return json_error(
+                    StatusCode::BAD_GATEWAY,
+                    "Rapid-MLX catalog is temporarily unavailable",
+                );
+            }
+        }
+    };
+    // Cache inspection is blocking filesystem work (directory scans, index parsing).
+    let probe = {
+        let (models_dir, repo_id, source) = (models_dir, repo_id.clone(), source.clone());
+        tokio::task::spawn_blocking(move || {
+            probe_model_cache(
+                &models_dir,
+                &repo_id,
+                &source,
+                is_alias,
+                system_hub,
+                catalog_size,
+            )
+        })
+        .await
+    };
+    let probe = match probe {
+        Ok(probe) => probe,
+        Err(e) => {
+            eprintln!("[rapid-mlx] model-status cache inspection failed: {e}");
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Model cache inspection failed",
+            );
+        }
+    };
+    Box::new(warp::reply::json(&serde_json::json!({
+        "ok": true,
+        "source": source,
+        "repo_id": repo_id,
+        "cached": probe.cached,
+        "in_system_cache": probe.in_system_cache,
+        "size_bytes": probe.size_bytes,
+        "quant": probe.quant,
+    })))
+}
+
+struct ModelCacheProbe {
+    cached: bool,
+    in_system_cache: bool,
+    size_bytes: Option<u64>,
+    quant: Option<String>,
+}
+
+/// Blocking: reads the hub directories. `size_bytes` is the real weight size of the
+/// cached snapshot when there is one, else the catalog's own figure (if it reports any).
+fn probe_model_cache(
+    models_dir: &std::path::Path,
+    repo_id: &str,
+    source: &str,
+    is_alias: bool,
+    system_hub: Option<std::path::PathBuf>,
+    catalog_size: Option<u64>,
+) -> ModelCacheProbe {
+    use crate::inference::rapid_mlx::model_cache;
+    let app_hub = model_cache::app_hub_dir(models_dir);
+    let in_app_cache = model_cache::repo_cached(&app_hub, repo_id);
+    // Catalog aliases may launch from a complete global-cache copy.
+    let system_copy = (!in_app_cache && is_alias)
+        .then(|| model_cache::alias_launch_hub_in(models_dir, repo_id, system_hub.clone()))
+        .flatten();
+    let in_system_cache = system_copy.is_some();
+    let cached_hub = in_app_cache.then(|| app_hub.clone()).or(system_copy);
+    let size_bytes = cached_hub
+        .as_deref()
+        .and_then(|hub| model_cache::cached_weight_bytes(hub, repo_id))
+        .or(catalog_size);
+    let mut hubs = vec![app_hub];
+    hubs.extend(system_hub);
+    ModelCacheProbe {
+        cached: in_app_cache || in_system_cache,
+        in_system_cache,
+        size_bytes,
+        quant: model_cache::quant_label(&hubs, repo_id, source),
+    }
 }
 
 /// The curated Rapid-MLX model catalog: rows of the upstream-validated
@@ -4120,6 +4295,8 @@ Run with `--verbose` for details on each check.
             max_concurrent_requests: None,
             prefill_batch_size: None,
             completion_batch_size: None,
+            context_length: None,
+            default_reasoning_effort: None,
             prefill_step_size: 512,
             reasoning_mode: None,
             speculative_config: None,
@@ -4202,6 +4379,8 @@ Run with `--verbose` for details on each check.
             max_concurrent_requests: None,
             prefill_batch_size: None,
             completion_batch_size: None,
+            context_length: None,
+            default_reasoning_effort: None,
             prefill_step_size: 512,
             reasoning_mode: None,
             speculative_config: None,
@@ -4264,6 +4443,8 @@ Run with `--verbose` for details on each check.
             max_concurrent_requests: None,
             prefill_batch_size: None,
             completion_batch_size: None,
+            context_length: None,
+            default_reasoning_effort: None,
             prefill_step_size: 512,
             reasoning_mode: None,
             speculative_config: None,
@@ -4514,4 +4695,375 @@ fn mtp_draft_suggestion_route(ctx: ApiCtx) -> ApiRoute {
             }
         })
         .boxed()
+}
+
+#[cfg(test)]
+mod model_status_tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use crate::state::AppState;
+    use crate::web::auth::AuthManager;
+    use std::path::{Path, PathBuf};
+
+    const TOKEN: &str = "status-token";
+
+    fn route() -> ApiRoute {
+        let ctx = ApiCtx {
+            state: AppState::default(),
+            config: Arc::new(AppConfig::for_test(Some(TOKEN.to_string()), None)),
+            auth: AuthManager::new(None, None, &crate::config::TLSConfig::default().mode),
+        };
+        let state = RuntimeApiState {
+            manager: Err("unused".into()),
+            releases: Arc::new(tokio::sync::Mutex::new(None)),
+            jobs: Arc::new(Mutex::new(RuntimeJobs::default())),
+            model_downloads: Arc::new(Mutex::new(ModelDownloads::default())),
+            changelog_cache: Arc::new(changelog::ChangelogCacheManager::new()),
+            client: reqwest::Client::new(),
+        };
+        model_status_route(ctx, state)
+    }
+
+    fn hub_snapshot(hub: &Path, weights: &[(&str, usize)]) {
+        let snap = hub.join("models--o--m/snapshots/abc");
+        std::fs::create_dir_all(&snap).unwrap();
+        std::fs::write(snap.join("config.json"), b"{}").unwrap();
+        for (name, len) in weights {
+            std::fs::write(snap.join(name), vec![0u8; *len]).unwrap();
+        }
+    }
+
+    /// A stand-in `rapid-mlx` that answers `models --json` with one catalog alias.
+    #[cfg(unix)]
+    fn fake_rapid_mlx(dir: &Path, catalog_size: Option<u64>) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let size = catalog_size
+            .map(|size| format!(r#","size_bytes":{size}"#))
+            .unwrap_or_default();
+        let script = dir.join("rapid-mlx");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat <<'EOF'\n{{\"qwen\":[{{\"alias\":\"known\",\"hf_path\":\"o/m\"{size}}}]}}\nEOF\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    async fn reply(
+        models_dir: &Path,
+        source: &str,
+        managed: Option<PathBuf>,
+        system_hub: Option<PathBuf>,
+    ) -> (StatusCode, serde_json::Value) {
+        let models_dir = models_dir.to_path_buf();
+        let source = source.to_string();
+        let route = warp::any().and_then(move || {
+            let models_dir = models_dir.clone();
+            let source = source.clone();
+            let managed = managed.clone();
+            let system_hub = system_hub.clone();
+            async move {
+                Ok::<_, warp::Rejection>(
+                    model_status_reply(models_dir, source, managed, system_hub).await,
+                )
+            }
+        });
+        let response = warp::test::request().reply(&route).await;
+        let body = serde_json::from_slice(response.body()).unwrap_or(serde_json::Value::Null);
+        (response.status(), body)
+    }
+
+    async fn get(query: &str, token: Option<&str>) -> StatusCode {
+        let mut request = warp::test::request()
+            .method("GET")
+            .path(&format!("/api/rapid-mlx/model-status{query}"));
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        request.reply(&route()).await.status()
+    }
+
+    #[tokio::test]
+    async fn route_requires_the_api_token() {
+        assert_eq!(get("?source=o/m", None).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            get("?source=o/m", Some("wrong")).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn route_rejects_missing_or_invalid_source_with_400() {
+        for query in [
+            "",
+            "?source=",
+            "?source=%20%20",
+            "?source=o/m/extra",
+            "?source=o/bad%20name",
+        ] {
+            assert_eq!(
+                get(query, Some(TOKEN)).await,
+                StatusCode::BAD_REQUEST,
+                "{query}"
+            );
+        }
+        let long = format!("?source=o/{}", "x".repeat(300));
+        assert_eq!(get(&long, Some(TOKEN)).await, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn invalid_repo_source_is_400_with_a_message() {
+        let models = tempfile::tempdir().unwrap();
+        let (status, body) = reply(models.path(), "../etc/passwd", None, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["error"], "Invalid repo id");
+    }
+
+    #[tokio::test]
+    async fn alias_without_an_installed_runtime_is_503() {
+        let models = tempfile::tempdir().unwrap();
+        // A managed pointer to a file that is not there takes the same "not installed" branch.
+        let missing = models.path().join("no-such-rapid-mlx");
+        let (status, body) = reply(models.path(), "known", Some(missing), None).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"], "Rapid-MLX is not installed");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unknown_alias_is_404() {
+        let models = tempfile::tempdir().unwrap();
+        let binary = fake_rapid_mlx(models.path(), None);
+        let (status, body) = reply(models.path(), "nope", Some(binary), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "Unknown Rapid-MLX alias");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn alias_in_the_system_cache_is_cached_and_flagged() {
+        let models = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        hub_snapshot(system.path(), &[("model.safetensors", 11)]);
+        let binary = fake_rapid_mlx(models.path(), None);
+        let (status, body) = reply(
+            models.path(),
+            "known",
+            Some(binary),
+            Some(system.path().to_path_buf()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["repo_id"], "o/m");
+        assert_eq!(body["cached"], true);
+        assert_eq!(body["in_system_cache"], true);
+        assert_eq!(body["size_bytes"], 11);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn alias_in_the_app_cache_is_cached_but_not_system() {
+        let models = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let app_hub = crate::inference::rapid_mlx::model_cache::app_hub_dir(models.path());
+        hub_snapshot(
+            &app_hub,
+            &[
+                ("model-00001.safetensors", 4),
+                ("model-00002.safetensors", 6),
+            ],
+        );
+        hub_snapshot(system.path(), &[("model.safetensors", 999)]);
+        let binary = fake_rapid_mlx(models.path(), Some(123_456));
+        let (status, body) = reply(
+            models.path(),
+            "known",
+            Some(binary),
+            Some(system.path().to_path_buf()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["cached"], true);
+        assert_eq!(body["in_system_cache"], false);
+        // The real cached size wins over the catalog estimate.
+        assert_eq!(body["size_bytes"], 10);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uncached_alias_reports_not_cached_and_catalog_size() {
+        let models = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let binary = fake_rapid_mlx(models.path(), Some(123_456));
+        let (status, body) = reply(
+            models.path(),
+            "known",
+            Some(binary),
+            Some(system.path().to_path_buf()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["cached"], false);
+        assert_eq!(body["in_system_cache"], false);
+        assert_eq!(body["size_bytes"], 123_456);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uncached_alias_without_any_size_is_null() {
+        let models = tempfile::tempdir().unwrap();
+        let binary = fake_rapid_mlx(models.path(), None);
+        let (_, body) = reply(models.path(), "known", Some(binary), None).await;
+        assert_eq!(body["cached"], false);
+        assert!(body["size_bytes"].is_null());
+    }
+
+    #[tokio::test]
+    async fn repo_source_never_uses_the_system_cache() {
+        let models = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        hub_snapshot(system.path(), &[("model.safetensors", 3)]);
+        let (status, body) = reply(
+            models.path(),
+            "o/m",
+            None,
+            Some(system.path().to_path_buf()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["cached"], false);
+        assert_eq!(body["in_system_cache"], false);
+        assert!(body["size_bytes"].is_null());
+
+        let app_hub = crate::inference::rapid_mlx::model_cache::app_hub_dir(models.path());
+        hub_snapshot(&app_hub, &[("model.safetensors", 5)]);
+        let (_, body) = reply(models.path(), "o/m", None, None).await;
+        assert_eq!(body["cached"], true);
+        assert_eq!(body["in_system_cache"], false);
+        assert_eq!(body["size_bytes"], 5);
+    }
+
+    /// A stand-in `rapid-mlx` running an arbitrary shell body.
+    #[cfg(unix)]
+    fn fake_script(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("rapid-mlx");
+        std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn alias_resolving_to_an_invalid_repo_is_502_with_a_fixed_message() {
+        // Raw strings: the JSON `\\` below decodes to a single backslash.
+        for hf_path in [
+            "../../etc/passwd",
+            "o/m/x",
+            r"o\\m",
+            "no-slash",
+            "-o/m",
+            "o/..",
+            "o/bad name",
+        ] {
+            let models = tempfile::tempdir().unwrap();
+            let json = format!(r#"{{"qwen":[{{"alias":"known","hf_path":"{hf_path}"}}]}}"#);
+            let binary = fake_script(models.path(), &format!("cat <<'EOF'\n{json}\nEOF"));
+            let (status, body) = reply(models.path(), "known", Some(binary), None).await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{hf_path}");
+            assert_eq!(body["ok"], false, "{hf_path}");
+            assert_eq!(
+                body["error"], "Rapid-MLX catalog returned an invalid model repository",
+                "{hf_path}"
+            );
+            assert!(body.get("repo_id").is_none(), "{hf_path} was echoed back");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn catalog_failure_returns_a_fixed_message_without_the_binary_path() {
+        let models = tempfile::tempdir().unwrap();
+        let binary = fake_script(models.path(), "echo \"boom from $0\" >&2\nexit 3");
+        let (status, body) = reply(models.path(), "known", Some(binary), None).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            body["error"],
+            "Rapid-MLX catalog is temporarily unavailable"
+        );
+        let text = body.to_string();
+        assert!(!text.contains("boom"), "{text}");
+        assert!(!text.contains(models.path().to_str().unwrap()), "{text}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn malformed_catalog_json_is_a_fixed_502_too() {
+        let models = tempfile::tempdir().unwrap();
+        let binary = fake_script(models.path(), "echo 'not json'");
+        let (status, body) = reply(models.path(), "known", Some(binary), None).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            body["error"],
+            "Rapid-MLX catalog is temporarily unavailable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn repeated_alias_requests_reuse_one_catalog_subprocess() {
+        let models = tempfile::tempdir().unwrap();
+        let counter = models.path().join("runs");
+        let binary = fake_script(
+            models.path(),
+            &format!(
+                "echo run >> '{}'\ncat <<'EOF'\n{{\"q\":[{{\"alias\":\"known\",\"hf_path\":\"o/m\"}}]}}\nEOF",
+                counter.display()
+            ),
+        );
+        for _ in 0..5 {
+            let (status, _) = reply(models.path(), "known", Some(binary.clone()), None).await;
+            assert_eq!(status, StatusCode::OK);
+        }
+        let runs = std::fs::read_to_string(&counter).unwrap();
+        assert_eq!(
+            runs.lines().count(),
+            1,
+            "the catalog subprocess must be cached"
+        );
+    }
+}
+
+#[cfg(test)]
+mod download_job_id_tests {
+    use super::*;
+
+    #[test]
+    fn download_job_ids_are_prefixed_random_hex_and_unique() {
+        let ids: Vec<String> = (0..64).map(|_| new_model_download_id().unwrap()).collect();
+        for id in &ids {
+            let hex = id.strip_prefix("mdl-").expect("mdl- prefix is kept");
+            assert_eq!(hex.len(), 32, "{id}");
+            assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+        }
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len());
+    }
+
+    #[test]
+    fn download_job_ids_are_not_a_timestamp_or_counter() {
+        // The old scheme was `mdl-<nanos>-<seq>`: a second dash-separated field and ids
+        // that shared a long time prefix. Random ids have neither.
+        let (a, b) = (
+            new_model_download_id().unwrap(),
+            new_model_download_id().unwrap(),
+        );
+        assert_eq!(a.matches('-').count(), 1, "{a}");
+        assert_ne!(a[4..20], b[4..20], "leading 8 random bytes collided");
+    }
 }

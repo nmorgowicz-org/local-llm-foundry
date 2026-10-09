@@ -1,5 +1,3 @@
-/* eslint-disable no-unsanitized/property */
-/* Reason: all content is server metrics; no user input flows into this page. */
 import { applyProductIdentity, LEGACY_STORAGE_KEYS } from './core/identity.js';
 
 applyProductIdentity();
@@ -121,37 +119,49 @@ function renderGPUs(gpuEntries) {
     const container = document.getElementById('gpu-sections');
     if (!container) return;
     container.style.display = '';
-    container.innerHTML = '';
+    container.replaceChildren();
     for (const [name, m] of gpuEntries) {
         const tempPct = m.temp / 120 * 100;
-        const loadPct = m.load;
+        // False marks an unavailable measurement; older collectors omit the flag.
+        const loadKnown = m.load_available !== false && Number.isFinite(m.load);
+        const loadPct = loadKnown ? m.load : 0;
         const vramPct = m.vram_total > 0 ? (m.vram_used / m.vram_total * 100) : 0;
         const vramGB = (m.vram_used / 1024).toFixed(1);
         const vramTotalGB = (m.vram_total / 1024).toFixed(1);
 
-        const loadSeverity = getSeverity(m.load, 100);
+        const loadSeverity = loadKnown ? getSeverity(m.load, 100) : '';
         const tempSeverity = getSeverity(m.temp, 120);
         const vramSeverity = getSeverity(m.vram_used, m.vram_total);
 
         const div = document.createElement('div');
         div.className = 'gpu-section';
-        div.innerHTML =
-            '<div class="gpu-name">' + name + '</div>' +
-            '<div class="metric-row">' +
-                '<span class="metric-label">Load</span>' +
-                '<div class="metric-bar-wrap"><div class="metric-bar gpu-load' + (loadSeverity ? ' severity-' + loadSeverity : '') + '" style="width:' + loadPct + '%"></div></div>' +
-                '<span class="metric-value">' + m.load + '%</span>' +
-            '</div>' +
-            '<div class="metric-row">' +
-                '<span class="metric-label">Temp</span>' +
-                '<div class="metric-bar-wrap"><div class="metric-bar gpu-temp' + (tempSeverity ? ' severity-' + tempSeverity : '') + '" style="width:' + tempPct + '%"></div></div>' +
-                '<span class="metric-value">' + Math.round(m.temp) + '°C</span>' +
-            '</div>' +
-            '<div class="metric-row">' +
-                '<span class="metric-label">VRAM</span>' +
-                '<div class="metric-bar-wrap"><div class="metric-bar gpu-vram' + (vramSeverity ? ' severity-' + vramSeverity : '') + '" style="width:' + vramPct + '%"></div></div>' +
-                '<span class="metric-value">' + vramGB + ' / ' + vramTotalGB + ' GB</span>' +
-            '</div>';
+        const gpuName = document.createElement('div');
+        gpuName.className = 'gpu-name';
+        gpuName.textContent = name;
+        div.appendChild(gpuName);
+        const rows = [
+            ['Load', 'gpu-load', loadPct, loadSeverity, loadKnown ? m.load + '%' : '—'],
+            ['Temp', 'gpu-temp', tempPct, tempSeverity, Math.round(m.temp) + '°C'],
+            ['VRAM', 'gpu-vram', vramPct, vramSeverity, vramGB + ' / ' + vramTotalGB + ' GB'],
+        ];
+        for (const [label, type, pct, severity, value] of rows) {
+            const row = document.createElement('div');
+            row.className = 'metric-row';
+            const labelEl = document.createElement('span');
+            labelEl.className = 'metric-label';
+            labelEl.textContent = label;
+            const wrap = document.createElement('div');
+            wrap.className = 'metric-bar-wrap';
+            const bar = document.createElement('div');
+            bar.className = 'metric-bar ' + type + (severity ? ' severity-' + severity : '');
+            bar.style.width = pct + '%';
+            wrap.appendChild(bar);
+            const valueEl = document.createElement('span');
+            valueEl.className = 'metric-value';
+            valueEl.textContent = value;
+            row.append(labelEl, wrap, valueEl);
+            div.appendChild(row);
+        }
         container.appendChild(div);
     }
 }
@@ -307,12 +317,14 @@ ws.onmessage = function(e) {
         }
 
     const sys = d.system || {};
-    const cpuLoad = sys.cpu_load || 0;
+    // cpu_load_available=false: first sampling interval, 0 is a placeholder (absent = real value).
+    const cpuLoadKnown = sys.cpu_load_available !== false && Number.isFinite(sys.cpu_load);
+    const cpuLoad = cpuLoadKnown ? sys.cpu_load : 0;
     const cpuLoadSeverity = getSeverity(cpuLoad, 100);
     const cpuLoadBar = document.getElementById('cpu-load-bar');
     cpuLoadBar.className = 'metric-bar cpu' + (cpuLoadSeverity ? ' severity-' + cpuLoadSeverity : '');
     setBar('cpu-load-bar', cpuLoad, 100);
-    document.getElementById('cpu-load').textContent = cpuLoad > 0 ? cpuLoad + '%' : '—';
+    document.getElementById('cpu-load').textContent = cpuLoadKnown ? cpuLoad + '%' : '—';
 
     if (sys.cpu_temp_available && sys.cpu_temp > 0) {
         const severity = getSeverity(sys.cpu_temp, 120);
@@ -351,7 +363,7 @@ ws.onmessage = function(e) {
     }
     }
 
-    const l = d.llama || {};
+    const l = d.inference_poll_failed ? {} : (d.llama || {});
     const promptRate = l.prompt_tokens_per_sec > 0 ? l.prompt_tokens_per_sec : (l.last_prompt_tokens_per_sec || 0);
     const genRate = l.generation_tokens_per_sec > 0 ? l.generation_tokens_per_sec : (l.last_generation_tokens_per_sec || 0);
     const contextCapacity = l.context_capacity_tokens || l.kv_cache_max || 0;
@@ -360,13 +372,13 @@ ws.onmessage = function(e) {
     const contextLiveAvailable = l.context_live_tokens_available || l.kv_cache_tokens_available;
 
     if (promptRate > 0) {
-        document.getElementById('inf-prompt').innerHTML = promptRate.toFixed(1) + ' tok/s';
+        document.getElementById('inf-prompt').textContent = promptRate.toFixed(1) + ' tok/s';
     } else {
         document.getElementById('inf-prompt').innerHTML = '<span class="dash-line">—</span> tok/s';
     }
 
     if (genRate > 0) {
-        document.getElementById('inf-generate').innerHTML = genRate.toFixed(1) + ' tok/s';
+        document.getElementById('inf-generate').textContent = genRate.toFixed(1) + ' tok/s';
     } else {
         document.getElementById('inf-generate').innerHTML = '<span class="dash-line">—</span> tok/s';
     }

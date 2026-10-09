@@ -68,6 +68,7 @@ import {
   _applyScopeDefaultForEngine,
 } from './spawn-wizard-hf-browse.js';
 import { bindHfDownloadPanel } from './spawn-wizard-hf-download.js';
+import { bindRapidDownloadPanel, refreshRapidModelDownload, isRapidModelMissing } from './spawn-wizard-rapid-download.js';
 import {
   _openHwTagPicker,
   resetTagsRowOrigin,
@@ -703,8 +704,8 @@ export const wizardState = {
     // which is not the same as an explicit value, so these stay strings and are only
     // written into the payload when non-empty.
     gpuMemoryUtilization: '',
-    maxNumSeqs: '',
-    maxConcurrentRequests: '',
+    maxNumSeqs: '1', // New presets default to one stream; '' remains explicit Auto.
+    maxConcurrentRequests: '4', // One running request plus room for three queued requests.
     pflashPolicy: 'off',
     // Measured general agent-workflow default. Zero remains the explicit omit value,
     // which takes Rapid-MLX's runtime default (0, hybrid reuse disabled).
@@ -715,6 +716,7 @@ export const wizardState = {
     workloadScenario: 'interactive_coding_agent',
     reasoningMode: null,         // llama.cpp thinking/reasoning select
     rapidReasoningMode: 'on',    // Rapid-MLX checkbox (defaults to on)
+    reasoningEffort: '',         // Rapid-MLX --default-reasoning-effort ('' = send nothing)
     toolCallParser: '',
     reasoningParser: '',
     hybridMode: 'auto',
@@ -825,6 +827,7 @@ export function initSpawnWizard() {
   initHfBrowseWidgets();
 
   bindHfDownloadPanel();
+  bindRapidDownloadPanel();
   bindSidebarTipsToggle();
   initSidebarColumnResizers();
 
@@ -945,6 +948,15 @@ export function openSpawnWizard(opts = {}) {
     if (t.max_tokens != null)    wizardState.hardware.maxTokens     = t.max_tokens;
     if (t.seed != null)          wizardState.hardware.seed          = t.seed;
     if (t.alias != null)         wizardState.hardware.alias        = t.alias;
+    if (t.backend === 'rapid_mlx') {
+      // Templates retain their saved Auto/missing value rather than the new-preset default.
+      wizardState.hardware.maxNumSeqs = t.rapid_mlx?.max_num_seqs == null
+        ? '' : String(t.rapid_mlx.max_num_seqs);
+      wizardState.hardware.maxConcurrentRequests = t.rapid_mlx?.max_concurrent_requests == null
+        ? '' : String(t.rapid_mlx.max_concurrent_requests);
+      wizardState.hardware.reasoningEffort = t.rapid_mlx?.default_reasoning_effort ?? '';
+      if (dom.reasoningEffortSelect) dom.reasoningEffortSelect.value = wizardState.hardware.reasoningEffort;
+    }
     if (t.backend === 'rapid_mlx' && t.rapid_mlx) {
       const rapid = t.rapid_mlx;
       const source = rapid.model_source || null;
@@ -1155,8 +1167,10 @@ function resetWizardState() {
   wizardState.hardware.kvCacheDtype = '';
   wizardState.hardware.turboquantMode = 'none';
   wizardState.hardware.gpuMemoryUtilization = '';
-  wizardState.hardware.maxNumSeqs = '';
-  wizardState.hardware.maxConcurrentRequests = '';
+  wizardState.hardware.maxNumSeqs = '1';
+  if (dom.maxNumSeqsSelect) dom.maxNumSeqsSelect.value = '1';
+  wizardState.hardware.maxConcurrentRequests = '4';
+  if (dom.maxConcurrentRequestsSelect) dom.maxConcurrentRequestsSelect.value = '4';
   wizardState.hardware.pflashPolicy = 'off';
   wizardState.hardware.hybridCacheEntries = 16;
   wizardState.hardware.cacheMode = 'custom';
@@ -1165,6 +1179,8 @@ function resetWizardState() {
     wizardState.hardware.prefillStepSize = 512;
     wizardState.hardware.prefillStepSizeUserSet = false;
   wizardState.hardware.rapidReasoningMode = 'on';
+  wizardState.hardware.reasoningEffort = '';
+  if (dom.reasoningEffortSelect) dom.reasoningEffortSelect.value = '';
   wizardState.hardware.speculativeEnabled = false;
   wizardState.hardware.speculativeSource = 'embedded';
   wizardState.hardware.speculativeModel = '';
@@ -1642,6 +1658,7 @@ function cacheDom() {
    dom.rapidCacheModeSelect = document.getElementById('spawn-rapid-cache-mode');
    dom.workloadScenarioSelect = document.getElementById('spawn-workload-scenario'); // hidden select for compat
    dom.reasoningModeCheck   = document.getElementById('spawn-rapid-reasoning-mode');
+   dom.reasoningEffortSelect = document.getElementById('spawn-rapid-reasoning-effort');
    dom.toolCallParserSelect = document.getElementById('spawn-rapid-tool-call-parser');
    dom.reasoningParserSelect = document.getElementById('spawn-rapid-reasoning-parser');
    dom.hybridModeSelect = document.getElementById('spawn-rapid-hybrid-mode');
@@ -2383,6 +2400,9 @@ function getStepGuardState(step = wizardState.currentStep) {
     // Workload/use-case is now chosen on page 1 and auto-applied with a sane
     // default (Phase 7B2's dedicated step-3 picker + confirmation gate was
     // redundant with it and has been removed).
+    if (isRapidModelMissing()) {
+      return error('Download the model above before continuing. Rapid-MLX serves it from your models folder.');
+    }
     if (wizardState.engine.selected === 'rapid_mlx') {
       return info('Rapid-MLX backend controls remain isolated from llama.cpp memory and speculation flags.');
     }
@@ -2608,6 +2628,7 @@ export function showStep(index) {
     // capability may populate an explicit recommendation; otherwise leave the
     // control unset and let the server-owned safe default apply.
     if (!rapid) _updateSpecHint(dom.specTypeSelect?.value || '');
+    if (rapid) void refreshRapidModelDownload();
     // Trigger download panel now (moved from file-select to hardware step entry)
     const dlPanel = document.getElementById('hf-download-panel');
     if (wizardState.model.source === 'hf' && wizardState.model.hfFile) {

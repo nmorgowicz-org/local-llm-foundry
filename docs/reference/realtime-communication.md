@@ -23,7 +23,7 @@ If chat generation is active, the backend preserves the normal interval to avoid
 Configurable from 200ms to 10s via the nav **Cadence** chip or **Settings > Performance**. The interval controls how often the server pushes dashboard updates. For local sessions, GPU telemetry is also kept from polling faster than the dashboard can display it; system metrics and remote-agent checks may still use their own cadence.
 
 | Interval | Use Case |
-|----------|----------|
+| ---------- | ---------- |
 | 200ms | Maximum responsiveness, higher CPU/network usage |
 | 500ms | Default, balanced responsiveness and resource usage |
 | 1000ms | Moderate updates, lower resource usage |
@@ -37,7 +37,7 @@ The browser's [Network Information API](https://developer.mozilla.org/en-US/docs
 ### Auto-Detection Mapping
 
 | Connection Type | Auto Interval | Label |
-|-----------------|---------------|-------|
+| ----------------- | --------------- | ------- |
 | `slow-2g` | 5000ms | Very Slow (2G) |
 | `2g` | 5000ms | Slow (2G) |
 | `3g` | 2000ms | Moderate (3G) |
@@ -116,7 +116,7 @@ Payload is reduced depending on `mode`. In logs-only and sleep, some fields may 
 Populated by polling the llama.cpp server's `/metrics`, `/slots`, and `/v1/models` endpoints.
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `prompt_tokens_per_sec` | `f64` | Live prompt throughput (0 when idle) |
 | `generation_tokens_per_sec` | `f64` | Live generation throughput (0 when idle) |
 | `last_prompt_tokens_per_sec` | `f64` | Retained peak prompt throughput |
@@ -154,7 +154,7 @@ Populated by polling the llama.cpp server's `/metrics`, `/slots`, and `/v1/model
 One entry per slot returned by `/slots`.
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `id` | `u64 \| null` | Slot index |
 | `n_ctx` | `u64` | Context window size for this slot |
 | `is_processing` | `bool` | Whether the slot is currently active |
@@ -177,7 +177,7 @@ One entry per slot returned by `/slots`.
 Empty object when `host_metrics_available` is false.
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `temp` | `f32` | GPU temperature °C |
 | `load` | `u32` | GPU utilization % |
 | `power_consumption` | `f32` | Current power draw (W) |
@@ -196,11 +196,12 @@ On Apple Silicon, `power_consumption` is derived from `gpu_power` (dedicated GPU
 `null` when `host_metrics_available` is false.
 
 | Field | Type | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | `cpu_name` | `string` | CPU model string |
 | `cpu_temp` | `f32` | CPU temperature °C |
 | `cpu_temp_available` | `bool` | False on platforms without sensor access |
 | `cpu_load` | `u32` | CPU utilization % |
+| `cpu_load_available` | `bool?` | `false` while no real CPU sample exists yet (`cpu_load` is a placeholder 0); absent from older senders |
 | `cpu_clock_mhz` | `u32` | Current CPU clock MHz |
 | `ram_total_gb` | `f64` | Total RAM (GB) |
 | `ram_used_gb` | `f64` | RAM in use (GB) |
@@ -218,7 +219,7 @@ On Apple Silicon, `power_consumption` is derived from `gpu_power` (dedicated GPU
 Used in `availability.system`, `availability.gpu`, and `availability.cpu_temp`.
 
 | Value | Meaning |
-|-------|---------|
+| ------- | --------- |
 | `"Available"` | Metric is live and working |
 | `"RemoteEndpoint"` | No host metrics over remote connection without agent |
 | `"NoDisplay"` | No graphical session (headless system) |

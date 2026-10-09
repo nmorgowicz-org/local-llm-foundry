@@ -421,6 +421,8 @@ test.describe('@fake-data-bypass llama.cpp inference efficiency', () => {
     const base = {
       backend: 'llama_cpp', sessionId: 'history-a', endpointTag: 'target-a', attached: true,
       state: 'generating', decodeTps: 100, prefillTps: 50, running: 1, waiting: 2,
+      // An active rate is sampled only when the normalized view marks it current.
+      decodeCurrent: true,
       gpu: { load: 60, name: 'fixture GPU', vramUsed: 4, unifiedTotal: 16, vramTotal: 12, temp: 40, power: 30 },
       sys: { cpu: 20, cpuName: 'fixture CPU' },
     };
@@ -431,9 +433,25 @@ test.describe('@fake-data-bypass llama.cpp inference efficiency', () => {
         updateMetricCards(value);
       }, view);
     };
+    // Sampling and drawing are synchronous in updateMetricCards. Snapshot every
+    // series by name so missing paths cannot make an empty .every() pass.
     const paths = async () => page.locator('#metrics-grid .mcard__spark-line').evaluateAll(
-      nodes => nodes.map(node => node.getAttribute('d') || ''),
+      nodes => Object.fromEntries(nodes.map(node => [
+        node.closest('.mcard').id.replace('mc-card-', '') + (node.closest('.mcard__spark-alt') ? '-alt' : ''),
+        node.getAttribute('d') || '',
+      ])),
     );
+    const sampledPaths = {
+      speed: 'M0.00,4.00L100.00,4.00',
+      'speed-alt': 'M0.00,30.00L100.00,30.00', // Inactive prefill plots zero, not its last measured 50.
+      queue: 'M0.00,4.00L100.00,4.00',
+      gpu: 'M0.00,14.40L100.00,14.40',
+      vram: 'M0.00,23.50L100.00,23.50',
+      temp: 'M0.00,19.60L100.00,19.60',
+      power: 'M0.00,4.00L100.00,4.00',
+      cpu: 'M0.00,24.80L100.00,24.80',
+    };
+    const emptyPaths = Object.fromEntries(Object.keys(sampledPaths).map(key => [key, '']));
     for (const changed of [
       { backend: 'rapid_mlx' }, { sessionId: 'history-b' },
       { endpointTag: 'target-b' }, { attached: false },
@@ -441,19 +459,17 @@ test.describe('@fake-data-bypass llama.cpp inference efficiency', () => {
       await update(base);
       time += 1000;
       await update(base);
-      expect((await paths()).every(path => path.startsWith('M'))).toBe(true);
+      expect(await paths()).toEqual(sampledPaths);
       // Switch inside the previous speed throttle: the first new sample must
       // still be accepted, but one sample cannot draw an old-target segment.
       time += 100;
       const next = { ...base, ...changed, decodeTps: 10, waiting: 1 };
       await update(next);
-      expect((await paths()).every(path => path === '')).toBe(true);
+      expect(await paths()).toEqual(emptyPaths);
       time += 1000;
       await update(next);
-      expect((await paths()).every(path => path.startsWith('M'))).toBe(true);
-      await expect(page.locator('#mc-card-speed > .mcard__spark > .mcard__spark-line')).toHaveAttribute(
-        'd', 'M0.00,4.00L100.00,4.00',
-      );
+      // Two new-owner samples draw flat segments, never a third old-owner point.
+      expect(await paths()).toEqual(sampledPaths);
       time += 1000;
     }
   });

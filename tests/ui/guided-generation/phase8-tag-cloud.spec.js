@@ -3,6 +3,11 @@
 import { test, expect } from '@playwright/test';
 import { switchToChat, enableGuidedGenFeatures, mockSuggestionsAPI } from './fixtures.js';
 
+// Count chips not hidden by the search filter, independently of group visibility.
+const countVisible = (chips) => chips.evaluateAll(
+  (els) => els.filter(el => el.style.display !== 'none').length,
+);
+
 test.describe('Phase 8 - Tag Cloud', () => {
   test.beforeEach(async ({ page }) => {
     await switchToChat(page);
@@ -111,12 +116,9 @@ test.describe('Phase 8 - Tag Cloud', () => {
 
     const searchInput = page.locator('#suggestion-search-input');
 
-    // All chips visible initially
+    // All chips pass the empty search filter, including the gated explicit chip.
     const allChips = page.locator('.suggestion-category-btn');
-    const visibleCount = await allChips.evaluateAll(
-      (els) => els.filter(el => el.style.display !== 'none').length,
-    );
-    expect(visibleCount).toBe(15);
+    await expect.poll(() => countVisible(allChips)).toBe(15);
 
     // Type "horror" — only Horror chip should remain visible
     await searchInput.fill('horror');
@@ -138,7 +140,7 @@ test.describe('Phase 8 - Tag Cloud', () => {
     const explicitDisplay = await explicitGroup.evaluate(el => el.style.display);
     expect(explicitDisplay).toBe('none');
 
-    // Clear search — all chips return
+    // Clear search — all chips pass the filter again.
     await searchInput.fill('');
     await expect.poll(() => countVisible(allChips)).toBe(15);
   });

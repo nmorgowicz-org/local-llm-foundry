@@ -102,17 +102,30 @@ test.describe('@fake-data-bypass Rapid-MLX dashboard card registry', () => {
   });
 
   test('resets between sessions and restores llama nodes on backend switch', async ({ page }) => {
+    // The generation card was removed from the static markup by the unified
+    // metric cards (#443), so compare against the nodes actually parked.
+    const before = await page.evaluate(() => ({
+      inference: document.querySelector('#inference')?.children.length ?? 0,
+      detail: document.querySelector('.inference-detail-grid')?.children.length ?? 0,
+      context: document.querySelectorAll('.widget-context').length,
+    }));
+    expect(before.inference).toBeGreaterThan(0);
     await render(page, fullSample, 1, false, 'rapid-a');
     await render(page, null, 2, false, 'rapid-b');
     const loading = page.locator('[data-telemetry-state="loading"]');
     await expect(loading).toHaveCount(1);
     await expect(loading).toHaveAttribute('role', 'status');
+    await expect(page.locator('.widget-context')).toHaveCount(0);
     await page.evaluate(async () => {
       const cards = await import('/js/features/rapid-mlx-cards.js');
       cards.restoreLlamaCards();
     });
-    await expect(page.locator('.widget-generation')).toHaveCount(1);
-    await expect(page.locator('.widget-context')).toHaveCount(1);
     await expect(page.locator('#rapid-mlx-card-grid')).toHaveCount(0);
+    await expect(page.locator('.widget-context')).toHaveCount(before.context);
+    const after = await page.evaluate(() => ({
+      inference: document.querySelector('#inference')?.children.length ?? 0,
+      detail: document.querySelector('.inference-detail-grid')?.children.length ?? 0,
+    }));
+    expect(after).toEqual({ inference: before.inference, detail: before.detail });
   });
 });

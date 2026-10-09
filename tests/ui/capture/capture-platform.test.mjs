@@ -21,7 +21,7 @@ test('non-Rapid captures remain cross-platform', () => {
         null,
     );
     assert.equal(
-        capturePlatformSkipReason(SCENARIOS['dashboard-rapid-mlx'], { platform: 'win32', arch: 'x64' }),
+        capturePlatformSkipReason(SCENARIOS.dashboard, { platform: 'win32', arch: 'x64' }),
         null,
     );
 });

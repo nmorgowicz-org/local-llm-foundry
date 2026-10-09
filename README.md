@@ -76,15 +76,13 @@ Rapid-MLX is now a first-class inference backend for Apple Silicon. Local LLM Fo
   the Rapid-MLX runtime automatically; the nav pill turns amber when a newer
   release exists, and both runtimes (Rapid-MLX and the llama.cpp binary) can be
   uninstalled from their manage dialogs — downloaded models are always kept.
-- Live telemetry: the dashboard surfaces Rapid-MLX-specific metrics (throughput, context, model info) alongside llama.cpp, with the same UX.
-
-![Rapid-MLX dashboard](docs/screenshots/dashboard-rapid-mlx--rapidmlx-local--dark.png)
+- Live telemetry: Rapid-MLX uses the same performance dashboard as llama.cpp, with optional engine-specific telemetry when the runtime provides it.
 
 ![Curated Rapid-MLX model picker](docs/screenshots/rapidmlx-local--spawn-wizard-rapid-catalog-picker.png)
 
 ### Live Monitoring Cockpit
 
-Top nav and Server tab show Speed (throughput), context pressure, connection details, active sessions, and model/runtime details in real time. Local sessions read host telemetry directly; remote sessions gain the same depth via the remote agent.
+The shared llama.cpp/Rapid-MLX performance dashboard shows throughput, context pressure, connection details, active sessions, and model/runtime details in real time. Optional engine-specific telemetry appears when provided by the active runtime. Local sessions read host telemetry directly; remote sessions gain host telemetry via the remote agent.
 
 ![Performance & metrics](docs/screenshots/neutral--performance-metrics.gif)
 

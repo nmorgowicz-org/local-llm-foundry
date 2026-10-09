@@ -776,3 +776,120 @@ async fn sessions_recent_requires_api_token() {
         "wrong token must be rejected for sessions/recent"
     );
 }
+
+// ===================== REAL ROUTE AUTH: RAPID-MLX MODEL ENDPOINTS =====================
+
+// Unlike the helper-level tests above, these drive the real warp routes through
+// `api_routes`, so they prove each handler actually calls `check_api_token`.
+// Authorized requests deliberately use inputs that stop at validation or lookup
+// (400/404) or a read-only status probe, so no download worker or subprocess starts.
+
+mod model_endpoint_routes {
+    use super::*;
+    use llama_monitor::{state::AppState, web::api::api_routes};
+    use std::sync::Arc;
+    use warp::http::StatusCode;
+
+    /// One request against a route: `(method, path, json_body, status_when_authorized)`.
+    type Case = (&'static str, &'static str, Option<&'static str>, StatusCode);
+
+    const CASES: [Case; 4] = [
+        (
+            "GET",
+            "/api/rapid-mlx/model-status?source=owner/model",
+            None,
+            StatusCode::OK,
+        ),
+        (
+            "POST",
+            "/api/models/downloads",
+            // Valid JSON, invalid repo_id: passes auth, then fails validation.
+            Some(r#"{"repo_id":"not a repo"}"#),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "GET",
+            "/api/models/downloads/mdl-unknown",
+            None,
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "POST",
+            "/api/models/downloads/mdl-unknown/cancel",
+            None,
+            StatusCode::NOT_FOUND,
+        ),
+    ];
+
+    async fn status(cfg: AppConfig, case: Case, token: Option<&str>) -> StatusCode {
+        let routes = api_routes(
+            AppState::default(),
+            Arc::new(cfg),
+            auth_none(),
+            "127.0.0.1".to_string(),
+        );
+        let (method, path, body, _) = case;
+        let mut request = warp::test::request().method(method).path(path);
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        if let Some(body) = body {
+            request = request
+                .header("content-type", "application/json")
+                .body(body);
+        }
+        request.reply(&routes).await.status()
+    }
+
+    #[tokio::test]
+    async fn model_endpoints_return_401_without_a_token() {
+        for case in CASES {
+            assert_eq!(
+                status(cfg_api_only(), case, None).await,
+                StatusCode::UNAUTHORIZED,
+                "{} {}",
+                case.0,
+                case.1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn model_endpoints_return_401_with_a_wrong_token() {
+        for case in CASES {
+            assert_eq!(
+                status(cfg_api_only(), case, Some("wrong-token")).await,
+                StatusCode::UNAUTHORIZED,
+                "{} {}",
+                case.0,
+                case.1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn model_endpoints_accept_the_api_token() {
+        for case in CASES {
+            assert_eq!(
+                status(cfg_api_only(), case, Some(TEST_API_TOKEN)).await,
+                case.3,
+                "{} {}",
+                case.0,
+                case.1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn model_endpoints_are_open_when_no_api_token_is_configured() {
+        for case in CASES {
+            assert_eq!(
+                status(cfg_no_tokens(), case, None).await,
+                case.3,
+                "{} {}",
+                case.0,
+                case.1
+            );
+        }
+    }
+}
