@@ -14,11 +14,57 @@ const MODELS = {
   [REPO_A]: { ok: true, repo_id: REPO_A, size_bytes: 4 * GiB, cached: false, quant: '4-bit' },
 };
 
+const transientPollResponses = [
+  ['HTTP 500', { status: 500, json: { ok: false, error: 'temporarily unavailable' } }],
+  ['HTTP 500 with a terminal-looking body', { status: 500, json: { ok: true, job: { state: 'complete' } } }],
+  ['HTTP 404', { status: 404, json: { ok: false, error: 'not found' } }],
+  ['invalid JSON', { contentType: 'application/json', body: '{' }],
+  ['missing job', { json: { ok: true } }],
+  ['null job', { json: { ok: true, job: null } }],
+  ['unknown state', { json: { ok: true, job: { state: 'unknown' } } }],
+  ['unsuccessful envelope', { json: { ok: false, job: { state: 'complete' } } }],
+];
+
+const trackedJob = (page, repo = REPO_A) => page.evaluate(async repoId =>
+  (await import('/js/features/rapid-model-download.js')).activeRapidDownloadJob(repoId), repo);
+
+async function freezePollClock(page) {
+  await page.clock.install({ time: new Date('2030-01-01T00:00:00Z') });
+  await page.clock.pauseAt(new Date('2030-01-01T00:00:01Z'));
+}
+
+// Advance browser timers while waiting on the real poller's asynchronous fetch chain.
+async function nextPoll(page, fake, id = 'job-1', waitForResponse = true) {
+  const response = waitForResponse ? page.waitForResponse(resp =>
+    new URL(resp.url()).pathname === `/api/models/downloads/${id}` && resp.request().method() === 'GET') : null;
+  const before = fake.polls[id] || 0;
+  await expect.poll(async () => {
+    await page.clock.runFor(1500);
+    return fake.polls[id] || 0;
+  }).toBeGreaterThan(before);
+  if (response) {
+    await (await response).finished();
+    await page.evaluate(() => {}); // let the browser consume the response before asserting retained state
+  }
+}
+
+async function pollAfterDelay(page, fake, delay) {
+  const before = fake.polls['job-1'];
+  const response = page.waitForResponse(resp =>
+    new URL(resp.url()).pathname === '/api/models/downloads/job-1' && resp.request().method() === 'GET');
+  await page.clock.runFor(delay - 1);
+  expect(fake.polls['job-1']).toBe(before);
+  await page.clock.runFor(1);
+  await (await response).finished();
+  await page.evaluate(() => {});
+  expect(fake.polls['job-1']).toBe(before + 1);
+}
+
 /** In-test fake of the download + model-status endpoints. */
 async function fakeBackend(page) {
   const fake = {
     statusRequests: [], starts: [], polls: {}, cancels: [], jobs: {},
-    holdStart: null, holdPoll: null, models: structuredClone(MODELS),
+    holdStart: null, holdPoll: null, pollResponses: {}, cancelResponses: [], models: structuredClone(MODELS),
   };
   await page.route('**/api/rapid-mlx/model-status?*', route => {
     const source = new URL(route.request().url()).searchParams.get('source');
@@ -32,7 +78,12 @@ async function fakeBackend(page) {
     fake.starts.push(body.repo_id);
     if (fake.holdStart) await fake.holdStart;
     const id = `job-${fake.starts.length}`;
-    fake.jobs[id] = { state: 'running', bytes_done: GiB, bytes_total: 4 * GiB, current_file: 'weights.safetensors' };
+    fake.jobs[id] = {
+      repo_id: body.repo_id, revision: 'main', engine: 'rapid-mlx',
+      state: 'running', message: '', error: null, local_path: null,
+      bytes_done: GiB, bytes_total: 4 * GiB, current_file: 'weights.safetensors',
+      stalled: false, restarts: 0,
+    };
     return route.fulfill({ json: { ok: true, job_id: id } });
   });
   await page.route('**/api/models/downloads/**', async route => {
@@ -40,11 +91,15 @@ async function fakeBackend(page) {
     const [, id, action] = url.pathname.match(/downloads\/([^/]+)(?:\/(cancel))?$/) || [];
     if (action === 'cancel') {
       fake.cancels.push(id);
+      const response = fake.cancelResponses.shift();
+      if (response) return route.fulfill(response);
       if (fake.jobs[id]) fake.jobs[id].state = 'cancelled';
       return route.fulfill({ json: { ok: true } });
     }
     fake.polls[id] = (fake.polls[id] || 0) + 1;
     if (fake.holdPoll) await fake.holdPoll;
+    const response = fake.pollResponses[id]?.shift();
+    if (response) return route.fulfill(response);
     return route.fulfill({ json: { ok: true, job: fake.jobs[id] || {} } });
   });
   return fake;
@@ -177,6 +232,109 @@ test.describe('@fake-data-bypass Rapid-MLX wizard download step', () => {
     expect(fake.cancels).toEqual([]);
   });
 
+  for (const [label, response] of transientPollResponses) {
+    test(`${label} preserves wizard progress and tracking until a valid poll completes`, async ({ page }) => {
+      const fake = await fakeBackend(page);
+      await freezePollClock(page);
+      await openWizard(page);
+      await select(page, 'alias-a');
+      await page.locator('#rapid-dlp-download-btn').click();
+      await expect(page.locator('#rapid-dlp-stats')).toContainText('1.0 GiB / 4.0 GiB');
+      fake.pollResponses['job-1'] = [response];
+      await nextPoll(page, fake);
+
+      await expect(page.locator('#rapid-dlp-progress')).toBeVisible();
+      await expect(page.locator('#rapid-dlp-progress-pct')).toHaveText('25%');
+      await expect(page.locator('#rapid-dlp-download-btn')).toBeDisabled();
+      await expect(page.locator('#rapid-dlp-cancel-btn')).toBeEnabled();
+      expect(await trackedJob(page)).toBe('job-1');
+      expect(await missingRepo(page)).toBe(REPO_A);
+      await select(page, 'alias-a');
+      await page.evaluate(() => document.getElementById('rapid-dlp-download-btn').click());
+      expect(fake.starts).toEqual([REPO_A]);
+
+      fake.jobs['job-1'].bytes_done = 2 * GiB;
+      await nextPoll(page, fake);
+      await expect(page.locator('#rapid-dlp-progress-pct')).toHaveText('50%');
+      expect(await trackedJob(page)).toBe('job-1');
+      fake.jobs['job-1'].state = 'complete';
+      await nextPoll(page, fake);
+      await expect(page.locator('#rapid-dlp-complete')).toBeVisible();
+      expect(await trackedJob(page)).toBeNull();
+      expect(await missingRepo(page)).toBeNull();
+      expect(fake.starts).toEqual([REPO_A]);
+    });
+  }
+
+  test('queued wizard jobs remain active and an explicit failed state alone offers retry', async ({ page }) => {
+    const fake = await fakeBackend(page);
+    await freezePollClock(page);
+    await openWizard(page);
+    await select(page, 'alias-a');
+    fake.pollResponses['job-1'] = [{ json: { ok: true, job: { state: 'queued' } } }];
+    await page.locator('#rapid-dlp-download-btn').click();
+    await expect(page.locator('#rapid-dlp-progress')).toBeVisible();
+    await expect.poll(() => trackedJob(page)).toBe('job-1');
+    await expect(page.locator('#rapid-dlp-download-btn')).toBeDisabled();
+    await nextPoll(page, fake);
+    await expect(page.locator('#rapid-dlp-progress-pct')).toHaveText('25%');
+    fake.jobs['job-1'].state = 'failed';
+    fake.jobs['job-1'].error = 'disk full';
+    await nextPoll(page, fake);
+    await expect(page.locator('#rapid-dlp-idle')).toBeVisible();
+    await expect(page.locator('#rapid-dlp-note')).toContainText('disk full');
+    await expect(page.locator('#rapid-dlp-download-btn')).toBeEnabled();
+    expect(await trackedJob(page)).toBeNull();
+  });
+
+  test('wizard poll errors back off to a bounded delay and success restores normal polling', async ({ page }) => {
+    const fake = await fakeBackend(page);
+    await freezePollClock(page);
+    await openWizard(page);
+    await select(page, 'alias-a');
+    await page.locator('#rapid-dlp-download-btn').click();
+    await expect(page.locator('#rapid-dlp-progress-pct')).toHaveText('25%');
+    fake.pollResponses['job-1'] = Array.from({ length: 7 }, () => transientPollResponses[0][1]);
+    for (const delay of [1500, 3000, 6000, 12000, 24000, 30000, 30000]) {
+      await pollAfterDelay(page, fake, delay);
+      expect(await trackedJob(page)).toBe('job-1');
+    }
+    fake.jobs['job-1'].bytes_done = 2 * GiB;
+    await pollAfterDelay(page, fake, 30000);
+    await expect(page.locator('#rapid-dlp-progress-pct')).toHaveText('50%');
+    await pollAfterDelay(page, fake, 1500);
+    expect(fake.starts).toEqual([REPO_A]);
+  });
+
+  test('switching sources during a failed poll detaches and later resumes the same job', async ({ page }) => {
+    const fake = await fakeBackend(page);
+    await freezePollClock(page);
+    await openWizard(page);
+    await select(page, 'alias-a');
+    await page.locator('#rapid-dlp-download-btn').click();
+    await expect(page.locator('#rapid-dlp-progress-pct')).toHaveText('25%');
+    let release;
+    fake.holdPoll = new Promise(resolve => { release = resolve; });
+    fake.pollResponses['job-1'] = [transientPollResponses[0][1]];
+    await nextPoll(page, fake, 'job-1', false);
+    await select(page, 'alias-b');
+    fake.holdPoll = null;
+    release();
+    await expect(page.locator('#rapid-dlp-repo')).toContainText(REPO_B);
+    expect(await trackedJob(page)).toBe('job-1');
+    const before = fake.polls['job-1'];
+    await page.clock.runFor(30_000);
+    expect(fake.polls['job-1']).toBe(before);
+    await select(page, 'alias-a');
+    await expect(page.locator('#rapid-dlp-progress-pct')).toHaveText('25%');
+    expect(fake.starts).toEqual([REPO_A]);
+    await page.locator('#rapid-dlp-cancel-btn').click();
+    await nextPoll(page, fake);
+    await expect(page.locator('#rapid-dlp-note')).toContainText('Download cancelled');
+    expect(await trackedJob(page)).toBeNull();
+    expect(fake.cancels).toEqual(['job-1']);
+  });
+
   test('cancel reports the cancelled job and offers a resumable retry', async ({ page }) => {
     const fake = await fakeBackend(page);
     await openWizard(page);
@@ -224,6 +382,119 @@ test.describe('@fake-data-bypass Rapid-MLX preset card download state', () => {
     await expect(page.locator('#card-2 .launch-card-dl-btn')).toBeDisabled();
     await expect(page.locator('#card-2 .launch-card-dl-label')).toContainText('Downloading');
     expect(fake.starts).toEqual([REPO_A]);
+  });
+
+  for (const [label, response] of transientPollResponses) {
+    test(`${label} preserves card progress and cancel until polling succeeds`, async ({ page }) => {
+      const fake = await fakeBackend(page);
+      await freezePollClock(page);
+      await mountCard(page, 'card-1');
+      await page.locator('#card-1 .launch-card-dl-btn').click();
+      await expect(page.locator('#card-1 .launch-card-dl-label')).toContainText('Downloading 25%');
+      fake.pollResponses['job-1'] = [response];
+      await nextPoll(page, fake);
+      await expect(page.locator('#card-1 .launch-card-dl-label')).toContainText('Downloading 25%');
+      await expect(page.locator('#card-1 .launch-card-dl-btn')).toBeDisabled();
+      await expect(page.locator('#card-1 .launch-card-dl-cancel')).toBeVisible();
+      await expect(page.locator('#card-1 .launch-card-dl-cancel')).toBeEnabled();
+      expect(await trackedJob(page)).toBe('job-1');
+      await page.locator('#card-1 .launch-card-btn-start').click();
+      expect(fake.starts).toEqual([REPO_A]);
+
+      fake.jobs['job-1'].bytes_done = 2 * GiB;
+      await nextPoll(page, fake);
+      await expect(page.locator('#card-1 .launch-card-dl-label')).toContainText('Downloading 50%');
+      fake.jobs['job-1'].state = 'complete';
+      await nextPoll(page, fake);
+      await expect(page.locator('#card-1 .launch-card-dl')).toHaveCount(0);
+      await expect(page.locator('#card-1')).not.toHaveAttribute('data-model-missing', '1');
+      expect(await trackedJob(page)).toBeNull();
+      expect(fake.starts).toEqual([REPO_A]);
+    });
+  }
+
+  for (const state of ['failed', 'cancelled']) {
+    test(`queued card jobs retain tracking until explicit ${state}`, async ({ page }) => {
+      const fake = await fakeBackend(page);
+      await freezePollClock(page);
+      await mountCard(page, 'card-1');
+      fake.pollResponses['job-1'] = [{ json: { ok: true, job: { state: 'queued' } } }];
+      await page.locator('#card-1 .launch-card-dl-btn').click();
+      await expect.poll(() => trackedJob(page)).toBe('job-1');
+      await expect(page.locator('#card-1 .launch-card-dl-btn')).toBeDisabled();
+      await expect(page.locator('#card-1 .launch-card-dl-cancel')).toBeVisible();
+      await nextPoll(page, fake);
+      await expect(page.locator('#card-1 .launch-card-dl-label')).toContainText('Downloading 25%');
+      fake.jobs['job-1'].state = state;
+      await nextPoll(page, fake);
+      await expect(page.locator('#card-1 .launch-card-dl-btn')).toBeEnabled();
+      await expect(page.locator('#card-1 .launch-card-dl-btn')).toHaveText(state === 'failed' ? 'Retry' : 'Resume');
+      expect(await trackedJob(page)).toBeNull();
+    });
+  }
+
+  test('card poll errors back off to a bounded delay and success restores normal polling', async ({ page }) => {
+    const fake = await fakeBackend(page);
+    await freezePollClock(page);
+    await mountCard(page, 'card-1');
+    await page.locator('#card-1 .launch-card-dl-btn').click();
+    await expect(page.locator('#card-1 .launch-card-dl-label')).toContainText('Downloading 25%');
+    fake.pollResponses['job-1'] = Array.from({ length: 7 }, () => transientPollResponses[0][1]);
+    for (const delay of [1500, 3000, 6000, 12000, 24000, 30000, 30000]) {
+      await pollAfterDelay(page, fake, delay);
+      expect(await trackedJob(page)).toBe('job-1');
+    }
+    fake.jobs['job-1'].bytes_done = 2 * GiB;
+    await pollAfterDelay(page, fake, 30000);
+    await expect(page.locator('#card-1 .launch-card-dl-label')).toContainText('Downloading 50%');
+    await pollAfterDelay(page, fake, 1500);
+    expect(fake.starts).toEqual([REPO_A]);
+  });
+
+  test('a failed cancellation request leaves card cancel usable while poll status is unavailable', async ({ page }) => {
+    const fake = await fakeBackend(page);
+    await freezePollClock(page);
+    await mountCard(page, 'card-1');
+    await page.locator('#card-1 .launch-card-dl-btn').click();
+    await expect(page.locator('#card-1 .launch-card-dl-label')).toContainText('Downloading 25%');
+    fake.pollResponses['job-1'] = [transientPollResponses[0][1]];
+    await nextPoll(page, fake);
+    fake.cancelResponses = [{ status: 500, json: { ok: false } }];
+    await page.locator('#card-1 .launch-card-dl-cancel').click();
+    await expect(page.locator('#card-1 .launch-card-dl-cancel')).toBeEnabled();
+    expect(await trackedJob(page)).toBe('job-1');
+    await page.locator('#card-1 .launch-card-dl-cancel').click();
+    await nextPoll(page, fake);
+    await expect(page.locator('#card-1 .launch-card-dl-btn')).toHaveText('Resume');
+    expect(fake.cancels).toEqual(['job-1', 'job-1']);
+    expect(await trackedJob(page)).toBeNull();
+  });
+
+  test('a card removed during a failed poll keeps tracking and its replacement can cancel', async ({ page }) => {
+    const fake = await fakeBackend(page);
+    await freezePollClock(page);
+    await mountCard(page, 'card-1');
+    await page.locator('#card-1 .launch-card-dl-btn').click();
+    await expect(page.locator('#card-1 .launch-card-dl-label')).toContainText('Downloading 25%');
+    let release;
+    fake.holdPoll = new Promise(resolve => { release = resolve; });
+    fake.pollResponses['job-1'] = [transientPollResponses[0][1]];
+    await nextPoll(page, fake, 'job-1', false);
+    await page.evaluate(() => document.getElementById('card-1').remove());
+    fake.holdPoll = null;
+    release();
+    const before = fake.polls['job-1'];
+    await page.clock.runFor(30_000);
+    expect(fake.polls['job-1']).toBe(before);
+    expect(await trackedJob(page)).toBe('job-1');
+    await mountCard(page, 'card-2');
+    await expect(page.locator('#card-2 .launch-card-dl-label')).toContainText('Downloading 25%');
+    await page.locator('#card-2 .launch-card-dl-cancel').click();
+    await nextPoll(page, fake);
+    await expect(page.locator('#card-2 .launch-card-dl-btn')).toHaveText('Resume');
+    expect(await trackedJob(page)).toBeNull();
+    expect(fake.starts).toEqual([REPO_A]);
+    expect(fake.cancels).toEqual(['job-1']);
   });
 
   test('cancel with no job id is a no-op', async ({ page }) => {

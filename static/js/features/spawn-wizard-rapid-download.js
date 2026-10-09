@@ -15,6 +15,8 @@ import {
 } from './rapid-model-download.js';
 
 const POLL_MS = 1500;
+const MAX_POLL_MS = 30_000;
+const JOB_STATES = new Set(['queued', 'running', 'complete', 'failed', 'cancelled']);
 // The download this panel is currently attached to: { source, info, id }. `id` is null
 // while the start request is in flight. Every async continuation compares against the
 // object it captured, so a stale job can never touch the panel or wizardState after the
@@ -173,10 +175,20 @@ async function poll(job, fromTimer = false) {
   };
   try {
     const resp = await fetch(`/api/models/downloads/${encodeURIComponent(job.id)}`, { headers: headers() });
-    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error('Download status unavailable');
+    const data = await resp.json();
     // Stale guard: the user switched model/source (or restarted) while this was in flight.
     if (currentJob !== job || selectedSource() !== job.source) return;
-    const status = data.job || {};
+    const status = data?.job;
+    if (data?.ok !== true || !JOB_STATES.has(status?.state)) {
+      throw new Error('Invalid download status');
+    }
+    job.pollFailures = 0;
+    if (status.state === 'queued') {
+      $('rapid-dlp-stats').textContent = 'Download queued\u2026';
+      again(POLL_MS);
+      return;
+    }
     if (status.state === 'running') {
       const pct = status.bytes_total > 0 ? Math.min(100, Math.round((status.bytes_done / status.bytes_total) * 100)) : 0;
       $('rapid-dlp-bar').style.width = `${pct}%`;
@@ -202,7 +214,12 @@ async function poll(job, fromTimer = false) {
       ? 'Download cancelled. Finished files are kept; download again to resume.'
       : `Download failed${status.error ? `: ${status.error}` : ''}. Try again.`);
   } catch {
-    if (currentJob === job) again(POLL_MS * 2);
+    if (currentJob === job && selectedSource() === job.source) {
+      // Missing/evicted jobs (including 404) are not proof of termination. Retain the
+      // job and last progress, retry with capped backoff, and never invite a duplicate.
+      job.pollFailures = Math.min((job.pollFailures || 0) + 1, 5);
+      again(Math.min(MAX_POLL_MS, POLL_MS * 2 ** job.pollFailures));
+    }
   } finally {
     if (!rescheduled) job.polling = false;
   }

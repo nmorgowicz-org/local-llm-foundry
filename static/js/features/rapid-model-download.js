@@ -7,6 +7,8 @@
 import { showToast } from './toast.js';
 
 const POLL_MS = 1500;
+const MAX_POLL_MS = 30_000;
+const JOB_STATES = new Set(['queued', 'running', 'complete', 'failed', 'cancelled']);
 
 function headers(json = false) {
     const base = window.authHeaders ? window.authHeaders() : {};
@@ -134,6 +136,7 @@ export async function attachRapidDownloadState(card, source) {
     let busy = false;
     let alive = true;
     let pollTimer = null;
+    let pollFailures = 0;
 
     // Stops this card's poll loop and listener. Does not cancel the job: it keeps running
     // server-side and stays tracked, so a re-rendered card for the same repo resumes it.
@@ -176,11 +179,22 @@ export async function attachRapidDownloadState(card, source) {
         const polledJob = jobId;
         try {
             const resp = await fetch(`/api/models/downloads/${encodeURIComponent(polledJob)}`, { headers: headers() });
-            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error('Download status unavailable');
+            const data = await resp.json();
             if (!alive || jobId !== polledJob) return;
-            const job = data.job || {};
+            if (!document.contains(card)) { teardown(); return; }
+            const job = data?.job;
+            if (data?.ok !== true || !JOB_STATES.has(job?.state)) {
+                throw new Error('Invalid download status');
+            }
+            pollFailures = 0;
+            if (job.state === 'queued') {
+                label.textContent = 'Download queued…';
+                schedule(POLL_MS);
+                return;
+            }
             if (job.state === 'running') {
-                if (job.bytes_total > 0) {
+                if (job.bytes_total > 0 && Number.isFinite(job.bytes_done) && Number.isFinite(job.bytes_total)) {
                     const pct = Math.min(100, Math.round((job.bytes_done / job.bytes_total) * 100));
                     fill.style.width = `${pct}%`;
                     label.textContent = `Downloading ${pct}% · ${fmtGiB(job.bytes_done)} / ${fmtGiB(job.bytes_total)}`;
@@ -208,7 +222,12 @@ export async function attachRapidDownloadState(card, source) {
             dlBtn.textContent = 'Retry';
             finish('idle');
         } catch {
-            if (alive && jobId === polledJob) schedule(POLL_MS * 2);
+            if (!alive || jobId !== polledJob) return;
+            if (!document.contains(card)) { teardown(); return; }
+            // Even 404 can be temporary or an evicted job: never offer a duplicate start
+            // without an explicit terminal state. Keep progress/cancel and cap retry delay.
+            pollFailures = Math.min(pollFailures + 1, 5);
+            schedule(Math.min(MAX_POLL_MS, POLL_MS * 2 ** pollFailures));
         }
     }
 
@@ -258,8 +277,10 @@ export async function attachRapidDownloadState(card, source) {
                 headers: headers(),
             });
         } catch {
-            // The next poll reports the real state; let the user retry the cancel.
-            if (jobId === cancelling) cancelBtn.disabled = false;
+            // The next poll reports the real state.
+        } finally {
+            // Cancellation is asynchronous; a failed poll must not strand Cancel disabled.
+            if (alive && jobId === cancelling) cancelBtn.disabled = false;
         }
     });
 
