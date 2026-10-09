@@ -922,8 +922,18 @@ impl RapidMlxAdapter {
     /// argument. Directory launches (and any lookup failure) answer false; those are covered
     /// by the local `config.json` check in `resolve_hybrid_mode`.
     async fn profile_is_hybrid(&self) -> bool {
-        fetch_rapid_mlx_profile(self.resolved_model.launch_argument.trim())
-            .await
+        let profile = tokio::time::timeout(
+            Duration::from_secs(10),
+            info_query::fetch_model_profile(
+                &self.runtime.executable_path,
+                self.resolved_model.launch_argument.trim(),
+            ),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten();
+        profile
             .and_then(|profile| profile.architecture)
             .is_some_and(|arch| arch.to_ascii_lowercase().contains("hybrid"))
     }
@@ -1583,6 +1593,78 @@ mod tests {
         let other = adapter.poller_for(8001).unwrap();
         assert!(std::sync::Arc::ptr_eq(&first, &second));
         assert!(!std::sync::Arc::ptr_eq(&first, &other));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_hybrid_launch_uses_selected_binary_without_path_discovery() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const CHILD_ENV: &str = "LLF_MANAGED_HYBRID_REGRESSION_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // Isolate PATH without racing other tests that use process-wide discovery.
+            let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "inference::rapid_mlx::tests::managed_hybrid_launch_uses_selected_binary_without_path_discovery",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .env("PATH", "")
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "isolated regression failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let binary = tmp.path().join("managed-rapid-mlx");
+        let queried = tmp.path().join("queried");
+        std::fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = '--version' ]; then\n\
+                   printf 'rapid-mlx 0.15.4\\n'\n\
+                 elif [ \"$1\" = 'info' ] && [ \"$2\" = 'managed-hybrid' ]; then\n\
+                   printf 'queried' > '{}'\n\
+                   printf '│ Architecture: Hybrid GatedDeltaNet │\\n'\n\
+                 else\n\
+                   exit 1\n\
+                 fi\n",
+                queried.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut adapter = RapidMlxAdapter::from_resolved(
+            RuntimeMetadata {
+                executable_path: binary.clone(),
+                source: RuntimeSource::Managed,
+                ..Default::default()
+            },
+            ResolvedRapidMlxLaunchModel::validated_alias("managed-hybrid").unwrap(),
+        );
+        for dtype in [KvCacheConfig::Int8, KvCacheConfig::Int4] {
+            adapter.kv_cache_dtype = Some(dtype);
+            let launch = adapter.build_launch().await.unwrap();
+            assert_eq!(launch.program, binary);
+            assert!(!launch.args.iter().any(|arg| arg == "--kv-cache-dtype"));
+            assert!(
+                launch
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("bf16"))
+            );
+            assert_eq!(std::fs::read_to_string(&queried).unwrap(), "queried");
+        }
     }
 
     #[test]
