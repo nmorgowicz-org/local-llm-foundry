@@ -141,9 +141,9 @@ jobs:
       - name: ESLint static/js
         run: npm run lint
 
-  ui:
+  ui-build:
     needs: [paths-filter, check, check-windows]
-    timeout-minutes: 60
+    timeout-minutes: 90
     if: >-
       always() &&
       needs.check.result != 'failure' &&
@@ -155,8 +155,13 @@ jobs:
       (contains(github.event.pull_request.labels.*.name, 'ready-to-test') ||
        startsWith(github.actor, 'dependabot'))
     runs-on: arc-llama-monitor-fast
+    outputs:
+      artifact_name: ${{ steps.binary.outputs.artifact_name }}
+      build_attempt: ${{ steps.binary.outputs.build_attempt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
@@ -166,13 +171,95 @@ jobs:
         with:
           prefix-key: "v0-rust"
           shared-key: "local-llm-foundry-${{ hashFiles('Cargo.lock') }}"
-          save-if: "${{ github.ref == 'refs/heads/main' }}"
+          # GitHub scopes PR saves to refs/pull/<n>/merge, never main.
+          # Keeping the shared key allows dependency fallback to the base/main ref.
+          save-if: >-
+            ${{ github.ref == 'refs/heads/main' ||
+                (github.event_name == 'pull_request' &&
+                 github.event.pull_request.head.repo.full_name == github.repository) }}
 
-      - name: Build binary
-        run: cargo build --release
+      - name: Build binary for tested SHA
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          # Never publish an executable left behind by a cache or runner workspace.
+          rm -f target/release/local-llm-foundry
+          cargo build --release
 
-      - name: Make binary executable
-        run: chmod +x target/release/local-llm-foundry
+      - name: Stage binary and provenance
+        id: binary
+        run: |
+          binary_dir=$(mktemp -d "$RUNNER_TEMP/ui-binary.XXXXXX")
+          {
+            echo "path=$binary_dir"
+            echo "artifact_name=ui-binary-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "build_attempt=$GITHUB_RUN_ATTEMPT"
+          } >> "$GITHUB_OUTPUT"
+          cp target/release/local-llm-foundry "$binary_dir/local-llm-foundry"
+          binary_sha256=$(sha256sum "$binary_dir/local-llm-foundry" | cut -d ' ' -f 1)
+          printf '{"sha":"%s","run_id":"%s","run_attempt":"%s","runner_os":"%s","runner_arch":"%s","binary_sha256":"%s"}\n' \
+            "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            "$RUNNER_OS" "$RUNNER_ARCH" "$binary_sha256" > "$binary_dir/provenance.json"
+
+      - name: Upload same-run UI executable
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          # Immutable, SHA-bound and unique even when the workflow is rerun.
+          name: ${{ steps.binary.outputs.artifact_name }}
+          path: |
+            ${{ steps.binary.outputs.path }}/local-llm-foundry
+            ${{ steps.binary.outputs.path }}/provenance.json
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Remove staged UI executable
+        if: always() && steps.binary.outputs.path != ''
+        env:
+          BINARY_DIR: ${{ steps.binary.outputs.path }}
+        run: rm -rf "$BINARY_DIR"
+
+  ui:
+    needs: [paths-filter, check, check-windows, ui-build]
+    timeout-minutes: 90
+    if: >-
+      always() &&
+      needs.ui-build.result == 'success' &&
+      needs.check.result != 'failure' &&
+      needs.check-windows.result != 'failure' &&
+      !startsWith(github.event.pull_request.head.ref, 'release-please--') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ready-to-test') &&
+      needs.paths-filter.outputs.ui == 'true' &&
+      github.event.pull_request.draft == false &&
+      (contains(github.event.pull_request.labels.*.name, 'ready-to-test') ||
+       startsWith(github.actor, 'dependabot'))
+    name: ui (shard ${{ matrix.shard }}/2)
+    runs-on: arc-llama-monitor-fast
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    env:
+      CI: '1'
+      LLAMA_MONITOR_USE_RELEASE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Isolate UI shard environment
+        run: |
+          job_dir=$(mktemp -d "$RUNNER_TEMP/ui-shard-${{ matrix.shard }}.XXXXXX")
+          mkdir -p "$job_dir/tmp" "$job_dir/binary"
+          test_port=$((17778 + ${{ matrix.shard }}))
+          # run-server.mjs creates its config and config-path marker in os.tmpdir().
+          # Isolate both, even if ARC jobs share the host's temporary directory.
+          {
+            echo "UI_JOB_DIR=$job_dir"
+            echo "TMPDIR=$job_dir/tmp"
+            echo "TMP=$job_dir/tmp"
+            echo "TEMP=$job_dir/tmp"
+            echo "LLAMA_MONITOR_TEST_PORT=$test_port"
+            echo "LLAMA_MONITOR_UI_URL=http://127.0.0.1:$test_port"
+          } >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -180,7 +267,44 @@ jobs:
           cache: npm
           cache-dependency-path: tests/ui/package-lock.json
 
+      - name: Download same-run UI executable
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          # No token/run-id override: download only from this workflow run.
+          # Producer outputs also support rerunning only failed shard jobs.
+          name: ${{ needs.ui-build.outputs.artifact_name }}
+          path: ${{ env.UI_JOB_DIR }}/binary
+
+      - name: Verify executable provenance and install
+        env:
+          UI_BUILD_ATTEMPT: ${{ needs.ui-build.outputs.build_attempt }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          import { join } from 'node:path';
+          const dir = join(process.env.UI_JOB_DIR, 'binary');
+          const provenance = JSON.parse(readFileSync(join(dir, 'provenance.json'), 'utf8'));
+          const expected = {
+            sha: process.env.GITHUB_SHA,
+            run_id: process.env.GITHUB_RUN_ID,
+            run_attempt: process.env.UI_BUILD_ATTEMPT,
+            runner_os: process.env.RUNNER_OS,
+            runner_arch: process.env.RUNNER_ARCH,
+            binary_sha256: createHash('sha256')
+              .update(readFileSync(join(dir, 'local-llm-foundry'))).digest('hex'),
+          };
+          for (const [key, value] of Object.entries(expected)) {
+            if (provenance[key] !== value) throw new Error(`UI executable provenance mismatch: ${key}`);
+          }
+          NODE
+          mkdir -p target/release
+          cp "$UI_JOB_DIR/binary/local-llm-foundry" target/release/local-llm-foundry
+          chmod +x target/release/local-llm-foundry
+
       - name: Check static JavaScript syntax
+        if: matrix.shard == 1
         run: npm run validate-js
 
       - name: Install UI test dependencies
@@ -199,47 +323,85 @@ jobs:
         working-directory: tests/ui
         run: npx playwright install chromium
 
-      - name: Start UI smoke server
+      - name: Start isolated UI server
+        working-directory: tests/ui
+        timeout-minutes: 5
         run: |
-          ./target/release/local-llm-foundry --headless --port 7778 > "$RUNNER_TEMP/local-llm-foundry-ui.log" 2>&1 &
-          echo $! > "$RUNNER_TEMP/local-llm-foundry-ui.pid"
-          for i in {1..30}; do
-            curl -fsS http://127.0.0.1:7778 >/dev/null && exit 0
+          # Do not attach to an unrelated server on a shared ARC host.
+          if curl -s --max-time 2 "$LLAMA_MONITOR_UI_URL" >/dev/null; then
+            echo "Refusing to reuse occupied UI shard port $LLAMA_MONITOR_TEST_PORT" > "$UI_JOB_DIR/server.log"
+            cat "$UI_JOB_DIR/server.log"
+            exit 1
+          fi
+          # The existing wrapper uses only the downloaded release binary, supplies
+          # a fresh --config-dir, and forwards termination to its server child.
+          # A separate process group also lets cleanup kill a stalled child.
+          setsid node run-server.mjs > "$UI_JOB_DIR/server.log" 2>&1 &
+          echo $! > "$UI_JOB_DIR/server.pid"
+          for ((i = 0; i < 180; i++)); do
+            kill -0 "$(cat "$UI_JOB_DIR/server.pid")" 2>/dev/null || break
+            curl -fsS --max-time 2 "$LLAMA_MONITOR_UI_URL" >/dev/null && exit 0
             sleep 1
           done
-          cat "$RUNNER_TEMP/local-llm-foundry-ui.log"
+          cat "$UI_JOB_DIR/server.log"
           exit 1
 
       - name: Run Rapid-MLX UI contract gate
+        if: matrix.shard == 1
+        timeout-minutes: 10
         working-directory: tests/ui
         env:
-          LLAMA_MONITOR_UI_URL: http://127.0.0.1:7778
-        run: npm run test:rapid-mlx-contract
+          PLAYWRIGHT_HTML_OUTPUT_DIR: ${{ env.UI_JOB_DIR }}/contract-report
+        run: npm run test:rapid-mlx-contract -- --workers=1 --output="$UI_JOB_DIR/contract-results"
 
       - name: Run Playwright UI tests
         # Runs all .spec.js files except:
         # - SSH integration test (skips without LLAMA_MONITOR_SSH_TARGET)
         # - AI-dependent tests (skip without LLAMA_MONITOR_HAS_AI=1)
         working-directory: tests/ui
+        # Leave budget for cleanup and uploads if the suite reaches its limit.
+        timeout-minutes: 60
         env:
-          LLAMA_MONITOR_UI_URL: http://127.0.0.1:7778
-        run: npm test
+          PLAYWRIGHT_HTML_OUTPUT_DIR: ${{ env.UI_JOB_DIR }}/playwright-report
+        run: npm test -- --workers=1 --shard=${{ matrix.shard }}/2 --output="$UI_JOB_DIR/test-results"
 
-      - name: Stop UI smoke server
+      - name: Stop isolated UI server
         if: always()
         run: |
-          if [ -f "$RUNNER_TEMP/local-llm-foundry-ui.pid" ]; then
-            kill "$(cat "$RUNNER_TEMP/local-llm-foundry-ui.pid")" || true
+          if [ -n "${UI_JOB_DIR:-}" ] && [ -f "$UI_JOB_DIR/server.pid" ]; then
+            server_pid=$(cat "$UI_JOB_DIR/server.pid")
+            kill -TERM -- "-$server_pid" 2>/dev/null || true
+            for ((i = 0; i < 20; i++)); do
+              kill -0 -- "-$server_pid" 2>/dev/null || break
+              sleep 1
+            done
+            kill -KILL -- "-$server_pid" 2>/dev/null || true
           fi
 
-      - name: Upload Playwright report
+      - name: Show UI server failure log
         if: failure()
+        run: |
+          if [ -n "${UI_JOB_DIR:-}" ] && [ -f "$UI_JOB_DIR/server.log" ]; then
+            cat "$UI_JOB_DIR/server.log"
+          fi
+
+      - name: Upload UI shard reports and server log
+        if: always() && env.UI_JOB_DIR != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: playwright-report
-          path: tests/ui/playwright-report/
+          name: ui-reports-shard-${{ matrix.shard }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.UI_JOB_DIR }}/playwright-report/
+            ${{ env.UI_JOB_DIR }}/test-results/
+            ${{ env.UI_JOB_DIR }}/contract-report/
+            ${{ env.UI_JOB_DIR }}/contract-results/
+            ${{ env.UI_JOB_DIR }}/server.log
           if-no-files-found: ignore
           retention-days: 1
+
+      - name: Remove isolated UI shard environment
+        if: always() && env.UI_JOB_DIR != ''
+        run: rm -rf "$UI_JOB_DIR"
 
   release-smoke:
     needs: [paths-filter, check, check-windows]
