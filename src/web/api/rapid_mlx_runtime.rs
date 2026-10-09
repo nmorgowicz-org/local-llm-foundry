@@ -2134,7 +2134,6 @@ fn releases_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
 /// GET /api/rapid-mlx/model-status?source=<alias|owner/repo> — is the model complete in
 /// the cache the launch environment uses? Drives the wizard/card download affordance.
 fn model_status_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
-    use crate::inference::rapid_mlx::model_cache;
     warp::path!("api" / "rapid-mlx" / "model-status")
         .and(warp::get())
         .and(warp::header::optional::<String>("authorization"))
@@ -2147,64 +2146,143 @@ fn model_status_route(ctx: ApiCtx, state: RuntimeApiState) -> ApiRoute {
                     if !check_api_token(&auth, &ctx.config) {
                         return Ok::<ApiReply, warp::Rejection>(unauthorized_api_token());
                     }
-                    let source = query.get("source").map(|s| s.trim().to_string()).unwrap_or_default();
-                    if source.is_empty() || source.len() > 256 {
-                        return Ok(json_error(StatusCode::BAD_REQUEST, "source is required"));
-                    }
+                    let source = query
+                        .get("source")
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_default();
                     let models_dir = super::models::get_effective_models_dir(&ctx.state)
                         .unwrap_or_else(|| ctx.config.default_models_dir.clone());
-                    let (repo_id, size_bytes) = if source.contains('/') {
-                        if !validate_model_download_repo(&source) {
-                            return Ok(json_error(StatusCode::BAD_REQUEST, "Invalid repo id"));
-                        }
-                        (source.clone(), None)
+                    // Only an alias needs the runtime to resolve it to a repo.
+                    let managed = if source.contains('/') {
+                        None
                     } else {
-                        let managed = managed_executable(&state).await;
-                        let binary = match Discovery::resolve_binary(None, managed.as_deref()).await {
-                            Ok((binary, _)) => binary,
-                            Err(_) => {
-                                return Ok(json_error(
-                                    StatusCode::SERVICE_UNAVAILABLE,
-                                    "Rapid-MLX is not installed",
-                                ));
-                            }
-                        };
-                        match crate::inference::rapid_mlx::info_query::resolve_alias_repo(&binary, &source).await {
-                            Ok(Some(found)) => found,
-                            Ok(None) => {
-                                return Ok(json_error(StatusCode::NOT_FOUND, "Unknown Rapid-MLX alias"));
-                            }
-                            Err(e) => {
-                                return Ok(json_error(
-                                    StatusCode::BAD_GATEWAY,
-                                    format!("Catalog query failed: {e}"),
-                                ));
-                            }
-                        }
+                        managed_executable(&state).await
                     };
-                    let in_app_cache =
-                        model_cache::repo_cached(&model_cache::app_hub_dir(&models_dir), &repo_id);
-                    // Catalog aliases may launch from a complete global-cache copy.
-                    let in_system_cache = !in_app_cache
-                        && !source.contains('/')
-                        && model_cache::alias_launch_hub(&models_dir, &repo_id).is_some();
-                    let cached = in_app_cache || in_system_cache;
-                    let mut hubs = vec![model_cache::app_hub_dir(&models_dir)];
-                    hubs.extend(model_cache::system_hub_dir());
-                    let quant = model_cache::quant_label(&hubs, &repo_id, &source);
-                    Ok(Box::new(warp::reply::json(&serde_json::json!({
-                        "ok": true,
-                        "source": source,
-                        "repo_id": repo_id,
-                        "cached": cached,
-                        "in_system_cache": in_system_cache,
-                        "size_bytes": size_bytes,
-                        "quant": quant,
-                    }))) as ApiReply)
+                    Ok(model_status_reply(
+                        models_dir,
+                        source,
+                        managed,
+                        crate::inference::rapid_mlx::model_cache::system_hub_dir(),
+                    )
+                    .await)
                 }
             },
         )
         .boxed()
+}
+
+/// Everything after auth: validate `source`, resolve an alias through the runtime, then
+/// inspect the caches. `managed` is the managed runtime pointer (aliases only) and
+/// `system_hub` the user's global hub, passed in so callers decide where they come from.
+async fn model_status_reply(
+    models_dir: std::path::PathBuf,
+    source: String,
+    managed: Option<std::path::PathBuf>,
+    system_hub: Option<std::path::PathBuf>,
+) -> ApiReply {
+    if source.is_empty() || source.len() > 256 {
+        return json_error(StatusCode::BAD_REQUEST, "source is required");
+    }
+    let is_alias = !source.contains('/');
+    let (repo_id, catalog_size) = if !is_alias {
+        if !validate_model_download_repo(&source) {
+            return json_error(StatusCode::BAD_REQUEST, "Invalid repo id");
+        }
+        (source.clone(), None)
+    } else {
+        let binary = match Discovery::resolve_binary(None, managed.as_deref()).await {
+            Ok((binary, _)) => binary,
+            Err(_) => {
+                return json_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Rapid-MLX is not installed",
+                );
+            }
+        };
+        match info_query::resolve_alias_repo(&binary, &source).await {
+            Ok(Some(found)) => found,
+            Ok(None) => return json_error(StatusCode::NOT_FOUND, "Unknown Rapid-MLX alias"),
+            Err(e) => {
+                return json_error(
+                    StatusCode::BAD_GATEWAY,
+                    format!("Catalog query failed: {e}"),
+                );
+            }
+        }
+    };
+    // Cache inspection is blocking filesystem work (directory scans, index parsing).
+    let probe = {
+        let (models_dir, repo_id, source) = (models_dir, repo_id.clone(), source.clone());
+        tokio::task::spawn_blocking(move || {
+            probe_model_cache(
+                &models_dir,
+                &repo_id,
+                &source,
+                is_alias,
+                system_hub,
+                catalog_size,
+            )
+        })
+        .await
+    };
+    let probe = match probe {
+        Ok(probe) => probe,
+        Err(e) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Model cache inspection failed: {e}"),
+            );
+        }
+    };
+    Box::new(warp::reply::json(&serde_json::json!({
+        "ok": true,
+        "source": source,
+        "repo_id": repo_id,
+        "cached": probe.cached,
+        "in_system_cache": probe.in_system_cache,
+        "size_bytes": probe.size_bytes,
+        "quant": probe.quant,
+    })))
+}
+
+struct ModelCacheProbe {
+    cached: bool,
+    in_system_cache: bool,
+    size_bytes: Option<u64>,
+    quant: Option<String>,
+}
+
+/// Blocking: reads the hub directories. `size_bytes` is the real weight size of the
+/// cached snapshot when there is one, else the catalog's own figure (if it reports any).
+fn probe_model_cache(
+    models_dir: &std::path::Path,
+    repo_id: &str,
+    source: &str,
+    is_alias: bool,
+    system_hub: Option<std::path::PathBuf>,
+    catalog_size: Option<u64>,
+) -> ModelCacheProbe {
+    use crate::inference::rapid_mlx::model_cache;
+    let app_hub = model_cache::app_hub_dir(models_dir);
+    let in_app_cache = model_cache::repo_cached(&app_hub, repo_id);
+    // Catalog aliases may launch from a complete global-cache copy.
+    let system_copy = (!in_app_cache && is_alias)
+        .then(|| model_cache::alias_launch_hub_in(models_dir, repo_id, system_hub.clone()))
+        .flatten();
+    let in_system_cache = system_copy.is_some();
+    let cached_hub = in_app_cache.then(|| app_hub.clone()).or(system_copy);
+    let size_bytes = cached_hub
+        .as_deref()
+        .and_then(|hub| model_cache::cached_weight_bytes(hub, repo_id))
+        .or(catalog_size);
+    let mut hubs = vec![app_hub];
+    hubs.extend(system_hub);
+    ModelCacheProbe {
+        cached: in_app_cache || in_system_cache,
+        in_system_cache,
+        size_bytes,
+        quant: model_cache::quant_label(&hubs, repo_id, source),
+    }
 }
 
 /// The curated Rapid-MLX model catalog: rows of the upstream-validated
@@ -4600,4 +4678,256 @@ fn mtp_draft_suggestion_route(ctx: ApiCtx) -> ApiRoute {
             }
         })
         .boxed()
+}
+
+#[cfg(test)]
+mod model_status_tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use crate::state::AppState;
+    use crate::web::auth::AuthManager;
+    use std::path::{Path, PathBuf};
+
+    const TOKEN: &str = "status-token";
+
+    fn route() -> ApiRoute {
+        let ctx = ApiCtx {
+            state: AppState::default(),
+            config: Arc::new(AppConfig::for_test(Some(TOKEN.to_string()), None)),
+            auth: AuthManager::new(None, None, &crate::config::TLSConfig::default().mode),
+        };
+        let state = RuntimeApiState {
+            manager: Err("unused".into()),
+            releases: Arc::new(tokio::sync::Mutex::new(None)),
+            jobs: Arc::new(Mutex::new(RuntimeJobs::default())),
+            model_downloads: Arc::new(Mutex::new(ModelDownloads::default())),
+            changelog_cache: Arc::new(changelog::ChangelogCacheManager::new()),
+            client: reqwest::Client::new(),
+        };
+        model_status_route(ctx, state)
+    }
+
+    fn hub_snapshot(hub: &Path, weights: &[(&str, usize)]) {
+        let snap = hub.join("models--o--m/snapshots/abc");
+        std::fs::create_dir_all(&snap).unwrap();
+        std::fs::write(snap.join("config.json"), b"{}").unwrap();
+        for (name, len) in weights {
+            std::fs::write(snap.join(name), vec![0u8; *len]).unwrap();
+        }
+    }
+
+    /// A stand-in `rapid-mlx` that answers `models --json` with one catalog alias.
+    #[cfg(unix)]
+    fn fake_rapid_mlx(dir: &Path, catalog_size: Option<u64>) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let size = catalog_size
+            .map(|size| format!(r#","size_bytes":{size}"#))
+            .unwrap_or_default();
+        let script = dir.join("rapid-mlx");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat <<'EOF'\n{{\"qwen\":[{{\"alias\":\"known\",\"hf_path\":\"o/m\"{size}}}]}}\nEOF\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    async fn reply(
+        models_dir: &Path,
+        source: &str,
+        managed: Option<PathBuf>,
+        system_hub: Option<PathBuf>,
+    ) -> (StatusCode, serde_json::Value) {
+        let models_dir = models_dir.to_path_buf();
+        let source = source.to_string();
+        let route = warp::any().and_then(move || {
+            let models_dir = models_dir.clone();
+            let source = source.clone();
+            let managed = managed.clone();
+            let system_hub = system_hub.clone();
+            async move {
+                Ok::<_, warp::Rejection>(
+                    model_status_reply(models_dir, source, managed, system_hub).await,
+                )
+            }
+        });
+        let response = warp::test::request().reply(&route).await;
+        let body = serde_json::from_slice(response.body()).unwrap_or(serde_json::Value::Null);
+        (response.status(), body)
+    }
+
+    async fn get(query: &str, token: Option<&str>) -> StatusCode {
+        let mut request = warp::test::request()
+            .method("GET")
+            .path(&format!("/api/rapid-mlx/model-status{query}"));
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        request.reply(&route()).await.status()
+    }
+
+    #[tokio::test]
+    async fn route_requires_the_api_token() {
+        assert_eq!(get("?source=o/m", None).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            get("?source=o/m", Some("wrong")).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn route_rejects_missing_or_invalid_source_with_400() {
+        for query in [
+            "",
+            "?source=",
+            "?source=%20%20",
+            "?source=o/m/extra",
+            "?source=o/bad%20name",
+        ] {
+            assert_eq!(
+                get(query, Some(TOKEN)).await,
+                StatusCode::BAD_REQUEST,
+                "{query}"
+            );
+        }
+        let long = format!("?source=o/{}", "x".repeat(300));
+        assert_eq!(get(&long, Some(TOKEN)).await, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn invalid_repo_source_is_400_with_a_message() {
+        let models = tempfile::tempdir().unwrap();
+        let (status, body) = reply(models.path(), "../etc/passwd", None, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["error"], "Invalid repo id");
+    }
+
+    #[tokio::test]
+    async fn alias_without_an_installed_runtime_is_503() {
+        let models = tempfile::tempdir().unwrap();
+        // A managed pointer to a file that is not there takes the same "not installed" branch.
+        let missing = models.path().join("no-such-rapid-mlx");
+        let (status, body) = reply(models.path(), "known", Some(missing), None).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"], "Rapid-MLX is not installed");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unknown_alias_is_404() {
+        let models = tempfile::tempdir().unwrap();
+        let binary = fake_rapid_mlx(models.path(), None);
+        let (status, body) = reply(models.path(), "nope", Some(binary), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "Unknown Rapid-MLX alias");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn alias_in_the_system_cache_is_cached_and_flagged() {
+        let models = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        hub_snapshot(system.path(), &[("model.safetensors", 11)]);
+        let binary = fake_rapid_mlx(models.path(), None);
+        let (status, body) = reply(
+            models.path(),
+            "known",
+            Some(binary),
+            Some(system.path().to_path_buf()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["repo_id"], "o/m");
+        assert_eq!(body["cached"], true);
+        assert_eq!(body["in_system_cache"], true);
+        assert_eq!(body["size_bytes"], 11);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn alias_in_the_app_cache_is_cached_but_not_system() {
+        let models = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let app_hub = crate::inference::rapid_mlx::model_cache::app_hub_dir(models.path());
+        hub_snapshot(
+            &app_hub,
+            &[
+                ("model-00001.safetensors", 4),
+                ("model-00002.safetensors", 6),
+            ],
+        );
+        hub_snapshot(system.path(), &[("model.safetensors", 999)]);
+        let binary = fake_rapid_mlx(models.path(), Some(123_456));
+        let (status, body) = reply(
+            models.path(),
+            "known",
+            Some(binary),
+            Some(system.path().to_path_buf()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["cached"], true);
+        assert_eq!(body["in_system_cache"], false);
+        // The real cached size wins over the catalog estimate.
+        assert_eq!(body["size_bytes"], 10);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uncached_alias_reports_not_cached_and_catalog_size() {
+        let models = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let binary = fake_rapid_mlx(models.path(), Some(123_456));
+        let (status, body) = reply(
+            models.path(),
+            "known",
+            Some(binary),
+            Some(system.path().to_path_buf()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["cached"], false);
+        assert_eq!(body["in_system_cache"], false);
+        assert_eq!(body["size_bytes"], 123_456);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uncached_alias_without_any_size_is_null() {
+        let models = tempfile::tempdir().unwrap();
+        let binary = fake_rapid_mlx(models.path(), None);
+        let (_, body) = reply(models.path(), "known", Some(binary), None).await;
+        assert_eq!(body["cached"], false);
+        assert!(body["size_bytes"].is_null());
+    }
+
+    #[tokio::test]
+    async fn repo_source_never_uses_the_system_cache() {
+        let models = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        hub_snapshot(system.path(), &[("model.safetensors", 3)]);
+        let (status, body) = reply(
+            models.path(),
+            "o/m",
+            None,
+            Some(system.path().to_path_buf()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["cached"], false);
+        assert_eq!(body["in_system_cache"], false);
+        assert!(body["size_bytes"].is_null());
+
+        let app_hub = crate::inference::rapid_mlx::model_cache::app_hub_dir(models.path());
+        hub_snapshot(&app_hub, &[("model.safetensors", 5)]);
+        let (_, body) = reply(models.path(), "o/m", None, None).await;
+        assert_eq!(body["cached"], true);
+        assert_eq!(body["in_system_cache"], false);
+        assert_eq!(body["size_bytes"], 5);
+    }
 }

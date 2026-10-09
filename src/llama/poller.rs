@@ -16,7 +16,7 @@ fn with_current_poll_target(
     backend: crate::inference::InferenceBackend,
     base: &str,
     api_key: Option<&str>,
-    publish: impl FnOnce(),
+    publish: impl FnOnce(&crate::state::Session),
 ) -> bool {
     // AppState session operations acquire sessions before active_session_id.
     let sessions = state.sessions.lock().unwrap();
@@ -24,32 +24,30 @@ fn with_current_poll_target(
     if current_id.as_str() != active_id {
         return false;
     }
-    let matches = sessions
-        .iter()
-        .find(|s| s.id == active_id)
-        .is_some_and(|session| {
-            if session.backend != backend {
-                return false;
-            }
-            let (current_base, current_key) = match &session.mode {
-                crate::state::SessionMode::Spawn {
-                    port,
-                    bind_host,
-                    api_key,
-                } => (
-                    spawned_base_url(*port, bind_host.as_deref()),
-                    api_key.as_deref(),
-                ),
-                crate::state::SessionMode::Attach { endpoint, api_key } => {
-                    (endpoint.clone(), api_key.as_deref())
-                }
-            };
-            current_base.trim_end_matches('/') == base.trim_end_matches('/')
-                && crate::inference::llama_cpp::same_api_key(current_key, api_key)
-        });
+    let Some(session) = sessions.iter().find(|s| s.id == active_id) else {
+        return false;
+    };
+    if session.backend != backend {
+        return false;
+    }
+    let (current_base, current_key) = match &session.mode {
+        crate::state::SessionMode::Spawn {
+            port,
+            bind_host,
+            api_key,
+        } => (
+            spawned_base_url(*port, bind_host.as_deref()),
+            api_key.as_deref(),
+        ),
+        crate::state::SessionMode::Attach { endpoint, api_key } => {
+            (endpoint.clone(), api_key.as_deref())
+        }
+    };
+    let matches = current_base.trim_end_matches('/') == base.trim_end_matches('/')
+        && crate::inference::llama_cpp::same_api_key(current_key, api_key);
     if matches {
         // Callback is synchronous: no guards are held across network I/O or sleep.
-        publish();
+        publish(session);
     }
     matches
 }
@@ -61,7 +59,7 @@ fn active_poll_target_matches(
     base: &str,
     api_key: Option<&str>,
 ) -> bool {
-    with_current_poll_target(state, active_id, backend, base, api_key, || {})
+    with_current_poll_target(state, active_id, backend, base, api_key, |_| {})
 }
 
 fn project_optional_llama_metrics(
@@ -355,6 +353,208 @@ fn clear_failed_llama_sample(state: &AppState, tracker: &mut LiveRateTracker) {
     clear_optional_llama_metrics(state);
 }
 
+/// Publish one finished poll under the active-target guard. Rapid-MLX spawned
+/// targets are enriched here (cheap, no IO) because only the guard holds the
+/// Session proving the snapshot belongs to the current spawn.
+fn publish_poll_result(
+    state: &AppState,
+    active_id: &str,
+    session_backend: crate::inference::InferenceBackend,
+    base: &str,
+    api_key: Option<&str>,
+    snapshot_result: anyhow::Result<crate::inference::metrics::InferenceMetricsSnapshot>,
+    llama_live_rates: &mut LiveRateTracker,
+) -> bool {
+    with_current_poll_target(
+        state,
+        active_id,
+        session_backend,
+        base,
+        api_key,
+        |session| {
+            state
+                .inference_poll_sequence
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if matches!(
+                session_backend,
+                crate::inference::InferenceBackend::RapidMlx
+            ) {
+                record_rapid_poll_liveness(state, snapshot_result.is_ok());
+            }
+            if let Ok(mut snapshot) = snapshot_result {
+                // Lock order: sessions -> active_session_id -> backend. The guards
+                // taken by `with_current_poll_target` are still held here, so
+                // `state.backend` is the third lock in the chain. Every other
+                // `backend` lock site (supervisor/server teardown and setup) takes it
+                // as a short temporary and never acquires `sessions` or
+                // `active_session_id` while holding it, so this ordering cannot
+                // invert. Never lock `backend` first and then reach for `sessions`.
+                if session_backend == crate::inference::InferenceBackend::RapidMlx {
+                    crate::inference::rapid_mlx::poller::enrich_launch_model_facts(
+                        &mut snapshot,
+                        session,
+                        state.backend.lock().unwrap().as_ref(),
+                        base,
+                    );
+                }
+                if matches!(
+                    session_backend,
+                    crate::inference::InferenceBackend::LlamaCpp
+                ) {
+                    state
+                        .inference_poll_failed
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                    state
+                        .inference_poll_failures
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                }
+                *state.inference_metrics.lock().unwrap() = Some(snapshot.clone());
+                *state.inference_metrics_session_id.lock().unwrap() = active_id.to_string();
+                // Rapid-MLX stays exclusively in the normalized inference contract.
+                if snapshot.backend != crate::inference::InferenceBackend::LlamaCpp {
+                    return;
+                }
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
+                let mut m = state.llama_metrics.lock().unwrap();
+                project_optional_llama_metrics(&mut m, &snapshot);
+
+                let slots = project_llama_throughput(
+                    &mut m,
+                    &snapshot,
+                    llama_live_rates,
+                    std::time::Instant::now(),
+                    now_ms,
+                );
+
+                if let Some(details) = snapshot.backend_details.as_ref()
+                    && slots.is_some()
+                {
+                    let gen_tokens = details
+                        .get("slot_generation_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    if let Some(remaining) = details
+                        .get("slot_generation_remaining")
+                        .and_then(|v| v.as_u64())
+                    {
+                        m.slot_generation_remaining = remaining;
+                    }
+                    if let Some(limit) = details
+                        .get("slot_generation_limit")
+                        .and_then(|v| v.as_u64())
+                    {
+                        m.slot_generation_limit = limit;
+                    }
+                    if let Some(active) = details
+                        .get("slot_generation_active")
+                        .and_then(|v| v.as_bool())
+                    {
+                        m.slot_generation_active = active;
+                    }
+                    if let Some(available) = details
+                        .get("slot_generation_available")
+                        .and_then(|v| v.as_bool())
+                    {
+                        m.slot_generation_available = available;
+                    }
+
+                    // Live prefill progress: prompt_tokens_processed only
+                    // advances while the slot is prefilling — use its delta
+                    // for a live PP rate (the Prometheus counters stall).
+                    let prompt_processed = details
+                        .get("slot_prompt_processed")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    if let Some(total) = details.get("slot_prompt_total").and_then(|v| v.as_u64()) {
+                        m.slot_prompt_total = total;
+                    }
+                    if let Some(progress) =
+                        details.get("slot_prompt_progress").and_then(|v| v.as_f64())
+                    {
+                        m.slot_prompt_progress = progress;
+                    }
+                    m.slot_prompt_processed = prompt_processed;
+
+                    m.slot_generation_tokens = gen_tokens;
+                }
+
+                if let Some(prompt_total) = snapshot.prompt_tokens_total {
+                    m.prompt_tokens_total = prompt_total;
+                }
+                if let Some(completion_total) = snapshot.completion_tokens_total {
+                    m.predicted_tokens_total = completion_total;
+                    m.generation_tokens_total = completion_total;
+                }
+                if let Some(running) = snapshot.running_requests {
+                    m.requests_processing = running as u32;
+                }
+                if let Some(details) = snapshot.backend_details {
+                    if let Some(idle) = details.get("slots_idle").and_then(|v| v.as_u64()) {
+                        m.slots_idle = idle as u32;
+                    }
+                    if let Some(processing) =
+                        details.get("slots_processing").and_then(|v| v.as_u64())
+                    {
+                        m.slots_processing = processing as u32;
+                    }
+                    if let Some(max) = details.get("kv_cache_max").and_then(|v| v.as_u64()) {
+                        m.kv_cache_max = max;
+                        m.context_capacity_tokens = max;
+                    }
+                    if let Some(tokens) = details.get("kv_cache_tokens").and_then(|v| v.as_u64()) {
+                        m.kv_cache_tokens = tokens;
+                        m.context_live_tokens = tokens;
+                    }
+                    if let Some(avail) = details
+                        .get("kv_cache_tokens_available")
+                        .and_then(|v| v.as_bool())
+                    {
+                        m.kv_cache_tokens_available = avail;
+                        m.context_live_tokens_available = avail;
+                    }
+                    if let Some(source) = details
+                        .get("kv_cache_tokens_source")
+                        .and_then(|v| v.as_str())
+                    {
+                        m.kv_cache_tokens_source = source.to_string();
+                        m.context_live_tokens_source = source.to_string();
+                    }
+                    if let Some(active) = details.get("active_task_id").and_then(|v| v.as_u64()) {
+                        m.active_task_id = Some(active);
+                    }
+                    if let Some(last) = details.get("last_task_id").and_then(|v| v.as_u64()) {
+                        m.last_task_id = Some(last);
+                    }
+                    if let Some(tokens_per_decode) =
+                        details.get("tokens_per_decode").and_then(|v| v.as_f64())
+                    {
+                        m.tokens_per_decode = tokens_per_decode;
+                    }
+                    if let Some(busy_slots_per_decode) = details
+                        .get("n_busy_slots_per_decode")
+                        .and_then(|v| v.as_f64())
+                    {
+                        m.n_busy_slots_per_decode = busy_slots_per_decode;
+                    }
+                    m.speculative_acceptance_rate = details
+                        .get("speculative_acceptance_rate")
+                        .and_then(|v| v.as_f64());
+                    if let Some(slots) = slots {
+                        m.slots = slots;
+                    }
+                }
+                m.model_name = snapshot.model.unwrap_or_default();
+            } else {
+                clear_failed_llama_sample(state, llama_live_rates);
+            }
+        },
+    )
+}
+
 pub async fn llama_metrics_poller(state: AppState, poll_interval: u64) {
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -584,186 +784,14 @@ pub async fn llama_metrics_poller(state: AppState, poll_interval: u64) {
             } else {
                 Err(anyhow::anyhow!("active backend adapter unavailable"))
             };
-            with_current_poll_target(
+            publish_poll_result(
                 &state,
                 &active_id,
                 session_backend,
                 &base,
                 api_key.as_deref(),
-                || {
-                    state
-                        .inference_poll_sequence
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if matches!(
-                        session_backend,
-                        crate::inference::InferenceBackend::RapidMlx
-                    ) {
-                        record_rapid_poll_liveness(&state, snapshot_result.is_ok());
-                    }
-                    if let Ok(snapshot) = snapshot_result {
-                        if matches!(
-                            session_backend,
-                            crate::inference::InferenceBackend::LlamaCpp
-                        ) {
-                            state
-                                .inference_poll_failed
-                                .store(false, std::sync::atomic::Ordering::Relaxed);
-                            state
-                                .inference_poll_failures
-                                .store(0, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        *state.inference_metrics.lock().unwrap() = Some(snapshot.clone());
-                        *state.inference_metrics_session_id.lock().unwrap() = active_id.clone();
-                        // Rapid-MLX stays exclusively in the normalized inference contract.
-                        if snapshot.backend != crate::inference::InferenceBackend::LlamaCpp {
-                            return;
-                        }
-                        let now_ms = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64;
-
-                        let mut m = state.llama_metrics.lock().unwrap();
-                        project_optional_llama_metrics(&mut m, &snapshot);
-
-                        let slots = project_llama_throughput(
-                            &mut m,
-                            &snapshot,
-                            &mut llama_live_rates,
-                            std::time::Instant::now(),
-                            now_ms,
-                        );
-
-                        if let Some(details) = snapshot.backend_details.as_ref()
-                            && slots.is_some()
-                        {
-                            let gen_tokens = details
-                                .get("slot_generation_tokens")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            if let Some(remaining) = details
-                                .get("slot_generation_remaining")
-                                .and_then(|v| v.as_u64())
-                            {
-                                m.slot_generation_remaining = remaining;
-                            }
-                            if let Some(limit) = details
-                                .get("slot_generation_limit")
-                                .and_then(|v| v.as_u64())
-                            {
-                                m.slot_generation_limit = limit;
-                            }
-                            if let Some(active) = details
-                                .get("slot_generation_active")
-                                .and_then(|v| v.as_bool())
-                            {
-                                m.slot_generation_active = active;
-                            }
-                            if let Some(available) = details
-                                .get("slot_generation_available")
-                                .and_then(|v| v.as_bool())
-                            {
-                                m.slot_generation_available = available;
-                            }
-
-                            // Live prefill progress: prompt_tokens_processed only
-                            // advances while the slot is prefilling — use its delta
-                            // for a live PP rate (the Prometheus counters stall).
-                            let prompt_processed = details
-                                .get("slot_prompt_processed")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            if let Some(total) =
-                                details.get("slot_prompt_total").and_then(|v| v.as_u64())
-                            {
-                                m.slot_prompt_total = total;
-                            }
-                            if let Some(progress) =
-                                details.get("slot_prompt_progress").and_then(|v| v.as_f64())
-                            {
-                                m.slot_prompt_progress = progress;
-                            }
-                            m.slot_prompt_processed = prompt_processed;
-
-                            m.slot_generation_tokens = gen_tokens;
-                        }
-
-                        if let Some(prompt_total) = snapshot.prompt_tokens_total {
-                            m.prompt_tokens_total = prompt_total;
-                        }
-                        if let Some(completion_total) = snapshot.completion_tokens_total {
-                            m.predicted_tokens_total = completion_total;
-                            m.generation_tokens_total = completion_total;
-                        }
-                        if let Some(running) = snapshot.running_requests {
-                            m.requests_processing = running as u32;
-                        }
-                        if let Some(details) = snapshot.backend_details {
-                            if let Some(idle) = details.get("slots_idle").and_then(|v| v.as_u64()) {
-                                m.slots_idle = idle as u32;
-                            }
-                            if let Some(processing) =
-                                details.get("slots_processing").and_then(|v| v.as_u64())
-                            {
-                                m.slots_processing = processing as u32;
-                            }
-                            if let Some(max) = details.get("kv_cache_max").and_then(|v| v.as_u64())
-                            {
-                                m.kv_cache_max = max;
-                                m.context_capacity_tokens = max;
-                            }
-                            if let Some(tokens) =
-                                details.get("kv_cache_tokens").and_then(|v| v.as_u64())
-                            {
-                                m.kv_cache_tokens = tokens;
-                                m.context_live_tokens = tokens;
-                            }
-                            if let Some(avail) = details
-                                .get("kv_cache_tokens_available")
-                                .and_then(|v| v.as_bool())
-                            {
-                                m.kv_cache_tokens_available = avail;
-                                m.context_live_tokens_available = avail;
-                            }
-                            if let Some(source) = details
-                                .get("kv_cache_tokens_source")
-                                .and_then(|v| v.as_str())
-                            {
-                                m.kv_cache_tokens_source = source.to_string();
-                                m.context_live_tokens_source = source.to_string();
-                            }
-                            if let Some(active) =
-                                details.get("active_task_id").and_then(|v| v.as_u64())
-                            {
-                                m.active_task_id = Some(active);
-                            }
-                            if let Some(last) = details.get("last_task_id").and_then(|v| v.as_u64())
-                            {
-                                m.last_task_id = Some(last);
-                            }
-                            if let Some(tokens_per_decode) =
-                                details.get("tokens_per_decode").and_then(|v| v.as_f64())
-                            {
-                                m.tokens_per_decode = tokens_per_decode;
-                            }
-                            if let Some(busy_slots_per_decode) = details
-                                .get("n_busy_slots_per_decode")
-                                .and_then(|v| v.as_f64())
-                            {
-                                m.n_busy_slots_per_decode = busy_slots_per_decode;
-                            }
-                            m.speculative_acceptance_rate = details
-                                .get("speculative_acceptance_rate")
-                                .and_then(|v| v.as_f64());
-                            if let Some(slots) = slots {
-                                m.slots = slots;
-                            }
-                        }
-                        m.model_name = snapshot.model.unwrap_or_default();
-                    } else {
-                        clear_failed_llama_sample(&state, &mut llama_live_rates);
-                    }
-                },
+                snapshot_result,
+                &mut llama_live_rates,
             );
         }
 
@@ -1655,7 +1683,7 @@ mod tests {
             InferenceBackend::LlamaCpp,
             "http://a:8001",
             Some("key-a"),
-            || state
+            |_| state
                 .llama_metrics
                 .lock()
                 .unwrap()
@@ -1675,7 +1703,7 @@ mod tests {
             InferenceBackend::LlamaCpp,
             "http://b:8001",
             Some("key-b"),
-            || state
+            |_| state
                 .llama_metrics
                 .lock()
                 .unwrap()
@@ -1697,6 +1725,106 @@ mod tests {
             "http://a:8001",
             Some("key-a"),
         ));
+    }
+
+    fn rapid_publication_state(session: crate::state::Session, adapter_port: u16) -> AppState {
+        use crate::inference::backend::BackendAdapter;
+        use crate::inference::rapid_mlx::{
+            RapidMlxAdapter, model_resolver::ResolvedRapidMlxLaunchModel,
+        };
+        let state = AppState::default();
+        let mut adapter = RapidMlxAdapter::from_resolved(
+            crate::inference::rapid_mlx::runtime::RuntimeMetadata {
+                version: "0.10.0".into(),
+                ..Default::default()
+            },
+            ResolvedRapidMlxLaunchModel::validated_alias("catalog-alias").unwrap(),
+        );
+        adapter.host = "127.0.0.1".into();
+        adapter.port = adapter_port;
+        *state.backend.lock().unwrap() =
+            Some(BackendAdapter::RapidMlx(std::sync::Arc::new(adapter)));
+        *state.active_session_id.lock().unwrap() = session.id.clone();
+        state.sessions.lock().unwrap().push(session);
+        state
+    }
+
+    fn publish_rapid(state: &AppState, base: &str) -> bool {
+        let mut snapshot =
+            crate::inference::metrics::InferenceMetricsSnapshot::empty(InferenceBackend::RapidMlx);
+        snapshot.backend_details = Some(serde_json::json!({
+            "runtime_facts": {"engine_type": "batched"},
+            // Stale value from an earlier publication must never survive.
+            "launch_facts": {"version": "stale"},
+        }));
+        super::publish_poll_result(
+            state,
+            "s",
+            InferenceBackend::RapidMlx,
+            base,
+            None,
+            Ok(snapshot),
+            &mut super::LiveRateTracker::default(),
+        )
+    }
+
+    #[test]
+    fn published_rapid_snapshot_carries_launch_facts_only_for_the_spawned_target() {
+        let spawn = |port| {
+            crate::state::Session::new_spawn_with_backend(
+                "s".into(),
+                "rapid".into(),
+                port,
+                String::new(),
+                Some("127.0.0.1".into()),
+                None,
+                InferenceBackend::RapidMlx,
+                None,
+            )
+        };
+        let state = rapid_publication_state(spawn(8123), 8123);
+        assert!(publish_rapid(&state, "http://127.0.0.1:8123"));
+        let published = state.inference_metrics.lock().unwrap().clone().unwrap();
+        let details = published.backend_details.unwrap();
+        assert_eq!(details["launch_facts"]["version"], "0.10.0");
+        assert_eq!(details["launch_facts"]["source_alias"], "catalog-alias");
+        assert_eq!(details["runtime_facts"]["engine_type"], "batched");
+
+        // Adapter for a different port: stale facts are cleared, not published.
+        let state = rapid_publication_state(spawn(8123), 9999);
+        assert!(publish_rapid(&state, "http://127.0.0.1:8123"));
+        let published = state.inference_metrics.lock().unwrap().clone().unwrap();
+        assert!(
+            published
+                .backend_details
+                .unwrap()
+                .get("launch_facts")
+                .is_none()
+        );
+
+        // Attached Rapid-MLX target never receives the spawned adapter's facts.
+        let mut attach = crate::state::Session::new_attach(
+            "s".into(),
+            "attached".into(),
+            "http://127.0.0.1:8123".into(),
+            None,
+        );
+        attach.backend = InferenceBackend::RapidMlx;
+        let state = rapid_publication_state(attach, 8123);
+        assert!(publish_rapid(&state, "http://127.0.0.1:8123"));
+        let published = state.inference_metrics.lock().unwrap().clone().unwrap();
+        assert!(
+            published
+                .backend_details
+                .unwrap()
+                .get("launch_facts")
+                .is_none()
+        );
+
+        // A superseded target publishes nothing at all.
+        let state = rapid_publication_state(spawn(8123), 8123);
+        assert!(!publish_rapid(&state, "http://127.0.0.1:1"));
+        assert!(state.inference_metrics.lock().unwrap().is_none());
     }
 
     #[test]

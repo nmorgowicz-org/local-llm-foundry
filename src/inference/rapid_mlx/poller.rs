@@ -13,7 +13,10 @@ const CALL_SPACING: Duration = Duration::from_millis(200);
 const STATUS_BODY_LIMIT: usize = 512 * 1024;
 const CACHE_BODY_LIMIT: usize = 256 * 1024;
 const METRICS_BODY_LIMIT: usize = 256 * 1024;
+const HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
 const METRICS_TIMEOUT: Duration = Duration::from_secs(2);
+const CLIENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 const ACTIVE_REQUEST_LIMIT: usize = 64;
 
 #[derive(Deserialize)]
@@ -60,8 +63,19 @@ impl RapidMlxPoller {
     }
 
     pub fn from_base_url(base_url: String, api_key: Option<&str>) -> Self {
+        // The bearer key must only ever reach the configured endpoint, and a
+        // redirect could point the poller at an unrelated host or path. Never
+        // follow one: a 3xx surfaces as a non-success status instead. The
+        // client-level timeout is a backstop; per-request timeouts and body
+        // limits below stay tighter.
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(CLIENT_CONNECT_TIMEOUT)
+            .timeout(CLIENT_TIMEOUT)
+            .build()
+            .expect("static reqwest client configuration is valid");
         Self {
-            client: reqwest::Client::new(),
+            client,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.filter(|key| !key.is_empty()).map(str::to_string),
         }
@@ -80,12 +94,7 @@ impl RapidMlxPoller {
     }
 
     pub async fn poll(&self) -> Result<InferenceMetricsSnapshot> {
-        let health_ok = self
-            .authenticated_get(&format!("{}/health", self.base_url))
-            .timeout(Duration::from_secs(2))
-            .send()
-            .await
-            .is_ok_and(|response| response.status().is_success());
+        let (health_ok, runtime_facts) = self.probe_health().await;
 
         tokio::time::sleep(CALL_SPACING).await;
         let status_response = self
@@ -188,6 +197,7 @@ impl RapidMlxPoller {
                 "runtime_status": status.status,
                 "progress": status.progress.and_then(recognized_progress),
                 "telemetry": telemetry.as_ref().map(PrometheusTelemetry::as_json),
+                "runtime_facts": runtime_facts,
             })),
         })
     }
@@ -208,12 +218,190 @@ impl RapidMlxPoller {
         .ok()?
     }
 
+    /// Liveness comes from the HTTP status alone. The optional body only feeds
+    /// runtime facts, so a slow, oversized, or malformed body after a 2xx
+    /// status can never turn a reachable server unhealthy.
+    async fn probe_health(&self) -> (bool, Option<Value>) {
+        let deadline = tokio::time::Instant::now() + HEALTH_TIMEOUT;
+        let url = format!("{}/health", self.base_url);
+        let response =
+            match tokio::time::timeout_at(deadline, self.authenticated_get(&url).send()).await {
+                Ok(Ok(response)) => response,
+                _ => return (false, None),
+            };
+        if !response.status().is_success() {
+            return (false, None);
+        }
+        let facts = tokio::time::timeout_at(
+            deadline,
+            parse_json_limited::<Value>(response, CACHE_BODY_LIMIT, "Rapid-MLX /health"),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .map(|value| health_runtime_facts(&value));
+        (true, facts)
+    }
+
     fn authenticated_get(&self, url: &str) -> reqwest::RequestBuilder {
         match &self.api_key {
             Some(key) => self.client.get(url).bearer_auth(key),
             None => self.client.get(url),
         }
     }
+}
+
+/// Static launch facts from the resolved adapter: no IO, subprocess, or secrets.
+/// Requested settings stay separate from live facts (never an effective lane).
+pub fn launch_model_facts(adapter: &super::RapidMlxAdapter) -> Value {
+    use super::model_resolver::{RapidMlxModelSource, RapidMlxModelSourceView};
+
+    let mut facts = serde_json::Map::new();
+    let view = RapidMlxModelSourceView::from_source(&adapter.resolved_model.original_input);
+    for (key, value) in [
+        ("repo_id", view.repo_id),
+        ("revision", view.revision),
+        ("served_model_name", adapter.served_model_name.clone()),
+        ("version", Some(adapter.runtime.version.clone())),
+    ] {
+        if let Some(value) = bounded_fact_text(value.as_deref()) {
+            facts.insert(key.into(), Value::String(value));
+        }
+    }
+    let argument = &adapter.resolved_model.launch_argument;
+    // A free-form launch alias is not a physical path.
+    if matches!(
+        &adapter.resolved_model.original_input,
+        RapidMlxModelSource::Alias { .. }
+    ) {
+        if let Some(value) = bounded_fact_text(Some(argument)) {
+            facts.insert("source_alias".into(), Value::String(value));
+        }
+    } else if let Some(value) = bounded_fact_text(Some(argument)) {
+        // The snapshot is published to every dashboard client, so a local directory
+        // must never leave this process. Keep only what identifies the model.
+        match redacted_model_location(&value) {
+            Some(RedactedModelLocation::HubRepo(repo)) => {
+                facts
+                    .entry("repo_id".to_string())
+                    .or_insert(Value::String(repo));
+            }
+            Some(RedactedModelLocation::Directory(name)) => {
+                // `./name` is a redacted path: nav.js `physicalModel` treats a
+                // dot-prefixed value as a local path and shows its basename.
+                facts.insert("model_path".into(), Value::String(format!("./{name}")));
+            }
+            None => {}
+        }
+    }
+    if let Some(context) = adapter.context_length.filter(|value| *value > 0) {
+        facts.insert("context_length".into(), json!(context));
+    }
+    if let Some(speculative) = adapter.speculative_config.as_ref() {
+        let mut spec = serde_json::Map::new();
+        spec.insert("method".into(), json!(speculative.method));
+        if let Some(model) = bounded_fact_text(speculative.model.as_deref()) {
+            spec.insert("model".into(), Value::String(model));
+        }
+        spec.insert(
+            "num_speculative_tokens".into(),
+            json!(speculative.num_speculative_tokens),
+        );
+        facts.insert("speculative_config".into(), Value::Object(spec));
+    }
+    Value::Object(facts)
+}
+
+/// Apply cached launch facts only while publishing a checked spawned target.
+/// The caller must pass the Session held by the publication target guard.
+pub fn enrich_launch_model_facts(
+    snapshot: &mut InferenceMetricsSnapshot,
+    session: &crate::state::Session,
+    backend: Option<&crate::inference::backend::BackendAdapter>,
+    base: &str,
+) -> bool {
+    // Clear stale launch facts even when the current target is now an attachment.
+    if let Some(details) = snapshot
+        .backend_details
+        .as_mut()
+        .and_then(Value::as_object_mut)
+    {
+        details.remove("launch_facts");
+    }
+    let crate::state::SessionMode::Spawn {
+        port,
+        bind_host,
+        api_key,
+    } = &session.mode
+    else {
+        return false;
+    };
+    let Some(crate::inference::backend::BackendAdapter::RapidMlx(adapter)) = backend else {
+        return false;
+    };
+    let host = crate::web::api::upstream::local_connect_host(Some(&adapter.host));
+    let session_host = crate::web::api::upstream::local_connect_host(bind_host.as_deref());
+    let adapter_base = format!("http://{host}:{}", adapter.port);
+    if snapshot.backend != InferenceBackend::RapidMlx
+        || session.backend != InferenceBackend::RapidMlx
+        || adapter.port != *port
+        || host != session_host
+        || adapter_base != base.trim_end_matches('/')
+        || !crate::inference::llama_cpp::same_api_key(
+            adapter.api_key.as_deref(),
+            api_key.as_deref(),
+        )
+    {
+        return false;
+    }
+    let details = snapshot.backend_details.get_or_insert_with(|| json!({}));
+    if let Some(details) = details.as_object_mut() {
+        details.insert("launch_facts".into(), launch_model_facts(adapter));
+        true
+    } else {
+        false
+    }
+}
+
+enum RedactedModelLocation {
+    /// A Hugging Face hub snapshot path (`.../models--owner--name/snapshots/...`).
+    HubRepo(String),
+    /// Any other local directory, reduced to its final component.
+    Directory(String),
+}
+
+fn redacted_model_location(argument: &str) -> Option<RedactedModelLocation> {
+    let path = std::path::Path::new(argument);
+    for component in path.components() {
+        let part = component.as_os_str().to_string_lossy();
+        if let Some(rest) = part.strip_prefix("models--")
+            && let Some((owner, name)) = rest.split_once("--")
+            && !owner.is_empty()
+            && !name.is_empty()
+        {
+            let repo = format!("{owner}/{name}");
+            return bounded_fact_text(Some(&repo)).map(RedactedModelLocation::HubRepo);
+        }
+    }
+    let name = path.file_name()?.to_string_lossy();
+    bounded_fact_text(Some(&name)).map(RedactedModelLocation::Directory)
+}
+
+fn bounded_fact_text(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && text.len() <= 512 && !text.chars().any(char::is_control))
+        .map(str::to_string)
+}
+
+fn health_runtime_facts(value: &Value) -> Value {
+    let mut facts = serde_json::Map::new();
+    for key in ["model_type", "engine_type"] {
+        if let Some(text) = bounded_fact_text(value.get(key).and_then(Value::as_str)) {
+            facts.insert(key.into(), Value::String(text));
+        }
+    }
+    Value::Object(facts)
 }
 
 /// Privacy-safe aggregates only: labels (including model names) never escape.
@@ -351,7 +539,9 @@ fn parse_prometheus_sample(mut input: &str) -> Result<(BTreeMap<String, String>,
         bail!("Missing Rapid-MLX /metrics sample separator");
     }
     let mut fields = input.split_whitespace();
-    let value = fields.next().context("Missing Rapid-MLX /metrics counter")?;
+    let value = fields
+        .next()
+        .context("Missing Rapid-MLX /metrics counter")?;
     let counter = parse_prometheus_counter(value)?;
     if let Some(timestamp) = fields.next() {
         timestamp
@@ -431,9 +621,7 @@ fn parse_prometheus_counter(value: &str) -> Result<u64> {
     let scale = i64::from(exponent) - fractional_digits;
     let integer_digits = if scale < 0 {
         let removed = usize::try_from(-scale).context("Invalid Rapid-MLX counter scale")?;
-        if removed >= digits.len()
-            || !digits[digits.len() - removed..].bytes().all(|c| c == b'0')
-        {
+        if removed >= digits.len() || !digits[digits.len() - removed..].bytes().all(|c| c == b'0') {
             bail!("Fractional Rapid-MLX /metrics counter");
         }
         &digits[..digits.len() - removed]
@@ -625,6 +813,310 @@ fn recognized_progress(value: Value) -> Option<Value> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn launch_facts_preserve_repo_and_served_alias_without_secrets_or_effective_lane() {
+        use crate::inference::rapid_mlx::model_resolver::{
+            RapidMlxModelSource, ResolvedRapidMlxLaunchModel,
+        };
+        let mut model = ResolvedRapidMlxLaunchModel::validated_alias("catalog-alias").unwrap();
+        model.launch_argument = "/private/hub/models--owner--real-model/snapshots/abc123".into();
+        model.original_input = RapidMlxModelSource::HuggingFaceRepo {
+            repo_id: "owner/real-model".into(),
+            revision: "abc123".into(),
+        };
+        let mut adapter = super::super::RapidMlxAdapter::from_resolved(
+            super::super::runtime::RuntimeMetadata {
+                version: "0.10.0".into(),
+                ..Default::default()
+            },
+            model,
+        );
+        adapter.served_model_name = Some("friendly-alias".into());
+        adapter.context_length = Some(32768);
+        adapter.mllm_vision = Some("auto".into());
+        let facts = launch_model_facts(&adapter);
+        assert_eq!(facts["repo_id"], "owner/real-model");
+        assert_eq!(facts["served_model_name"], "friendly-alias");
+        assert_eq!(facts["version"], "0.10.0");
+        assert_eq!(facts["context_length"], 32768);
+        assert!(facts.get("runtime_lane").is_none());
+        assert!(facts.get("api_key").is_none());
+        assert!(facts.get("speculative_config").is_none());
+        // The published snapshot never carries a local directory.
+        assert!(!facts.to_string().contains("/private"), "{facts}");
+        assert!(facts.get("model_path").is_none());
+    }
+
+    #[test]
+    fn alias_launch_facts_do_not_claim_a_physical_repo_or_default_version() {
+        let adapter = super::super::RapidMlxAdapter::from_resolved(
+            super::super::runtime::RuntimeMetadata::default(),
+            super::super::model_resolver::ResolvedRapidMlxLaunchModel::validated_alias(
+                "catalog-alias",
+            )
+            .unwrap(),
+        );
+        let facts = launch_model_facts(&adapter);
+        assert_eq!(facts["source_alias"], "catalog-alias");
+        assert!(facts.get("repo_id").is_none());
+        assert!(facts.get("model_path").is_none());
+        assert!(facts.get("version").is_none());
+        assert!(facts.get("context_length").is_none());
+    }
+
+    #[tokio::test]
+    async fn status_redirect_is_not_followed() {
+        let mut server = mockito::Server::new_async().await;
+        let _health = server
+            .mock("GET", "/health")
+            .with_status(200)
+            .with_body("{}")
+            .create_async()
+            .await;
+        let _status = server
+            .mock("GET", "/v1/status")
+            .with_status(302)
+            .with_header("location", "/redirected-status")
+            .create_async()
+            .await;
+        let target = server
+            .mock("GET", "/redirected-status")
+            .with_status(200)
+            .with_body(r#"{"status":"idle"}"#)
+            .expect(0)
+            .create_async()
+            .await;
+        let result = RapidMlxPoller::from_base_url(server.url(), Some("secret"))
+            .poll()
+            .await;
+        assert!(
+            result.is_err(),
+            "a redirected status endpoint must fail the poll"
+        );
+        target.assert_async().await;
+    }
+
+    fn adapter_for_source(
+        original_input: super::super::model_resolver::RapidMlxModelSource,
+        launch_argument: &str,
+    ) -> super::super::RapidMlxAdapter {
+        use crate::inference::rapid_mlx::model_resolver::ResolvedRapidMlxLaunchModel;
+        let mut model = ResolvedRapidMlxLaunchModel::validated_alias("placeholder").unwrap();
+        model.launch_argument = launch_argument.into();
+        model.original_input = original_input;
+        super::super::RapidMlxAdapter::from_resolved(
+            super::super::runtime::RuntimeMetadata::default(),
+            model,
+        )
+    }
+
+    #[test]
+    fn local_directory_launch_fact_is_a_basename_not_a_path() {
+        use crate::inference::rapid_mlx::model_resolver::RapidMlxModelSource;
+        let dir = "/Users/someone/private-models/My-MLX-4bit";
+        let adapter =
+            adapter_for_source(RapidMlxModelSource::MlxDirectory { path: dir.into() }, dir);
+        let facts = launch_model_facts(&adapter);
+        let text = facts.to_string();
+        assert!(
+            !text.contains("/Users") && !text.contains("private-models"),
+            "{text}"
+        );
+        // `./name` is a redacted path: nav.js `physicalModel` still resolves its
+        // basename, so the dashboard identity keeps working without the directory.
+        assert_eq!(facts["model_path"], "./My-MLX-4bit");
+    }
+
+    #[test]
+    fn hub_snapshot_launch_fact_reduces_to_repo_id() {
+        use crate::inference::rapid_mlx::model_resolver::RapidMlxModelSource;
+        let dir = "/Users/someone/cache/models--owner--real-model/snapshots/abc123";
+        let adapter =
+            adapter_for_source(RapidMlxModelSource::MlxDirectory { path: dir.into() }, dir);
+        let facts = launch_model_facts(&adapter);
+        let text = facts.to_string();
+        assert!(
+            !text.contains("/Users") && !text.contains("snapshots"),
+            "{text}"
+        );
+        assert_eq!(facts["repo_id"], "owner/real-model");
+        assert!(facts.get("model_path").is_none());
+    }
+
+    #[test]
+    fn unrepresentable_launch_path_is_dropped() {
+        use crate::inference::rapid_mlx::model_resolver::RapidMlxModelSource;
+        let adapter =
+            adapter_for_source(RapidMlxModelSource::MlxDirectory { path: "/".into() }, "/");
+        let facts = launch_model_facts(&adapter);
+        assert!(facts.get("model_path").is_none(), "{facts}");
+    }
+
+    #[test]
+    fn health_runtime_facts_are_bounded_and_never_forward_mcp_or_secrets() {
+        assert_eq!(
+            health_runtime_facts(&json!({
+                "model_type": "llm", "engine_type": "batched",
+                "model_name": "served-alias", "api_key": "secret",
+                "mcp": {"tools_available": 8},
+            })),
+            json!({"model_type": "llm", "engine_type": "batched"})
+        );
+        assert_eq!(
+            health_runtime_facts(&json!({"engine_type": "x".repeat(513)})),
+            json!({})
+        );
+    }
+
+    #[tokio::test]
+    async fn health_status_200_is_healthy_regardless_of_body() {
+        use tokio::io::AsyncWriteExt;
+
+        for body in [String::from("not json"), "x".repeat(CACHE_BODY_LIMIT + 1)] {
+            let mut server = mockito::Server::new_async().await;
+            let _health = server
+                .mock("GET", "/health")
+                .with_status(200)
+                .with_body(body)
+                .create_async()
+                .await;
+            let (ok, facts) = RapidMlxPoller::from_base_url(server.url(), None)
+                .probe_health()
+                .await;
+            assert!(ok);
+            assert!(facts.is_none());
+        }
+
+        // Headers arrive, then the body stalls past the 2s budget.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{").await.unwrap();
+            tokio::time::sleep(Duration::from_secs(4)).await;
+        });
+        let (ok, facts) = RapidMlxPoller::from_base_url(base, None)
+            .probe_health()
+            .await;
+        server.abort();
+        assert!(ok, "a 200 status must stay healthy when the body stalls");
+        assert!(facts.is_none());
+
+        let mut server = mockito::Server::new_async().await;
+        let _health = server
+            .mock("GET", "/health")
+            .with_status(503)
+            .create_async()
+            .await;
+        assert!(
+            !RapidMlxPoller::from_base_url(server.url(), None)
+                .probe_health()
+                .await
+                .0
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_launch_enrichment_is_spawn_target_scoped_and_preserves_live_facts() {
+        use crate::inference::backend::BackendAdapter;
+        use crate::state::{Session, SessionMode};
+        use std::sync::Arc;
+
+        let mut server = mockito::Server::new_async().await;
+        let _health = server
+            .mock("GET", "/health")
+            .with_status(200)
+            .with_body(r#"{"model_type":"llm","engine_type":"batched"}"#)
+            .create_async()
+            .await;
+        let _status = server
+            .mock("GET", "/v1/status")
+            .with_status(200)
+            .with_body(STATUS_FIXTURE)
+            .create_async()
+            .await;
+        let _cache = server
+            .mock("GET", "/v1/cache/stats")
+            .with_status(404)
+            .create_async()
+            .await;
+        let _metrics = server
+            .mock("GET", "/metrics")
+            .with_status(404)
+            .create_async()
+            .await;
+        let mut snapshot = RapidMlxPoller::from_base_url(server.url(), None)
+            .poll()
+            .await
+            .unwrap();
+        let endpoint = reqwest::Url::parse(&server.url()).unwrap();
+        let mut adapter = super::super::RapidMlxAdapter::from_resolved(
+            super::super::runtime::RuntimeMetadata {
+                version: "0.10.0".into(),
+                ..Default::default()
+            },
+            super::super::model_resolver::ResolvedRapidMlxLaunchModel::validated_alias(
+                "catalog-alias",
+            )
+            .unwrap(),
+        );
+        adapter.host = endpoint.host_str().unwrap().into();
+        adapter.port = endpoint.port().unwrap();
+        let backend = BackendAdapter::RapidMlx(Arc::new(adapter));
+        let mut session: Session =
+            serde_json::from_value(json!({"id":"s", "backend":"rapid_mlx"})).unwrap();
+        session.mode = SessionMode::Spawn {
+            port: endpoint.port().unwrap(),
+            bind_host: Some(endpoint.host_str().unwrap().into()),
+            api_key: None,
+        };
+        assert!(enrich_launch_model_facts(
+            &mut snapshot,
+            &session,
+            Some(&backend),
+            &server.url()
+        ));
+        let details = snapshot.backend_details.as_ref().unwrap();
+        assert_eq!(details["launch_facts"]["version"], "0.10.0");
+        assert_eq!(details["runtime_facts"]["engine_type"], "batched");
+        assert_eq!(details["runtime_status"], "generating");
+        assert_eq!(snapshot.model.as_deref(), Some("fixture"));
+        assert!(!enrich_launch_model_facts(
+            &mut snapshot,
+            &session,
+            Some(&backend),
+            "http://127.0.0.1:1"
+        ));
+        assert!(
+            snapshot
+                .backend_details
+                .as_ref()
+                .unwrap()
+                .get("launch_facts")
+                .is_none()
+        );
+        session.mode = SessionMode::Attach {
+            endpoint: server.url(),
+            api_key: None,
+        };
+        assert!(!enrich_launch_model_facts(
+            &mut snapshot,
+            &session,
+            Some(&backend),
+            &server.url()
+        ));
+        assert!(
+            snapshot
+                .backend_details
+                .as_ref()
+                .unwrap()
+                .get("launch_facts")
+                .is_none()
+        );
+    }
+
     const PROMETHEUS_FIXTURE: &str = r#"
 # HELP rapid_mlx_model_requests_total Requests by outcome.
 # TYPE rapid_mlx_model_requests_total counter
@@ -729,11 +1221,9 @@ future_unknown_gauge NaN
         ] {
             assert!(parse_prometheus(body).unwrap().is_none(), "{body}");
         }
-        let telemetry = parse_prometheus(
-            "rapid_mlx_model_requests_total{outcome=\"succeeded\"} 0",
-        )
-        .unwrap()
-        .unwrap();
+        let telemetry = parse_prometheus("rapid_mlx_model_requests_total{outcome=\"succeeded\"} 0")
+            .unwrap()
+            .unwrap();
         assert_eq!(telemetry.succeeded_requests_total, Some(0));
         assert_eq!(telemetry.failed_requests_total, None);
         assert_eq!(telemetry.acceptance_rate(), None);
@@ -744,7 +1234,10 @@ future_unknown_gauge NaN
             "rapid_mlx_spec_decode_accepts_total 1",
             "rapid_mlx_spec_decode_attempts_total 1\nrapid_mlx_spec_decode_accepts_total 2",
         ] {
-            assert_eq!(parse_prometheus(body).unwrap().unwrap().acceptance_rate(), None);
+            assert_eq!(
+                parse_prometheus(body).unwrap().unwrap().acceptance_rate(),
+                None
+            );
         }
         assert_eq!(
             parse_prometheus(
@@ -774,9 +1267,23 @@ future_unknown_gauge NaN
             assert_eq!(parse_prometheus_counter(text).unwrap(), expected, "{text}");
         }
         for text in [
-            "", ".", "NaN", "+Inf", "-Inf", "-1", "-0.0", "0.1", "1e-400",
-            "-1e-400", "0.99999999999999999999", "18446744073709551616",
-            "18446744073709551616.0", "1e100", "1e999999999999", "1.2.0", "1e1e1",
+            "",
+            ".",
+            "NaN",
+            "+Inf",
+            "-Inf",
+            "-1",
+            "-0.0",
+            "0.1",
+            "1e-400",
+            "-1e-400",
+            "0.99999999999999999999",
+            "18446744073709551616",
+            "18446744073709551616.0",
+            "1e100",
+            "1e999999999999",
+            "1.2.0",
+            "1e1e1",
         ] {
             assert!(parse_prometheus_counter(text).is_err(), "{text}");
         }
@@ -806,11 +1313,13 @@ future_unknown_gauge NaN
             let body = format!("rapid_mlx_model_requests_total{sample}");
             assert!(parse_prometheus(&body).is_err(), "{body}");
         }
-        assert!(parse_prometheus(
-            "rapid_mlx_spec_decode_attempts_total{family=\"a\",method=\"mtp\"} 1\n\
+        assert!(
+            parse_prometheus(
+                "rapid_mlx_spec_decode_attempts_total{family=\"a\",method=\"mtp\"} 1\n\
              rapid_mlx_spec_decode_attempts_total{method=\"mtp\",family=\"a\"} 2"
-        )
-        .is_err());
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -900,7 +1409,10 @@ future_unknown_gauge NaN
             assert_eq!(snapshot.speculative_acceptance_rate, Some(0.1));
             assert_eq!(
                 snapshot.backend_details.as_ref().unwrap()["telemetry"],
-                parse_prometheus(PROMETHEUS_FIXTURE).unwrap().unwrap().as_json()
+                parse_prometheus(PROMETHEUS_FIXTURE)
+                    .unwrap()
+                    .unwrap()
+                    .as_json()
             );
         }
         health.assert_async().await;
@@ -918,7 +1430,10 @@ future_unknown_gauge NaN
             (200, vec![b'x'; METRICS_BODY_LIMIT + 1]),
             (200, vec![0xff]),
             (200, b"rapid_mlx_spec_decode_attempts_total NaN".to_vec()),
-            (200, b"rapid_mlx_spec_decode_attempts_total{broken} 1".to_vec()),
+            (
+                200,
+                b"rapid_mlx_spec_decode_attempts_total{broken} 1".to_vec(),
+            ),
             (200, b"<html>not metrics</html>".to_vec()),
         ];
         for (code, body) in bad_bodies {
@@ -927,7 +1442,11 @@ future_unknown_gauge NaN
                 ..Default::default()
             })
             .await;
-            let health = server.mock("GET", "/health").with_status(200).create_async().await;
+            let health = server
+                .mock("GET", "/health")
+                .with_status(200)
+                .create_async()
+                .await;
             let status = server
                 .mock("GET", "/v1/status")
                 .with_status(200)
@@ -1009,9 +1528,7 @@ future_unknown_gauge NaN
             let size = socket.read(&mut request).await.unwrap();
             assert!(request[..size].starts_with(b"GET /metrics "));
             socket
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n#\r\n",
-                )
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n#\r\n")
                 .await
                 .unwrap();
             // Keep the socket alive but never finish the body.
@@ -1024,7 +1541,11 @@ future_unknown_gauge NaN
         )
         .await;
         stalled_server.abort();
-        assert!(result.expect("optional /metrics must remain bounded").is_none());
+        assert!(
+            result
+                .expect("optional /metrics must remain bounded")
+                .is_none()
+        );
     }
 
     #[tokio::test]
