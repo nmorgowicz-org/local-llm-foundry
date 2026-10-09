@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.3.1...v2.4.0) (2026-10-09)
+
+
+### Features
+
+* **models:** download Rapid-MLX models from cards and reuse the Hugging Face cache ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+* **nav:** show engine identity and distinguish model repositories from served aliases ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+* **ui:** integrate Rapid-MLX telemetry into shared dashboard cards and active requests ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+* **ui:** show model quantization and memory estimates on preset cards ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+* **wizard:** add Rapid-MLX download steps and context-length controls ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+
+
+### Bug Fixes
+
+* **api:** harden Rapid-MLX model lookups and download job identifiers ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+* **ci:** give UI builds and test jobs independent 90-minute timeout budgets ([a682e85](https://github.com/nmorgowicz-org/local-llm-foundry/commit/a682e8572c575e49ccd9aad2cfe7e1f84cbdce5b))
+* **ci:** reuse exact-commit UI build artifacts across isolated test shards and reruns ([a682e85](https://github.com/nmorgowicz-org/local-llm-foundry/commit/a682e8572c575e49ccd9aad2cfe7e1f84cbdce5b))
+* **ci:** save PR-scoped Rust caches while retaining main dependency fallback ([a682e85](https://github.com/nmorgowicz-org/local-llm-foundry/commit/a682e8572c575e49ccd9aad2cfe7e1f84cbdce5b))
+* **deps:** update rust crate zip to v9 ([#452](https://github.com/nmorgowicz-org/local-llm-foundry/issues/452)) ([ed88186](https://github.com/nmorgowicz-org/local-llm-foundry/commit/ed8818634dc8588241acec58bbd3c6923483ea69))
+* **gpu:** distinguish unavailable CPU and compact GPU samples from genuine zero load ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+* **models:** reject incomplete snapshots without blocking valid caches for unrelated partial downloads ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+* **models:** retain download state across surfaces and recover transient errors and missing jobs ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+* **settings:** keep TLS certificate controls clickable and stable ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+* **spawn:** filter routine backend health and status polling logs ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+* **spawn:** stop inference backends safely on SIGINT, SIGTERM, and tray Quit ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+* **spawn:** use bf16 KV for hybrid Rapid-MLX models and validate tool parser settings ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+* **spawn:** use the selected managed Rapid runtime for hybrid model checks ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+* **ui:** preserve active-request selection and hide retained telemetry after failed polls ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+* **ui:** respect light themes and reduced motion in Rapid-MLX controls ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+* **wizard:** preserve Rapid Auto context and saved template reasoning effort ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+* **wizard:** use safe Rapid-MLX concurrency defaults and consistent model controls ([357bf4c](https://github.com/nmorgowicz-org/local-llm-foundry/commit/357bf4cf574a6c7712909aab92226cc72ea3e3df))
+
 ## [2.3.1](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.3.0...v2.3.1) (2026-10-07)
 
 
