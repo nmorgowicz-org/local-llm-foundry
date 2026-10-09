@@ -138,7 +138,8 @@ fn safe_repo_parts(repo_id: &str) -> Option<(&str, &str)> {
 }
 
 /// True when `repo_id` (`owner/name`) has a complete snapshot in `hub`: a snapshot
-/// directory with `config.json` and its weights, and no partial blobs.
+/// directory with `config.json` and complete weights. Partial blobs belonging to another
+/// revision do not affect this snapshot.
 ///
 /// "Its weights" means every shard named by `model.safetensors.index.json` when the
 /// snapshot has one (symlinked blobs are resolved, so a dangling link is a missing
@@ -179,16 +180,19 @@ fn is_weight_name(file: &str) -> bool {
     file.ends_with(".safetensors") || file.ends_with(".npz")
 }
 
+/// Resolve required files (including HF blob symlinks), never accepting partial targets.
+fn snapshot_file_present(path: &Path) -> bool {
+    path.is_file()
+        && std::fs::canonicalize(path).is_ok_and(|target| {
+            !target
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with(".incomplete"))
+        })
+}
+
 fn complete_snapshot(hub: &Path, repo_id: &str) -> Option<PathBuf> {
     let (owner, name) = safe_repo_parts(repo_id)?;
     let repo_dir = hub.join(format!("models--{owner}--{name}"));
-    if let Ok(blobs) = std::fs::read_dir(repo_dir.join("blobs")) {
-        for blob in blobs.flatten() {
-            if blob.file_name().to_string_lossy().ends_with(".incomplete") {
-                return None;
-            }
-        }
-    }
     std::fs::read_dir(repo_dir.join("snapshots"))
         .ok()?
         .flatten()
@@ -197,20 +201,36 @@ fn complete_snapshot(hub: &Path, repo_id: &str) -> Option<PathBuf> {
 }
 
 fn snapshot_complete(dir: &Path) -> bool {
-    if !dir.join("config.json").exists() {
+    if !snapshot_file_present(&dir.join("config.json")) {
         return false;
+    }
+    // Inspect the selected snapshot, not the repository-wide blob pool. Do not
+    // short-circuit on the first weight: another weight may be a broken link.
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let mut has_weights = false;
+    for (count, entry) in entries.take(MAX_SNAPSHOT_ENTRIES + 1).enumerate() {
+        if count == MAX_SNAPSHOT_ENTRIES {
+            return false;
+        }
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let is_weight = is_weight_name(&entry.file_name().to_string_lossy());
+        if is_weight {
+            if !snapshot_file_present(&entry.path()) {
+                return false;
+            }
+            has_weights = true;
+        }
     }
     let index = dir.join("model.safetensors.index.json");
     // `symlink_metadata`: a dangling index link is still a (broken) index, not "no index".
     if std::fs::symlink_metadata(&index).is_ok() {
         return index_shards_present(dir, &index);
     }
-    std::fs::read_dir(dir).is_ok_and(|entries| {
-        entries.flatten().take(MAX_SNAPSHOT_ENTRIES).any(|entry| {
-            is_weight_name(&entry.file_name().to_string_lossy())
-                && std::fs::metadata(entry.path()).is_ok_and(|meta| meta.is_file())
-        })
-    })
+    has_weights
 }
 
 /// Every shard in the index's `weight_map` exists as a file. An unreadable, oversized,
@@ -219,7 +239,7 @@ fn index_shards_present(dir: &Path, index: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(index) else {
         return false;
     };
-    if meta.len() > MAX_INDEX_BYTES {
+    if !meta.is_file() || meta.len() > MAX_INDEX_BYTES || !snapshot_file_present(index) {
         return false;
     }
     let Ok(bytes) = std::fs::read(index) else {
@@ -238,7 +258,7 @@ fn index_shards_present(dir: &Path, index: &Path) -> bool {
         };
         shards.insert(shard);
     }
-    if shards.is_empty() {
+    if shards.is_empty() || shards.len() > MAX_SNAPSHOT_ENTRIES {
         return false;
     }
     shards.into_iter().all(|shard| {
@@ -247,7 +267,7 @@ fn index_shards_present(dir: &Path, index: &Path) -> bool {
             .components()
             .all(|part| matches!(part, std::path::Component::Normal(_)))
             && shard.ends_with(".safetensors")
-            && std::fs::metadata(dir.join(relative)).is_ok_and(|meta| meta.is_file())
+            && snapshot_file_present(&dir.join(relative))
     })
 }
 
@@ -278,13 +298,26 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_blob_is_not_cached() {
+    fn unrelated_revision_partial_blob_does_not_invalidate_complete_snapshot() {
         let t = tempfile::tempdir().unwrap();
         snapshot(t.path(), &["config.json", "model.safetensors"]);
-        let blobs = t.path().join("models--o--m/blobs");
-        std::fs::create_dir_all(&blobs).unwrap();
-        std::fs::write(blobs.join("deadbeef.incomplete"), b"x").unwrap();
-        assert!(!repo_cached(t.path(), "o/m"));
+        let repo = t.path().join("models--o--m");
+        std::fs::create_dir_all(repo.join("blobs")).unwrap();
+        std::fs::write(repo.join("blobs/deadbeef.incomplete"), b"x").unwrap();
+        // Another revision is still downloading; it must not invalidate revision abc.
+        let partial = repo.join("snapshots/partial");
+        std::fs::create_dir_all(&partial).unwrap();
+        std::fs::write(partial.join("config.json"), b"{}").unwrap();
+        assert_eq!(
+            complete_snapshot(t.path(), "o/m"),
+            Some(repo.join("snapshots/abc"))
+        );
+        assert_eq!(cached_weight_bytes(t.path(), "o/m"), Some(1));
+        let models = tempfile::tempdir().unwrap();
+        assert_eq!(
+            alias_launch_hub_in(models.path(), "o/m", Some(t.path().to_path_buf())),
+            Some(t.path().to_path_buf())
+        );
     }
 
     #[test]
@@ -316,9 +349,12 @@ mod tests {
             None
         );
         snapshot(global.path(), &["config.json", "model.safetensors"]);
-        let blobs = global.path().join("models--o--m/blobs");
-        std::fs::create_dir_all(&blobs).unwrap();
-        std::fs::write(blobs.join("x.incomplete"), b"x").unwrap();
+        std::fs::remove_file(
+            global
+                .path()
+                .join("models--o--m/snapshots/abc/model.safetensors"),
+        )
+        .unwrap();
         assert_eq!(
             alias_launch_hub_in(models.path(), "o/m", Some(global.path().to_path_buf())),
             None
@@ -533,6 +569,103 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         snapshot(t.path(), &["config.json", "weights.npz"]);
         assert!(repo_cached(t.path(), "o/m"));
+    }
+
+    #[test]
+    fn missing_required_snapshot_files_are_not_cached() {
+        for missing in ["config.json", "model.safetensors"] {
+            let t = tempfile::tempdir().unwrap();
+            snapshot(t.path(), &["config.json", "model.safetensors"]);
+            std::fs::remove_file(t.path().join("models--o--m/snapshots/abc").join(missing))
+                .unwrap();
+            assert!(!repo_cached(t.path(), "o/m"), "missing {missing}");
+            assert_eq!(cached_weight_bytes(t.path(), "o/m"), None, "{missing}");
+        }
+    }
+
+    #[test]
+    fn required_snapshot_assets_must_be_files() {
+        for asset in ["config.json", "model.safetensors"] {
+            let t = tempfile::tempdir().unwrap();
+            snapshot(t.path(), &["config.json", "model.safetensors"]);
+            let path = t.path().join("models--o--m/snapshots/abc").join(asset);
+            std::fs::remove_file(&path).unwrap();
+            std::fs::create_dir(path).unwrap();
+            assert!(!repo_cached(t.path(), "o/m"), "directory {asset}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unrelated_dangling_readme_symlink_does_not_invalidate_complete_snapshot() {
+        let t = tempfile::tempdir().unwrap();
+        snapshot(t.path(), &["config.json", "model.safetensors"]);
+        let snap = t.path().join("models--o--m/snapshots/abc");
+        std::os::unix::fs::symlink("../../blobs/missing-readme", snap.join("README.md")).unwrap();
+        assert!(repo_cached(t.path(), "o/m"));
+        assert_eq!(cached_weight_bytes(t.path(), "o/m"), Some(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn required_snapshot_assets_can_resolve_to_complete_blobs() {
+        let t = tempfile::tempdir().unwrap();
+        snapshot(t.path(), &["config.json", "model.safetensors"]);
+        write_index(t.path(), &["model.safetensors"]);
+        let repo = t.path().join("models--o--m");
+        let snap = repo.join("snapshots/abc");
+        std::fs::create_dir_all(repo.join("blobs")).unwrap();
+        for (i, asset) in [
+            "config.json",
+            "model.safetensors",
+            "model.safetensors.index.json",
+        ]
+        .iter()
+        .enumerate()
+        {
+            std::fs::rename(snap.join(asset), repo.join("blobs").join(i.to_string())).unwrap();
+            std::os::unix::fs::symlink(format!("../../blobs/{i}"), snap.join(asset)).unwrap();
+        }
+        std::fs::write(repo.join("blobs/unrelated.incomplete"), b"x").unwrap();
+        assert!(repo_cached(t.path(), "o/m"));
+        assert_eq!(cached_weight_bytes(t.path(), "o/m"), Some(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn broken_required_snapshot_symlinks_are_not_cached() {
+        for asset in [
+            "config.json",
+            "model.safetensors",
+            "model.safetensors.index.json",
+            "model-00002-of-00002.safetensors",
+        ] {
+            let t = tempfile::tempdir().unwrap();
+            snapshot(t.path(), &["config.json", "model.safetensors"]);
+            let snap = t.path().join("models--o--m/snapshots/abc");
+            if snap.join(asset).exists() {
+                std::fs::remove_file(snap.join(asset)).unwrap();
+            }
+            std::os::unix::fs::symlink("../../blobs/missing", snap.join(asset)).unwrap();
+            assert!(!repo_cached(t.path(), "o/m"), "broken {asset}");
+            assert_eq!(cached_weight_bytes(t.path(), "o/m"), None, "{asset}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_referencing_partial_blob_is_not_cached() {
+        let t = tempfile::tempdir().unwrap();
+        snapshot(t.path(), &["config.json"]);
+        let repo = t.path().join("models--o--m");
+        std::fs::create_dir_all(repo.join("blobs")).unwrap();
+        std::fs::write(repo.join("blobs/weights.incomplete"), b"x").unwrap();
+        std::os::unix::fs::symlink(
+            "../../blobs/weights.incomplete",
+            repo.join("snapshots/abc/model.safetensors"),
+        )
+        .unwrap();
+        assert!(!repo_cached(t.path(), "o/m"));
     }
 
     #[test]
