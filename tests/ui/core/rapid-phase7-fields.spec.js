@@ -107,6 +107,83 @@ test.describe('Rapid-MLX Phase 7 throughput fields', () => {
     });
   }
 
+  for (const effort of ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']) {
+    test(`@in-memory-test template reasoning effort ${effort} survives hardware visits and reaches launch/save payloads`, async ({ page }) => {
+      await openRapidHardware(page, {
+        name: 'Reasoning template', backend: 'rapid_mlx',
+        rapid_mlx: {
+          model_source: { kind: 'mlx_directory', path: '/tmp/Qwen3-8B-4bit' },
+          default_reasoning_effort: effort,
+        },
+      });
+      await expect(page.locator('#spawn-rapid-reasoning-effort')).toHaveValue(effort);
+      const result = await page.evaluate(async () => {
+        const wiz = await import('/js/features/spawn-wizard.js');
+        wiz.showStep(1);
+        wiz.showStep(0);
+        wiz.showStep(1);
+        return {
+          state: wiz.wizardState.hardware.reasoningEffort,
+          launch: wiz.buildSpawnPayload().rapid_mlx.default_reasoning_effort,
+          saved: wiz.buildPresetPayload().rapid_mlx.default_reasoning_effort,
+        };
+      });
+      await expect(page.locator('#spawn-rapid-reasoning-effort')).toHaveValue(effort);
+      expect(result).toEqual({ state: effort, launch: effort, saved: effort });
+    });
+  }
+
+  for (const [label, config] of [
+    ['missing', {}],
+    ['null', { default_reasoning_effort: null }],
+    ['empty', { default_reasoning_effort: '' }],
+  ]) {
+    test(`@in-memory-test ${label} template reasoning effort clears an old selection to Auto`, async ({ page }) => {
+      await openRapidHardware(page);
+      const result = await page.evaluate(async rapid => {
+        const wiz = await import('/js/features/spawn-wizard.js');
+        const control = document.getElementById('spawn-rapid-reasoning-effort');
+        control.value = 'high';
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+        wiz.openSpawnWizard({ templatePreset: {
+          backend: 'rapid_mlx',
+          rapid_mlx: { model_source: { kind: 'mlx_directory', path: '/tmp/model' }, ...rapid },
+        } });
+        return {
+          state: wiz.wizardState.hardware.reasoningEffort,
+          launch: wiz.buildSpawnPayload().rapid_mlx.default_reasoning_effort,
+        };
+      }, config);
+      await expect(page.locator('#spawn-rapid-reasoning-effort')).toHaveValue('');
+      expect(result).toEqual({ state: '', launch: null });
+    });
+  }
+
+  test('@in-memory-test explicit Auto survives Rapid defaults and a fresh wizard resets reasoning effort', async ({ page }) => {
+    await openRapidHardware(page);
+    const result = await page.evaluate(async () => {
+      const wiz = await import('/js/features/spawn-wizard.js');
+      const { applyRapidMlxDefaults } = await import('/js/features/spawn-wizard-rapid-mlx.js');
+      const control = document.getElementById('spawn-rapid-reasoning-effort');
+      const choose = value => {
+        control.value = value;
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      choose('xhigh');
+      choose('');
+      applyRapidMlxDefaults();
+      const auto = wiz.buildSpawnPayload().rapid_mlx.default_reasoning_effort;
+      choose('high');
+      wiz.openSpawnWizard();
+      wiz.wizardState.engine.selected = 'rapid_mlx';
+      applyRapidMlxDefaults();
+      return { auto, fresh: wiz.buildSpawnPayload().rapid_mlx.default_reasoning_effort,
+        state: wiz.wizardState.hardware.reasoningEffort };
+    });
+    await expect(page.locator('#spawn-rapid-reasoning-effort')).toHaveValue('');
+    expect(result).toEqual({ auto: null, fresh: null, state: '' });
+  });
+
   // Only one exclusion rule remains. The second paired speculative_policy with max_num_seqs;
   // it was built on --speculative, which no rapid-mlx release has, and went with the field.
   test('@in-memory-test the mutual-exclusion rule is surfaced', async ({ page }) => {

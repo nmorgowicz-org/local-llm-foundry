@@ -127,6 +127,144 @@ test.describe('Rapid-MLX preset editor throughput fields', () => {
     await expect(page.locator('#modal-rapid-max-concurrent-requests')).toHaveValue('');
   });
 
+  async function captureConfirmedSave(page) {
+    let body = null;
+    await page.route('**/api/presets/**', async (route, request) => {
+      if (request.method() === 'PUT') body = request.postDataJSON();
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"id":"probe"}' });
+    });
+    await page.evaluate(async () => {
+      const mod = await import('/js/features/presets.js');
+      await mod.savePreset(new Event('submit'));
+      if (document.getElementById('btn-modal-save').dataset.confirmed === 'yes') {
+        await mod.savePreset(new Event('submit'));
+      }
+    });
+    expect(body, 'save request was never issued').not.toBeNull();
+    return body;
+  }
+
+  // The backend normalizes the nullable legacy mirror to zero and may omit the
+  // unset Rapid option. Reopen that representation, not just the outgoing nulls.
+  function persistedAutoContext(body) {
+    const persisted = { ...body, context_size: 0, rapid_mlx: { ...body.rapid_mlx } };
+    delete persisted.rapid_mlx.context_length;
+    return persisted;
+  }
+
+  for (const [label, context] of [
+    ['missing', {}],
+    ['null', { context_length: null }],
+  ]) {
+    for (const [mirrorLabel, mirror] of [
+      ['no legacy mirror', {}],
+      ['stale legacy mirror', { context_size: 65536 }],
+    ]) {
+      test(`@in-memory-test name-only edit preserves ${label} Auto context with ${mirrorLabel}`, async ({ page }) => {
+        await openSeeded(page, {
+          ...SEED,
+          ...mirror,
+          rapid_mlx: { ...SEED.rapid_mlx, ...context },
+        });
+        await expect(page.locator('#modal-context-size')).toHaveValue('');
+        await page.locator('#preset-modal .preset-nav-item[data-section="model"]').click();
+        await page.locator('#modal-name').fill('renamed Auto context');
+
+        const body = await captureConfirmedSave(page);
+        expect(body.name).toBe('renamed Auto context');
+        expect(body.rapid_mlx.context_length).toBeNull();
+        expect(body.context_size).toBeNull();
+
+        await openSeeded(page, persistedAutoContext(body));
+        await expect(page.locator('#modal-context-size')).toHaveValue('');
+      });
+    }
+  }
+
+  test('@in-memory-test explicit Rapid context can be cleared to Auto without reviving its mirror', async ({ page }) => {
+    await openSeeded(page, {
+      ...SEED,
+      context_size: 65536,
+      rapid_mlx: { ...SEED.rapid_mlx, context_length: 32768 },
+    });
+    await expect(page.locator('#modal-context-size')).toHaveValue('32768');
+    await page.locator('#modal-context-size').fill('');
+
+    const body = await captureConfirmedSave(page);
+    expect(body.rapid_mlx.context_length).toBeNull();
+    expect(body.context_size).toBeNull();
+    await openSeeded(page, body);
+    await expect(page.locator('#modal-context-size')).toHaveValue('');
+    await openSeeded(page, persistedAutoContext(body));
+    await expect(page.locator('#modal-context-size')).toHaveValue('');
+  });
+
+  for (const [label, editedContext, expectedContext] of [
+    ['untouched', null, 32768],
+    ['edited', '49152', 49152],
+  ]) {
+    test(`@in-memory-test ${label} numeric Rapid context remains explicit and updates its mirror`, async ({ page }) => {
+      await openSeeded(page, {
+        ...SEED,
+        context_size: 65536,
+        rapid_mlx: { ...SEED.rapid_mlx, context_length: 32768 },
+      });
+      await expect(page.locator('#modal-context-size')).toHaveValue('32768');
+      if (editedContext !== null) await page.locator('#modal-context-size').fill(editedContext);
+
+      const body = await captureConfirmedSave(page);
+      expect(body.rapid_mlx.context_length).toBe(expectedContext);
+      expect(body.context_size).toBe(expectedContext);
+      await openSeeded(page, body);
+      await expect(page.locator('#modal-context-size')).toHaveValue(String(expectedContext));
+    });
+  }
+
+  for (const [label, context, expectedContext] of [
+    ['missing', {}, ''],
+    ['null', { context_length: null }, ''],
+    ['numeric', { context_length: 32768 }, '32768'],
+  ]) {
+    test(`@in-memory-test seeded-new Rapid ${label} context ignores the legacy mirror`, async ({ page }) => {
+      await page.goto('/');
+      await page.waitForLoadState('networkidle');
+      await page.evaluate(async (seed) => {
+        const mod = await import('/js/features/presets.js');
+        mod.openPresetModal('new', 'context', seed);
+      }, {
+        ...SEED,
+        context_size: 65536,
+        rapid_mlx: { ...SEED.rapid_mlx, ...context },
+      });
+      await expect(page.locator('#modal-context-size')).toHaveValue(expectedContext);
+    });
+  }
+
+  for (const { label, context, hydrated, edited, expected } of [
+    { label: 'numeric', context: { context_size: 65536 }, hydrated: '65536', expected: 65536 },
+    { label: 'edited numeric', context: { context_size: 65536 }, hydrated: '65536', edited: '49152', expected: 49152 },
+    { label: 'missing default', context: {}, hydrated: '128000', expected: 128000 },
+    { label: 'null default', context: { context_size: null }, hydrated: '128000', expected: 128000 },
+    { label: 'cleared default', context: { context_size: 65536 }, hydrated: '65536', edited: '', expected: 128000 },
+  ]) {
+    test(`@in-memory-test llama.cpp ${label} context behavior is unchanged`, async ({ page }) => {
+      await openSeeded(page, {
+        name: 'llama context probe',
+        backend: 'llama_cpp',
+        model_path: '/tmp/context-probe.gguf',
+        ...context,
+      });
+      await expect(page.locator('#modal-context-size')).toHaveValue(hydrated);
+      if (edited !== undefined) await page.locator('#modal-context-size').fill(edited);
+
+      const body = await captureConfirmedSave(page);
+      expect(body.context_size).toBe(expected);
+      expect(body.rapid_mlx).toBeUndefined();
+      await openSeeded(page, body);
+      await expect(page.locator('#modal-context-size')).toHaveValue(String(expected));
+    });
+  }
+
   // The generalisation of the bug above. Every Rapid control in the save path used the
   // `if (value) out.x = value` idiom, so "(unset)" and "Auto" were unreachable states on any
   // preset that already had a value -- the spread restored the old one and it kept reaching

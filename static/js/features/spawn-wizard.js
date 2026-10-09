@@ -954,6 +954,8 @@ export function openSpawnWizard(opts = {}) {
         ? '' : String(t.rapid_mlx.max_num_seqs);
       wizardState.hardware.maxConcurrentRequests = t.rapid_mlx?.max_concurrent_requests == null
         ? '' : String(t.rapid_mlx.max_concurrent_requests);
+      wizardState.hardware.reasoningEffort = t.rapid_mlx?.default_reasoning_effort ?? '';
+      if (dom.reasoningEffortSelect) dom.reasoningEffortSelect.value = wizardState.hardware.reasoningEffort;
     }
     if (t.backend === 'rapid_mlx' && t.rapid_mlx) {
       const rapid = t.rapid_mlx;
@@ -1178,6 +1180,7 @@ function resetWizardState() {
     wizardState.hardware.prefillStepSizeUserSet = false;
   wizardState.hardware.rapidReasoningMode = 'on';
   wizardState.hardware.reasoningEffort = '';
+  if (dom.reasoningEffortSelect) dom.reasoningEffortSelect.value = '';
   wizardState.hardware.speculativeEnabled = false;
   wizardState.hardware.speculativeSource = 'embedded';
   wizardState.hardware.speculativeModel = '';

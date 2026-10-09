@@ -557,6 +557,7 @@ export function applyRapidMlxDefaults() {
   // Replay state, not a fallback: Auto ('') must survive profile refreshes and engine switches.
   if (dom.maxNumSeqsSelect) dom.maxNumSeqsSelect.value = h.maxNumSeqs ?? '';
   if (dom.maxConcurrentRequestsSelect) dom.maxConcurrentRequestsSelect.value = h.maxConcurrentRequests ?? '';
+  if (dom.reasoningEffortSelect) dom.reasoningEffortSelect.value = h.reasoningEffort ?? '';
 
   if (!h.kvCacheDtype) {
     h.kvCacheDtype = 'int4';

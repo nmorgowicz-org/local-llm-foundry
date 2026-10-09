@@ -1886,7 +1886,9 @@ export function openPresetModal(mode, section, seedPreset = null) {
   setOpt('modal-load-mode', p.load_mode || (p.no_mmap ? 'none' : 'mmap'));
         setChk('modal-mlock', p.mlock);
         // Context & KV
-        setVal('modal-context-size', presetContextSize(p) || 128000);
+        // Rapid Auto is owned by context_length; a legacy mirror must not revive it.
+        if (p.backend === 'rapid_mlx') numOrEmpty('modal-context-size', p.rapid_mlx?.context_length);
+        else setVal('modal-context-size', presetContextSize(p) || 128000);
         setVal('modal-ctk', p.ctk || 'q8_0');
         const pillsContainer = document.getElementById('preset-context-pills'); if (pillsContainer) pillsContainer.style.display = 'flex';
         _renderContextPills(mode, section);
@@ -2127,7 +2129,8 @@ export function openPresetModal(mode, section, seedPreset = null) {
         setVal('modal-name', newPresetSeed?.name || '');
         setVal('modal-model-path', presetModelSource(newPresetSeed));
         document.getElementById('modal-model-path').title = presetModelSource(newPresetSeed);
-        setVal('modal-context-size', presetContextSize(newPresetSeed) || 128000);
+        if (newPresetSeed?.backend === 'rapid_mlx') numOrEmpty('modal-context-size', newPresetSeed.rapid_mlx?.context_length);
+        else setVal('modal-context-size', presetContextSize(newPresetSeed) || 128000);
         setVal('modal-ctk', 'q8_0');
         setVal('modal-ctv', 'f16');
         setVal('modal-batch-size', 2048);
@@ -3262,8 +3265,9 @@ function _buildFormPreset(existing) {
             ...existing,
             name: strVal('modal-name'),
             port: rapidPort,
-            // Top-level mirrors keep shared readers (cards, estimates) in agreement.
-            ...(rapidContextSize && { context_size: rapidContextSize }),
+            // Clear the legacy mirror as well as context_length for Auto. JSON null
+            // is accepted by context_size's null_as_zero_u64 deserializer.
+            context_size: rapidContextSize,
             bind_host: strVal('modal-bind-host') || null,
             api_key: strVal('modal-api-key') || null,
             rapid_mlx: existing.rapid_mlx ? {
