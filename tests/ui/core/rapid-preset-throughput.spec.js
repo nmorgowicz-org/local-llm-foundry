@@ -21,7 +21,7 @@ test.describe('Rapid-MLX preset editor throughput fields', () => {
 
   // Edit mode, not seeded-new: only the edit path loads stored values into the controls,
   // and editing an existing preset is the path where a dropped field overwrites real data.
-  async function openSeeded(page) {
+  async function openSeeded(page, seed = SEED) {
     await page.goto('/');
     await page.waitForLoadState('networkidle');
     await page.evaluate(async (seed) => {
@@ -32,7 +32,7 @@ test.describe('Rapid-MLX preset editor throughput fields', () => {
       sel.innerHTML = '<option value="probe">throughput probe</option>';
       sel.value = 'probe';
       mod.openPresetModal('edit');
-    }, SEED);
+    }, seed);
     await page.locator('#preset-modal .preset-nav-item[data-section="context"]').click();
   }
 
@@ -43,6 +43,20 @@ test.describe('Rapid-MLX preset editor throughput fields', () => {
     await expect(page.locator('#modal-rapid-max-concurrent-requests')).toHaveValue('32');
     await expect(page.locator('#modal-rapid-pflash-policy')).toHaveValue('auto');
   });
+
+  for (const [label, concurrency] of [
+    ['missing', {}],
+    ['null', { max_num_seqs: null, max_concurrent_requests: null }],
+  ]) {
+    test(`@in-memory-test ${label} stored concurrency loads as Auto rather than new-preset defaults`, async ({ page }) => {
+      await openSeeded(page, {
+        ...SEED,
+        rapid_mlx: { port: 8080, model_source: '/tmp/Qwen3-8B-4bit', ...concurrency },
+      });
+      await expect(page.locator('#modal-rapid-max-num-seqs')).toHaveValue('');
+      await expect(page.locator('#modal-rapid-max-concurrent-requests')).toHaveValue('');
+    });
+  }
 
   test('@in-memory-test edited values reach the save request', async ({ page }) => {
     await openSeeded(page);
@@ -80,9 +94,13 @@ test.describe('Rapid-MLX preset editor throughput fields', () => {
   // The reason Auto writes null instead of omitting the key: `out` is spread over the stored
   // rapid_mlx object, so an omitted key leaves the previous value untouched and selecting Auto
   // on a preset that already had a value would silently do nothing.
-  test('@in-memory-test selecting Auto clears a stored value', async ({ page }) => {
+  test('@in-memory-test selecting Auto clears stored values and reloads as Auto', async ({ page }) => {
     await openSeeded(page);
+    await expect(page.locator('#modal-rapid-gpu-memory-utilization')).toHaveValue('0.85');
+    await expect(page.locator('#modal-rapid-max-num-seqs')).toHaveValue('8');
     await expect(page.locator('#modal-rapid-max-concurrent-requests')).toHaveValue('32');
+    await page.selectOption('#modal-rapid-gpu-memory-utilization', '');
+    await page.selectOption('#modal-rapid-max-num-seqs', '');
     await page.selectOption('#modal-rapid-max-concurrent-requests', '');
 
     let body = null;
@@ -98,7 +116,15 @@ test.describe('Rapid-MLX preset editor throughput fields', () => {
     }
 
     expect(body, 'save request was never issued').not.toBeNull();
+    expect(body.rapid_mlx.gpu_memory_utilization).toBeNull();
+    expect(body.rapid_mlx.max_num_seqs).toBeNull();
     expect(body.rapid_mlx.max_concurrent_requests).toBeNull();
+
+    // A saved Auto must remain Auto when reopened, not turn back into a safe default.
+    await openSeeded(page, body);
+    await expect(page.locator('#modal-rapid-gpu-memory-utilization')).toHaveValue('');
+    await expect(page.locator('#modal-rapid-max-num-seqs')).toHaveValue('');
+    await expect(page.locator('#modal-rapid-max-concurrent-requests')).toHaveValue('');
   });
 
   // The generalisation of the bug above. Every Rapid control in the save path used the
@@ -173,34 +199,61 @@ test.describe('Rapid-MLX preset editor throughput fields', () => {
     expect(stuck, 'controls cleared by the user but still carrying their old value').toEqual([]);
   });
 
-  test('@in-memory-test Auto writes null rather than pinning a default', async ({ page }) => {
-    await page.goto('/');
-    await page.waitForLoadState('networkidle');
-    await page.evaluate(async () => {
-      const mod = await import('/js/features/presets.js');
-      mod.openPresetModal('new', null, {
-        name: 'bare', backend: 'rapid_mlx',
-        rapid_mlx: { port: 8080, model_source: '/tmp/Qwen3-8B-4bit' },
+  for (const { label, seedConcurrency, selectAuto, expectedMaxNumSeqs } of [
+    {
+      label: 'untouched new preset keeps the single-stream default',
+      seedConcurrency: {}, selectAuto: false, expectedMaxNumSeqs: 1,
+    },
+    {
+      label: 'explicitly selecting Auto on a new preset writes null',
+      seedConcurrency: {}, selectAuto: true, expectedMaxNumSeqs: null,
+    },
+    {
+      label: 'a new preset seeded with explicit Auto does not pin the single-stream default',
+      seedConcurrency: { max_num_seqs: null }, selectAuto: false, expectedMaxNumSeqs: null,
+    },
+  ]) {
+    test(`@in-memory-test ${label}`, async ({ page }) => {
+      await page.goto('/');
+      await page.waitForLoadState('networkidle');
+      await page.evaluate(async (seedConcurrency) => {
+        const mod = await import('/js/features/presets.js');
+        mod.openPresetModal('new', null, {
+          name: 'bare', backend: 'rapid_mlx',
+          rapid_mlx: { port: 8080, model_source: '/tmp/Qwen3-8B-4bit', ...seedConcurrency },
+        });
+      }, seedConcurrency);
+      await page.locator('#preset-modal .preset-nav-item[data-section="context"]').click();
+
+      // Unlike the wizard's 1/4 defaults, the new preset editor defaults only the
+      // sequence count; GPU memory utilization and concurrent requests start on Auto.
+      await expect(page.locator('#modal-rapid-gpu-memory-utilization')).toHaveValue('');
+      await expect(page.locator('#modal-rapid-max-num-seqs')).toHaveValue(
+        seedConcurrency.max_num_seqs === null ? '' : '1',
+      );
+      await expect(page.locator('#modal-rapid-max-concurrent-requests')).toHaveValue('');
+      if (selectAuto) {
+        await page.selectOption('#modal-rapid-gpu-memory-utilization', '');
+        await page.selectOption('#modal-rapid-max-num-seqs', '');
+        await page.selectOption('#modal-rapid-max-concurrent-requests', '');
+        await expect(page.locator('#modal-rapid-max-num-seqs')).toHaveValue('');
+      }
+
+      let body = null;
+      await page.route('**/api/presets', async (route, request) => {
+        if (request.method() === 'POST') body = request.postDataJSON();
+        await route.fulfill({ status: 200, contentType: 'application/json', body: '{"id":"probe"}' });
       });
-    });
-    await page.locator('#preset-modal .preset-nav-item[data-section="context"]').click();
+      await page.evaluate(async () => {
+        const mod = await import('/js/features/presets.js');
+        await mod.savePreset(new Event('submit'));
+      });
 
-    let body = null;
-    await page.route('**/api/presets', async (route, request) => {
-      if (request.method() === 'POST') body = request.postDataJSON();
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"id":"probe"}' });
+      expect(body, 'save request was never issued').not.toBeNull();
+      // Auto writes null so it can override stored values during the rapid_mlx merge.
+      expect(body.rapid_mlx.gpu_memory_utilization).toBeNull();
+      expect(body.rapid_mlx.max_num_seqs).toBe(expectedMaxNumSeqs);
+      expect(body.rapid_mlx.max_concurrent_requests).toBeNull();
     });
-    await page.evaluate(async () => {
-      const mod = await import('/js/features/presets.js');
-      await mod.savePreset(new Event('submit'));
-    });
-
-    expect(body, 'save request was never issued').not.toBeNull();
-    // null, not absent: `out` is spread over the stored rapid_mlx, so Auto has to write
-    // something or it could never clear a value that was already there. Serde reads null
-    // into the same None the missing key would have produced.
-    expect(body.rapid_mlx.gpu_memory_utilization).toBeNull();
-    expect(body.rapid_mlx.max_num_seqs).toBeNull();
-    expect(body.rapid_mlx.max_concurrent_requests).toBeNull();
-  });
+  }
 });

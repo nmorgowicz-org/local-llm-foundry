@@ -5,16 +5,16 @@ import { test, expect } from '@playwright/test';
 // these tests is that the controls reach buildSpawnPayload -- a rendered <select> that never
 // arrives in the payload is the same defect in a new coat.
 test.describe('Rapid-MLX Phase 7 throughput fields', () => {
-  async function openRapidHardware(page) {
+  async function openRapidHardware(page, templatePreset = null) {
     await page.goto('/');
     await page.waitForLoadState('networkidle');
-    await page.evaluate(async () => {
+    await page.evaluate(async (templatePreset) => {
       const { openSpawnWizard, wizardState } = await import('/js/features/spawn-wizard.js');
-      openSpawnWizard();
+      openSpawnWizard(templatePreset ? { templatePreset } : {});
       wizardState.engine.selected = 'rapid_mlx';
       wizardState.model.source = 'local';
       wizardState.model.path = '/tmp/Qwen3-8B-4bit';
-    });
+    }, templatePreset);
   }
 
   test('@in-memory-test each control reaches the launch payload', async ({ page }) => {
@@ -40,20 +40,72 @@ test.describe('Rapid-MLX Phase 7 throughput fields', () => {
     expect(payload.pflash_policy).toBe('auto');
   });
 
-  test('@in-memory-test "Auto" omits the key rather than sending a default', async ({ page }) => {
+  test('@in-memory-test untouched controls launch with safe concurrency defaults', async ({ page }) => {
     await openRapidHardware(page);
+    await expect(page.locator('#spawn-rapid-gpu-memory-utilization')).toHaveValue('');
+    await expect(page.locator('#spawn-rapid-max-num-seqs')).toHaveValue('1');
+    await expect(page.locator('#spawn-rapid-max-concurrent-requests')).toHaveValue('4');
 
     const payload = await page.evaluate(async () => {
       const { buildSpawnPayload } = await import('/js/features/spawn-wizard.js');
       return buildSpawnPayload().rapid_mlx;
     });
 
-    // An absent flag and an explicit runtime default are different states; sending a value
-    // for a field the user left on Auto would pin behaviour they never asked to pin.
+    // New launches pin a single running stream and a small request queue. Untouched
+    // concurrency controls are not Auto; GPU memory utilization still is.
+    expect(payload).not.toHaveProperty('gpu_memory_utilization');
+    expect(payload.max_num_seqs).toBe(1);
+    expect(payload.max_concurrent_requests).toBe(4);
+  });
+
+  test('@in-memory-test explicitly selecting Auto omits the keys rather than sending defaults', async ({ page }) => {
+    await openRapidHardware(page);
+
+    const payload = await page.evaluate(async () => {
+      const { buildSpawnPayload } = await import('/js/features/spawn-wizard.js');
+      const set = (id, value) => {
+        const el = document.getElementById(id);
+        el.value = value;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      // Exercise clearing numeric choices, not merely leaving the controls untouched.
+      set('spawn-rapid-gpu-memory-utilization', '0.85');
+      set('spawn-rapid-max-num-seqs', '8');
+      set('spawn-rapid-max-concurrent-requests', '32');
+      for (const id of ['spawn-rapid-gpu-memory-utilization', 'spawn-rapid-max-num-seqs',
+                       'spawn-rapid-max-concurrent-requests']) {
+        set(id, '');
+      }
+      return buildSpawnPayload().rapid_mlx;
+    });
+
+    await expect(page.locator('#spawn-rapid-gpu-memory-utilization')).toHaveValue('');
+    await expect(page.locator('#spawn-rapid-max-num-seqs')).toHaveValue('');
+    await expect(page.locator('#spawn-rapid-max-concurrent-requests')).toHaveValue('');
     expect(payload).not.toHaveProperty('gpu_memory_utilization');
     expect(payload).not.toHaveProperty('max_num_seqs');
     expect(payload).not.toHaveProperty('max_concurrent_requests');
   });
+
+  for (const [label, concurrency] of [
+    ['missing', {}],
+    ['null', { max_num_seqs: null, max_concurrent_requests: null }],
+  ]) {
+    test(`@in-memory-test ${label} template concurrency stays Auto instead of taking new-launch defaults`, async ({ page }) => {
+      await openRapidHardware(page, {
+        name: 'Auto template', backend: 'rapid_mlx',
+        rapid_mlx: { port: 8080, model_source: '/tmp/Qwen3-8B-4bit', ...concurrency },
+      });
+      await expect(page.locator('#spawn-rapid-max-num-seqs')).toHaveValue('');
+      await expect(page.locator('#spawn-rapid-max-concurrent-requests')).toHaveValue('');
+      const payload = await page.evaluate(async () => {
+        const { buildSpawnPayload } = await import('/js/features/spawn-wizard.js');
+        return buildSpawnPayload().rapid_mlx;
+      });
+      expect(payload).not.toHaveProperty('max_num_seqs');
+      expect(payload).not.toHaveProperty('max_concurrent_requests');
+    });
+  }
 
   // Only one exclusion rule remains. The second paired speculative_policy with max_num_seqs;
   // it was built on --speculative, which no rapid-mlx release has, and went with the field.
