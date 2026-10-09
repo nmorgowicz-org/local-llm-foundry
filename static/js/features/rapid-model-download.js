@@ -69,14 +69,14 @@ export function notifyRapidModelDownloaded(repoId) {
  * label and cache state via /api/rapid-mlx/model-status. Memoized per source with a TTL; the
  * entry is dropped on failure and when a download completes so state never goes stale.
  */
-export function rapidModelInfo(source) {
+export function rapidModelInfo(source, { fresh = false } = {}) {
     const src = String(source || '').trim();
     if (!src || isLocalPath(src)) return Promise.resolve(null);
     const existing = infoCache.get(src);
-    if (existing && Date.now() - existing.at < INFO_TTL_MS) return existing.promise;
+    if (!fresh && existing && Date.now() - existing.at < INFO_TTL_MS) return existing.promise;
     const entry = { at: Date.now(), promise: null };
     const drop = () => { if (infoCache.get(src) === entry) infoCache.delete(src); };
-    entry.promise = fetch(`/api/rapid-mlx/model-status?source=${encodeURIComponent(src)}`, { headers: headers() })
+    entry.promise = fetch(`/api/rapid-mlx/model-status?source=${encodeURIComponent(src)}`, { headers: headers(), ...(fresh ? { cache: 'no-store' } : {}) })
         .then(resp => (resp.ok ? resp.json() : null))
         .then(info => {
             if (!info || !info.ok) drop();
@@ -137,6 +137,7 @@ export async function attachRapidDownloadState(card, source) {
     let alive = true;
     let pollTimer = null;
     let pollFailures = 0;
+    let missingConfirmations = 0;
 
     // Stops this card's poll loop and listener. Does not cancel the job: it keeps running
     // server-side and stays tracked, so a re-rendered card for the same repo resumes it.
@@ -179,10 +180,45 @@ export async function attachRapidDownloadState(card, source) {
         const polledJob = jobId;
         try {
             const resp = await fetch(`/api/models/downloads/${encodeURIComponent(polledJob)}`, { headers: headers() });
-            if (!resp.ok) throw new Error('Download status unavailable');
             const data = await resp.json();
             if (!alive || jobId !== polledJob) return;
             if (!document.contains(card)) { teardown(); return; }
+            // Only the backend's explicit unknown-job response confirms a restart/eviction.
+            // Bare/proxy 404s and malformed responses remain temporary poll failures.
+            if (resp.status === 404 && data?.ok === false && data.error === 'Unknown download job') {
+                missingConfirmations = Math.min(missingConfirmations + 1, 2);
+                if (missingConfirmations < 2) {
+                    schedule(POLL_MS * 2);
+                    return;
+                }
+                const info = await rapidModelInfo(src, { fresh: true });
+                if (!alive || jobId !== polledJob) return;
+                if (!document.contains(card)) { teardown(); return; }
+                const tracked = activeRapidDownloadJob(repoId);
+                if (tracked && tracked !== polledJob) {
+                    jobId = tracked;
+                    missingConfirmations = 0;
+                    pollFailures = 0;
+                    schedule(POLL_MS);
+                    return;
+                }
+                if (!info || info.repo_id !== repoId || typeof info.cached !== 'boolean') {
+                    throw new Error('Model cache status unavailable');
+                }
+                untrackRapidDownloadJob(repoId, polledJob);
+                if (info.cached) {
+                    teardown();
+                    finish('complete');
+                    notifyRapidModelDownloaded(repoId);
+                } else {
+                    label.textContent = 'Download interrupted · finished files are kept';
+                    dlBtn.textContent = 'Resume';
+                    finish('idle');
+                }
+                return;
+            }
+            missingConfirmations = 0;
+            if (!resp.ok) throw new Error('Download status unavailable');
             const job = data?.job;
             if (data?.ok !== true || !JOB_STATES.has(job?.state)) {
                 throw new Error('Invalid download status');
@@ -224,8 +260,8 @@ export async function attachRapidDownloadState(card, source) {
         } catch {
             if (!alive || jobId !== polledJob) return;
             if (!document.contains(card)) { teardown(); return; }
-            // Even 404 can be temporary or an evicted job: never offer a duplicate start
-            // without an explicit terminal state. Keep progress/cancel and cap retry delay.
+            // Temporary failures retain tracking/progress; a failed fresh cache check
+            // also retries rather than treating an unknown cache state as complete.
             pollFailures = Math.min(pollFailures + 1, 5);
             schedule(Math.min(MAX_POLL_MS, POLL_MS * 2 ** pollFailures));
         }
@@ -233,6 +269,8 @@ export async function attachRapidDownloadState(card, source) {
 
     const start = async () => {
         if (busy) return;
+        missingConfirmations = 0;
+        pollFailures = 0;
         busy = true;
         dlBtn.disabled = true;
         label.textContent = 'Starting download…';

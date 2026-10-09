@@ -14,10 +14,13 @@ const MODELS = {
   [REPO_A]: { ok: true, repo_id: REPO_A, size_bytes: 4 * GiB, cached: false, quant: '4-bit' },
 };
 
+const unknownJob = { status: 404, json: { ok: false, error: 'Unknown download job' } };
+
 const transientPollResponses = [
   ['HTTP 500', { status: 500, json: { ok: false, error: 'temporarily unavailable' } }],
   ['HTTP 500 with a terminal-looking body', { status: 500, json: { ok: true, job: { state: 'complete' } } }],
   ['HTTP 404', { status: 404, json: { ok: false, error: 'not found' } }],
+  ['one explicit unknown-job 404', unknownJob],
   ['invalid JSON', { contentType: 'application/json', body: '{' }],
   ['missing job', { json: { ok: true } }],
   ['null job', { json: { ok: true, job: null } }],
@@ -65,10 +68,14 @@ async function fakeBackend(page) {
   const fake = {
     statusRequests: [], starts: [], polls: {}, cancels: [], jobs: {},
     holdStart: null, holdPoll: null, pollResponses: {}, cancelResponses: [], models: structuredClone(MODELS),
+    holdStatus: null, statusResponses: {},
   };
-  await page.route('**/api/rapid-mlx/model-status?*', route => {
+  await page.route('**/api/rapid-mlx/model-status?*', async route => {
     const source = new URL(route.request().url()).searchParams.get('source');
     fake.statusRequests.push(source);
+    if (fake.holdStatus) await fake.holdStatus;
+    const response = fake.statusResponses[source]?.shift();
+    if (response) return route.fulfill(response);
     const info = fake.models[source];
     return route.fulfill({ status: info ? 200 : 404, json: info || { ok: false } });
   });
@@ -134,6 +141,124 @@ test.describe('@fake-data-bypass Rapid-MLX wizard download step', () => {
 
   const missingRepo = (page) => page.evaluate(async () =>
     (await import('/js/features/spawn-wizard.js')).wizardState.model.rapidDownload?.repo_id ?? null);
+
+  for (const cached of [true, false]) {
+    test(`server restart recovers wizard with cache complete=${cached}`, async ({ page }) => {
+      const fake = await fakeBackend(page);
+      await freezePollClock(page);
+      await openWizard(page);
+      await select(page, 'alias-a');
+      await page.locator('#rapid-dlp-download-btn').click();
+      await expect(page.locator('#rapid-dlp-progress-pct')).toHaveText('25%');
+      const lookups = fake.statusRequests.length;
+      fake.models['alias-a'].cached = cached;
+      fake.pollResponses['job-1'] = [unknownJob, unknownJob];
+      fake.cancelResponses = [unknownJob];
+      await page.locator('#rapid-dlp-cancel-btn').click();
+      await expect(page.locator('#rapid-dlp-cancel-btn')).toBeEnabled();
+      await nextPoll(page, fake);
+      expect(await trackedJob(page)).toBe('job-1');
+      expect(fake.statusRequests).toHaveLength(lookups);
+      await nextPoll(page, fake);
+      await expect(page.locator(cached ? '#rapid-dlp-complete' : '#rapid-dlp-idle')).toBeVisible();
+      expect(await trackedJob(page)).toBeNull();
+      expect(await missingRepo(page)).toBe(cached ? null : REPO_A);
+      expect(fake.statusRequests).toHaveLength(lookups + 1);
+      if (cached) {
+        await expect(page.locator('#wizard-next-btn')).toBeEnabled();
+      } else {
+        await expect(page.locator('#wizard-next-btn')).toBeDisabled();
+        await expect(page.locator('#rapid-dlp-download-btn')).toHaveText('Resume');
+        await expect(page.locator('#rapid-dlp-note')).toContainText('Finished files are kept');
+        await page.locator('#rapid-dlp-download-btn').click();
+        await expect(page.locator('#rapid-dlp-progress-pct')).toHaveText('25%');
+        expect(fake.starts).toEqual([REPO_A, REPO_A]);
+        fake.jobs['job-2'].state = 'complete';
+        await nextPoll(page, fake, 'job-2');
+        await expect(page.locator('#wizard-next-btn')).toBeEnabled();
+      }
+    });
+  }
+
+  for (const response of [transientPollResponses[0][1], { contentType: 'application/json', body: '{' }]) {
+    test(`wizard cache recheck failure (${response.status || 'JSON'}) retains tracking and retries`, async ({ page }) => {
+      const fake = await fakeBackend(page);
+      await freezePollClock(page);
+      await openWizard(page);
+      await select(page, 'alias-a');
+      await page.locator('#rapid-dlp-download-btn').click();
+      await expect(page.locator('#rapid-dlp-progress-pct')).toHaveText('25%');
+      fake.pollResponses['job-1'] = [unknownJob, unknownJob, unknownJob];
+      fake.statusResponses['alias-a'] = [response];
+      await nextPoll(page, fake);
+      await nextPoll(page, fake);
+      await expect.poll(() => fake.statusResponses['alias-a'].length).toBe(0);
+      expect(await trackedJob(page)).toBe('job-1');
+      expect(await missingRepo(page)).toBe(REPO_A);
+      await expect(page.locator('#rapid-dlp-progress-pct')).toHaveText('25%');
+      await expect(page.locator('#rapid-dlp-cancel-btn')).toBeEnabled();
+      fake.models['alias-a'].cached = true;
+      await nextPoll(page, fake);
+      await expect(page.locator('#rapid-dlp-complete')).toBeVisible();
+      expect(await trackedJob(page)).toBeNull();
+    });
+  }
+
+  test('late restart cache recheck cannot change a newly selected wizard source', async ({ page }) => {
+    const fake = await fakeBackend(page);
+    await freezePollClock(page);
+    await openWizard(page);
+    await select(page, 'alias-a');
+    await page.locator('#rapid-dlp-download-btn').click();
+    await expect(page.locator('#rapid-dlp-progress-pct')).toHaveText('25%');
+    fake.pollResponses['job-1'] = [unknownJob, unknownJob];
+    await nextPoll(page, fake);
+    let release;
+    fake.holdStatus = new Promise(resolve => { release = resolve; });
+    const lookups = fake.statusRequests.length;
+    await nextPoll(page, fake);
+    await expect.poll(() => fake.statusRequests.length).toBe(lookups + 1);
+    fake.holdStatus = null;
+    await select(page, 'alias-b');
+    fake.models['alias-a'].cached = true;
+    const lateStatus = page.waitForResponse(resp =>
+      resp.url().includes('/api/rapid-mlx/model-status?source=alias-a'));
+    release();
+    await (await lateStatus).finished();
+    await page.evaluate(() => {});
+    await expect(page.locator('#rapid-dlp-repo')).toContainText(REPO_B);
+    expect(await missingRepo(page)).toBe(REPO_B);
+    expect(await trackedJob(page)).toBe('job-1');
+    await expect(page.locator('#rapid-dlp-complete')).toBeHidden();
+  });
+
+  test('wizard restart recovery reattaches a newer tracked job instead of clearing it', async ({ page }) => {
+    const fake = await fakeBackend(page);
+    await freezePollClock(page);
+    await openWizard(page);
+    await select(page, 'alias-a');
+    await page.locator('#rapid-dlp-download-btn').click();
+    await expect(page.locator('#rapid-dlp-progress-pct')).toHaveText('25%');
+    fake.pollResponses['job-1'] = [unknownJob, unknownJob];
+    await nextPoll(page, fake);
+    let release;
+    fake.holdStatus = new Promise(resolve => { release = resolve; });
+    const lookups = fake.statusRequests.length;
+    await nextPoll(page, fake);
+    await expect.poll(() => fake.statusRequests.length).toBe(lookups + 1);
+    fake.jobs['job-2'] = { ...fake.jobs['job-1'], bytes_done: 2 * GiB };
+    await page.evaluate(async repo => {
+      (await import('/js/features/rapid-model-download.js')).trackRapidDownloadJob(repo, 'job-2');
+    }, REPO_A);
+    fake.models['alias-a'].cached = true;
+    fake.holdStatus = null;
+    release();
+    await expect(page.locator('#rapid-dlp-progress-pct')).toHaveText('50%');
+    expect(await trackedJob(page)).toBe('job-2');
+    expect(await missingRepo(page)).toBe(REPO_A);
+    await expect(page.locator('#rapid-dlp-download-btn')).toBeDisabled();
+    await expect(page.locator('#rapid-dlp-complete')).toBeHidden();
+  });
 
   test('re-checking while a download runs keeps the progress view and cannot start a duplicate', async ({ page }) => {
     const fake = await fakeBackend(page);
@@ -363,6 +488,99 @@ test.describe('@fake-data-bypass Rapid-MLX preset card download state', () => {
     document.body.appendChild(card);
     await attachRapidDownloadState(card, source);
   }, { source: SOURCE, id });
+
+  for (const cached of [true, false]) {
+    test(`server restart bypasses card missing memo with cache complete=${cached}`, async ({ page }) => {
+      const fake = await fakeBackend(page);
+      await freezePollClock(page);
+      await mountCard(page, 'card-1');
+      await page.locator('#card-1 .launch-card-dl-btn').click();
+      await expect(page.locator('#card-1 .launch-card-dl-label')).toContainText('Downloading 25%');
+      fake.models[SOURCE].cached = cached;
+      fake.pollResponses['job-1'] = [unknownJob, unknownJob];
+      fake.cancelResponses = [unknownJob];
+      await page.locator('#card-1 .launch-card-dl-cancel').click();
+      await expect(page.locator('#card-1 .launch-card-dl-cancel')).toBeEnabled();
+      await nextPoll(page, fake);
+      expect(await trackedJob(page)).toBe('job-1');
+      expect(fake.statusRequests).toHaveLength(1);
+      await nextPoll(page, fake);
+      await expect.poll(() => trackedJob(page)).toBeNull();
+      expect(fake.statusRequests).toHaveLength(2); // fresh even inside the memo TTL
+      if (cached) {
+        await expect(page.locator('#card-1 .launch-card-dl')).toHaveCount(0);
+        await expect(page.locator('#card-1')).not.toHaveAttribute('data-model-missing', '1');
+        await page.locator('#card-1 .launch-card-btn-start').click();
+        expect(fake.starts).toEqual([REPO_A]);
+      } else {
+        await expect(page.locator('#card-1 .launch-card-dl-btn')).toHaveText('Resume');
+        await expect(page.locator('#card-1 .launch-card-dl-btn')).toBeEnabled();
+        await expect(page.locator('#card-1 .launch-card-dl-label')).toContainText('finished files are kept');
+        await page.locator('#card-1 .launch-card-dl-btn').click();
+        await expect(page.locator('#card-1 .launch-card-dl-label')).toContainText('Downloading 25%');
+        expect(fake.starts).toEqual([REPO_A, REPO_A]);
+      }
+    });
+  }
+
+  for (const response of [transientPollResponses[0][1], { contentType: 'application/json', body: '{' }]) {
+    test(`card cache recheck failure (${response.status || 'JSON'}) retains tracking and retries`, async ({ page }) => {
+      const fake = await fakeBackend(page);
+      await freezePollClock(page);
+      await mountCard(page, 'card-1');
+      await page.locator('#card-1 .launch-card-dl-btn').click();
+      await expect(page.locator('#card-1 .launch-card-dl-label')).toContainText('Downloading 25%');
+      fake.pollResponses['job-1'] = [unknownJob, unknownJob, unknownJob];
+      fake.statusResponses[SOURCE] = [response];
+      await nextPoll(page, fake);
+      await nextPoll(page, fake);
+      await expect.poll(() => fake.statusResponses[SOURCE].length).toBe(0);
+      expect(await trackedJob(page)).toBe('job-1');
+      await expect(page.locator('#card-1 .launch-card-dl-label')).toContainText('Downloading 25%');
+      await expect(page.locator('#card-1 .launch-card-dl-btn')).toBeDisabled();
+      await expect(page.locator('#card-1 .launch-card-dl-cancel')).toBeEnabled();
+      fake.models[SOURCE].cached = true;
+      await nextPoll(page, fake);
+      await expect(page.locator('#card-1 .launch-card-dl')).toHaveCount(0);
+      expect(await trackedJob(page)).toBeNull();
+    });
+  }
+
+  for (const replaceJob of [false, true]) {
+    test(`late card cache recovery ignores ${replaceJob ? 'a replaced tracked job' : 'a detached card'}`, async ({ page }) => {
+      const fake = await fakeBackend(page);
+      await freezePollClock(page);
+      await mountCard(page, 'card-1');
+      await page.locator('#card-1 .launch-card-dl-btn').click();
+      await expect(page.locator('#card-1 .launch-card-dl-label')).toContainText('Downloading 25%');
+      fake.pollResponses['job-1'] = [unknownJob, unknownJob];
+      await nextPoll(page, fake);
+      let release;
+      fake.holdStatus = new Promise(resolve => { release = resolve; });
+      await nextPoll(page, fake);
+      await expect.poll(() => fake.statusRequests.length).toBe(2);
+      if (replaceJob) {
+        fake.jobs['job-2'] = { ...fake.jobs['job-1'], bytes_done: 2 * GiB };
+        await page.evaluate(async repo => {
+          (await import('/js/features/rapid-model-download.js')).trackRapidDownloadJob(repo, 'job-2');
+        }, REPO_A);
+      } else {
+        await page.evaluate(() => document.getElementById('card-1').remove());
+      }
+      fake.models[SOURCE].cached = true;
+      fake.holdStatus = null;
+      const lateStatus = page.waitForResponse(resp => resp.url().includes('/api/rapid-mlx/model-status?'));
+      release();
+      await (await lateStatus).finished();
+      await page.evaluate(() => {});
+      expect(await trackedJob(page)).toBe(replaceJob ? 'job-2' : 'job-1');
+      if (replaceJob) {
+        await nextPoll(page, fake, 'job-2');
+        await expect(page.locator('#card-1 .launch-card-dl-label')).toContainText('Downloading 50%');
+        await expect(page.locator('#card-1 .launch-card-dl-btn')).toBeDisabled();
+      }
+    });
+  }
 
   test('poll loop stops when the card is re-rendered, and the replacement resumes the same job', async ({ page }) => {
     const fake = await fakeBackend(page);

@@ -10,6 +10,7 @@ import { wizardState, refreshStepGuardrails } from './spawn-wizard.js';
 import {
   activeRapidDownloadJob,
   notifyRapidModelDownloaded,
+  rapidModelInfo,
   trackRapidDownloadJob,
   untrackRapidDownloadJob,
 } from './rapid-model-download.js';
@@ -94,6 +95,7 @@ function showProgress(job, text) {
   panel.style.display = '';
   setView('progress');
   $('rapid-dlp-download-btn').disabled = true;
+  $('rapid-dlp-cancel-btn').disabled = false;
   $('rapid-dlp-bar').style.width = '0%';
   $('rapid-dlp-progress-pct').textContent = '';
   $('rapid-dlp-progress-file').textContent = job.info.repo_id;
@@ -175,10 +177,45 @@ async function poll(job, fromTimer = false) {
   };
   try {
     const resp = await fetch(`/api/models/downloads/${encodeURIComponent(job.id)}`, { headers: headers() });
-    if (!resp.ok) throw new Error('Download status unavailable');
     const data = await resp.json();
-    // Stale guard: the user switched model/source (or restarted) while this was in flight.
-    if (currentJob !== job || selectedSource() !== job.source) return;
+    // Stale guard: selection/engine changes and detached panels must remain inert.
+    if (currentJob !== job || selectedSource() !== job.source ||
+        wizardState.engine.selected !== 'rapid_mlx' || !document.contains($('rapid-dl-panel'))) return;
+    if (resp.status === 404 && data?.ok === false && data.error === 'Unknown download job') {
+      job.missingConfirmations = Math.min((job.missingConfirmations || 0) + 1, 2);
+      if (job.missingConfirmations < 2) {
+        again(POLL_MS * 2);
+        return;
+      }
+      const info = await rapidModelInfo(job.source, { fresh: true });
+      if (currentJob !== job || selectedSource() !== job.source ||
+          wizardState.engine.selected !== 'rapid_mlx' || !document.contains($('rapid-dl-panel'))) return;
+      const tracked = activeRapidDownloadJob(job.info.repo_id);
+      if (tracked && tracked !== job.id) {
+        currentJob = { source: job.source, info: job.info, id: tracked };
+        showProgress(currentJob, 'Resuming\u2026');
+        void poll(currentJob);
+        return;
+      }
+      if (!info || info.repo_id !== job.info.repo_id || typeof info.cached !== 'boolean') {
+        throw new Error('Model cache status unavailable');
+      }
+      currentJob = null;
+      untrackRapidDownloadJob(job.info.repo_id, job.id);
+      if (info.cached) {
+        setView('complete');
+        $('rapid-dlp-download-btn').disabled = false;
+        setMissing(null);
+        notifyRapidModelDownloaded(job.info.repo_id);
+      } else {
+        setMissing(job.info);
+        showIdle(job.info, 'Download interrupted. Finished files are kept; resume the download to continue.');
+        $('rapid-dlp-download-btn').textContent = 'Resume';
+      }
+      return;
+    }
+    job.missingConfirmations = 0;
+    if (!resp.ok) throw new Error('Download status unavailable');
     const status = data?.job;
     if (data?.ok !== true || !JOB_STATES.has(status?.state)) {
       throw new Error('Invalid download status');
@@ -214,9 +251,9 @@ async function poll(job, fromTimer = false) {
       ? 'Download cancelled. Finished files are kept; download again to resume.'
       : `Download failed${status.error ? `: ${status.error}` : ''}. Try again.`);
   } catch {
-    if (currentJob === job && selectedSource() === job.source) {
-      // Missing/evicted jobs (including 404) are not proof of termination. Retain the
-      // job and last progress, retry with capped backoff, and never invite a duplicate.
+    if (currentJob === job && selectedSource() === job.source &&
+        wizardState.engine.selected === 'rapid_mlx' && document.contains($('rapid-dl-panel'))) {
+      // Temporary poll/cache-check failures retain the job and last progress.
       job.pollFailures = Math.min((job.pollFailures || 0) + 1, 5);
       again(Math.min(MAX_POLL_MS, POLL_MS * 2 ** job.pollFailures));
     }
@@ -273,6 +310,6 @@ export function bindRapidDownloadPanel() {
         headers: headers(),
       });
     } catch { /* the next poll reports the real state */ }
-    btn.disabled = false;
+    if (currentJob === job && selectedSource() === job.source) btn.disabled = false;
   });
 }
