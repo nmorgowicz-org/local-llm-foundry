@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.1](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.4.0...v2.4.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **certs:** drop verifier result from test assertion messages ([aa936df](https://github.com/nmorgowicz-org/local-llm-foundry/commit/aa936df6e10bef3c352c0c1f006975bafd0a3d06))
+
 ## [2.4.0](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.3.1...v2.4.0) (2026-10-09)
 
 
