@@ -693,11 +693,7 @@ mod tests {
         let now = rustls::pki_types::UnixTime::now();
 
         let result = verifier.verify_client_cert(&client_der, &[], now);
-        assert!(
-            result.is_ok(),
-            "agent-client cert should be accepted, got: {:?}",
-            result
-        );
+        assert!(result.is_ok(), "agent-client cert should be accepted");
     }
 
     #[test]
@@ -713,11 +709,7 @@ mod tests {
         let now = rustls::pki_types::UnixTime::now();
 
         let result = verifier.verify_client_cert(&client_der, &[], now);
-        assert!(
-            result.is_err(),
-            "non-agent-client cert should be rejected, got: {:?}",
-            result
-        );
+        assert!(result.is_err(), "non-agent-client cert should be rejected");
     }
 
     #[test]
