@@ -49,6 +49,29 @@ pub fn recover_roots(roots: &[PathBuf], active_root: &std::path::Path) -> Vec<St
         if !root.is_dir() {
             continue;
         }
+        if root.as_path() == active_root {
+            let build_paths =
+                crate::llama_build::paths::BuildPaths::new(&AppPaths::from_root(root.clone()));
+            for id in crate::llama_build::job::recover_interrupted(&build_paths) {
+                findings.push(StartupFinding {
+                    message: format!("llama.cpp build {id} was interrupted; its build tree requires reconfiguration"),
+                    warning: true,
+                });
+            }
+            // A corrupt record is just as blocking as an unresolved process.
+            // Do not recover a transaction or sweep staging while a writer
+            // could still own it.
+            match std::fs::symlink_metadata(&build_paths.process_records) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                _ => {
+                    findings.push(StartupFinding {
+                        message: "llama.cpp build containment needs repair; runtime recovery and staging cleanup were deferred".into(),
+                        warning: true,
+                    });
+                    continue;
+                }
+            }
+        }
         let Ok(paths) = RuntimePaths::for_live_dir(&live) else {
             continue;
         };
@@ -183,5 +206,30 @@ mod tests {
         );
         assert!(legacy.exists());
         assert!(!other.path().join("bin-previous").exists());
+    }
+}
+
+#[cfg(test)]
+mod build_recovery_tests {
+    #[test]
+    fn corrupt_build_records_block_the_staging_sweep() {
+        let root = tempfile::tempdir().unwrap();
+        let build = root.path().join("llama-build");
+        std::fs::create_dir(&build).unwrap();
+        std::fs::write(build.join("processes.json"), "{broken").unwrap();
+        let staged = root.path().join(".bin.staging-owned");
+        std::fs::create_dir(&staged).unwrap();
+        std::fs::write(staged.join("keep"), "in-use").unwrap();
+        let findings = super::recover_roots(&[root.path().to_path_buf()], root.path());
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.warning && f.message.contains("containment"))
+        );
+        assert!(staged.join("keep").exists());
+        assert_eq!(
+            std::fs::read_to_string(build.join("processes.json")).unwrap(),
+            "{broken"
+        );
     }
 }

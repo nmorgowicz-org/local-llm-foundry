@@ -109,6 +109,30 @@ impl AppPaths {
         self.root.join("runtime-transaction.json")
     }
 
+    /// Everything the from-source llama.cpp build owns: the git checkout, the
+    /// per-accelerator build trees, the managed ccache and validation caches.
+    pub fn llama_build_dir(&self) -> PathBuf {
+        self.root.join("llama-build")
+    }
+
+    pub fn llama_source_dir(&self) -> PathBuf {
+        self.llama_build_dir().join("src")
+    }
+
+    /// One CMake build tree per accelerator (`build-metal`, `build-cuda`,
+    /// `build-cpu`). `accel` is the accelerator's stable lowercase name.
+    pub fn llama_build_tree_dir(&self, accel: &str) -> PathBuf {
+        self.llama_build_dir().join(format!("build-{accel}"))
+    }
+
+    pub fn llama_build_ccache_dir(&self) -> PathBuf {
+        self.llama_build_dir().join("ccache")
+    }
+
+    pub fn llama_build_logs_dir(&self) -> PathBuf {
+        self.logs_dir().join("llama-build")
+    }
+
     /// Resolve the managed llama.cpp server while the application-root
     /// migration remains restartable. A healthy binary in either the canonical
     /// or legacy root must remain usable by every runtime consumer, not only by
@@ -308,6 +332,30 @@ mod tests {
             crate::llama_runtime::promote::RuntimePaths::for_live_dir(&paths.bin_dir()).unwrap();
         assert_eq!(runtime.previous, paths.bin_previous_dir());
         assert_eq!(runtime.journal, paths.runtime_transaction_file());
+    }
+
+    #[test]
+    fn llama_build_layout_is_below_root_and_per_accelerator() {
+        let paths = AppPaths::from_root(PathBuf::from("/tmp/foundry-test-root"));
+        let base = paths.llama_build_dir();
+        assert_eq!(base, paths.root.join("llama-build"));
+        assert_eq!(paths.llama_source_dir(), base.join("src"));
+        assert_eq!(
+            paths.llama_build_tree_dir("metal"),
+            base.join("build-metal")
+        );
+        assert_ne!(
+            paths.llama_build_tree_dir("cuda"),
+            paths.llama_build_tree_dir("cpu")
+        );
+        assert_eq!(paths.llama_build_ccache_dir(), base.join("ccache"));
+        assert_eq!(
+            paths.llama_build_logs_dir(),
+            paths.logs_dir().join("llama-build")
+        );
+        // The live runtime must never be inside a directory a clean may remove.
+        assert!(!paths.bin_dir().starts_with(&base));
+        assert!(!paths.bin_previous_dir().starts_with(&base));
     }
 
     #[test]

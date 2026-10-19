@@ -1073,27 +1073,27 @@ both platforms leaves stable live/previous sets and reports restart failure dist
 
 Order (TDD per unit):
 
-1. [ ] `paths.rs`: journal/temp/ccache paths, managed-path containment, log/JSON pair retention.
-2. [ ] `gpu.rs`: nvidia-smi fixtures, arch map and device features.
-3. [ ] `configure.rs`: golden accelerator × wipe/heal argv; always CUDA `FA_QUANTS=all`,
+1. [x] `paths.rs`: journal/temp/ccache paths, managed-path containment, log/JSON pair retention.
+2. [x] `gpu.rs`: nvidia-smi fixtures, arch map and device features.
+3. [x] `configure.rs`: golden accelerator × wipe/heal argv; always CUDA `FA_QUANTS=all`,
    never deprecated flag; parse actual configure pair list.
-4. [ ] `manifest.rs`: provenance round-trip/hash mismatch; never converts to capability.
-5. [ ] `prereqs*.rs`: version/vswhere/vcvars fixtures; cited toolkit/driver matrix incl. minor
+4. [x] `manifest.rs`: provenance round-trip/hash mismatch; never converts to capability.
+5. [x] `prereqs*.rs`: version/vswhere/vcvars fixtures; cited toolkit/driver matrix incl. minor
    compatibility/PTX cases; disk additional-growth estimator, no live-dir double counting,
    20 GB Windows floor and stage recheck; no invented minimum driver.
-6. [ ] `toolchain_env.rs`: captured build env vs sanitized staged env; malicious PATH/build-tree
+6. [x] `toolchain_env.rs`: captured build env vs sanitized staged env; malicious PATH/build-tree
    DLL fixture must not satisfy closure. Missing intended backend/device fails verification.
-7. [ ] `source.rs`: local bare repo tag/master movement after resolution, exact detached commit
+7. [x] `source.rs`: local bare repo tag/master movement after resolution, exact detached commit
    pinned through GC/build, master git-describe normalization; build-number-only match rejected.
-8. [ ] `stage.rs`: fake trees/loader fixtures; stale executable/plugin, missing DLL, source CUDA
+8. [x] `stage.rs`: fake trees/loader fixtures; stale executable/plugin, missing DLL, source CUDA
    configure-all but runtime-list absent/not-all rejected by shared verifier. Model proof deferred
    explicitly if no local model is available.
-9. [ ] `job.rs` fake toolchain: fail every phase; disk exhaustion compile/stage/promotion preserves
+9. [x] `job.rs` fake toolchain: fail every phase; disk exhaustion compile/stage/promotion preserves
    live sets. Ownership conflict matrix tests (build vs clean, validation vs clean, install vs
    check/validation/build). Windows Job Object and Unix supervisor integration fixtures spawn
    grandchildren; cancel **and parent death** reap/contain writers before ownership release.
    Test PID identity mismatch never kills unrelated process, next job cannot inherit orphan writers.
-10. [ ] Cache cap/clean and last-3 log+JSON tests, active exemptions, bounded git/dependency
+10. [x] Cache cap/clean and last-3 log+JSON tests, active exemptions, bounded git/dependency
     retention, interruption recovery preceding staging sweep.
 
 **Gate:** `cargo test llama_build` green on macOS and Windows platform fixtures. Real Metal

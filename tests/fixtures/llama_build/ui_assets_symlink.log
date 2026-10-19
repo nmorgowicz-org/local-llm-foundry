@@ -1,0 +1,4 @@
+CMake Error at scripts/ui-assets.cmake:218 (file):
+  file COMPRESS_GZIP failed: Unable to read from file
+  /tmp/foundry/llama-build/build-metal/tools/server/public/bundle.css
+CMake Error: Can't lstat /tmp/foundry/llama-build/build-metal/tools/server/public/bundle.css

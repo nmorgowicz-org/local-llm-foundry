@@ -1,0 +1,888 @@
+//! Owned process supervision (plan §4.4 *Cancel and crash containment*).
+//!
+//! Every subprocess a build starts (git, cmake, compilers, smoke tests) runs
+//! contained, so cancel and a crash of the app both reach every descendant:
+//!
+//! - **Windows:** the child is created suspended, assigned to a Job Object with
+//!   `KILL_ON_JOB_CLOSE` (no breakaway flags), then resumed. Closing the job
+//!   handle - which the kernel does when the app dies - kills everything.
+//! - **Unix:** the app re-executes itself as a small supervisor
+//!   (`__llama-build-supervise`). The supervisor owns the child's process group
+//!   and watches a control pipe; when the app cancels *or dies* the pipe closes
+//!   and the supervisor sends `TERM`, then `KILL` after a grace period, and
+//!   does not exit until the group is empty.
+//!
+//! Recovery never signals a saved PID blindly: a record carries the process
+//! creation time, and a mismatch means the PID was reused and nothing is killed.
+
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
+
+use serde::{Deserialize, Serialize};
+
+/// argv[1] that switches the executable into supervisor mode.
+pub const SUPERVISOR_ARG: &str = "__llama-build-supervise";
+/// Grace between `TERM` and `KILL`.
+pub const TERM_GRACE: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Clone, Default)]
+pub struct SpawnSpec {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    /// Windows only: appended verbatim (for `cmd /s /c "..."` quoting).
+    pub raw_args: Option<String>,
+    pub cwd: Option<PathBuf>,
+    /// The complete environment. `None` inherits the app's.
+    pub env: Option<Vec<(String, String)>>,
+    /// `nice 10` / `BELOW_NORMAL_PRIORITY_CLASS`.
+    pub low_priority: bool,
+}
+
+impl SpawnSpec {
+    pub fn new(program: impl Into<PathBuf>, args: &[&str]) -> Self {
+        Self {
+            program: program.into(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            ..Self::default()
+        }
+    }
+
+    /// Shell-quoted command line for logs.
+    pub fn display(&self) -> String {
+        let mut parts = vec![quote(&self.program.to_string_lossy())];
+        parts.extend(self.args.iter().map(|a| quote(a)));
+        if let Some(raw) = &self.raw_args {
+            parts.push(raw.clone());
+        }
+        parts.join(" ")
+    }
+}
+
+fn quote(arg: &str) -> String {
+    if !arg.is_empty()
+        && arg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=+,@\\".contains(c))
+    {
+        arg.to_string()
+    } else {
+        format!("\"{}\"", arg.replace('"', "\\\""))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Line {
+    Stdout(String),
+    Stderr(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunOutcome {
+    pub exit_code: Option<i32>,
+    pub cancelled: bool,
+    /// Every descendant is gone. `false` blocks releasing ownership.
+    pub contained: bool,
+}
+
+/// Where the Unix supervisor binary is. Tests point this at the built binary.
+#[derive(Debug, Clone)]
+pub struct Launcher {
+    pub supervisor_exe: Option<PathBuf>,
+}
+
+impl Launcher {
+    pub fn current_exe() -> Self {
+        Self {
+            supervisor_exe: std::env::current_exe().ok(),
+        }
+    }
+}
+
+/// A contained, running child.
+pub struct Contained {
+    child: Child,
+    #[cfg(unix)]
+    control: Option<std::process::ChildStdin>,
+    #[cfg(windows)]
+    job: win::Job,
+}
+
+pub fn spawn(spec: &SpawnSpec, launcher: &Launcher) -> std::io::Result<Contained> {
+    #[cfg(unix)]
+    {
+        spawn_unix(spec, launcher)
+    }
+    #[cfg(windows)]
+    {
+        let _ = launcher;
+        spawn_windows(spec)
+    }
+}
+
+impl Contained {
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub fn take_output(
+        &mut self,
+    ) -> (
+        Option<std::process::ChildStdout>,
+        Option<std::process::ChildStderr>,
+    ) {
+        (self.child.stdout.take(), self.child.stderr.take())
+    }
+
+    pub fn try_wait(&mut self) -> std::io::Result<Option<i32>> {
+        Ok(self.child.try_wait()?.map(|s| s.code().unwrap_or(-1)))
+    }
+
+    /// Ask for termination and wait until no descendant is left. Returns
+    /// whether containment held.
+    pub fn terminate(&mut self) -> bool {
+        #[cfg(unix)]
+        {
+            // Closing the control pipe is the cancel signal: the supervisor
+            // does TERM, grace, KILL and waits for an empty group.
+            self.control.take();
+            let deadline = Instant::now() + TERM_GRACE + Duration::from_secs(15);
+            loop {
+                match self.child.try_wait() {
+                    Ok(Some(status)) => return status.code().is_some_and(|c| c != 125),
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(25))
+                    }
+                    _ => {
+                        let _ = self.child.kill();
+                        let _ = self.child.wait();
+                        return false;
+                    }
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            self.job.terminate();
+            let _ = self.child.wait();
+            self.job.wait_empty(Duration::from_secs(15))
+        }
+    }
+}
+
+/// Run to completion, teeing output line-by-line to `sink`, polling `cancel`.
+pub fn run_contained(
+    spec: &SpawnSpec,
+    launcher: &Launcher,
+    sink: &mut dyn FnMut(Line),
+    cancel: &dyn Fn() -> bool,
+) -> std::io::Result<RunOutcome> {
+    run_contained_with(spec, launcher, sink, cancel, &mut |_| Ok(()))
+}
+
+/// As [`run_contained`], reporting the contained process id as soon as it
+/// exists so the caller can persist an identity record for crash recovery.
+pub fn run_contained_with(
+    spec: &SpawnSpec,
+    launcher: &Launcher,
+    sink: &mut dyn FnMut(Line),
+    cancel: &dyn Fn() -> bool,
+    on_spawn: &mut dyn FnMut(u32) -> std::io::Result<()>,
+) -> std::io::Result<RunOutcome> {
+    let mut contained = spawn(spec, launcher)?;
+    if let Err(e) = on_spawn(contained.id()) {
+        let reaped = contained.terminate();
+        return Err(std::io::Error::other(format!(
+            "could not persist child ownership: {e}; containment reaped: {reaped}"
+        )));
+    }
+    let (stdout, stderr) = contained.take_output();
+    let (tx, rx) = mpsc::sync_channel::<Line>(256);
+    let mut readers = Vec::new();
+    if let Some(out) = stdout {
+        let tx = tx.clone();
+        readers.push(std::thread::spawn(move || {
+            for line in BufReader::new(out).split(b'\n').map_while(Result::ok) {
+                let _ = tx.send(Line::Stdout(
+                    String::from_utf8_lossy(&line)
+                        .trim_end_matches('\r')
+                        .to_string(),
+                ));
+            }
+        }));
+    }
+    if let Some(err) = stderr {
+        let tx = tx.clone();
+        readers.push(std::thread::spawn(move || {
+            for line in BufReader::new(err).split(b'\n').map_while(Result::ok) {
+                let _ = tx.send(Line::Stderr(
+                    String::from_utf8_lossy(&line)
+                        .trim_end_matches('\r')
+                        .to_string(),
+                ));
+            }
+        }));
+    }
+    drop(tx);
+
+    let mut cancelled = false;
+    let mut contained_ok = true;
+    let exit_code = loop {
+        while let Ok(line) = rx.try_recv() {
+            sink(line);
+        }
+        if !cancelled && cancel() {
+            cancelled = true;
+            contained_ok = contained.terminate();
+        }
+        match contained.try_wait()? {
+            Some(code) => break Some(code),
+            None => match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(line) => sink(line),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    // Pipes closed: the child is exiting.
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            },
+        }
+    };
+    // The leader is gone; make sure nothing it started is still writing.
+    if !cancelled {
+        contained_ok = contained.terminate();
+    }
+    for r in readers {
+        // An uncontained descendant may still hold a pipe open. Do not hang
+        // forever joining its reader: the durable record blocks future reuse.
+        if contained_ok {
+            let _ = r.join();
+        }
+    }
+    while let Ok(line) = rx.try_recv() {
+        sink(line);
+    }
+    Ok(RunOutcome {
+        exit_code: if cancelled { None } else { exit_code },
+        cancelled,
+        contained: contained_ok,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Unix
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+fn spawn_unix(spec: &SpawnSpec, launcher: &Launcher) -> std::io::Result<Contained> {
+    let exe = launcher
+        .supervisor_exe
+        .clone()
+        .ok_or_else(|| std::io::Error::other("the supervisor executable is unknown"))?;
+    let mut cmd = Command::new(exe);
+    cmd.arg(SUPERVISOR_ARG);
+    if spec.low_priority {
+        cmd.arg("--nice");
+    }
+    cmd.arg("--").arg(&spec.program).args(&spec.args);
+    if let Some(cwd) = &spec.cwd {
+        cmd.current_dir(cwd);
+    }
+    if let Some(env) = &spec.env {
+        cmd.env_clear();
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let control = child.stdin.take();
+    Ok(Contained { child, control })
+}
+
+/// Supervisor entry point. Never returns to the caller's `main`.
+#[cfg(unix)]
+pub fn run_supervisor(args: &[String]) -> i32 {
+    use std::os::unix::process::CommandExt;
+
+    let mut rest = args;
+    let mut nice = false;
+    if rest.first().map(String::as_str) == Some("--nice") {
+        nice = true;
+        rest = &rest[1..];
+    }
+    if rest.first().map(String::as_str) == Some("--") {
+        rest = &rest[1..];
+    }
+    let Some((program, program_args)) = rest.split_first() else {
+        eprintln!("supervisor: no command");
+        return 2;
+    };
+
+    // Our own group, so a signal aimed at the app's group never reaches us and
+    // ours never reaches the app.
+    // SAFETY: plain libc calls with valid arguments.
+    unsafe {
+        libc::setpgid(0, 0);
+        libc::signal(libc::SIGTERM, libc::SIG_IGN);
+        libc::signal(libc::SIGINT, libc::SIG_IGN);
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        if nice {
+            libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+        }
+    }
+
+    let mut cmd = Command::new(program);
+    cmd.args(program_args).stdin(Stdio::null());
+    // The child leads a fresh group; every descendant joins it.
+    cmd.process_group(0);
+    // SAFETY: only async-signal-safe `signal` calls between fork and exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::signal(libc::SIGTERM, libc::SIG_DFL);
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            libc::signal(libc::SIGHUP, libc::SIG_DFL);
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+            Ok(())
+        });
+    }
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("supervisor: could not start {program}: {e}");
+            return 127;
+        }
+    };
+    let pgid = child.id() as i32;
+
+    // Cancel and parent death are the same event: the control pipe closes.
+    let (tx, rx) = mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let mut sink = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut std::io::stdin().lock(), &mut sink);
+        let _ = tx.send(());
+    });
+
+    let mut kill_at: Option<Instant> = None;
+    let status = loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            break status;
+        }
+        if kill_at.is_none() && rx.try_recv().is_ok() {
+            // SAFETY: signalling a group we created.
+            unsafe { libc::killpg(pgid, libc::SIGTERM) };
+            kill_at = Some(Instant::now() + TERM_GRACE);
+        }
+        if kill_at.is_some_and(|at| Instant::now() >= at) {
+            // SAFETY: as above. Repeating KILL is harmless.
+            unsafe { libc::killpg(pgid, libc::SIGKILL) };
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    };
+
+    // The leader exited; nothing it started may outlive it.
+    if !drain_group(pgid) {
+        eprintln!("supervisor: descendants survived termination; repair required");
+        return 125;
+    }
+    use std::os::unix::process::ExitStatusExt;
+    status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
+}
+
+/// `TERM`, wait for an empty group, then `KILL`.
+#[cfg(unix)]
+fn drain_group(pgid: i32) -> bool {
+    let alive = || {
+        // SAFETY: signal 0 only probes.
+        unsafe { libc::killpg(pgid, 0) == 0 }
+    };
+    if !alive() {
+        return true;
+    }
+    // SAFETY: signalling a group we created.
+    unsafe { libc::killpg(pgid, libc::SIGTERM) };
+    let deadline = Instant::now() + TERM_GRACE;
+    while alive() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    if alive() {
+        // SAFETY: as above.
+        unsafe { libc::killpg(pgid, libc::SIGKILL) };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(40));
+        }
+    }
+    !alive()
+}
+
+// ---------------------------------------------------------------------------
+// Windows
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+fn spawn_windows(spec: &SpawnSpec) -> std::io::Result<Contained> {
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_SUSPENDED: u32 = 0x0000_0004;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+
+    let job = win::Job::new()?;
+    let mut cmd = Command::new(&spec.program);
+    cmd.args(&spec.args);
+    if let Some(raw) = &spec.raw_args {
+        cmd.raw_arg(raw);
+    }
+    if let Some(cwd) = &spec.cwd {
+        cmd.current_dir(cwd);
+    }
+    if let Some(env) = &spec.env {
+        cmd.env_clear();
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+    let mut flags = CREATE_SUSPENDED | CREATE_NO_WINDOW;
+    if spec.low_priority {
+        flags |= BELOW_NORMAL_PRIORITY_CLASS;
+    }
+    cmd.creation_flags(flags)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = cmd.spawn()?;
+    let handle = child.as_raw_handle();
+    // Assign before resume: the process cannot have started a child of its own.
+    if let Err(e) = job.assign(handle) {
+        let mut child = child;
+        let _ = child.kill();
+        return Err(e);
+    }
+    win::resume(handle)?;
+    Ok(Contained { child, job })
+}
+
+#[cfg(windows)]
+pub(crate) mod win {
+    use std::ffi::c_void;
+    use std::time::{Duration, Instant};
+
+    type Handle = *mut c_void;
+
+    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
+    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
+    const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION_CLASS: i32 = 1;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct BasicLimit {
+        per_process_user_time_limit: i64,
+        per_job_user_time_limit: i64,
+        limit_flags: u32,
+        minimum_working_set_size: usize,
+        maximum_working_set_size: usize,
+        active_process_limit: u32,
+        affinity: usize,
+        priority_class: u32,
+        scheduling_class: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct IoCounters {
+        counters: [u64; 6],
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct ExtendedLimit {
+        basic: BasicLimit,
+        io: IoCounters,
+        process_memory_limit: usize,
+        job_memory_limit: usize,
+        peak_process_memory_used: usize,
+        peak_job_memory_used: usize,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct BasicAccounting {
+        total_user_time: i64,
+        total_kernel_time: i64,
+        this_period_total_user_time: i64,
+        this_period_total_kernel_time: i64,
+        total_page_fault_count: u32,
+        total_processes: u32,
+        active_processes: u32,
+        total_terminated_processes: u32,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateJobObjectW(attrs: *mut c_void, name: *const u16) -> Handle;
+        fn SetInformationJobObject(job: Handle, class: i32, info: *mut c_void, len: u32) -> i32;
+        fn QueryInformationJobObject(
+            job: Handle,
+            class: i32,
+            info: *mut c_void,
+            len: u32,
+            returned: *mut u32,
+        ) -> i32;
+        fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
+        fn TerminateJobObject(job: Handle, exit_code: u32) -> i32;
+        fn CloseHandle(handle: Handle) -> i32;
+    }
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn NtResumeProcess(process: Handle) -> i32;
+    }
+
+    pub struct Job(Handle);
+
+    // SAFETY: a job handle is a kernel object reference usable from any thread.
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    impl Job {
+        pub fn new() -> std::io::Result<Self> {
+            // SAFETY: null attributes/name create an anonymous job.
+            let handle = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
+            if handle.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut info = ExtendedLimit::default();
+            // KILL_ON_JOB_CLOSE only: breakaway flags are deliberately absent.
+            info.basic.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            // SAFETY: `info` is a correctly laid-out ExtendedLimit of the stated size.
+            let ok = unsafe {
+                SetInformationJobObject(
+                    handle,
+                    JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+                    &mut info as *mut _ as *mut c_void,
+                    std::mem::size_of::<ExtendedLimit>() as u32,
+                )
+            };
+            if ok == 0 {
+                let e = std::io::Error::last_os_error();
+                // SAFETY: handle came from CreateJobObjectW.
+                unsafe { CloseHandle(handle) };
+                return Err(e);
+            }
+            Ok(Self(handle))
+        }
+
+        pub fn assign(&self, process: *mut c_void) -> std::io::Result<()> {
+            // SAFETY: both handles are valid for the call.
+            if unsafe { AssignProcessToJobObject(self.0, process) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        }
+
+        pub fn terminate(&self) {
+            // SAFETY: valid job handle.
+            unsafe { TerminateJobObject(self.0, 1) };
+        }
+
+        pub fn active_processes(&self) -> Option<u32> {
+            let mut info = BasicAccounting::default();
+            let mut returned = 0u32;
+            // SAFETY: `info` matches the queried class and size.
+            let ok = unsafe {
+                QueryInformationJobObject(
+                    self.0,
+                    JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION_CLASS,
+                    &mut info as *mut _ as *mut c_void,
+                    std::mem::size_of::<BasicAccounting>() as u32,
+                    &mut returned,
+                )
+            };
+            (ok != 0).then_some(info.active_processes)
+        }
+
+        pub fn wait_empty(&self, timeout: Duration) -> bool {
+            let deadline = Instant::now() + timeout;
+            loop {
+                match self.active_processes() {
+                    Some(0) => return true,
+                    None => return false,
+                    Some(_) if Instant::now() >= deadline => return false,
+                    Some(_) => std::thread::sleep(Duration::from_millis(25)),
+                }
+            }
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // KILL_ON_JOB_CLOSE: dropping the last handle ends every member.
+            // SAFETY: handle is owned by this value.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    pub fn resume(process: *mut c_void) -> std::io::Result<()> {
+        // SAFETY: `process` is the suspended child's handle.
+        let status = unsafe { NtResumeProcess(process) };
+        if status < 0 {
+            return Err(std::io::Error::other(format!(
+                "NtResumeProcess failed: {status:#x}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Identity-checked process records
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessRecord {
+    pub job_id: String,
+    pub pid: u32,
+    /// Seconds since the epoch at process creation (OS-reported).
+    pub start_time: u64,
+}
+
+/// Creation time of `pid` as the OS reports it, or `None` if it is not running.
+pub fn process_start_time(pid: u32) -> Option<u64> {
+    let mut sys = sysinfo::System::new();
+    let pid = sysinfo::Pid::from_u32(pid);
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+    sys.process(pid).map(|p| p.start_time())
+}
+
+pub fn record_for(job_id: &str, pid: u32) -> Option<ProcessRecord> {
+    Some(ProcessRecord {
+        job_id: job_id.to_string(),
+        pid,
+        start_time: process_start_time(pid)?,
+    })
+}
+
+pub fn load_records(file: &Path) -> std::io::Result<Vec<ProcessRecord>> {
+    match std::fs::read(file) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn save_records(file: &Path, records: &[ProcessRecord]) -> std::io::Result<()> {
+    if records.is_empty() {
+        return match std::fs::remove_file(file) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        };
+    }
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = file.with_extension("json.tmp");
+    std::fs::write(
+        &tmp,
+        serde_json::to_vec_pretty(records).map_err(std::io::Error::other)?,
+    )?;
+    std::fs::rename(tmp, file)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecoveryAction {
+    /// The recorded process is gone; nothing to do.
+    Gone,
+    /// The PID now belongs to a different process: left alone.
+    IdentityMismatch { pid: u32 },
+    /// Members of the recorded group were signalled.
+    Killed { pid: u32, members: usize },
+    /// Containment could not be established; reuse stays blocked.
+    Failed { pid: u32, reason: String },
+}
+
+/// Validate saved ownership before recovery. Unix records identify the
+/// supervisor, not its child's independent process group. Without a durable
+/// group handshake, even a dead/reused supervisor cannot prove its descendants
+/// are gone. Preserve the record and require repair rather than signal an
+/// unrelated PID or falsely release the tree.
+pub fn recover_record(record: &ProcessRecord) -> RecoveryAction {
+    #[cfg(unix)]
+    {
+        let leader = process_start_time(record.pid);
+        if let Some(start) = leader
+            && start.abs_diff(record.start_time) > 1
+        {
+            return RecoveryAction::IdentityMismatch { pid: record.pid };
+        }
+        RecoveryAction::Failed {
+            pid: record.pid,
+            reason: "the supervisor's child group cannot be proven empty; inspect descendants before repairing processes.json".into(),
+        }
+    }
+    #[cfg(windows)]
+    {
+        // The Job Object dies with the app, taking every descendant with it.
+        match process_start_time(record.pid) {
+            None => RecoveryAction::Gone,
+            Some(start) if start.abs_diff(record.start_time) > 1 => {
+                RecoveryAction::IdentityMismatch { pid: record.pid }
+            }
+            Some(_) => RecoveryAction::Failed {
+                pid: record.pid,
+                reason: "the recorded process is still running outside a job".into(),
+            },
+        }
+    }
+}
+
+/// Reap every saved record. Records whose processes are gone or reused are
+/// dropped; failures are kept so reuse stays blocked.
+pub fn recover_all(file: &Path) -> std::io::Result<Vec<(ProcessRecord, RecoveryAction)>> {
+    let records = load_records(file)?;
+    let mut keep = Vec::new();
+    let mut out = Vec::new();
+    for record in records {
+        let action = recover_record(&record);
+        if !matches!(action, RecoveryAction::Gone) {
+            keep.push(record.clone());
+        }
+        out.push((record, action));
+    }
+    save_records(file, &keep)?;
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_quotes_only_what_needs_it() {
+        let spec = SpawnSpec::new("cmake", &["--build", "/a b/c", "-DX=1", "say \"hi\""]);
+        assert_eq!(
+            spec.display(),
+            "cmake --build \"/a b/c\" -DX=1 \"say \\\"hi\\\"\""
+        );
+    }
+
+    #[test]
+    fn records_round_trip_and_an_empty_set_removes_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("x/processes.json");
+        let rec = ProcessRecord {
+            job_id: "j".into(),
+            pid: 7,
+            start_time: 100,
+        };
+        save_records(&file, std::slice::from_ref(&rec)).unwrap();
+        assert_eq!(load_records(&file).unwrap(), vec![rec]);
+        save_records(&file, &[]).unwrap();
+        assert!(!file.exists());
+        save_records(&file, &[]).unwrap();
+        assert!(load_records(&file).unwrap().is_empty());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"{broken").unwrap();
+        assert!(load_records(&file).is_err());
+        assert!(recover_all(&file).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), b"{broken");
+    }
+
+    #[test]
+    fn this_process_has_a_start_time() {
+        let me = std::process::id();
+        let t = process_start_time(me).unwrap();
+        assert!(t > 1_500_000_000);
+        assert!(record_for("j", me).is_some());
+        assert!(process_start_time(u32::MAX - 3).is_none());
+    }
+
+    /// A live, unrelated process whose PID is in a record with the wrong
+    /// creation time must never be signalled.
+    #[cfg(unix)]
+    #[test]
+    fn a_reused_pid_is_never_signalled() {
+        let mut bystander = Command::new("sleep").arg("30").spawn().unwrap();
+        let real = process_start_time(bystander.id()).unwrap();
+        let stale = ProcessRecord {
+            job_id: "old".into(),
+            pid: bystander.id(),
+            start_time: real.saturating_sub(10_000),
+        };
+        assert_eq!(
+            recover_record(&stale),
+            RecoveryAction::IdentityMismatch {
+                pid: bystander.id()
+            }
+        );
+        assert!(
+            bystander.try_wait().unwrap().is_none(),
+            "the bystander was killed"
+        );
+        let _ = bystander.kill();
+        let _ = bystander.wait();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dead_supervisor_does_not_prove_its_child_group_is_gone() {
+        let rec = ProcessRecord {
+            job_id: "j".into(),
+            pid: 999_999,
+            start_time: 1,
+        };
+        assert!(matches!(
+            recover_record(&rec),
+            RecoveryAction::Failed { .. }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recover_all_drops_resolved_records_and_keeps_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("processes.json");
+        save_records(
+            &file,
+            &[
+                ProcessRecord {
+                    job_id: "a".into(),
+                    pid: 999_998,
+                    start_time: 1,
+                },
+                ProcessRecord {
+                    job_id: "b".into(),
+                    pid: 999_997,
+                    start_time: 1,
+                },
+            ],
+        )
+        .unwrap();
+        let results = recover_all(&file).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .all(|(_, a)| matches!(a, RecoveryAction::Failed { .. }))
+        );
+        assert_eq!(load_records(&file).unwrap().len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_supervisor_executable_is_an_error_not_a_hang() {
+        let launcher = Launcher {
+            supervisor_exe: None,
+        };
+        assert!(spawn(&SpawnSpec::new("true", &[]), &launcher).is_err());
+    }
+}

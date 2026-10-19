@@ -130,6 +130,51 @@ Directory used for model auto-discovery across all backends.
 llama-monitor --models-dir /srv/models
 ```
 
+## Build llama.cpp from source
+
+`local-llm-foundry llama-build` compiles `llama-server` and `llama-bench` into the
+selected application's managed runtime. Stop the foundry, agents, and models
+using that root first. A cross-process lease prevents overlap with other
+builders and running foundry/agent processes that support this lease.
+
+```bash
+local-llm-foundry llama-build --dry-run --config-dir /custom/config/path
+local-llm-foundry llama-build --accelerator metal --ref latest --headroom
+local-llm-foundry llama-build --accelerator cuda --ref master --jobs 8
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--dry-run` | Read-only prerequisite checks, resolved tag/commit, and lossless JSON CMake argv. Does not compile, install, or create application directories. |
+| `--config-dir PATH` | Select the managed root; build settings never fall back to another root. |
+| `--accelerator metal\|cuda\|cpu` | Defaults to Metal on macOS, CUDA on Windows, CPU on Linux. Linux builds are untested. |
+| `--ref latest\|master` | Latest numeric `bNNNN` release tag (default), or upstream `master`. Execution resolves once and pins the exact commit; a preview does not reserve it. |
+| `--jobs N` | Explicit parallelism, bounded to 1–4096 and at most twice the logical CPU count. Default: logical CPUs minus one, at least one. |
+| `--headroom` | Half the logical CPUs and lower build priority; conflicts with `--jobs`. |
+| `--wipe` | Reset only the selected managed build tree before configuring. Never deletes live or previous runtimes. |
+
+CUDA builds always compile all supported Flash Attention K/V pairs
+(`GGML_CUDA_FA_QUANTS=all`). Prerequisite validation includes a compile smoke
+test; dry-run skips this test. Actual installation uses staged loader/backend
+verification and journaled promotion. A successful installation retains at most
+one previous runtime in `bin-previous/`. Compilation failure leaves installed
+binaries unchanged.
+
+`llama-build.json` in the selected root accepts `ccache_max_bytes` (default
+2 GiB, allowed 256 MiB–16 GiB). Build trees, checkout, and the capped cache live
+under `llama-build/`; the last three completed log/JSON pairs are retained under
+`logs/llama-build/`, with active/recovery-owned diagnostics exempt.
+
+Ctrl-C requests cancellation before the transaction boundary. Once installation
+has begun journaling, recovery must finish. Unresolved or corrupt
+`llama-build/processes.json` blocks new builds and cache cleanup; inspect any
+surviving descendants before repairing the ownership record. Do not delete it
+merely to bypass the safety check.
+
+Exit codes: `0` installed (or ready dry-run), `1` failed/not ready, `2` installed
+but model restart failed (also used for CLI usage errors), `75` busy or repair
+required, `130` cancelled. The standalone CLI does not restart models.
+
 ## Persisted file locations
 
 ### `--presets-file`

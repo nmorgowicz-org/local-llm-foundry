@@ -43,6 +43,12 @@ pub struct RuntimeManifest {
     pub cmake_args: Vec<String>,
     #[serde(default)]
     pub fa_quants_spec: Option<String>,
+    /// Source builds: the pairs the configure recorded. A record of what was
+    /// asked for, never read as a capability.
+    #[serde(default)]
+    pub fa_pairs_compiled: Vec<(String, String)>,
+    #[serde(default)]
+    pub cuda_architectures: Option<String>,
     #[serde(default)]
     pub toolchain: BTreeMap<String, String>,
     pub built_at_unix: u64,
@@ -81,10 +87,22 @@ fn sha256_file(path: &Path) -> std::io::Result<String> {
 
 fn hash_files(dir: &Path) -> std::io::Result<BTreeMap<String, String>> {
     let mut files = BTreeMap::new();
+    let canonical_dir = std::fs::canonicalize(dir)?;
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name == MANIFEST_FILE || !entry.file_type()?.is_file() {
+        if name == MANIFEST_FILE {
+            continue;
+        }
+        let kind = entry.file_type()?;
+        if kind.is_symlink() {
+            let target = std::fs::canonicalize(entry.path())?;
+            if target.parent() != Some(canonical_dir.as_path()) || !target.is_file() {
+                return Err(std::io::Error::other(
+                    "manifest symlink escapes the runtime set",
+                ));
+            }
+        } else if !kind.is_file() {
             continue;
         }
         files.insert(name, sha256_file(&entry.path())?);
@@ -108,6 +126,8 @@ impl RuntimeManifest {
             accelerator,
             cmake_args: Vec::new(),
             fa_quants_spec: None,
+            fa_pairs_compiled: Vec::new(),
+            cuda_architectures: None,
             toolchain: BTreeMap::new(),
             built_at_unix: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -235,5 +255,22 @@ mod tests {
             check_manifest(dir.path()),
             ManifestCheck::Unreadable(_)
         ));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod symlink_tests {
+    use super::*;
+
+    #[test]
+    fn shipped_symlinks_are_hashed_and_escaping_links_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("libggml.1.dylib"), "backend").unwrap();
+        std::os::unix::fs::symlink("libggml.1.dylib", dir.path().join("libggml.dylib")).unwrap();
+        let hashes = hash_files(dir.path()).unwrap();
+        assert_eq!(hashes["libggml.1.dylib"], hashes["libggml.dylib"]);
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("escape.dylib")).unwrap();
+        assert!(hash_files(dir.path()).is_err());
     }
 }

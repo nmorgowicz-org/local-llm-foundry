@@ -527,6 +527,7 @@ pub struct AppConfig {
     /// Explicit disposable migration roots used only by native qualification.
     pub migration_test_root: Option<PathBuf>,
     pub llama_server_path: PathBuf,
+    pub llama_build: crate::llama_build::cache::LlamaBuildConfig,
     /// Optional separately-built llama-fit-params estimate probe.
     pub llama_fit_params_path: Option<PathBuf>,
     pub llama_server_cwd: PathBuf,
@@ -609,6 +610,14 @@ impl AppConfig {
             config_dir: config_dir.clone(),
             migration_test_root: args.migration_test_root,
             llama_server_path: args.llama_server_path.unwrap_or(default_server_path),
+            llama_build: if initialize_resources {
+                crate::llama_build::cache::LlamaBuildConfig::load(&config_dir).unwrap_or_else(|e| {
+                    eprintln!("[warn] invalid llama-build config: {e}; using defaults");
+                    Default::default()
+                })
+            } else {
+                Default::default()
+            },
             llama_fit_params_path: None,
             llama_server_cwd: args.llama_server_cwd.unwrap_or(default_server_cwd),
             port: args.port,
@@ -688,6 +697,7 @@ impl AppConfig {
             config_dir: std::path::PathBuf::from("/tmp/llama-monitor-test"),
             migration_test_root: None,
             llama_server_path: std::path::PathBuf::from("llama-server"),
+            llama_build: Default::default(),
             llama_fit_params_path: None,
             llama_server_cwd: std::path::PathBuf::from("."),
             port: 8001,
