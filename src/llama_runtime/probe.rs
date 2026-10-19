@@ -203,6 +203,7 @@ pub fn kv_basis_from_probe(
         backend,
         fa_pairs,
         runtime_identity: identity.map(RuntimeIdentity::fingerprint),
+        devices: parsed.devices.clone(),
     }
 }
 

@@ -224,6 +224,10 @@ pub struct KvSupportBasis {
     /// evidence was read from.
     #[serde(default)]
     pub runtime_identity: Option<String>,
+    /// Devices the loaded runtime enumerated (`"CUDA0 : NVIDIA ..."`). Detected
+    /// device ids sent by clients are validated against this list.
+    #[serde(default)]
+    pub devices: Vec<String>,
 }
 
 impl KvSupportBasis {
@@ -234,6 +238,7 @@ impl KvSupportBasis {
             backend: Backend::Unknown,
             fa_pairs: Evidence::unavailable(reason),
             runtime_identity: None,
+            devices: Vec::new(),
         }
     }
 }
@@ -258,8 +263,9 @@ pub struct DeviceEvidence {
 pub struct ModelEvidence {
     /// Opaque model metadata identity (including revision).
     pub metadata_identity: String,
-    /// Attention head dimension from GGUF metadata, when known.
-    pub head_dim: Option<u32>,
+    /// Per-head attention dimensions from GGUF metadata (more than one for
+    /// models with different global/local head sizes). Empty when unknown.
+    pub head_dims: Vec<u32>,
 }
 
 /// Session/context-specific runtime observations (log watchers, benchmarks).
@@ -472,10 +478,16 @@ fn device_model_adequate(ctx: &KvContext<'_>) -> Result<(), String> {
     let Some(model) = ctx.model else {
         return Err("no model metadata was provided".into());
     };
-    match model.head_dim {
-        Some(dim) if FA_ADEQUATE_HEAD_DIMS.contains(&dim) => Ok(()),
+    if model.head_dims.is_empty() {
+        return Err("the model head dimension is unknown".into());
+    }
+    match model
+        .head_dims
+        .iter()
+        .find(|dim| !FA_ADEQUATE_HEAD_DIMS.contains(dim))
+    {
         Some(dim) => Err(format!("model head dimension {dim} is not a verified size")),
-        None => Err("the model head dimension is unknown".into()),
+        None => Ok(()),
     }
 }
 
@@ -692,6 +704,7 @@ mod tests {
             backend: Backend::Cuda,
             fa_pairs: Evidence::confirmed(compiled_fa_pairs(spec).unwrap(), "probe"),
             runtime_identity: Some("test".into()),
+            devices: Vec::new(),
         }
     }
 
@@ -701,6 +714,7 @@ mod tests {
             backend,
             fa_pairs: Evidence::unavailable("not applicable"),
             runtime_identity: Some("test".into()),
+            devices: Vec::new(),
         }
     }
 
@@ -716,7 +730,7 @@ mod tests {
     fn model(head_dim: Option<u32>) -> ModelEvidence {
         ModelEvidence {
             metadata_identity: "m1".into(),
-            head_dim,
+            head_dims: head_dim.into_iter().collect(),
         }
     }
 
@@ -959,6 +973,30 @@ mod tests {
         let c = ctx(&basis, None, None);
         let out = classify_kv_pair(KvType::Q8_0, KvType::F16, FlashAttnMode::Off, &c);
         assert!(!out.buildable_missing);
+    }
+
+    #[test]
+    fn every_head_dimension_must_be_adequate() {
+        let basis = cuda_basis("all");
+        let d = device(None);
+        let mixed = ModelEvidence {
+            metadata_identity: "gemma".into(),
+            head_dims: vec![256, 512],
+        };
+        let c = ctx(&basis, Some(&d), Some(&mixed));
+        assert!(matches!(
+            classify(KvType::Q8_0, KvType::Q8_0, FlashAttnMode::On, &c),
+            KvSupport::Unverified { .. }
+        ));
+        let both_ok = ModelEvidence {
+            metadata_identity: "x".into(),
+            head_dims: vec![128, 256],
+        };
+        let c = ctx(&basis, Some(&d), Some(&both_ok));
+        assert_eq!(
+            classify(KvType::Q8_0, KvType::Q8_0, FlashAttnMode::On, &c),
+            KvSupport::Native
+        );
     }
 
     #[test]
