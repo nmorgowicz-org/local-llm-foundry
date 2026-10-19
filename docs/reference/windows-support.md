@@ -30,7 +30,7 @@ toolchain (`x86_64-pc-windows-gnu`, see `scripts/build-single-target.sh`) with t
 it must ship next to the exe — without it the app fails to launch with `STATUS_DLL_NOT_FOUND`
 (`0xC0000135`). `release.yml` copies it from the build output into the zip (and fails the
 release if it is missing). Moving to an MSVC build would static-link the loader and reduce this
-to two files — see `docs/plans/20260622-windows_build_toolchain.md`.
+to two files; that switch is not scheduled.
 
 ---
 
