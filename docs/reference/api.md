@@ -539,7 +539,7 @@ Updates a bundled preset’s saved default selection and, when supplied, its bun
 
 #### Resolver issue codes
 
-`resolve`, `selection` (PATCH), and a session launch that resolves a bundled preset all share `crate::presets::resolver::resolve_preset`. When resolution fails, all three return `400` with `{"ok": false, "code": "selection_invalid", "error": <issues>}`, where `error` is the serialized `Vec<ValidationIssue>` (`{field, code, message, repair}`); the `/resolve` and PATCH routes JSON-stringify it into `error`, the session-launch route embeds the array directly. A successful `/resolve` response never carries these codes — its `capability_reasons` field only reports kv_policy quality-floor and mixed-K/V warnings, which are advisory, not blocking.
+`resolve`, `selection` (PATCH), and a session launch that resolves a bundled preset all share `crate::presets::resolver::resolve_preset`. When resolution fails, all three return `400` with `{"ok": false, "code": "selection_invalid", "error": <issues>}`, where `error` is the serialized `Vec<ValidationIssue>` (`{field, code, message, repair}`); the `/resolve` and PATCH routes JSON-stringify it into `error`, the session-launch route embeds the array directly. A successful `/resolve` response never carries these codes — its `capability_reasons` field only reports kv_policy quality-floor and K/V fallback guidance, which are advisory, not blocking.
 
 | Code | Field | Trigger |
 | --- | --- | --- |
@@ -549,7 +549,6 @@ Updates a bundled preset’s saved default selection and, when supplied, its bun
 | `artifact_not_found` | `selection` | the selected `artifact_id` is not present in the bundle |
 | `artifact_not_weights` | `selection` | the selected artifact is not a `Weights`-role artifact |
 | `artifact_not_local` | `selection` | the selected artifact has no adopted local path |
-| `MIXED_MAIN_KV_UNSUPPORTED` | `selection` | `kv_policy` is `q4_0`/`q8_0` mixed and the binary capability snapshot does not advertise `mixed_main_kv` |
 | `N_CPU_MOE_NEGATIVE` | `selection` | `n_cpu_moe` is negative |
 | `N_CPU_MOE_UNIFIED_MEMORY_UNQUALIFIED` | `selection` | `n_cpu_moe > 0` on a unified-memory host (CPU expert placement is not qualified there) |
 | `N_CPU_MOE_DENSE_MODEL` | `selection` | `n_cpu_moe > 0` but the artifact's `model_kind` is `Dense` |
@@ -1649,7 +1648,6 @@ is not retried because the runtime may already have accepted the inference. Time
 before a response starts return `504`; after SSE begins they emit an error event and
 end forwarding. Helper timeout failures also release their inference permits.
 
-
 ### `POST /api/chat/abort`
 
 Auth: api-token.
@@ -2572,6 +2570,31 @@ stable release is appended with `stable: true` so the UI can pin it below the
 window.
 
 - Auth: `api-token`.
+
+### `GET /api/llama-binary/kv-support`
+
+Authenticated, model-aware classification of a main K/V cache pair against the
+installed llama-server's *loaded runtime* (not a manifest or a platform guess).
+
+Query: `k` and `v` (required cache types), `fa` (the preset's `flash_attn`
+value, mapped exactly as a launch maps it: only `off` launches `-fa off`,
+everything else launches `-fa on`), `model_id` (optional; a path **relative to
+the models directory**, resolved and contained server-side, never an arbitrary
+path), `device_id` (optional; must be a device the loaded runtime enumerated).
+
+Response fields: `support` (`{kind: native | fallback | unverified | wont_start, ...}`),
+`blocking` (true only for `wont_start`), `compiled_pair` (typed evidence of a
+compiled fused kernel, independent of expected execution), `reason`, `fix`,
+`buildable_missing` (a confirmed CUDA pair that a source build would add),
+`backend`, `effective_flash_attn`, `runtime_identity`, `device_identity`,
+`model_metadata_identity`, `basis_version`, `advisories` (reserved), and
+`session_observations` (partial log-derived confirmation for the current
+server session; absence proves nothing).
+
+Only a quantized V cache with flash attention off is `wont_start` (llama.cpp
+refuses to start). Missing or malformed runtime evidence is `unverified` and
+never blocks. `400` for unknown cache types, unenumerated device ids, or a
+`model_id` outside the models directory.
 
 ### `GET /api/llama-binary/version`
 

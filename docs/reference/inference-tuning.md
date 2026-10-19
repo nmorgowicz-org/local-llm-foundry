@@ -24,7 +24,7 @@ to suggest context size, KV cache types, and MoE settings that fit.
 Everything below follows from one distinction: **where the bottleneck is.**
 
 | | Unified memory (Apple Silicon) | Discrete GPU (NVIDIA) |
-|---|---|---|
+| --- | --- | --- |
 | VRAM | = system RAM (minus OS reserve) | fixed, separate from system RAM |
 | Decode bottleneck | **memory bandwidth** (~410 GB/s M*-Pro → ~614 GB/s M5 Max → ~820 GB/s M*-Ultra) | usually **VRAM capacity**, then bandwidth (5090 ≈ 1790 GB/s) |
 | Prefill bottleneck | GPU compute (M5 adds matmul accelerators, MLX-only today) | GPU compute (abundant on 5080/5090) |
@@ -54,16 +54,17 @@ These were measured with `llama-bench`, build 9542, `-fa 1 -ngl 99`. Treat them 
 ground truth for this class of chip; scale by the bandwidth ratio for other Macs.
 
 | Model | Quant | KV | Context | Prefill (pp) | Decode (tg) |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | Qwen3.6-27B **dense** | Q5_K_S | q8_0 | short | 529 t/s | **16.9 t/s** |
-| Qwen3.6-27B **dense** | Q5_K_S | f16  | short | 478 t/s | 17.7 t/s |
+| Qwen3.6-27B **dense** | Q5_K_S | f16 | short | 478 t/s | 17.7 t/s |
 | Qwen3.6-27B **dense** | Q5_K_S | q8_0 | @16k | — | **6.9 t/s** |
-| Qwen3.6-27B **dense** | Q5_K_S | f16  | @16k | — | 7.7 t/s |
+| Qwen3.6-27B **dense** | Q5_K_S | f16 | @16k | — | 7.7 t/s |
 | Qwen3.6-**35B-A3B MoE** | Q4_K_M | q8_0 | short | 1587 t/s | **50.5 t/s** |
 | Qwen3.6-**35B-A3B MoE** | Q4_K_M | q8_0 | @32k | — | **72.9 t/s** |
 | Qwen3.6-**35B-A3B MoE** | Q4_K_M | q8_0 | @98k | — | **30.2 t/s** |
 
 Takeaways:
+
 1. **Dense 27B ≈ 17 t/s is the hardware ceiling**, not a misconfiguration. It
    collapses to ~7 t/s by 16k context.
 2. **MoE is ~3× faster and degrades far more gracefully** — still 30 t/s at 98k.
@@ -80,7 +81,7 @@ size, so a smaller quant is the only loader-independent way to speed up dense de
 — at a quality cost.
 
 | Quant | bits/wt | Quality | When to use |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Q8_0 | ~8.5 | ~lossless | Only if it fits and you don't care about speed |
 | Q6_K | ~6.6 | excellent | Best quality/size on roomy hardware |
 | Q5_K_M | ~5.7 | very good | Good default when VRAM allows |
@@ -121,7 +122,7 @@ Approximate official Q4_0 load footprints, including Google's 20% loading
 allowance but excluding context KV and runtime-specific extras:
 
 | Model | Q4_0 memory | Architecture |
-|---|---:|---|
+| --- | ---: | --- |
 | Gemma 4 E2B | 2.9 GB | dense, 128K context |
 | Gemma 4 E4B | 4.5 GB | dense, 128K context |
 | Gemma 4 12B | 6.7 GB | dense unified multimodal, 256K context |
@@ -140,13 +141,19 @@ bytes/token = 2 (K+V) × n_layers × n_kv_heads × head_dim × bytes_per_elem
 ```
 
 - **f16** = 2 bytes/elem, **q8_0** = ~1, **q4_0** = ~0.5.
-- **Quantized KV requires flash attention** (`-fa on`) and **matching K/V types**
-  (`-ctk q8_0 -ctv q8_0`) to stay on the fast fused kernel — mixed types silently
-  fall back to a slow path.
+- **Quantized V requires flash attention** (`-fa on`); llama.cpp refuses to start
+  without it. **Equal K/V types** (`-ctk q8_0 -ctv q8_0`) are the safe default for
+  the fast fused kernel. Mixed pairs can start, but on Metal the fused kernels
+  cover equal pairs only: in one measurement (b11719, M5 Max, Qwen3.8-27B IQ4_XS)
+  a mixed quantized pair ran attention on the CPU at roughly 21× slower prefill.
+  On CUDA a pair that was not compiled in falls back to an f16 conversion; a
+  source build with `GGML_CUDA_FA_QUANTS=all` compiles every pair.
 - Presets store KV types in the canonical `ctk`/`ctv` fields (the `-ctk`/`-ctv`
-  launch flags). Launch validation rejects the one build-gated mixed pair,
-  `q8_0/q4_0`, against the binary's capability snapshot, and refuses to let
-  `extra_args` reintroduce KV flags that would bypass the typed fields.
+  launch flags). Launch validation blocks only a known refusal (a quantized V cache
+  with flash attention off); every other pair is classified as native, fallback or
+  unverified from the loaded runtime's evidence (see `GET /api/llama-binary/kv-support`)
+  and never blocks. `extra_args` still may not reintroduce KV flags that would
+  bypass the typed fields.
 
 ### Architecture caveats that change the math
 
@@ -156,7 +163,7 @@ bytes/token = 2 (K+V) × n_layers × n_kv_heads × head_dim × bytes_per_elem
   38–50% throughput. **On Apple Silicon use f16 KV when it fits; only drop to q8_0
   to make a long context fit at all.**
 - **Gemma 4 uses alternating local/global attention** (sliding-window local layers
-  + a few full-context global layers, `global_head_dim = 512`). Its KV cache is
+  - a few full-context global layers, `global_head_dim = 512`). Its KV cache is
   much smaller than a same-size dense model at long context — Gemma is unusually
   cheap to run at high context. The app's [VRAM estimator](vram-estimator.md)
   models this directly.
@@ -164,7 +171,7 @@ bytes/token = 2 (K+V) × n_layers × n_kv_heads × head_dim × bytes_per_elem
 ### Rule of thumb
 
 | Context | Apple Silicon (64 GB) | Apple Silicon (128 GB) | Discrete |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | ≤ 32k | **f16 KV** (faster) | f16 KV | f16 KV |
 | 64k–131k | q8_0 KV (to fit) | f16 if it fits, else q8_0 | f16 if VRAM allows, else q8_0 |
 
@@ -187,6 +194,7 @@ Wherever llama-monitor shows architecture info (welcome screen cards, preset edi
   - More efficient at long context: smaller KV cache, faster decode.
 
 Use these labels as a quick guide:
+
 - For shared or laptop systems: prefer MoE or Hybrid MoE at the same quality tier.
 - For dedicated desktops/GPU rigs: dense is acceptable and often fine with high priority.
 
@@ -226,7 +234,7 @@ gracefully — it pages to SSD and collapses. See [VRAM estimator](vram-estimato
 ### 64 GB Mac
 
 | Model | Fits? | Recommended | Expected decode | Notes |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Qwen3.6-35B-A3B (MoE) | ✅ | **Q4_K_M, q8 KV @131k / f16 KV @≤32k** | 30–70 t/s | **Best all-round pick.** MTP on. |
 | gpt-oss-20b (MoE) | ✅ easily | MXFP4 (native) | very fast | Great light/coding model. |
 | Gemma 4 12B (dense) | ✅ easily | **QAT Q4_0**, f16 KV | fast | Strong compact multimodal/agentic option. |
@@ -246,7 +254,7 @@ gracefully — it pages to SSD and collapses. See [VRAM estimator](vram-estimato
 Everything above, plus the big MoEs become the headline:
 
 | Model | Fits? | Recommended | Expected decode | Notes |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | gpt-oss-120b (MoE, ~5B active) | ✅ MXFP4 (~63 GB) | MXFP4, f16/q8 KV | ~30–50 t/s | Flagship local model on a 128 GB Mac. |
 | Qwen3.5-122B-A10B (MoE, 10B active) | ✅ Q4 (~65 GB) | Q4_K_M, q8 KV @long | ~20–30 t/s | 10B active → heavier than gpt-oss. |
 | Llama 3.3 70B (dense) | ✅ | Q5_K_M / Q6_K | ~9–12 t/s | Quality-first, batch. |
@@ -266,7 +274,7 @@ that fits entirely in VRAM is fast.
 ### What fits fully in VRAM (no offload)
 
 | GPU | VRAM | Dense fully on-GPU | MoE fully on-GPU |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 5080 | 16 GB | ≤14B Q4–Q5, or 8B Q6/Q8 | ≤~20B-total MoE at Q4 (e.g. gpt-oss-20b MXFP4) |
 | 5090 | 32 GB | ≤32B Q4–Q5 (e.g. Qwen3.6-27B → 35–70 t/s) | 35B-A3B Q4 (~20 GB) → 100+ t/s |
 
@@ -282,16 +290,19 @@ attention + the rest stay on the GPU. This lets a 16 GB card run a 120B MoE — 
 is then limited by how many active experts must be fetched over PCIe each token.
 
 **Tuning procedure:**
+
 1. Start with `--cpu-moe` (all experts on CPU). Confirm it loads and runs.
 2. Decrease `--n-cpu-moe N` (move more layers' experts onto the GPU) until you are
    just under OOM. Every layer moved onto the GPU speeds decode.
 3. Keep KV + compute buffers in the VRAM budget — leave ~1–2 GB headroom.
 
 **Sizing math:**
+
 ```
 VRAM_used ≈ attention/shared weights + KV cache + compute buffers
           + (total_moe_layers − n_cpu_moe) × per_layer_expert_size
 ```
+
 Solve for the largest `(total_moe_layers − n_cpu_moe)` that fits. The app's
 [VRAM estimator](vram-estimator.md) can do this for you.
 
@@ -301,7 +312,7 @@ System RAM must hold the **offloaded experts** plus the OS. For a ~63 GB MXFP4
 gpt-oss-120b, the CPU-resident portion needs to fit in RAM.
 
 | System RAM | gpt-oss-120b / 122B-A10B (offloaded) | Practical guidance |
-|---|---|---|
+| --- | --- | --- |
 | 32 GB | ❌ can't hold the offloaded experts | Stick to models that fit VRAM + a small spill (≤~30B-total MoE, dense ≤VRAM). |
 | 64 GB | ⚠️ tight for 120B-class | Possible with aggressive `--n-cpu-moe`, low context; expect 5–15 t/s. |
 | 128 GB | ✅ comfortable | Run 120B-class MoE; push more onto GPU as VRAM allows. Best discrete experience for big MoE. |
@@ -383,7 +394,7 @@ generalize to new releases.
 ### Discrete-GPU quick fit (Gemma & large MoE)
 
 | Model | 5080 (16 GB) | 5090 (32 GB) |
-|---|---|---|
+| --- | --- | --- |
 | Gemma 4 12B (dense) | ✅ QAT Q4_0, roomy | ✅ QAT Q4_0, very fast |
 | Gemma 4 26B-A4B (MoE) | ⚠️ QAT Q4_0 is tight after KV/mmproj | ✅ QAT Q4_0, very fast |
 | Gemma 4 31B (dense) | ❌ full GPU fit | ✅ QAT Q4_0 (~17.5 GB), fast |
@@ -402,31 +413,38 @@ The bundled **`llama-bench`** sits next to `llama-server` in the app's binary di
 to replace any estimate in this doc with a measured number.
 
 **1. Baseline (short context):**
+
 ```bash
 llama-bench -m <model.gguf> -ngl 99 -fa 1 -ctk f16 -ctv f16 -p 512 -n 128 -r 2
 ```
+
 Read the two output rows: `pp512` = prefill t/s, `tg128` = decode t/s.
 
 **2. KV type comparison (run twice, matched K/V):**
+
 ```bash
 llama-bench -m <model.gguf> -ngl 99 -fa 1 -ctk f16  -ctv f16  -p 512 -n 128 -r 2
 llama-bench -m <model.gguf> -ngl 99 -fa 1 -ctk q8_0 -ctv q8_0 -p 512 -n 128 -r 2
 ```
 
 **3. Depth sweep (the important one — exposes the long-context collapse):**
+
 ```bash
 llama-bench -m <model.gguf> -ngl 99 -fa 1 -ctk q8_0 -ctv q8_0 -n 64 -d 0,16384,32768,98304 -r 1
 ```
+
 `tg64 @ dN` is decode speed with N tokens already in the cache. This is what your
 agentic/coding workload actually feels — short-context benches hide it.
 
 **4. Discrete MoE offload sweep (`--n-cpu-moe`):** start high, lower until just
 before OOM; each step that moves experts onto the GPU should raise decode.
+
 ```bash
 llama-bench -m <moe.gguf> -ngl 99 -fa 1 --n-cpu-moe 48 -n 64 -r 1   # then 40, 32, ...
 ```
 
 **Caveats:**
+
 - `llama-bench` measures **base** decode — it does **not** exercise MTP /
   speculative decoding. To measure MTP, run `llama-server` with `--spec-type
   draft-mtp` and read the real tokens/sec from the app's chat telemetry (or
@@ -572,7 +590,7 @@ and Spawn Wizard.
 ## Quick-pick cheat sheet
 
 | Hardware | Best speed/quality balance | Flags |
-|---|---|---|
+| --- | --- | --- |
 | Mac 64 GB | Qwen3.6-35B-A3B Q4_K_M | `-c 131072 -ctk q8_0 -ctv q8_0 -fa on -ngl 99 -t 6 --spec-type draft-mtp --spec-draft-n-max 3` |
 | Mac 128 GB | gpt-oss-120b MXFP4 | `-fa on -ngl 99 -t <P-cores>` (f16 KV at moderate ctx) |
 | 5090 32 GB | Qwen3.6-27B dense Q5 *or* 35B-A3B Q4 | `-fa on -ngl 99` (+ `--spec-type draft-mtp` for MTP GGUFs) |
@@ -601,7 +619,7 @@ above Quick.
 ### llama.cpp
 
 | Tier | Controls |
-|---|---|
+| --- | --- |
 | Quick (disabled, wizard-written) | `spawn-context-size`, `spawn-batch-size`, `spawn-gpu-layers` (→ `auto`) |
 | Balanced (editable, visible) | the three above, plus `spawn-cache-type-k/v`, `spawn-kv-unified`, `hw-quant-select`, `hw-mmproj-select`, `hw-use-mtp`, `spawn-parallel-slots` |
 | Advanced (auto-opened) | `spawn-ubatch-size`, `spawn-flash-attn`, `spawn-prio`, `spawn-threads`, `spawn-threads-batch`, `spawn-n-cpu-moe`, `spawn-tensor-split`, `spawn-cache-mode`, `spawn-cache-ram`, `spawn-fit-enable`/`spawn-fit-target`, `spawn-mlock` |
@@ -610,7 +628,7 @@ above Quick.
 ### Rapid-MLX
 
 | Group | Control | Tier | Rationale |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Generation — thinking | `spawn-rapid-reasoning-mode` | Quick, read-only readout | Effective value is always `on` — see [rapid-mlx-runtime.md](rapid-mlx-runtime.md#reasoning-profile-and-kv-cache-dtype). Editable only at Advanced, with the requested→effective diff shown inline. |
 | Generation — sampling | `spawn-sampling-mode` | Balanced | MLX peer of KV-quant-as-quality-dial; client sampling params still win, so it's low risk. |
 | Generation — protocol | `spawn-rapid-tool-call-parser` | Balanced | Auto-detected; override is a "my finetune is unusual" case, same weight as picking a chat template. |
@@ -642,6 +660,7 @@ the full I1/I2/I3 invariant writeup.
 ## Sources & further reading
 
 Apple Silicon / M5:
+
 - [M5 Max Local AI guide (llmcheck.net)](https://llmcheck.net/blog/apple-silicon-m5-max-local-ai-guide/)
 - [Apple Silicon LLM benchmarks by chip/quant (llmcheck.net)](https://llmcheck.net/benchmarks)
 - [Apple M5 Max 128 GB local LLM guide (aiproductivity.ai)](https://aiproductivity.ai/blog/apple-m5-max-local-llm-guide/)
@@ -649,22 +668,26 @@ Apple Silicon / M5:
 - [Tuning llama.cpp on Apple Silicon — 7 flags (Hannecke)](https://medium.com/@michael.hannecke/tuning-llama-cpp-on-apple-silicon-843f37a6c3dc)
 
 Loader comparison:
+
 - [MLX vs llama.cpp on Apple Silicon (Groundy)](https://groundy.com/articles/mlx-vs-llamacpp-on-apple-silicon-which-runtime-to-use-for-local-llm-inference/)
 - [Choosing an on-device runtime — decision framework (Hannecke)](https://medium.com/@michael.hannecke/choosing-an-on-device-llm-runtime-on-apple-silicon-a-decision-framework-beyond-benchmarks-2449067b8b67)
 - [Comparative study: MLX, MLC-LLM, Ollama, llama.cpp (arXiv 2511.05502)](https://arxiv.org/pdf/2511.05502)
 
 KV cache & quantization:
+
 - [TurboQuant / KV cache quantization discussion (llama.cpp #20969)](https://github.com/ggml-org/llama.cpp/discussions/20969)
 - [Symmetric KV quant enables fused flash-attention (llama.cpp #22411)](https://github.com/ggml-org/llama.cpp/discussions/22411)
 - [KV cache quantization: Q8 vs FP16 (TechPlained)](https://www.techplained.com/kv-cache-quantization)
 
 MTP / speculative decoding:
+
 - [Qwen3.6 — run locally (Unsloth docs)](https://unsloth.ai/docs/models/qwen3.6)
 - [Run Qwen3.6 MTP in llama.cpp — flag change writeup (mer.vin)](https://mer.vin/2026/05/run-qwen-3-6-mtp-in-llama-cpp-faster-local-inference-with-built-in-speculative-decoding/)
 - [MTP + llama.cpp with Qwen3.6-27B step-by-step (Dre Dyson)](https://dredyson.com/mtp-llama-cpp-with-qwen3-6-27b-a-complete-beginners-step-by-step-guide-to-speculative-decoding-turboquant-and-running-multiple-models-on-limited-gpu-vram/)
 - [MLX + native MTP speculative decoding, 18 t/s on a 27B (vinoth12940)](https://vinoth12940.github.io/blog/articles/genai-20260519-local-mtp-speculative-decoding/)
 
 Gemma 4 QAT:
+
 - [Gemma 4 QAT launch (Google)](https://blog.google/innovation-and-ai/technology/developers-tools/quantization-aware-training-gemma-4/)
 - [Gemma 4 model and QAT deployment overview (Google AI)](https://ai.google.dev/gemma/docs/core)
 - [Gemma 4 QAT guide (Unsloth)](https://unsloth.ai/docs/models/gemma-4/qat)
@@ -686,6 +709,7 @@ The dashboard includes macOS memory-pressure telemetry (via `vm_stat`):
   - Free memory < 0.5 GB, or compressor uses ≥ 30% of total RAM → critical
 
 If you see memory pressure while running a large model:
+
 - Reduce context size.
 - Stop active downloads.
 - Disable mlock if enabled and keep mmap enabled so macOS can reclaim file-backed model pages instead of compressing/swapping the entire system.
