@@ -528,7 +528,7 @@ pub fn run_to_staged(
         return Err(fail(
             shared,
             Phase::Preflight,
-            "Unresolved build process records require recovery before reuse.",
+            "Unresolved build process records require recovery before reuse: repair with POST /api/llama-build/repair-processes or `local-llm-foundry llama-build --repair-processes`.",
             None,
             None,
             &none,

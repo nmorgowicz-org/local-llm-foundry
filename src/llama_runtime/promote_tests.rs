@@ -1049,3 +1049,121 @@ async fn the_gate_is_held_for_the_whole_model_lifecycle_inside_a_transaction() {
     drop(guard);
     assert!(gate.try_begin(RuntimeOp::Rollback).is_ok());
 }
+
+// -- fix 5: the journal's staged path is untrusted input ----------------------
+
+fn install_journal_with_staged(staged: Option<&str>) -> Journal {
+    Journal {
+        schema: SCHEMA,
+        id: "tamper".into(),
+        op: Op::Install,
+        label: "tamper".into(),
+        started_unix: 0,
+        steps: vec![Step {
+            from: Role::Staged,
+            to: Role::Live,
+        }],
+        had_live: false,
+        had_previous: false,
+        live_fp: None,
+        previous_fp: None,
+        staged_fp: None,
+        staged: staged.map(str::to_string),
+        phase: Phase::Begun,
+        restart: RestartRecord::default(),
+        outcome: None,
+    }
+}
+
+#[test]
+fn a_journal_whose_staged_path_escapes_the_staging_namespace_is_corrupt_and_deletes_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = RuntimePaths::for_live_dir(&root.path().join("app").join("bin")).unwrap();
+    make_set(&paths.live, "old-live");
+    let outside = root.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("keep"), "x").unwrap();
+    let nested = paths.parent.join("nest").join("deep");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("keep"), "x").unwrap();
+    let absolute = outside.to_string_lossy().into_owned();
+
+    let cases: Vec<Option<String>> = vec![
+        None,
+        Some(String::new()),
+        Some("..".into()),
+        Some(".".into()),
+        Some(absolute),
+        Some("nest/deep".into()),
+        Some("nest\\deep".into()),
+        Some(".bin.staging-x/../..".into()),
+        Some("bin".into()),
+        Some(".bin.staging-".into()),
+    ];
+    for staged in cases {
+        let journal = install_journal_with_staged(staged.as_deref());
+        std::fs::write(&paths.journal, serde_json::to_vec(&journal).unwrap()).unwrap();
+        assert!(
+            matches!(read_journal(&paths), JournalState::Corrupt(_)),
+            "{staged:?} must be Corrupt"
+        );
+        assert!(
+            matches!(
+                recover(&paths, &NoFaults).unwrap(),
+                RecoveryReport::Blocked { .. }
+            ),
+            "{staged:?} must block recovery"
+        );
+        assert!(paths.journal.exists(), "{staged:?}: journal must stay");
+        assert_eq!(tag_of(&paths.live).as_deref(), Some("old-live"));
+        assert!(outside.join("keep").exists(), "{staged:?}: outside deleted");
+        assert!(nested.join("keep").exists(), "{staged:?}: nested deleted");
+        assert!(paths.parent.is_dir() && root.path().is_dir());
+    }
+}
+
+#[test]
+fn a_journal_with_a_well_formed_staged_name_is_still_accepted() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = RuntimePaths::for_live_dir(&root.path().join("bin")).unwrap();
+    let journal = install_journal_with_staged(Some(".bin.staging-job1"));
+    std::fs::write(&paths.journal, serde_json::to_vec(&journal).unwrap()).unwrap();
+    assert!(matches!(read_journal(&paths), JournalState::Present(_)));
+}
+
+// -- fix 2: a restart failure on the reject path is surfaced -------------------
+
+#[tokio::test]
+async fn a_rejected_install_whose_model_restart_fails_reports_the_restart_failure() {
+    for stage in [VerifyStage::Staged, VerifyStage::Live] {
+        let w = world(Kind::Both);
+        let mut host = FakeHost::quiet().running();
+        host.fail_restart = true;
+        *host.fail_verify.lock().unwrap() = Some(stage);
+        let result = do_install(&w, &host).await.unwrap();
+        match result.outcome {
+            PromoteOutcome::RolledBack {
+                restart_failed: Some(e),
+                ..
+            } => assert_eq!(e, "model failed to start", "{stage:?}"),
+            other => panic!("{stage:?}: restart failure was dropped: {other:?}"),
+        }
+        assert_eq!(w.tags(), w.old(), "the old runtime is still restored");
+        w.assert_no_leftovers();
+    }
+}
+
+#[tokio::test]
+async fn a_rejected_install_whose_model_restarts_fine_reports_no_restart_failure() {
+    let w = world(Kind::Both);
+    let host = FakeHost::quiet().running();
+    *host.fail_verify.lock().unwrap() = Some(VerifyStage::Staged);
+    let result = do_install(&w, &host).await.unwrap();
+    assert!(matches!(
+        result.outcome,
+        PromoteOutcome::RolledBack {
+            restart_failed: None,
+            ..
+        }
+    ));
+}

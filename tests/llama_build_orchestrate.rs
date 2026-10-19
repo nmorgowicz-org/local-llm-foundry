@@ -167,6 +167,8 @@ struct Host {
     reject: bool,
     die_after_begin: bool,
     cancel_in_verify: bool,
+    /// A model is running and its restart fails.
+    model_restart_fails: bool,
 }
 impl llama_monitor::llama_runtime::promote::Faults for Host {
     fn at(&self, point: &str) -> llama_monitor::llama_runtime::promote::Fault {
@@ -186,13 +188,15 @@ impl PromoteHost for Host {
         self.cancel.load(Ordering::SeqCst)
     }
     fn model_running(&self) -> bool {
-        false
+        self.model_restart_fails
     }
     async fn stop_model(&self) -> Result<(), String> {
-        panic!("no model")
+        assert!(self.model_restart_fails, "no model");
+        Ok(())
     }
     async fn restart_model(&self) -> Result<(), String> {
-        panic!("no model")
+        assert!(self.model_restart_fails, "no model");
+        Err("model failed to start".into())
     }
     async fn verify(
         &self,
@@ -262,6 +266,7 @@ fn setup(
             reject: false,
             die_after_begin: false,
             cancel_in_verify: false,
+            model_restart_fails: false,
         },
     )
 }
@@ -369,6 +374,33 @@ async fn llama_build_rejected_candidate_restores_both_sets() {
     .await
     .unwrap();
     assert_eq!(r.record.status, JobStatus::Failed);
+    assert_old(&deps);
+}
+
+#[tokio::test]
+async fn llama_build_rejected_candidate_with_a_failed_model_restart_says_so() {
+    let (_tmp, deps, _, mut host) = setup(None, false, false, false, false);
+    host.reject = true;
+    host.model_restart_fails = true;
+    let r = run_build(
+        deps.clone(),
+        &host,
+        &Arc::new(RuntimeGate::default()),
+        &Ownership::default(),
+        options(),
+        host.cancel.clone(),
+        |_, _| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.record.status, JobStatus::Failed);
+    let outcome = r.record.outcome.clone().unwrap();
+    assert!(
+        outcome.contains("previous runtime was restored")
+            && outcome.contains("model did not restart")
+            && outcome.contains("model failed to start"),
+        "{outcome}"
+    );
     assert_old(&deps);
 }
 

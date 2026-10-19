@@ -90,6 +90,10 @@ pub trait BuildEnv: Send + Sync {
     fn brew_install(&self, packages: &[&str]) -> Result<String, String>;
     /// The CUDA architecture of the first detected NVIDIA GPU, when known.
     fn cuda_arch_auto(&self) -> Option<String>;
+    /// The process table `repair-processes` consults before clearing records.
+    fn process_lister(&self) -> Arc<dyn super::repair::ProcessLister> {
+        Arc::new(super::repair::SysinfoLister)
+    }
 }
 
 /// The real machine.
@@ -171,8 +175,9 @@ impl BuildContext {
     pub fn recovery_required(&self) -> Option<String> {
         if !containment_clear(&self.paths) {
             return Some(format!(
-                "Unresolved build process records at {}. Recovery/repair is required before building.",
-                self.paths.process_records.display()
+                "Unresolved build process records at {}. Recovery is required before building: {}.",
+                self.paths.process_records.display(),
+                super::repair::REPAIR_ACTION
             ));
         }
         match read_journal(&self.runtime) {
@@ -196,6 +201,7 @@ pub fn owner_name(owner: Owner) -> &'static str {
         Owner::Validation => "validation",
         Owner::Check => "check",
         Owner::Install => "install",
+        Owner::Repair => "repair",
     }
 }
 
@@ -280,6 +286,13 @@ pub enum FixError {
 pub struct FixOutcome {
     pub installed: Vec<String>,
     pub output: String,
+}
+
+#[derive(Debug)]
+pub enum RepairFailure {
+    /// A build, validation, clean or install owns the tree.
+    Busy(Conflict),
+    Refused(super::repair::RepairError),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -395,8 +408,8 @@ impl BuildService {
     }
 
     /// What blocks starting a build right now: any holder but a read-only
-    /// check. Validation counts even though the ownership table lets it
-    /// overlap, because both write the same process records and report.
+    /// check. (The ownership table agrees: a validation writes the same
+    /// process records and report, so it never overlaps a build.)
     pub fn conflict_for_build(&self) -> Option<Conflict> {
         self.ownership
             .holders()
@@ -544,6 +557,11 @@ impl BuildService {
 
     /// Ask a running job to stop. Never succeeds from the promote phase on.
     pub fn cancel(&self, ctx: &BuildContext, id: &str) -> CancelOutcome {
+        // The id reaches the filesystem below; never trust the caller to have
+        // checked it.
+        if !is_job_id(id) {
+            return CancelOutcome::Unknown;
+        }
         let inner = lock(&self.inner);
         if let Some(active) = inner.active.as_ref().filter(|a| a.id == id) {
             let (status, phase) = with_state(&active.shared, |s| (s.record.status, s.record.phase));
@@ -690,14 +708,8 @@ impl BuildService {
         accelerator: Accelerator,
     ) -> Result<String, ValidateError> {
         let id = super::job::new_job_id().map_err(ValidateError::Failed)?;
-        if let Some((holder, holder_id)) = self
-            .ownership
-            .holders()
-            .into_iter()
-            .find(|(o, _)| *o == Owner::Build)
-        {
-            return Err(ValidateError::Busy(Conflict { holder, holder_id }));
-        }
+        // One atomic acquisition: the ownership table itself refuses a
+        // validation beside a build, so there is no check-then-act window.
         let lease = self
             .ownership
             .try_acquire(Owner::Validation, &id)
@@ -885,6 +897,26 @@ impl BuildService {
             build_trees: sizes.build_trees,
             previous_bytes: dir_size(&ctx.runtime.previous),
         }
+    }
+
+    /// Clear the process records a crash left behind, once nothing alive can
+    /// still own the directory. Exclusive with every other operation. Blocks:
+    /// call from `spawn_blocking`.
+    pub fn repair_processes(
+        &self,
+        ctx: &BuildContext,
+    ) -> Result<super::repair::RepairReport, RepairFailure> {
+        let id = super::job::new_job_id()
+            .map_err(|e| RepairFailure::Refused(super::repair::RepairError::Io(e)))?;
+        let lease = self
+            .ownership
+            .try_acquire(Owner::Repair, &id)
+            .map_err(RepairFailure::Busy)?;
+        let lister = self.env.process_lister();
+        let result = super::repair::repair_process_records(&ctx.paths, lister.as_ref());
+        drop(lease);
+        lock(&self.inner).rechecks.clear();
+        result.map_err(RepairFailure::Refused)
     }
 
     /// Remove inactive caches. Exclusive with build, validation and install.

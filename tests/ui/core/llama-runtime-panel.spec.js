@@ -224,6 +224,32 @@ test.describe('llama.cpp runtime panel', () => {
     await expect(page.locator('#lrp-arch')).toHaveCount(0);
   });
 
+  test('a rolled-back update shows the pill and a dismissible banner (real journal shape)', async ({ page }) => {
+    await boot(page, makeApi({
+      runtime: { ok: true, busy_owner: null, live: { label: 'b11739 · src · Metal' }, previous: null, previous_available: false, transaction: { state: 'clean' },
+        last: { id: 'tx1', label: 'b11740 · src', op: 'install', outcome: { kind: 'rolled_back', reason: 'candidate failed verification' }, started_unix: 1 } },
+    }));
+    const pill = page.locator('#llama-pill');
+    await expect(pill).toHaveAttribute('data-state', 'rolled-back');
+    await pill.click();
+    await expect(page.locator('[data-lrp="rolled-back-banner"]')).toContainText('candidate failed verification');
+    await page.locator('[data-lrp="dismiss-rolled-back"]').click();
+    await expect(page.locator('[data-lrp="rolled-back-banner"]')).toHaveCount(0);
+  });
+
+  test('unresolved process records offer an explicit, confirmed repair', async ({ page }) => {
+    const api = makeApi({ status: { ...IDLE_STATUS, recovery_required: 'Unresolved process records. Repair with POST /api/llama-build/repair-processes' } });
+    await boot(page, api);
+    let body = null;
+    await page.route('**/api/llama-build/repair-processes', async route => { body = route.request().postDataJSON(); await route.fulfill({ json: { ok: true, cleared: 1 } }); });
+    page.on('dialog', d => d.accept());
+    await openPanel(page);
+    await expect(page.locator('[data-lrp="recovery-banner"]')).toContainText('process records');
+    await expect(page.locator('[data-lrp="build"]')).toBeDisabled();
+    await page.locator('[data-lrp="repair-processes"]').click();
+    await expect.poll(() => body).toEqual({ confirm: true });
+  });
+
   test('server text is never interpreted as HTML', async ({ page }) => {
     const hostile = '<img src=x onerror="window.__pwned=1">';
     await boot(page, makeApi({

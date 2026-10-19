@@ -44,6 +44,12 @@ pub(crate) async fn start_backend(
     evidence: EvidenceContext,
 ) -> Result<()> {
     let lifecycle = state.server_lifecycle.lock().await;
+    // `construct_adapter` checked the runtime gate before it generated the
+    // capability snapshot; a promotion may have begun since. Nothing is
+    // registered or spawned until this second check passes.
+    if matches!(adapter, BackendAdapter::LlamaCpp(_)) {
+        crate::inference::launch::ensure_runtime_available(&state)?;
+    }
     ensure_no_local_process(&state).await?;
 
     state.server_stopping.store(false, Ordering::Relaxed);
@@ -263,6 +269,75 @@ async fn clear_server_state_unchecked(state: &AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn llama_adapter() -> (BackendAdapter, LocalLaunchRequest, EvidenceContext) {
+        use crate::inference::llama_cpp::LlamaCppAdapter;
+        let app_config = AppConfig::for_test(None, None);
+        let config = ServerConfig::default();
+        (
+            BackendAdapter::LlamaCpp(Arc::new(LlamaCppAdapter::new(
+                app_config.clone(),
+                config.clone(),
+                Default::default(),
+            ))),
+            LocalLaunchRequest::LlamaCpp(Box::new(config)),
+            EvidenceContext {
+                app_config,
+                resolved_preset: None,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn start_backend_rechecks_the_runtime_gate_after_taking_the_lifecycle_lock() {
+        use crate::llama_runtime::gate::{RUNTIME_OWNER, RuntimeOp};
+        let state = Arc::new(AppState::default());
+        let _guard = state.runtime_gate.try_begin(RuntimeOp::Update).unwrap();
+
+        let (adapter, request, evidence) = llama_adapter();
+        let error = start_backend(
+            state.clone(),
+            adapter,
+            request,
+            8080,
+            "m".into(),
+            None,
+            evidence,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("runtime is busy") && error.contains("update"),
+            "{error}"
+        );
+        assert!(
+            state.supervisor.lock().await.is_none(),
+            "nothing registered"
+        );
+        assert!(!*state.local_server_running.lock().unwrap());
+
+        // The promotion's own restart carries the owner token and gets past
+        // the gate (it then fails later, for unrelated reasons, in this test).
+        let (adapter, request, evidence) = llama_adapter();
+        let owned = RUNTIME_OWNER
+            .scope(true, async {
+                start_backend(
+                    state.clone(),
+                    adapter,
+                    request,
+                    8080,
+                    "m".into(),
+                    None,
+                    evidence,
+                )
+                .await
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(!owned.contains("runtime is busy"), "{owned}");
+    }
 
     #[tokio::test]
     async fn overlapping_start_is_rejected_with_existing_pid() {

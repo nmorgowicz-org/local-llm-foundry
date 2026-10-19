@@ -10,12 +10,26 @@ implementation detail see `windows-sensor-bridge-implementation.md`.
 
 ---
 
+## Building llama.cpp from source (CUDA)
+
+The runtime panel and `local-llm-foundry llama-build` can build llama.cpp with
+CUDA on Windows using Visual Studio 2022 Build Tools, the CUDA Toolkit, CMake,
+Ninja and Git. The foundry captures the Visual Studio build environment itself,
+strips credentials from it, and runs every build step inside a Job Object so
+cancelling or closing the app stops the compiler tree. Nothing is installed for
+you; missing tools are shown with the command or link to fix them. CUDA builds
+always compile every flash-attention K/V pair, so a mixed cache such as K `q8_0`
+/ V `q4_0` uses the fused kernel. Enable long path support before building.
+See [llama-runtime.md](llama-runtime.md).
+
+---
+
 ## Shipped bundle
 
 The Windows release zip (`llama-monitor-windows-x86_64.zip`) contains three files that must stay in the same directory:
 
 | File | Role |
-|------|------|
+| ------ | ------ |
 | `llama-monitor.exe` | Main application (tray icon + WebView2 popover, dashboard, API server) |
 | `sensor_bridge.exe` | C# sidecar for CPU temperature via LibreHardwareMonitor |
 | `WebView2Loader.dll` | Loader for the WebView2 tray popover (see below) |
@@ -100,7 +114,7 @@ the migration has completed.
 ## GPU data sources
 
 | Metric | Source |
-|--------|--------|
+| -------- | -------- |
 | GPU name | WMI `Win32_VideoController` |
 | Total VRAM | Registry `HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-...}\<N>\HardwareInformation.qwMemorySize` (QWORD); falls back to `AdapterRAM` (UINT32, wraps at 4 GiB) only when the QWORD value is absent. Implemented in `src/gpu/wmi_gpu.rs` via the `winreg` crate. |
 | GPU utilization | `nvidia-smi` (NVIDIA) or `rocm-smi` (AMD) |
@@ -116,8 +130,10 @@ Intel and non-CLI GPU utilization and temperature are not currently available on
 The tray popover requires the Microsoft Edge WebView2 runtime. WebView2 is present on Windows 11 and most updated Windows 10 installations, but may be absent on LTSC images or older systems.
 
 If `src/tray.rs` `build_as_child` fails, the code heuristically detects a missing WebView2 runtime from the error message and:
+
 1. Surfaces an actionable error message naming the missing runtime.
 2. Attempts a best-effort silent install via winget (through `crate::platform::no_window`):
+
    ```
    winget install -e --id Microsoft.EdgeWebView2Runtime --silent
      --accept-package-agreements --accept-source-agreements --disable-interactivity
@@ -133,10 +149,12 @@ CPU temperature on a clean Windows machine requires three things: a self-contain
 
 1. **.NET runtime** — eliminated. `sensor_bridge.exe` is self-contained (`net10.0`, `PublishSingleFile true`, `IncludeNativeLibrariesForSelfExtract true`). No runtime install needed.
 2. **PawnIO driver** — installed idempotently inside the same elevated PowerShell session, guarded by `sc query PawnIO`:
+
    ```
    winget install -e --id namazso.PawnIO --silent
      --accept-package-agreements --accept-source-agreements --disable-interactivity
    ```
+
    A failed winget install is non-fatal; the task is still registered.
 3. **Scheduled task** — registered as SYSTEM so the bridge survives reboots without a logged-in user. Already implemented in `src/lhm.rs::install_local_sensor_bridge`.
 
@@ -148,7 +166,7 @@ CPU temperature on a clean Windows machine requires three things: a self-contain
 
 ## Self-update (Windows-specific)
 
-On Windows, a running executable cannot overwrite itself. The self-update path for `llama-monitor.exe` (implemented in the `install` module of `src/agent.rs`) uses a detached `.bat` helper launched with `DETACHED_PROCESS`: the batch file waits for the parent PID to exit, then copies the new binary over the old one and starts the updated executable. This is distinct from the llama-server binary update, which uses a rename-based approach managed by `src/web/api/llama_binary.rs`.
+On Windows, a running executable cannot overwrite itself. The self-update path for `llama-monitor.exe` (implemented in the `install` module of `src/agent.rs`) uses a detached `.bat` helper launched with `DETACHED_PROCESS`: the batch file waits for the parent PID to exit, then copies the new binary over the old one and starts the updated executable. This is distinct from the llama-server binary update, which installs a complete staged directory through a journaled swap (see [llama-runtime.md](llama-runtime.md)) managed by `src/web/api/llama_binary.rs`.
 
 ---
 

@@ -1109,6 +1109,12 @@ mod tests {
             Some("{}")
         ),
         (
+            route_llama_build_repair_processes,
+            "POST",
+            "/api/llama-build/repair-processes",
+            Some("{\"confirm\":true}")
+        ),
+        (
             route_rapid_mlx_runtime_status,
             "GET",
             "/api/rapid-mlx/runtime/status",

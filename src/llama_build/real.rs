@@ -16,7 +16,7 @@ use super::prereqs_macos::{MacContext, macos_checks};
 use super::prereqs_windows::{WinContext, WindowsToolchain, windows_checks};
 use super::source::{self, Git, ResolvedRef, SourceError};
 use super::supervise::{
-    Launcher, Line, SpawnSpec, load_records, record_for, run_contained_with, save_records,
+    Launcher, Line, SpawnSpec, load_records, record_for, run_contained_with, update_records,
 };
 use super::sysprobe::{CmdOutput, RealSystem, SystemProbe, free_space_of};
 use super::toolchain_env::{
@@ -42,8 +42,10 @@ pub struct RealToolchain {
     cancel: Arc<AtomicBool>,
 }
 
+/// The app's environment as build children may see it: secrets and the app's
+/// own settings are stripped.
 fn process_env() -> BTreeMap<String, String> {
-    std::env::vars().collect()
+    super::toolchain_env::scrub_env(std::env::vars())
 }
 
 impl RealToolchain {
@@ -225,14 +227,18 @@ impl RealToolchain {
 
     /// Durable identity record so a crashed app's orphans can be found.
     fn persist_record(&self, job_id: &str, pid: u32, add: bool) -> std::io::Result<()> {
-        let mut all = load_records(&self.paths.process_records)?;
-        all.retain(|r| r.pid != pid);
-        if add {
-            all.push(record_for(job_id, pid).ok_or_else(|| {
+        // Resolve identity before taking the records lock.
+        let record = if add {
+            Some(record_for(job_id, pid).ok_or_else(|| {
                 std::io::Error::other("could not establish child process creation identity")
-            })?);
-        }
-        save_records(&self.paths.process_records, &all)
+            })?)
+        } else {
+            None
+        };
+        update_records(&self.paths.process_records, |all| {
+            all.retain(|r| r.pid != pid);
+            all.extend(record);
+        })
     }
 
     /// Run one contained step, teeing every line to the job log.
@@ -632,8 +638,14 @@ impl Toolchain for RealToolchain {
         let accelerator = options.accelerator;
         let unresolved = match load_records(&self.paths.process_records) {
             Ok(records) if records.is_empty() => None,
-            Ok(_) => Some("A previous child process has unresolved ownership; inspect descendants and repair processes.json before reuse.".to_string()),
-            Err(e) => Some(format!("Cannot read process ownership records: {e}. Repair is required before reuse.")),
+            Ok(_) => Some(format!(
+                "A previous child process has unresolved ownership; {}.",
+                super::repair::REPAIR_ACTION
+            )),
+            Err(e) => Some(format!(
+                "Cannot read process ownership records: {e}. {}.",
+                super::repair::REPAIR_ACTION
+            )),
         };
         if let Some(reason) = unresolved {
             let mut c = Collector::default();
@@ -1207,5 +1219,37 @@ mod cancellation_tests {
             .unwrap_err();
         assert_eq!(error, "cancelled");
         assert!(!app.root.exists());
+    }
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::*;
+
+    #[test]
+    fn the_children_environment_is_scrubbed_but_keeps_path() {
+        // Unique names: no other test reads them.
+        unsafe {
+            std::env::set_var("LLF_FIX4_WIRING_API_TOKEN", "secret");
+            std::env::set_var("LOCAL_LLM_FOUNDRY_FIX4_WIRING", "setting");
+        }
+        let env = process_env();
+        assert!(!env.contains_key("LLF_FIX4_WIRING_API_TOKEN"));
+        assert!(!env.contains_key("LOCAL_LLM_FOUNDRY_FIX4_WIRING"));
+        if std::env::var_os("PATH").is_some() {
+            assert!(env.contains_key("PATH"));
+        }
+        let root = tempfile::tempdir().unwrap();
+        let app = crate::paths::AppPaths::from_root(root.path().join("app"));
+        let tc = RealToolchain::new(
+            BuildPaths::new(&app),
+            LlamaBuildConfig::default(),
+            Launcher {
+                supervisor_exe: None,
+            },
+        );
+        let child = tc.env_for(None, false);
+        assert!(!child.contains_key("LLF_FIX4_WIRING_API_TOKEN"));
+        assert!(!child.contains_key("LOCAL_LLM_FOUNDRY_FIX4_WIRING"));
     }
 }

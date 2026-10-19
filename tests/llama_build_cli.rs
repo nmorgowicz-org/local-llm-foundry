@@ -125,3 +125,108 @@ fn llama_build_dry_run_prints_exact_ref_and_argv_without_creating_root() {
     );
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
 }
+
+mod repair_processes {
+    use clap::Parser;
+    use llama_monitor::llama_build::cache::runtime_process_lease;
+    use llama_monitor::llama_build::cli::{BuildCli, repair_processes_command};
+    use llama_monitor::llama_build::paths::BuildPaths;
+    use llama_monitor::llama_build::repair::{ProcessInfo, ProcessLister};
+    use llama_monitor::paths::AppPaths;
+    use std::path::Path;
+
+    struct Fake(Vec<ProcessInfo>);
+    impl ProcessLister for Fake {
+        fn list(&self) -> Vec<ProcessInfo> {
+            self.0.clone()
+        }
+        fn current_pid(&self) -> u32 {
+            1
+        }
+    }
+
+    fn rig() -> (tempfile::TempDir, std::path::PathBuf, BuildPaths) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        let paths = BuildPaths::new(&AppPaths::from_root(root.clone()));
+        std::fs::create_dir_all(&paths.root).unwrap();
+        std::fs::write(
+            &paths.process_records,
+            r#"[{"job_id":"old","pid":4000001,"start_time":100}]"#,
+        )
+        .unwrap();
+        (tmp, root, paths)
+    }
+
+    #[test]
+    fn the_flag_parses_and_excludes_every_build_option() {
+        assert!(
+            BuildCli::try_parse_from(["llama-build", "--repair-processes"])
+                .unwrap()
+                .repair_processes
+        );
+        for other in ["--dry-run", "--wipe", "--headroom"] {
+            assert!(
+                BuildCli::try_parse_from(["llama-build", "--repair-processes", other]).is_err(),
+                "{other}"
+            );
+        }
+        assert!(
+            BuildCli::try_parse_from(["llama-build", "--repair-processes", "--jobs", "2"]).is_err()
+        );
+        assert!(
+            BuildCli::try_parse_from(["llama-build", "--repair-processes", "--accelerator", "cpu"])
+                .is_err()
+        );
+        assert!(
+            !BuildCli::try_parse_from(["llama-build"])
+                .unwrap()
+                .repair_processes
+        );
+    }
+
+    #[test]
+    fn stale_records_are_cleared_and_exit_is_zero() {
+        let (_t, root, paths) = rig();
+        let (code, text) = repair_processes_command(&root, &Fake(vec![]));
+        assert_eq!(code, 0, "{text}");
+        assert!(text.contains("Cleared 1"), "{text}");
+        assert!(!paths.process_records.exists());
+    }
+
+    #[test]
+    fn a_live_process_refuses_with_exit_one_and_changes_nothing() {
+        let (_t, root, paths) = rig();
+        let live = Fake(vec![ProcessInfo {
+            pid: 4_000_001,
+            start_time: 100,
+            command: "cmake --build".into(),
+            cwd: None,
+        }]);
+        let (code, text) = repair_processes_command(&root, &live);
+        assert_eq!(code, 1, "{text}");
+        assert!(
+            text.contains("4000001") && text.contains("cmake --build"),
+            "{text}"
+        );
+        assert!(paths.process_records.exists());
+    }
+
+    #[test]
+    fn a_running_app_or_builder_is_busy_exit_75() {
+        let (_t, root, paths) = rig();
+        let _app = runtime_process_lease(&root, false).unwrap();
+        let (code, text) = repair_processes_command(&root, &Fake(vec![]));
+        assert_eq!(code, 75, "{text}");
+        assert!(paths.process_records.exists());
+    }
+
+    #[test]
+    fn a_missing_root_is_nothing_to_repair_and_is_not_created() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("absent");
+        let (code, text) = repair_processes_command(&root, &Fake(vec![]));
+        assert_eq!(code, 0, "{text}");
+        assert!(!Path::new(&root).exists());
+    }
+}

@@ -238,10 +238,42 @@ pub enum JournalState {
     Corrupt(String),
 }
 
+/// The journal is untrusted input: `staged` is joined onto the runtime parent
+/// and may later be deleted, so it must be exactly one staging-directory name.
+fn staged_name_is_valid(paths: &RuntimePaths, staged: &str) -> bool {
+    let prefix = paths.staging_prefix();
+    let mut components = Path::new(staged).components();
+    let single_normal = matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    );
+    single_normal
+        && !staged.contains(['/', '\\'])
+        && staged.len() > prefix.len()
+        && staged.starts_with(&prefix)
+}
+
+fn journal_staged_problem(paths: &RuntimePaths, j: &Journal) -> Option<String> {
+    let used = j.op == Op::Install
+        || j.steps
+            .iter()
+            .any(|s| s.from == Role::Staged || s.to == Role::Staged);
+    match j.staged.as_deref() {
+        Some(name) if !staged_name_is_valid(paths, name) => Some(format!(
+            "journal names an invalid staged directory {name:?}"
+        )),
+        None if used => Some("journal does not name its staged directory".into()),
+        _ => None,
+    }
+}
+
 pub fn read_journal(paths: &RuntimePaths) -> JournalState {
     match std::fs::read(&paths.journal) {
         Ok(bytes) => match serde_json::from_slice::<Journal>(&bytes) {
-            Ok(j) if j.schema == SCHEMA => JournalState::Present(Box::new(j)),
+            Ok(j) if j.schema == SCHEMA => match journal_staged_problem(paths, &j) {
+                Some(problem) => JournalState::Corrupt(problem),
+                None => JournalState::Present(Box::new(j)),
+            },
             Ok(j) => JournalState::Corrupt(format!("unknown journal schema {}", j.schema)),
             Err(e) => JournalState::Corrupt(format!("unreadable journal: {e}")),
         },
@@ -713,6 +745,24 @@ pub fn sweep_orphans(paths: &RuntimePaths) -> std::io::Result<Vec<PathBuf>> {
     Ok(removed)
 }
 
+/// Pre-journal rollback/failed-update folders left beside the live directory
+/// (read-only; they are user data from an older updater and never deleted).
+pub fn legacy_backup_count(paths: &RuntimePaths) -> usize {
+    let previous = format!("{}-previous-", paths.name);
+    let failed = format!("{}-failed-", paths.name);
+    std::fs::read_dir(&paths.parent)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .filter(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    name.starts_with(&previous) || name.starts_with(&failed)
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 // ---------------------------------------------------------------------------
 // Host and orchestration
 // ---------------------------------------------------------------------------
@@ -768,6 +818,9 @@ pub enum PromoteOutcome {
     },
     RolledBack {
         reason: String,
+        /// The previous runtime was restored, but restarting the model that
+        /// the transaction stopped failed: the old model is still stopped.
+        restart_failed: Option<String>,
     },
 }
 
@@ -1015,14 +1068,22 @@ impl<H: PromoteHost> Running<'_, H> {
         match reconcile(self.paths, &self.journal, faults).map_err(recover_error)? {
             ReconcileKind::Completed => self.finish_success().await,
             ReconcileKind::Restored => {
-                self.restart_model().await?;
+                // The restart result is the caller's to see: the previous
+                // runtime is back, but the model it served may still be down.
+                let restart_failed = match self.restart_model().await? {
+                    Some(Err(e)) => Some(e),
+                    _ => None,
+                };
                 let outcome = Outcome::RolledBack {
                     reason: reason.clone(),
                 };
                 finalize(self.paths, &self.journal, outcome, faults)?;
                 discard_candidate(self.paths, &self.journal);
                 Ok(PromoteResult {
-                    outcome: PromoteOutcome::RolledBack { reason },
+                    outcome: PromoteOutcome::RolledBack {
+                        reason,
+                        restart_failed,
+                    },
                     warnings: self.warnings,
                 })
             }

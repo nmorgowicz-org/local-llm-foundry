@@ -33,9 +33,10 @@ use crate::llama_build::cache::{
 use crate::llama_build::gpu::{CUDA_ARCH_BY_COMPUTE_CAP, validate_cuda_architectures};
 use crate::llama_build::job::{JobRecord, JobStatus};
 use crate::llama_build::paths::BuildPaths;
+use crate::llama_build::repair::RepairError;
 use crate::llama_build::service::{
-    BuildContext, BuildService, CancelOutcome, FixError, JobView, StartError, ValidateError,
-    default_accelerator, is_job_id, owner_name,
+    BuildContext, BuildService, CancelOutcome, FixError, JobView, RepairFailure, StartError,
+    ValidateError, default_accelerator, is_job_id, owner_name,
 };
 use crate::llama_build::{Accelerator, BuildOptions, RefChoice, TargetOs};
 use crate::llama_runtime::host::LiveHost;
@@ -677,6 +678,58 @@ async fn cancel(ctx: ApiCtx, auth: Option<String>, id: String) -> ApiReply {
     }
 }
 
+#[derive(Deserialize)]
+struct RepairBody {
+    #[serde(default)]
+    confirm: bool,
+}
+
+async fn repair_processes(ctx: ApiCtx, auth: Option<String>, body: bytes::Bytes) -> ApiReply {
+    let req = match begin(&ctx, &auth) {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
+    let body: RepairBody = match parse_body(&body) {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
+    if !body.confirm {
+        return bad_request(r#"clearing process records needs {"confirm": true}"#);
+    }
+    let (svc, build) = (req.svc.clone(), req.ctx.clone());
+    match blocking(move || svc.repair_processes(&build)).await {
+        Ok(Ok(report)) => {
+            req.state.push_log(format!(
+                "[monitor] llama-build: cleared {} process record(s)",
+                report.cleared
+            ));
+            ok_reply(json!({ "cleared": report.cleared, "corrupt": report.corrupt }))
+        }
+        Ok(Err(RepairFailure::Busy(c))) => reply(
+            StatusCode::CONFLICT,
+            json!({
+                "ok": false,
+                "error": c.to_string(),
+                "owner": owner_name(c.holder),
+                "owner_id": c.holder_id,
+                "processes": [],
+            }),
+        ),
+        Ok(Err(RepairFailure::Refused(RepairError::Live(live)))) => reply(
+            StatusCode::CONFLICT,
+            json!({
+                "ok": false,
+                "error": RepairError::Live(live.clone()).to_string(),
+                "processes": live,
+            }),
+        ),
+        Ok(Err(RepairFailure::Refused(e @ RepairError::Io(_)))) => {
+            error_reply(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        }
+        Err(r) => r,
+    }
+}
+
 async fn cache(ctx: ApiCtx, auth: Option<String>) -> ApiReply {
     let req = match begin(&ctx, &auth) {
         Ok(r) => r,
@@ -895,6 +948,15 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         .and(body())
         .then(cache_cap);
 
+    let repair_r = base()
+        .and(warp::path("repair-processes"))
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(c())
+        .and(auth_header())
+        .and(body())
+        .then(repair_processes);
+
     status_r
         .or(prereqs_r)
         .unify()
@@ -917,6 +979,8 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
         .or(clean_r)
         .unify()
         .or(cap_r)
+        .unify()
+        .or(repair_r)
         .unify()
         .boxed()
 }
@@ -951,6 +1015,7 @@ mod tests {
         fingerprint: Mutex<String>,
         validations: AtomicUsize,
         brew_calls: Mutex<Vec<Vec<String>>>,
+        procs: Mutex<Vec<crate::llama_build::repair::ProcessInfo>>,
     }
 
     struct FakeTool {
@@ -1079,6 +1144,16 @@ mod tests {
         fn cuda_arch_auto(&self) -> Option<String> {
             Some("120a-real".into())
         }
+
+        fn process_lister(&self) -> Arc<dyn crate::llama_build::repair::ProcessLister> {
+            struct Lister(Arc<Control>);
+            impl crate::llama_build::repair::ProcessLister for Lister {
+                fn list(&self) -> Vec<crate::llama_build::repair::ProcessInfo> {
+                    self.0.procs.lock().unwrap().clone()
+                }
+            }
+            Arc::new(Lister(self.ctl.clone()))
+        }
     }
 
     struct Rig {
@@ -1202,6 +1277,206 @@ mod tests {
         r#"{"accelerator":"metal","ref":"latest_release","headroom":false,"wipe":false}"#;
 
     #[tokio::test]
+    async fn a_build_and_a_validation_started_together_never_both_run() {
+        for _ in 0..5 {
+            let rig = Rig::new(TargetOs::Macos);
+            let _release = Release(rig.ctl.clone());
+            // Whoever wins keeps its lease until released.
+            rig.ctl.hold_fetch.store(true, Ordering::SeqCst);
+            rig.ctl.hold_validate.store(true, Ordering::SeqCst);
+            let ((start_status, start_body), (validate_status, validate_body)) = tokio::join!(
+                rig.start(START_METAL),
+                rig.call(
+                    "POST",
+                    "/api/llama-build/prereqs/validate",
+                    Some(r#"{"accelerator":"metal"}"#)
+                )
+            );
+            let started = start_status == 202;
+            let validating = validate_status == 202;
+            assert!(
+                started ^ validating,
+                "exactly one must win: start {start_status} {start_body}, validate {validate_status} {validate_body}"
+            );
+            let (loser_status, loser_body) = if started {
+                (validate_status, validate_body)
+            } else {
+                (start_status, start_body)
+            };
+            assert_eq!(loser_status, 409, "{loser_body}");
+            assert_eq!(loser_body["ok"], false);
+            rig.ctl.hold_fetch.store(false, Ordering::SeqCst);
+            rig.ctl.hold_validate.store(false, Ordering::SeqCst);
+            for _ in 0..200 {
+                if rig.state.llama_build.is_idle() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(rig.state.llama_build.is_idle());
+        }
+    }
+
+    #[tokio::test]
+    async fn the_service_cancel_validates_the_job_id_itself() {
+        let rig = Rig::new(TargetOs::Macos);
+        let id = "b2".repeat(16);
+        rig.disk_job(&id, &[], Some(JobStatus::Succeeded));
+        // A well-formed record that a traversal id would reach if cancel read
+        // `<logs>/<id>.json` without checking the id.
+        // `<logs>/../stolen.json` is where the id `../stolen` would point.
+        let outside = rig.paths().logs.parent().unwrap().join("stolen.json");
+        std::fs::copy(rig.paths().record_file(&id), outside).unwrap();
+        let ctx = build_context(&rig.config).unwrap();
+        for bad in ["../stolen", "..", "", "A1", &"g".repeat(32), "a1"] {
+            assert_eq!(
+                rig.state.llama_build.cancel(&ctx, bad),
+                CancelOutcome::Unknown,
+                "{bad:?}"
+            );
+        }
+        // A real finished job is still reported as such.
+        assert_eq!(
+            rig.state.llama_build.cancel(&ctx, &id),
+            CancelOutcome::NotCancellable(crate::llama_build::service::NOT_CANCELLABLE_FINISHED)
+        );
+    }
+
+    /// Releases the fakes even when an assertion fails, so a red run ends
+    /// instead of hanging the runtime shutdown on a spinning worker.
+    struct Release(Arc<Control>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.hold_fetch.store(false, Ordering::SeqCst);
+            self.0.hold_validate.store(false, Ordering::SeqCst);
+        }
+    }
+
+    const REPAIR: &str = "/api/llama-build/repair-processes";
+
+    fn write_records(rig: &Rig, records: &[(u32, u64)]) {
+        std::fs::create_dir_all(rig.paths().root).unwrap();
+        let records: Vec<crate::llama_build::supervise::ProcessRecord> = records
+            .iter()
+            .map(
+                |(pid, start)| crate::llama_build::supervise::ProcessRecord {
+                    job_id: "old".into(),
+                    pid: *pid,
+                    start_time: *start,
+                },
+            )
+            .collect();
+        std::fs::write(
+            rig.paths().process_records,
+            serde_json::to_vec(&records).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn repair_needs_an_explicit_confirmation() {
+        let rig = Rig::new(TargetOs::Macos);
+        write_records(&rig, &[(4_000_001, 100)]);
+        for body in [
+            "{}",
+            r#"{"confirm":false}"#,
+            r#"{"confirm":"yes"}"#,
+            r#"{"confirm":1}"#,
+            "not json",
+        ] {
+            let (code, reply) = rig.call("POST", REPAIR, Some(body)).await;
+            assert_eq!(code, 400, "{body}: {reply}");
+            assert_eq!(reply["ok"], false);
+        }
+        assert!(rig.paths().process_records.exists(), "nothing was cleared");
+    }
+
+    #[tokio::test]
+    async fn repair_clears_stale_records_and_unblocks_a_build() {
+        let rig = Rig::new(TargetOs::Macos);
+        write_records(&rig, &[(4_000_001, 100), (4_000_002, 100)]);
+        let (code, body) = rig.start(START_METAL).await;
+        assert_eq!(code, 409, "{body}");
+        let (_, status) = rig.get("/api/llama-build/status").await;
+        let hint = status["recovery_required"].as_str().unwrap();
+        assert!(
+            hint.contains("POST /api/llama-build/repair-processes")
+                && hint.contains("llama-build --repair-processes"),
+            "{hint}"
+        );
+        assert_eq!(body["recovery_required"], true);
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains("--repair-processes")
+        );
+
+        let (code, body) = rig.call("POST", REPAIR, Some(r#"{"confirm":true}"#)).await;
+        assert_eq!(
+            (code, &body["ok"], &body["cleared"]),
+            (200, &true.into(), &2.into())
+        );
+        assert!(!rig.paths().process_records.exists());
+        let (_, status) = rig.get("/api/llama-build/status").await;
+        assert!(status["recovery_required"].is_null());
+    }
+
+    #[tokio::test]
+    async fn repair_refuses_with_the_live_processes_named() {
+        let rig = Rig::new(TargetOs::Macos);
+        write_records(&rig, &[(4_000_001, 100)]);
+        *rig.ctl.procs.lock().unwrap() = vec![crate::llama_build::repair::ProcessInfo {
+            pid: 4_000_001,
+            start_time: 100,
+            command: "cmake --build".into(),
+            cwd: None,
+        }];
+        let (code, body) = rig.call("POST", REPAIR, Some(r#"{"confirm":true}"#)).await;
+        assert_eq!(code, 409, "{body}");
+        assert_eq!(body["ok"], false);
+        assert!(body["error"].is_string());
+        assert_eq!(
+            body["processes"],
+            json!([{ "pid": 4_000_001, "command": "cmake --build" }])
+        );
+        assert!(rig.paths().process_records.exists());
+    }
+
+    #[tokio::test]
+    async fn repair_is_refused_while_a_build_or_validation_owns_the_tree() {
+        let rig = Rig::new(TargetOs::Macos);
+        let _release = Release(rig.ctl.clone());
+        rig.ctl.hold_fetch.store(true, Ordering::SeqCst);
+        let (code, started) = rig.start(START_METAL).await;
+        assert_eq!(code, 202, "{started}");
+        write_records(&rig, &[(4_000_001, 100)]);
+        let (code, body) = rig.call("POST", REPAIR, Some(r#"{"confirm":true}"#)).await;
+        assert_eq!(code, 409, "{body}");
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["owner"], "build");
+        assert_eq!(body["processes"], json!([]));
+        assert!(rig.paths().process_records.exists());
+        rig.ctl.hold_fetch.store(false, Ordering::SeqCst);
+
+        let rig = Rig::new(TargetOs::Macos);
+        let _release = Release(rig.ctl.clone());
+        rig.ctl.hold_validate.store(true, Ordering::SeqCst);
+        let (code, _) = rig
+            .call(
+                "POST",
+                "/api/llama-build/prereqs/validate",
+                Some(r#"{"accelerator":"metal"}"#),
+            )
+            .await;
+        assert_eq!(code, 202);
+        let (code, body) = rig.call("POST", REPAIR, Some(r#"{"confirm":true}"#)).await;
+        assert_eq!(code, 409, "{body}");
+        assert_eq!(body["owner"], "validation");
+        rig.ctl.hold_validate.store(false, Ordering::SeqCst);
+    }
+
+    #[tokio::test]
     async fn every_route_requires_the_api_token() {
         let rig = Rig::new(TargetOs::Macos);
         let id = "a1".repeat(16);
@@ -1226,6 +1501,11 @@ mod tests {
             ("GET", "/api/llama-build/cache".into(), None),
             ("DELETE", "/api/llama-build/cache".into(), None),
             ("PUT", "/api/llama-build/cache-cap".into(), Some("{}")),
+            (
+                "POST",
+                "/api/llama-build/repair-processes".into(),
+                Some(r#"{"confirm":true}"#),
+            ),
         ];
         for (method, path, body) in cases {
             for header in [None, Some("Bearer wrong")] {

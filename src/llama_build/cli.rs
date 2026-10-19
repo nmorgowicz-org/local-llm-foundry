@@ -59,6 +59,13 @@ pub struct BuildCli {
     /// Reset only the selected managed build tree before configuring.
     #[arg(long)]
     pub wipe: bool,
+    /// Clear the process records a crash left behind, once nothing alive can still
+    /// use the build directory. Never kills a process.
+    #[arg(
+        long,
+        conflicts_with_all = ["dry_run", "accelerator", "jobs", "headroom", "wipe"]
+    )]
+    pub repair_processes: bool,
 }
 
 impl BuildCli {
@@ -216,6 +223,53 @@ pub fn dry_plan(
     Ok((text, report.ready))
 }
 
+/// `--repair-processes`: exit 0 cleared (or nothing to do), 1 refused, 75 busy.
+pub fn repair_processes_command(
+    root: &Path,
+    lister: &dyn super::repair::ProcessLister,
+) -> (i32, String) {
+    use super::repair::{RepairError, repair_process_records};
+    // Nothing to repair, and nothing worth creating a directory for.
+    if !root.exists() {
+        return (
+            0,
+            format!("Nothing to repair: {} does not exist.", root.display()),
+        );
+    }
+    // The same exclusive lease a build takes: a running foundry or another
+    // builder owns the tree.
+    let _lease = match super::cache::runtime_process_lease(root, true) {
+        Ok(lease) => lease,
+        Err(e) => return (75, e.to_string()),
+    };
+    let paths = BuildPaths::new(&AppPaths::from_root(root.to_path_buf()));
+    match repair_process_records(&paths, lister) {
+        Ok(report) if report.cleared == 0 && !report.corrupt => {
+            (0, "No process records to clear.".into())
+        }
+        Ok(report) => (
+            0,
+            format!(
+                "Cleared {} process record(s){}.",
+                report.cleared,
+                if report.corrupt {
+                    " (the file was unreadable)"
+                } else {
+                    ""
+                }
+            ),
+        ),
+        Err(RepairError::Live(live)) => {
+            let mut text = format!("Refused: {}.", RepairError::Live(live.clone()));
+            for p in live {
+                text.push_str(&format!("\n  pid {}: {}", p.pid, p.command));
+            }
+            (1, text)
+        }
+        Err(e) => (1, format!("Refused: {e}")),
+    }
+}
+
 /// Only handles argv[1] == llama-build; ordinary dashboard flags remain owned
 /// by the existing parser. Clap help and usage errors retain their exit codes.
 pub fn try_run(args: impl IntoIterator<Item = OsString>) -> Option<i32> {
@@ -250,6 +304,15 @@ fn execute(cli: BuildCli) -> Result<i32, String> {
     let root = planned_path(&AppPaths::resolve_root(cli.config_dir.clone()))?;
     if root.parent().is_none() {
         return Err("the filesystem root cannot be used as --config-dir".into());
+    }
+    if cli.repair_processes {
+        let (code, text) = repair_processes_command(&root, &super::repair::SysinfoLister);
+        if code == 0 {
+            println!("{text}");
+        } else {
+            eprintln!("{text}");
+        }
+        return Ok(code);
     }
     let config =
         LlamaBuildConfig::load(&root).map_err(|e| format!("invalid llama-build.json: {e}"))?;

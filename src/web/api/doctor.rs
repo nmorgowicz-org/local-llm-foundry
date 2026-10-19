@@ -29,6 +29,7 @@ pub fn routes(
                         ));
                     }
                     let mut findings = collect_llama_findings(&state, &cfg).await;
+                    findings.extend(collect_runtime_findings(&state, &cfg).await);
                     findings.extend(collect_cache_findings(&state).await);
                     findings.extend(collect_reclaim_findings().await);
                     Ok(Box::new(warp::reply::json(&serde_json::json!({
@@ -39,6 +40,68 @@ pub fn routes(
             },
         )
         .boxed()
+}
+
+/// Runtime-level llama.cpp findings: file reads only, no subprocesses.
+async fn collect_runtime_findings(
+    state: &crate::state::AppState,
+    cfg: &AppConfig,
+) -> Vec<DoctorFinding> {
+    let cfg = cfg.clone();
+    // A build, update or recovery in flight legitimately has a journal and
+    // process records; they are not leftovers then.
+    let busy = state.runtime_gate.current_owner().is_some() || !state.llama_build.is_idle();
+    tokio::task::spawn_blocking(move || {
+        crate::llama_build::doctor::runtime_findings(&runtime_facts(&cfg, busy))
+    })
+    .await
+    .unwrap_or_default()
+}
+
+fn runtime_facts(cfg: &AppConfig, busy: bool) -> crate::llama_build::doctor::RuntimeFacts {
+    use crate::llama_build::doctor::{JournalFact, PrereqFact, RuntimeFacts};
+    use crate::llama_build::paths::BuildPaths;
+    use crate::llama_runtime::promote::{
+        JournalState, RuntimePaths, legacy_backup_count, read_journal,
+    };
+
+    let (bin_dir, custom) = super::llama_binary::managed_bin_dir(cfg);
+    let provenance = super::llama_binary::runtime_provenance(cfg);
+    let paths = RuntimePaths::for_live_dir(&bin_dir).ok();
+    let build_paths = BuildPaths::new(&cfg.app_paths);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let prereq = std::fs::read(&build_paths.prereqs_last)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<crate::llama_build::prereqs::PrereqReport>(&b).ok())
+        .map(|r| PrereqFact {
+            validated_at_unix: r.validated_at_unix,
+            failing: r.failures().map(|c| c.title.clone()).collect(),
+        });
+    RuntimeFacts {
+        provenance_source: provenance
+            .get("source")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        hashes_match: provenance.get("hashes_match").and_then(|v| v.as_bool()),
+        journal: match paths.as_ref().map(read_journal) {
+            Some(JournalState::Present(j)) => JournalFact::Pending { label: j.label },
+            Some(JournalState::Corrupt(reason)) => JournalFact::Corrupt { reason },
+            _ => JournalFact::Clean,
+        },
+        process_records_unresolved: !crate::llama_build::job::containment_clear(&build_paths),
+        // A custom server path has no managed siblings to report.
+        legacy_backups: if custom.is_some() {
+            0
+        } else {
+            paths.as_ref().map(legacy_backup_count).unwrap_or(0)
+        },
+        prereq,
+        busy,
+        now_unix: now,
+    }
 }
 
 async fn collect_llama_findings(
@@ -54,7 +117,12 @@ async fn collect_llama_findings(
         return Vec::new();
     };
     let snapshot = doctor_capability_snapshot(cfg).await;
-    llama_config_findings(&config, snapshot.as_ref())
+    let mut findings = llama_config_findings(&config, snapshot.as_ref());
+    // The probe above ran (and failed to yield a snapshot): say so, quietly.
+    if snapshot.is_none() && cfg.llama_server_path.is_file() {
+        findings.push(crate::llama_build::doctor::capability_unavailable_finding());
+    }
+    findings
 }
 
 /// Fetch a fresh-or-cached llama.cpp capability snapshot for the K/V policy
@@ -102,10 +170,14 @@ fn llama_config_findings(
         {
             // An explicit `-fa off` choice is not worth a warning; a slower
             // alternate path the user did not ask for is.
+            let mut message = format!("K/V pair {k}/{v}: {reason}");
+            if classification.buildable_missing {
+                message.push_str(crate::llama_build::doctor::REBUILD_HINT);
+            }
             findings.push(DoctorFinding {
                 finding_type: DoctorFindingType::LlamaCpp,
                 severity: DoctorSeverity::Warning,
-                message: format!("K/V pair {k}/{v}: {reason}"),
+                message,
                 section: "llama.cpp cache".into(),
                 fix: None,
             });
@@ -409,6 +481,56 @@ mod tests {
         let findings = llama_config_findings(&config, Some(&snapshot));
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].severity, DoctorSeverity::Warning);
+    }
+
+    #[test]
+    fn rebuild_link_only_for_a_confirmed_missing_cuda_kernel() {
+        let config = ServerConfig {
+            tool_call_format: None,
+            ctk: "q8_0".into(),
+            ctv: "q4_0".into(),
+            ..Default::default()
+        };
+        // Confirmed CUDA pair list without the pair: buildable, so the hint appears.
+        let confirmed = llama_capability_snapshot(Some("q8_0-q8_0"));
+        let findings = llama_config_findings(&config, Some(&confirmed));
+        assert!(findings[0].message.contains("source build"));
+        // No pair evidence at all: never a rebuild recommendation.
+        let unknown = llama_capability_snapshot(None);
+        assert!(
+            llama_config_findings(&config, Some(&unknown))
+                .iter()
+                .all(|f| !f.message.contains("source build"))
+        );
+    }
+
+    #[test]
+    fn runtime_facts_report_a_pending_journal_and_legacy_backups() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config =
+            AppConfig::from_args_pure(<crate::cli::AppArgs as clap::Parser>::parse_from([
+                "llama-monitor",
+                "--gpu-backend",
+                "none",
+            ]));
+        config.app_paths = crate::paths::AppPaths::from_root(root.path().to_path_buf());
+        config.llama_server_path = root.path().join("bin").join("missing-llama-server");
+        let bin = root.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(root.path().join("bin-previous-20250101")).unwrap();
+        std::fs::create_dir_all(root.path().join("bin-failed-20250102")).unwrap();
+        std::fs::write(bin.join("journal-placeholder"), b"").unwrap();
+        let paths = crate::llama_runtime::promote::RuntimePaths::for_live_dir(&bin).unwrap();
+        std::fs::write(&paths.journal, b"not json").unwrap();
+        let facts = runtime_facts(&config, false);
+        assert_eq!(facts.legacy_backups, 2);
+        assert!(matches!(
+            facts.journal,
+            crate::llama_build::doctor::JournalFact::Corrupt { .. }
+        ));
+        assert!(!facts.process_records_unresolved);
+        let findings = crate::llama_build::doctor::runtime_findings(&facts);
+        assert_eq!(findings.len(), 2);
     }
 
     #[test]

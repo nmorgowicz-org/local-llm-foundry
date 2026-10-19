@@ -12,6 +12,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use crate::llama_runtime::durable;
 use crate::llama_runtime::verify::{InstallKind, VerificationIntent};
 
 use super::{Accelerator, BUILD_TARGETS, TargetOs};
@@ -371,16 +372,18 @@ pub fn stage(
 
     std::fs::create_dir_all(&plan.staging_dir)?;
     for name in &selection.files {
-        std::fs::copy(plan.output_dir.join(name), plan.staging_dir.join(name))?;
+        durable::copy_file(&plan.output_dir.join(name), &plan.staging_dir.join(name))?;
     }
     for (name, path) in &runtime {
-        std::fs::copy(path, plan.staging_dir.join(name))?;
+        durable::copy_file(path, &plan.staging_dir.join(name))?;
     }
     #[cfg(unix)]
     for name in &selection.symlinks {
         let target = std::fs::read_link(plan.output_dir.join(name))?;
         std::os::unix::fs::symlink(target, plan.staging_dir.join(name))?;
     }
+    // The entries themselves (new files, symlinks) must be durable too.
+    durable::sync_dir(&plan.staging_dir)?;
     Ok(StageReport {
         files: selection.files,
         symlinks: selection.symlinks,
@@ -593,6 +596,22 @@ all: phony bin/llama-server
                 PathBuf::from("libggml-base.0.27.0.dylib")
             );
         }
+    }
+
+    #[test]
+    fn every_staged_file_is_synced_before_stage_returns() {
+        let tmp = tempfile::tempdir().unwrap();
+        let build = tmp.path().join("build");
+        metal_tree(&build);
+        let staging = tmp.path().join("staging");
+        let plan = metal_plan(&build, &staging);
+        let before = crate::llama_runtime::durable::syncs();
+        let report = stage(&plan, &produced_targets(NINJA_METAL), &|| Some(u64::MAX)).unwrap();
+        assert_eq!(
+            crate::llama_runtime::durable::syncs() - before,
+            report.files.len(),
+            "one sync per copied file"
+        );
     }
 
     #[test]

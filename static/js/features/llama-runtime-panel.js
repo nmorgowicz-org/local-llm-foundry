@@ -8,7 +8,7 @@ import { showToast } from './toast.js';
 import { attachModalFocusTrap, detachModalFocusTrap } from './updater-shared.js';
 import {
     PHASES, buildDisabledReason, cancelState, currentRuntimeLine, diagnosticsText, formatBytes,
-    isSourceBuild, jobIsActive, phaseProgressText, rollbackLabel,
+    isSourceBuild, jobIsActive, phaseProgressText, rollbackLabel, runtimeLastModel,
 } from './llama-runtime-state.js';
 
 const OVERLAY_ID = 'llama-runtime-panel';
@@ -183,16 +183,16 @@ function brewInstall(packages) {
     });
 }
 
-function startBuild() {
+function startBuild(overrides = {}) {
     return act('build', async () => {
-        const form = view.form;
+        const form = { ...view.form, ...overrides };
         const body = {
             accelerator: view.accelerator,
             ref: form.ref,
             headroom: !!form.headroom,
             wipe: !!form.wipe,
         };
-        if (view.options?.show_cuda && form.cudaArch && form.cudaArch !== 'auto') body.cuda_arch = form.cudaArch;
+        if (view.options?.show_cuda && view.accelerator === 'cuda' && form.cudaArch && form.cudaArch !== 'auto') body.cuda_arch = form.cudaArch;
         if (String(form.jobs).trim()) body.jobs = Number(form.jobs);
         const r = await api('/api/llama-build/start', { method: 'POST', body });
         if (!r.ok) errorToast('Could not start build', r);
@@ -218,6 +218,7 @@ function rollback() {
     return act('rollback', async () => {
         const r = await api('/api/llama-binary/rollback', { method: 'POST' });
         if (!r.ok) errorToast('Rollback failed', r);
+        else if (r.data.outcome === 'installed_restart_failed') showToast('Rolled back; model restart failed', 'error', r.data.restart_error || 'Restart the model manually.');
         else showToast('Rolled back', 'success', r.data.label || 'Previous runtime restored.');
     });
 }
@@ -241,13 +242,16 @@ async function copyText(text, label) {
     }
 }
 
-export function dismissCurrent() {
-    if (!view.job) return;
+export function dismissKey(key) {
     const set = dismissedSet();
-    set.add(view.job.id);
+    set.add(key);
     sessionStorage.setItem('llama-build-dismissed', JSON.stringify([...set]));
     notifyChange();
     render();
+}
+
+export function dismissCurrent() {
+    if (view.job) dismissKey(view.job.id);
 }
 
 export function dismissedSet() {
@@ -255,6 +259,48 @@ export function dismissedSet() {
 }
 
 // ── Rendering ───────────────────────────────────────────────────────────────
+
+function buildBlockReason() {
+    return buildDisabledReason({
+        report: view.prereqs?.report,
+        owner: view.status?.owner || view.status?.recovery_required,
+        activeJobId: view.status?.active_job_id,
+        validating: view.prereqs?.validating,
+    });
+}
+
+function repairProcesses() {
+    if (!window.confirm('Clear the leftover build process record? Only do this after stopping any leftover cmake, ninja or compiler processes. Nothing is killed for you.')) return;
+    return act('repair', async () => {
+        const r = await api('/api/llama-build/repair-processes', { method: 'POST', body: { confirm: true } });
+        if (r.ok) showToast('Process record cleared', 'success', `${r.data.cleared ?? 0} record(s)`);
+        else {
+            const live = (r.data?.processes || []).map(p => `${p.pid}: ${p.command}`).join('\n');
+            showToast('Cannot repair yet', 'error', `${r.data?.error || 'Request failed'}${live ? `\n${live}` : ''}`);
+        }
+    });
+}
+
+function recoveryBanner() {
+    const reason = view.status?.recovery_required;
+    if (!reason) return null;
+    return el('section', { class: 'lrp-banner lrp-err', 'data-lrp': 'recovery-banner', role: 'alert' },
+        el('div', { class: 'lrp-banner-head' },
+            el('strong', { text: '✖ A previous build left process records' }),
+            el('button', { type: 'button', class: 'lrp-btn', 'data-lrp': 'repair-processes', disabled: view.busy.has('repair'), text: 'Clear record…', onclick: repairProcesses })),
+        el('div', { class: 'lrp-banner-summary', text: reason }));
+}
+
+function rolledBackBanner() {
+    const last = runtimeLastModel(view.runtime?.last);
+    if (!last || last.outcome !== 'rolled_back' || dismissedSet().has(`tx:${last.id}`)) return null;
+    return el('section', { class: 'lrp-banner lrp-warn', 'data-lrp': 'rolled-back-banner', role: 'status' },
+        el('div', { class: 'lrp-banner-head' },
+            el('strong', { text: `⚠ Update rolled back${last.label ? `: ${last.label}` : ''}` }),
+            el('button', { type: 'button', class: 'lrp-btn', 'data-lrp': 'dismiss-rolled-back', text: 'Dismiss', onclick: () => dismissKey(`tx:${last.id}`) })),
+        last.reason && el('div', { class: 'lrp-banner-summary', text: last.reason }),
+        el('div', { class: 'lrp-muted', text: 'The previous runtime was restored.' }));
+}
 
 function errorBanner() {
     const job = view.job;
@@ -280,13 +326,15 @@ function errorBanner() {
         const row = el('div', { class: 'lrp-hint' }, el('span', { text: `Hint: ${hint.message || hint.text || ''} ` }));
         if (hint.fix?.kind === 'action') {
             const actions = {
-                wipe_build_dir: () => { view.form.wipe = true; return startBuild(); },
-                leave_headroom: () => { view.form.headroom = true; return startBuild(); },
+                wipe_build_dir: () => startBuild({ wipe: true }),
+                leave_headroom: () => startBuild({ headroom: true }),
                 clean_build_cache: () => cleanCache(false),
                 revalidate: () => validate(),
             };
             const run = actions[hint.fix.id];
-            if (run) row.append(el('button', { type: 'button', class: 'lrp-btn lrp-primary', 'data-lrp': `hint-${hint.fix.id}`, text: hint.fix.label || hint.fix.id, onclick: run }));
+            const startsBuild = ['wipe_build_dir', 'leave_headroom'].includes(hint.fix.id);
+            const blocked = startsBuild ? buildBlockReason() : '';
+            if (run) row.append(el('button', { type: 'button', class: 'lrp-btn lrp-primary', 'data-lrp': `hint-${hint.fix.id}`, disabled: !!blocked, title: blocked || undefined, text: hint.fix.label || hint.fix.id, onclick: run }));
         } else if (hint.fix?.kind === 'copy') {
             row.append(el('button', { type: 'button', class: 'lrp-btn', text: 'Copy fix', onclick: () => copyText(hint.fix.command, 'Fix copied') }));
         } else if (hint.fix?.kind === 'link') {
@@ -357,19 +405,15 @@ function buildSection() {
     const options = view.options;
     const job = view.job;
     const active = jobIsActive(job);
-    const reason = buildDisabledReason({
-        report: view.prereqs?.report,
-        owner: view.status?.owner || view.status?.recovery_required,
-        activeJobId: view.status?.active_job_id,
-        validating: view.prereqs?.validating,
-    });
+    const reason = buildBlockReason();
+    const cudaShown = !!options?.show_cuda && view.accelerator === 'cuda';
     const refs = options?.refs?.length ? options.refs : [{ id: 'latest_release', label: 'Latest release' }, { id: 'master', label: 'master HEAD' }];
     const form = el('div', { class: 'lrp-form' },
         el('div', { class: 'lrp-row' }, el('span', { class: 'lrp-k', text: 'Source' }), refs.map(refRadio)),
         options?.refs_error && el('div', { class: 'lrp-muted', text: `Could not look up upstream: ${options.refs_error}` }),
-        options?.show_cuda && el('div', { class: 'lrp-row', 'data-lrp': 'cuda-controls' },
+        cudaShown && el('div', { class: 'lrp-row', 'data-lrp': 'cuda-controls' },
             el('span', { class: 'lrp-k', text: 'FA K/V kernels' }), el('span', { text: 'all pairs (fixed)' })),
-        options?.show_cuda && el('div', { class: 'lrp-row' },
+        cudaShown && el('div', { class: 'lrp-row' },
             el('label', { for: 'lrp-arch', text: 'CUDA arch' }),
             el('select', { id: 'lrp-arch', onchange: e => { view.form.cudaArch = e.target.value; } },
                 el('option', { value: 'auto', selected: view.form.cudaArch === 'auto', text: `auto${options.cuda_arch_auto ? `: ${options.cuda_arch_auto}` : ''}` }),
@@ -433,7 +477,7 @@ function render() {
     const body = root.querySelector('.lrp-body');
     if (!body) return;
     const scroll = body.scrollTop;
-    const nodes = [errorBanner(), currentSection(), prereqSection(), buildSection(), logSection(), diskSection()].filter(Boolean);
+    const nodes = [recoveryBanner(), rolledBackBanner(), errorBanner(), currentSection(), prereqSection(), buildSection(), logSection(), diskSection()].filter(Boolean);
     body.replaceChildren(...nodes);
     body.scrollTop = scroll;
 }

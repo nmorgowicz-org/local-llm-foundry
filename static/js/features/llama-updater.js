@@ -9,7 +9,7 @@ import { showToast } from './toast.js';
 import { setHtml } from '../core/set-html.js';
 import { wireUninstallButton } from './runtime-uninstall.js';
 import { attachModalFocusTrap, detachModalFocusTrap, fetchReleaseList, buildReleaseBadges } from './updater-shared.js';
-import { pillModel, isSourceBuild, effectiveBuild, jobIsActive } from './llama-runtime-state.js';
+import { pillModel, isSourceBuild, effectiveBuild, jobIsActive, runtimeLastModel } from './llama-runtime-state.js';
 import { openRuntimePanel, setRuntimePanelObserver, dismissedSet } from './llama-runtime-panel.js';
 
 const LLAMA_CPP_REPO = 'https://github.com/ggml-org/llama.cpp';
@@ -79,7 +79,7 @@ async function refreshBuildState() {
     const rResp = await fetch('/api/llama-binary/runtime-status', { headers });
     if (rResp.ok) {
       const rt = await rResp.json();
-      _runtimeLast = rt.last ? { id: rt.last.id, outcome: rt.last.outcome } : null;
+      _runtimeLast = runtimeLastModel(rt.last);
     }
   } catch (_) {
     // background refresh: keep the last known state
@@ -110,7 +110,7 @@ export function initLlamaUpdater() {
   }
   setRuntimePanelObserver(({ job, runtime, version }) => {
     _buildJob = job || _buildJob;
-    if (runtime) _runtimeLast = runtime.last ? { id: runtime.last.id, outcome: runtime.last.outcome } : null;
+    if (runtime) _runtimeLast = runtimeLastModel(runtime.last);
     if (version) {
       _provenance = version.provenance ?? null;
       _currentBuild = effectiveBuild(version.build ?? null, _provenance);
@@ -174,11 +174,15 @@ async function checkVersion() {
     _currentBuild = effectiveBuild(vData.build ?? null, _provenance);
     applyPill();
 
-    const lResp = await fetch('/api/llama-binary/latest', { headers });
-    if (!lResp.ok) return;
-    const lData = await lResp.json();
-    if (lData.error) return;
-    _latestBuild = lData.build ?? null;
+    try {
+      const lResp = await fetch('/api/llama-binary/latest', { headers });
+      if (lResp.ok) {
+        const lData = await lResp.json();
+        if (!lData.error) _latestBuild = lData.build ?? null;
+      }
+    } catch (_) {
+      // offline: still track local build state below
+    }
     applyPill();
     refreshBuildState();
   } catch (_) {

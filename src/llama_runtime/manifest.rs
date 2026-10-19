@@ -139,7 +139,8 @@ impl RuntimeManifest {
 
     pub fn write(&self, dir: &Path) -> std::io::Result<()> {
         let json = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
-        std::fs::write(dir.join(MANIFEST_FILE), json)
+        super::durable::write_file(&dir.join(MANIFEST_FILE), &json)?;
+        super::durable::sync_dir(dir)
     }
 
     pub fn read(dir: &Path) -> Result<Option<Self>, String> {
@@ -204,6 +205,15 @@ mod tests {
             Some("metal".into()),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn writing_the_manifest_syncs_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = sample(dir.path());
+        let before = crate::llama_runtime::durable::syncs();
+        manifest.write(dir.path()).unwrap();
+        assert_eq!(crate::llama_runtime::durable::syncs() - before, 1);
     }
 
     #[test]

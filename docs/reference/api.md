@@ -2765,8 +2765,7 @@ macOS only. Install allowlisted Homebrew formulae after an explicit click.
   why; the panel still loads offline. Results are cached for 60 s.
 - `cuda_arch_auto` is the architecture of the detected NVIDIA GPU (CUDA only, else `null`);
   `jobs_auto` is the default compile concurrency.
-- There is deliberately no build-time estimate: the panel may show the last measured build
-  time but never promises one.
+- There is deliberately no build-time estimate field; the panel shows live progress only.
 
 ### `POST /api/llama-build/start`
 
@@ -2840,6 +2839,16 @@ files.
   16 GiB; floats, negatives, strings and out-of-range values are `400`.
 - Response: `{ok, ccache_cap_bytes}`. The value is saved to `llama-build.json` and applies to
   the next build; no restart is needed. The default is 2 GiB.
+
+### `POST /api/llama-build/repair-processes`
+
+Clears an unresolved `llama-build/processes.json` left by a hard crash. Nothing is killed.
+
+- Request: `{"confirm": true}`. Without `confirm: true` the answer is `400`.
+- `200 {ok: true, cleared: N}` when the record was cleared (or there was nothing to clear).
+- `409 {ok: false, error, processes: [{pid, command}]}` while a recorded process is still alive,
+  another process references the build directory, or a build, validation, clean or install owns
+  the tree.
 
 ## Rapid-MLX Runtime Management
 

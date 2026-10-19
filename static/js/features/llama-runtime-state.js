@@ -7,6 +7,18 @@
 
 export const PHASES = ['preflight', 'fetch', 'configure', 'compile', 'stage', 'promote'];
 
+/** The journal serializes outcomes as `{kind, ...}`; older shapes were bare strings. */
+export function outcomeKind(outcome) {
+    return typeof outcome === 'string' ? outcome : (outcome?.kind ?? null);
+}
+
+/** Normalise `runtime-status.last` for the pill and panel. */
+export function runtimeLastModel(last) {
+    if (!last) return null;
+    const kind = outcomeKind(last.outcome);
+    return { id: last.id, outcome: kind, reason: last.outcome?.reason ?? null, label: last.label ?? null };
+}
+
 /** `foundry_source_build` → `src`, etc. Unknown/absent provenance has no suffix. */
 export function provenanceSuffix(provenance) {
     switch (provenance?.source) {

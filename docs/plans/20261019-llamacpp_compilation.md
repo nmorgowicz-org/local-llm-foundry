@@ -1118,13 +1118,13 @@ absence of fallback logs. Without a model, record deferred manual QA, not execut
 
 ### Phase 6: Doctor, docs, release
 
-1. [ ] Doctor: stale prereqs (if ever built), provenance mismatch, unavailable capability,
+1. [x] Doctor: stale prereqs (if ever built), provenance mismatch, unavailable capability,
    pending recovery and legacy backups. Rebuild link only for confirmed missing buildable CUDA
    kernels; never generic Metal/CPU fallback.
-2. Docs: `docs/reference/llama-runtime.md` (new; user-facing, covering build, prerequisites,
+2. [x] Docs: `docs/reference/llama-runtime.md` (new; user-facing, covering build, prerequisites,
    troubleshooting, the K/V support table) and `docs/reference/api.md`. Update
    `docs/reference/spawn-wizard.md` and `windows-support.md`, and the `README.md` feature bullet.
-3. CHANGELOG via the normal release flow.
+3. [x] CHANGELOG via the normal release flow (generated at release; not hand-edited).
 
 **Gate:** reviewer pass; manual QA matrix (§10) complete.
 

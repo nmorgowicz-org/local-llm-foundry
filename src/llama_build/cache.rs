@@ -123,6 +123,8 @@ pub enum Owner {
     Check,
     /// `brew install`: changes the toolchain itself.
     Install,
+    /// Clearing the process records after a crash: nothing else may run.
+    Repair,
 }
 
 impl Owner {
@@ -133,6 +135,7 @@ impl Owner {
             Self::Validation => "prerequisite validation",
             Self::Check => "a prerequisite check",
             Self::Install => "a tool install",
+            Self::Repair => "a process-record repair",
         }
     }
 }
@@ -141,16 +144,20 @@ impl Owner {
 ///
 /// - a build owns the directories a clean removes: they never overlap, nor do
 ///   two builds;
+/// - a build and a validation share the process records, the persisted report
+///   and the toolchain caches: they never overlap either;
 /// - validation shares the ccache a clean empties;
-/// - an install changes the toolchain under every other operation;
+/// - an install changes the toolchain under every other operation, and a
+///   repair rewrites the process records every other operation relies on:
+///   both exclude everything;
 /// - a read-only check overlaps with everything except an install.
 pub fn may_overlap(a: Owner, b: Owner) -> bool {
     use Owner::*;
     let conflicts = |x: Owner, y: Owner| {
         matches!(
             (x, y),
-            (Install, _)
-                | (Build, Build | Clean)
+            (Install | Repair, _)
+                | (Build, Build | Clean | Validation)
                 | (Clean, Clean | Validation)
                 | (Validation, Validation)
         )
@@ -406,7 +413,7 @@ mod tests {
             // (a, b, may_overlap)
             (Build, Build, false),
             (Build, Clean, false),
-            (Build, Validation, true),
+            (Build, Validation, false),
             (Build, Check, true),
             (Build, Install, false),
             (Clean, Clean, false),
@@ -419,6 +426,12 @@ mod tests {
             (Check, Check, true),
             (Check, Install, false),
             (Install, Install, false),
+            (Repair, Build, false),
+            (Repair, Clean, false),
+            (Repair, Validation, false),
+            (Repair, Check, false),
+            (Repair, Install, false),
+            (Repair, Repair, false),
         ];
         for (a, b, want) in expect {
             assert_eq!(may_overlap(a, b), want, "{a:?} vs {b:?}");

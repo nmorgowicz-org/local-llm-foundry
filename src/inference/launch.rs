@@ -407,8 +407,10 @@ pub fn request_from_session(
 }
 
 /// A model must not start against a runtime that is mid-swap. Only the
-/// promotion's own restart (which carries the owner token) passes.
-fn ensure_runtime_available(state: &AppState) -> Result<()> {
+/// promotion's own restart (which carries the owner token) passes. Checked
+/// before the (slow) capability snapshot and again by `start_backend` once it
+/// holds the lifecycle lock, since a promotion can begin in between.
+pub(crate) fn ensure_runtime_available(state: &AppState) -> Result<()> {
     if let Some(owner) = state.runtime_gate.current_owner()
         && !crate::llama_runtime::gate::is_runtime_owner()
     {

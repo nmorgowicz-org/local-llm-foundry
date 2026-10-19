@@ -107,8 +107,9 @@ pub async fn run_build<H: PromoteHost>(
     // Do not even create a new job/log until prior writers are proven gone.
     if !containment_clear(&deps.paths) {
         return Err(BuildStart::RecoveryRequired(format!(
-            "Unresolved process records at {}. Recovery/repair is required before building.",
-            deps.paths.process_records.display()
+            "Unresolved process records at {}. Recovery is required before building: {}.",
+            deps.paths.process_records.display(),
+            super::repair::REPAIR_ACTION
         )));
     }
     let job_id = new_job_id().map_err(BuildStart::RecoveryRequired)?;
@@ -154,8 +155,9 @@ pub async fn run_build<H: PromoteHost>(
     // diagnostics or source pin, even if the blocking task returned.
     if !containment_clear(&deps.paths) {
         let message = format!(
-            "Build containment is unresolved; preserved the source pin and staging. Repair {} before reuse.",
-            deps.paths.process_records.display()
+            "Build containment is unresolved; preserved the source pin and staging. Repair {} before reuse: {}.",
+            deps.paths.process_records.display(),
+            super::repair::REPAIR_ACTION
         );
         let _ = promote_failure(&shared, message.clone());
         finish(&shared, JobStatus::Failed, message);
@@ -284,12 +286,21 @@ pub async fn run_build<H: PromoteHost>(
                     staged.label
                 ),
             ),
-            PromoteOutcome::RolledBack { reason } => {
+            PromoteOutcome::RolledBack {
+                reason,
+                restart_failed,
+            } => {
                 let _ = promote_failure(
                     &shared,
                     format!("The new runtime failed verification and was rolled back: {reason}"),
                 );
-                (JobStatus::Failed, format!("Rolled back: {reason}"))
+                let text = match restart_failed {
+                    None => format!("Rolled back: {reason}"),
+                    Some(restart_error) => format!(
+                        "Rolled back: {reason}. The previous runtime was restored but the model did not restart: {restart_error}"
+                    ),
+                };
+                (JobStatus::Failed, text)
             }
         },
         Err(PromoteError::Cancelled) => (

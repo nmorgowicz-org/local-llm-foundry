@@ -152,6 +152,7 @@ local-llm-foundry llama-build --accelerator cuda --ref master --jobs 8
 | `--jobs N` | Explicit parallelism, bounded to 1–4096 and at most twice the logical CPU count. Default: logical CPUs minus one, at least one. |
 | `--headroom` | Half the logical CPUs and lower build priority; conflicts with `--jobs`. |
 | `--wipe` | Reset only the selected managed build tree before configuring. Never deletes live or previous runtimes. |
+| `--repair-processes` | Clear `llama-build/processes.json` after proving no recorded process is alive and no other process references the build directory. Never kills anything; excludes the other build flags. Exit `0` cleared (or nothing to clear), `1` refused (live processes are listed), `75` busy. |
 
 CUDA builds always compile all supported Flash Attention K/V pairs
 (`GGML_CUDA_FA_QUANTS=all`). Prerequisite validation includes a compile smoke
@@ -167,9 +168,9 @@ under `llama-build/`; the last three completed log/JSON pairs are retained under
 
 Ctrl-C requests cancellation before the transaction boundary. Once installation
 has begun journaling, recovery must finish. Unresolved or corrupt
-`llama-build/processes.json` blocks new builds and cache cleanup; inspect any
-surviving descendants before repairing the ownership record. Do not delete it
-merely to bypass the safety check.
+`llama-build/processes.json` blocks new builds and cache cleanup; stop any
+surviving descendants, then run `llama-build --repair-processes`. Do not delete
+it by hand to bypass the safety check.
 
 Exit codes: `0` installed (or ready dry-run), `1` failed/not ready, `2` installed
 but model restart failed (also used for CLI usage errors), `75` busy or repair

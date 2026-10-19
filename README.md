@@ -146,7 +146,10 @@ An integrated setup wizard for discovering, downloading, configuring, and launch
   - Local GGUF files with VRAM estimates
 - **VRAM-aware tuning**: live breakdown bar with auto-size and quant-compare
 - **llama.cpp binary management**: browse release notes and auto-download,
-  install, update, or roll back supported llama.cpp builds
+  install, update, or roll back supported llama.cpp builds, or build llama.cpp
+  from source (Metal, CUDA with every flash-attention K/V pair, CPU) with
+  guided prerequisites, live progress and journaled install
+  ([details](docs/reference/llama-runtime.md))
 - **Rapid-MLX flow**: curated catalog picker, one-click model selection, and
   hardware tuning without llama.cpp jargon
 
@@ -204,6 +207,7 @@ Local LLM Foundry includes in-app updates via the dashboard (Settings or header 
 - [Real-Time Communication](docs/reference/realtime-communication.md) — WebSocket schema, polling, network detection
 - [API Reference](docs/reference/api.md) — REST endpoints
 - [CLI Reference](docs/reference/cli-flags.md) — Supported flags
+- [llama.cpp Runtime](docs/reference/llama-runtime.md) — Source builds, prerequisites, K/V support
 - [Rapid-MLX Runtime](docs/reference/rapid-mlx-runtime.md) — Managed Rapid-MLX backend, install, update, and diagnostics
 - [Cross-Compilation](docs/reference/cross-compilation.md) — Build targets and toolchains
 - [Capability Flags](docs/reference/capabilities.md) — Metric capability system

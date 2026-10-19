@@ -185,6 +185,49 @@ fn prepend_path(path_value: &str, dirs: &[String], sep: char) -> String {
     parts.join(&sep.to_string())
 }
 
+/// Names (upper-cased) of the app's own settings: never reach a build child.
+const APP_PREFIXES: &[&str] = &["LOCAL_LLM_FOUNDRY_", "LLAMA_MONITOR_"];
+/// Substrings (upper-cased) that mark a value as a secret.
+const SECRET_MARKERS: &[&str] = &["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"];
+/// Names a build needs even when they happen to look secret.
+const BUILD_ALLOW_EXACT: &[&str] = &[
+    "PATH",
+    "CUDA_PATH",
+    "CUDA_HOME",
+    "CUDATOOLKIT_ROOT",
+    "CUDATOOLKIT_ROOT_DIR",
+    "CUDA_TOOLKIT_ROOT_DIR",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "SYSTEMROOT",
+    "WINDIR",
+];
+const BUILD_ALLOW_PREFIXES: &[&str] = &["CCACHE_", "CMAKE_"];
+
+/// A build runs upstream CMake and compilers nobody here has reviewed (a
+/// `master` build most of all), so it must not see the user's credentials or
+/// the app's own settings. Names are compared case-insensitively (Windows
+/// environment names are).
+fn build_env_allows(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    if APP_PREFIXES.iter().any(|p| upper.starts_with(p)) {
+        return false;
+    }
+    if BUILD_ALLOW_EXACT.contains(&upper.as_str())
+        || BUILD_ALLOW_PREFIXES.iter().any(|p| upper.starts_with(p))
+    {
+        return true;
+    }
+    !SECRET_MARKERS.iter().any(|m| upper.contains(m))
+}
+
+/// The environment build children inherit from the app, minus secrets.
+pub fn scrub_env(vars: impl IntoIterator<Item = (String, String)>) -> BTreeMap<String, String> {
+    vars.into_iter()
+        .filter(|(name, _)| build_env_allows(name))
+        .collect()
+}
+
 /// Inputs for the build environment.
 pub struct BuildEnvInputs<'a> {
     pub os: TargetOs,
@@ -447,6 +490,64 @@ mod tests {
         assert_eq!(env["CUDA_PATH"], r"C:\CUDA\v13.4");
         assert_eq!(env["CCACHE_DIR"], r"C:\app\llama-build\ccache");
         assert_eq!(env["CCACHE_MAXSIZE"], "2048M");
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn build_children_never_inherit_secrets_or_app_settings() {
+        let env = scrub_env(vars(&[
+            ("HF_TOKEN", "hf_x"),
+            ("GITHUB_TOKEN", "ghp_x"),
+            ("OPENAI_API_KEY", "sk-x"),
+            ("AWS_SECRET_ACCESS_KEY", "x"),
+            ("AWS_ACCESS_KEY_ID", "x"),
+            ("DB_PASSWORD", "x"),
+            ("GOOGLE_CREDENTIALS", "x"),
+            ("azure_credential_file", "x"),
+            ("LOCAL_LLM_FOUNDRY_API_TOKEN", "x"),
+            ("local_llm_foundry_anything", "x"),
+            ("LLAMA_MONITOR_HOME", "/x"),
+            ("Llama_Monitor_Port", "1"),
+            ("PATH", "/usr/bin"),
+            ("HOME", "/home/u"),
+        ]));
+        assert_eq!(
+            env.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["HOME", "PATH"]
+        );
+    }
+
+    #[test]
+    fn build_needed_names_survive_even_when_they_look_secret() {
+        let kept = [
+            ("PATH", "/usr/bin"),
+            ("Path", r"C:\Windows"),
+            ("CUDA_PATH", "/usr/local/cuda"),
+            ("CUDA_HOME", "/usr/local/cuda"),
+            ("CUDAToolkit_ROOT", "/usr/local/cuda"),
+            ("CCACHE_DIR", "/c"),
+            ("CCACHE_SECONDARY_STORAGE_KEY", "x"),
+            ("CMAKE_PREFIX_PATH", "/p"),
+            ("CMAKE_TOKEN_FILE", "/p"),
+            ("SSL_CERT_FILE", "/etc/ssl/cert.pem"),
+            ("SystemRoot", r"C:\Windows"),
+        ];
+        let env = scrub_env(vars(&kept));
+        for (k, v) in kept {
+            assert_eq!(env.get(k).map(String::as_str), Some(v), "{k} was dropped");
+        }
+    }
+
+    #[test]
+    fn the_app_prefix_denial_beats_the_allowlist() {
+        let env = scrub_env(vars(&[("LOCAL_LLM_FOUNDRY_CMAKE_PATH", "x")]));
+        assert!(env.is_empty());
     }
 
     #[test]

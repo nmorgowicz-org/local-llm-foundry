@@ -16,7 +16,7 @@ are called out where they are part of the contract.
 ## Reference Guides
 
 | Document | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | [chat.md](reference/chat.md) | Chat features, guided generation, explicit mode, persona system |
 | [dashboard.md](reference/dashboard.md) | Dashboard layout, settings, server tab, GPU metrics |
 | [api.md](reference/api.md) | REST API endpoints, WebSocket schema |
@@ -26,6 +26,7 @@ are called out where they are part of the contract.
 | [inference-tuning.md](reference/inference-tuning.md) | Model/quant/KV/flag tuning for Apple Silicon & discrete GPUs (dense vs MoE, `--n-cpu-moe`) |
 | [capabilities.md](reference/capabilities.md) | System capabilities, hardware support |
 | [cli-flags.md](reference/cli-flags.md) | Command-line options |
+| [llama-runtime.md](reference/llama-runtime.md) | llama.cpp runtime: source builds, prerequisites, rollback, K/V support, troubleshooting |
 | [realtime-communication.md](reference/realtime-communication.md) | WebSocket protocol details |
 | [cross-compilation.md](reference/cross-compilation.md) | Building for different platforms |
 | [windows-sensor-bridge-implementation.md](reference/windows-sensor-bridge-implementation.md) | Windows sensor bridge |

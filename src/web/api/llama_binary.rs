@@ -208,13 +208,23 @@ pub(super) fn promote_reply(
                     fields.insert("server_restarted".into(), false.into());
                     fields.insert("restart_error".into(), restart_error.into());
                 }
-                PromoteOutcome::RolledBack { reason } => {
+                PromoteOutcome::RolledBack {
+                    reason,
+                    restart_failed,
+                } => {
                     state.push_log(format!(
                         "[monitor] llama-binary/update: {reason}; previous runtime restored"
                     ));
                     fields.insert("ok".into(), false.into());
                     fields.insert("outcome".into(), "rolled_back".into());
                     fields.insert("error".into(), reason.into());
+                    if let Some(restart_error) = restart_failed {
+                        state.push_log(format!(
+                            "[monitor] llama-binary/update: the previous runtime was restored but the model did not restart: {restart_error}"
+                        ));
+                        fields.insert("server_restarted".into(), false.into());
+                        fields.insert("restart_error".into(), restart_error.into());
+                    }
                 }
             }
         }
@@ -1357,6 +1367,56 @@ mod tests {
             ));
 
         assert!(restart_config(&state).is_none());
+    }
+
+    async fn reply_json(reply: ReplyBox) -> serde_json::Value {
+        let cell = std::sync::Arc::new(std::sync::Mutex::new(Some(reply)));
+        let route = warp::any().map(move || cell.lock().unwrap().take().expect("one request"));
+        let response = warp::test::request().reply(&route).await;
+        serde_json::from_slice(response.body()).unwrap()
+    }
+
+    fn reply_ctx() -> PromoteReplyContext<'static> {
+        PromoteReplyContext {
+            tag: "b1",
+            backend: "cpu",
+            arch: "x64",
+            sha256: None,
+            restart_applicable: true,
+            custom_server_path: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn rolled_back_reply_carries_the_restart_failure() {
+        let state = AppState::default();
+        let result = Ok(PromoteResult {
+            outcome: PromoteOutcome::RolledBack {
+                reason: "verification failed".into(),
+                restart_failed: Some("model failed to start".into()),
+            },
+            warnings: Vec::new(),
+        });
+        let body = reply_json(promote_reply(&state, result, reply_ctx())).await;
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["outcome"], "rolled_back");
+        assert_eq!(body["error"], "verification failed");
+        assert_eq!(body["restart_error"], "model failed to start");
+    }
+
+    #[tokio::test]
+    async fn rolled_back_reply_without_a_restart_failure_has_no_restart_error() {
+        let state = AppState::default();
+        let result = Ok(PromoteResult {
+            outcome: PromoteOutcome::RolledBack {
+                reason: "verification failed".into(),
+                restart_failed: None,
+            },
+            warnings: Vec::new(),
+        });
+        let body = reply_json(promote_reply(&state, result, reply_ctx())).await;
+        assert_eq!(body["outcome"], "rolled_back");
+        assert!(body.get("restart_error").is_none(), "{body}");
     }
 
     #[test]

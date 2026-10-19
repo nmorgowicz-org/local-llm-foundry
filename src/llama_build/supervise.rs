@@ -18,7 +18,8 @@
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 #[cfg(unix)]
 use std::time::Instant;
@@ -174,6 +175,52 @@ impl Contained {
     }
 }
 
+/// Longest child output line kept whole. A child that never prints a newline
+/// must not grow the supervisor's memory without bound.
+pub const MAX_LINE_BYTES: usize = 64 * 1024;
+const TRUNCATION_MARKER: &str = " [line truncated]";
+
+/// Split `reader` into lines, never holding more than `cap` bytes of one line.
+/// The rest of an over-long line is discarded and the kept part ends in a
+/// marker; the lines after it are unaffected.
+fn for_each_line(reader: impl std::io::Read, cap: usize, mut each: impl FnMut(String)) {
+    let mut reader = BufReader::new(reader);
+    let mut line: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    let mut emit = |line: &mut Vec<u8>, truncated: &mut bool| {
+        let mut text = String::from_utf8_lossy(line)
+            .trim_end_matches('\r')
+            .to_string();
+        if *truncated {
+            text.push_str(TRUNCATION_MARKER);
+        }
+        line.clear();
+        *truncated = false;
+        each(text);
+    };
+    loop {
+        let buf = match reader.fill_buf() {
+            Ok([]) => break,
+            Ok(buf) => buf,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        let newline = buf.iter().position(|b| *b == b'\n');
+        let chunk = &buf[..newline.unwrap_or(buf.len())];
+        let room = cap.saturating_sub(line.len());
+        line.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        truncated |= chunk.len() > room;
+        let consumed = newline.map_or(buf.len(), |i| i + 1);
+        reader.consume(consumed);
+        if newline.is_some() {
+            emit(&mut line, &mut truncated);
+        }
+    }
+    if !line.is_empty() || truncated {
+        emit(&mut line, &mut truncated);
+    }
+}
+
 /// Run to completion, teeing output line-by-line to `sink`, polling `cancel`.
 pub fn run_contained(
     spec: &SpawnSpec,
@@ -206,25 +253,17 @@ pub fn run_contained_with(
     if let Some(out) = stdout {
         let tx = tx.clone();
         readers.push(std::thread::spawn(move || {
-            for line in BufReader::new(out).split(b'\n').map_while(Result::ok) {
-                let _ = tx.send(Line::Stdout(
-                    String::from_utf8_lossy(&line)
-                        .trim_end_matches('\r')
-                        .to_string(),
-                ));
-            }
+            for_each_line(out, MAX_LINE_BYTES, |line| {
+                let _ = tx.send(Line::Stdout(line));
+            });
         }));
     }
     if let Some(err) = stderr {
         let tx = tx.clone();
         readers.push(std::thread::spawn(move || {
-            for line in BufReader::new(err).split(b'\n').map_while(Result::ok) {
-                let _ = tx.send(Line::Stderr(
-                    String::from_utf8_lossy(&line)
-                        .trim_end_matches('\r')
-                        .to_string(),
-                ));
-            }
+            for_each_line(err, MAX_LINE_BYTES, |line| {
+                let _ = tx.send(Line::Stderr(line));
+            });
         }));
     }
     drop(tx);
@@ -680,7 +719,30 @@ pub fn load_records(file: &Path) -> std::io::Result<Vec<ProcessRecord>> {
     }
 }
 
-pub fn save_records(file: &Path, records: &[ProcessRecord]) -> std::io::Result<()> {
+/// Serialises every read-modify-write of the process records in this process.
+/// Concurrent owners (a build's child and a validation's smoke test) used to
+/// race on one fixed temp name and on load-modify-save.
+static RECORDS_LOCK: Mutex<()> = Mutex::new(());
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn records_lock() -> std::sync::MutexGuard<'static, ()> {
+    RECORDS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// `<file name>.<pid>-<seq>.tmp`, unique per call and per process.
+fn unique_tmp(file: &Path) -> PathBuf {
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    file.with_file_name(format!(
+        "{name}.{}-{}.tmp",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+fn save_records_locked(file: &Path, records: &[ProcessRecord]) -> std::io::Result<()> {
     if records.is_empty() {
         return match std::fs::remove_file(file) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
@@ -690,12 +752,32 @@ pub fn save_records(file: &Path, records: &[ProcessRecord]) -> std::io::Result<(
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp = file.with_extension("json.tmp");
-    std::fs::write(
+    let tmp = unique_tmp(file);
+    let written = std::fs::write(
         &tmp,
         serde_json::to_vec_pretty(records).map_err(std::io::Error::other)?,
-    )?;
-    std::fs::rename(tmp, file)
+    )
+    .and_then(|()| std::fs::rename(&tmp, file));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
+pub fn save_records(file: &Path, records: &[ProcessRecord]) -> std::io::Result<()> {
+    let _guard = records_lock();
+    save_records_locked(file, records)
+}
+
+/// Atomic load-modify-save: no other writer in this process can interleave.
+pub fn update_records(
+    file: &Path,
+    change: impl FnOnce(&mut Vec<ProcessRecord>),
+) -> std::io::Result<()> {
+    let _guard = records_lock();
+    let mut all = load_records(file)?;
+    change(&mut all);
+    save_records_locked(file, &all)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -795,6 +877,111 @@ mod tests {
         assert!(load_records(&file).is_err());
         assert!(recover_all(&file).is_err());
         assert_eq!(std::fs::read(&file).unwrap(), b"{broken");
+    }
+
+    fn lines_of(input: &[u8], cap: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        for_each_line(input, cap, |l| out.push(l));
+        out
+    }
+
+    #[test]
+    fn short_lines_pass_through_unchanged() {
+        assert_eq!(lines_of(b"a\r\nbb\n\nlast", 16), ["a", "bb", "", "last"]);
+    }
+
+    #[test]
+    fn an_unterminated_endless_line_is_truncated_with_a_marker() {
+        let big = vec![b'x'; MAX_LINE_BYTES * 3];
+        let lines = lines_of(&big, MAX_LINE_BYTES);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].ends_with(TRUNCATION_MARKER), "marker missing");
+        assert_eq!(lines[0].len(), MAX_LINE_BYTES + TRUNCATION_MARKER.len());
+    }
+
+    #[test]
+    fn an_over_long_line_does_not_swallow_the_lines_after_it() {
+        let mut input = vec![b'y'; 100];
+        input.extend_from_slice(b"\nnext\n");
+        let lines = lines_of(&input, 10);
+        assert_eq!(
+            lines,
+            [
+                format!("{}{TRUNCATION_MARKER}", "y".repeat(10)),
+                "next".into()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_line_of_exactly_the_cap_is_not_truncated() {
+        let mut input = vec![b'z'; 10];
+        input.push(b'\n');
+        assert_eq!(lines_of(&input, 10), ["z".repeat(10)]);
+    }
+
+    #[test]
+    fn concurrent_saves_never_collide_on_a_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = std::sync::Arc::new(dir.path().join("processes.json"));
+        let failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let threads: Vec<_> = (0..8u32)
+            .map(|t| {
+                let (file, failures) = (file.clone(), failures.clone());
+                std::thread::spawn(move || {
+                    for i in 0..150u32 {
+                        let rec = ProcessRecord {
+                            job_id: format!("t{t}"),
+                            pid: t * 1000 + i + 1,
+                            start_time: 1,
+                        };
+                        if save_records(&file, &[rec]).is_err() {
+                            failures.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(failures.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(load_records(&file).unwrap().len(), 1, "never torn");
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "processes.json")
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
+    }
+
+    #[test]
+    fn concurrent_updates_never_lose_a_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = std::sync::Arc::new(dir.path().join("processes.json"));
+        let threads: Vec<_> = (0..8u32)
+            .map(|t| {
+                let file = file.clone();
+                std::thread::spawn(move || {
+                    for i in 0..40u32 {
+                        let pid = t * 1000 + i + 1;
+                        update_records(&file, |all| {
+                            all.push(ProcessRecord {
+                                job_id: format!("t{t}"),
+                                pid,
+                                start_time: 1,
+                            })
+                        })
+                        .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(load_records(&file).unwrap().len(), 8 * 40);
     }
 
     #[test]

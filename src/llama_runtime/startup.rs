@@ -45,6 +45,7 @@ fn candidate_roots(config: &AppConfig) -> Vec<PathBuf> {
 pub fn recover_roots(roots: &[PathBuf], active_root: &std::path::Path) -> Vec<StartupFinding> {
     let mut findings = Vec::new();
     for root in roots {
+        let mut containment_unresolved = false;
         let live = root.join("bin");
         if !root.is_dir() {
             continue;
@@ -58,18 +59,22 @@ pub fn recover_roots(roots: &[PathBuf], active_root: &std::path::Path) -> Vec<St
                     warning: true,
                 });
             }
-            // A corrupt record is just as blocking as an unresolved process.
-            // Do not recover a transaction or sweep staging while a writer
-            // could still own it.
-            match std::fs::symlink_metadata(&build_paths.process_records) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                _ => {
-                    findings.push(StartupFinding {
-                        message: "llama.cpp build containment needs repair; runtime recovery and staging cleanup were deferred".into(),
-                        warning: true,
-                    });
-                    continue;
-                }
+            // A corrupt record is just as blocking as an unresolved process:
+            // a writer could still own the build tree or a staging directory.
+            // Replaying a journal is still safe (the journal only exists once
+            // the candidate is complete), so only the orphan sweep waits.
+            containment_unresolved = !matches!(
+                std::fs::symlink_metadata(&build_paths.process_records),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound
+            );
+            if containment_unresolved {
+                findings.push(StartupFinding {
+                    message: format!(
+                        "llama.cpp build containment needs repair; staging cleanup was deferred ({})",
+                        crate::llama_build::repair::REPAIR_ACTION
+                    ),
+                    warning: true,
+                });
             }
         }
         let Ok(paths) = RuntimePaths::for_live_dir(&live) else {
@@ -121,6 +126,7 @@ pub fn recover_roots(roots: &[PathBuf], active_root: &std::path::Path) -> Vec<St
         }
         // Orphans are only swept from a coherent runtime directory.
         if !blocked
+            && !containment_unresolved
             && root.as_path() == active_root
             && let Err(e) = sweep_orphans(&paths)
         {
@@ -231,5 +237,65 @@ mod build_recovery_tests {
             std::fs::read_to_string(build.join("processes.json")).unwrap(),
             "{broken"
         );
+    }
+
+    #[test]
+    fn an_interrupted_promotion_is_replayed_even_while_process_records_exist() {
+        use crate::llama_runtime::promote::{Journal, Op, Phase, RestartRecord, Role, Step};
+        let root = tempfile::tempdir().unwrap();
+        // A first install: no live set exists yet, matching `had_live: false`.
+        // The candidate an interrupted install referenced, plus an orphan no
+        // journal mentions.
+        let candidate = root.path().join(".bin.staging-job1");
+        let orphan = root.path().join(".bin.staging-orphan");
+        for dir in [&candidate, &orphan] {
+            std::fs::create_dir(dir).unwrap();
+            std::fs::write(dir.join("f"), "x").unwrap();
+        }
+        let journal = Journal {
+            schema: 1,
+            id: "t".into(),
+            op: Op::Install,
+            label: "interrupted".into(),
+            started_unix: 0,
+            steps: vec![Step {
+                from: Role::Staged,
+                to: Role::Live,
+            }],
+            had_live: false,
+            had_previous: false,
+            live_fp: None,
+            previous_fp: None,
+            staged_fp: None,
+            staged: Some(".bin.staging-job1".into()),
+            phase: Phase::Begun,
+            restart: RestartRecord::default(),
+            outcome: None,
+        };
+        let journal_file = root.path().join("runtime-transaction.json");
+        std::fs::write(&journal_file, serde_json::to_vec(&journal).unwrap()).unwrap();
+        let build = root.path().join("llama-build");
+        std::fs::create_dir(&build).unwrap();
+        // Unreadable records are kept on every platform (an empty list is reaped).
+        std::fs::write(build.join("processes.json"), "{broken").unwrap();
+
+        let findings = super::recover_roots(&[root.path().to_path_buf()], root.path());
+
+        assert!(
+            !journal_file.exists(),
+            "the journal was replayed and retired: {findings:?}"
+        );
+        assert!(!candidate.exists(), "the rejected candidate was discarded");
+        assert!(
+            findings.iter().any(|f| f.message.contains("rolled back")),
+            "{findings:?}"
+        );
+        // The sweep and the records stay behind the containment barrier, and
+        // the finding tells the user how to lift it.
+        assert!(orphan.join("f").exists(), "orphan sweep is deferred");
+        assert!(build.join("processes.json").exists());
+        assert!(findings.iter().any(|f| f.warning
+            && f.message.contains("containment")
+            && f.message.contains("--repair-processes")));
     }
 }
