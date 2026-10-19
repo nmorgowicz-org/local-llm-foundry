@@ -872,7 +872,6 @@ fn api_llama_binary_platform_info(
         })
 }
 
-#[cfg(any(target_os = "macos", test))]
 /// POST /api/llama-binary/update — downloads latest release and overwrites llama-server binary
 fn api_llama_binary_update(
     state: AppState,

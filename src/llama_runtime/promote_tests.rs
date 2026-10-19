@@ -988,3 +988,64 @@ async fn a_locked_file_in_the_live_set_fails_the_rename_and_recovery_restores() 
     assert_eq!(w.tags(), w.old());
     w.assert_no_leftovers();
 }
+
+#[tokio::test]
+async fn install_probes_the_candidate_exactly_once_before_and_once_after_the_swap() {
+    let w = world(Kind::Both);
+    let host = FakeHost::quiet();
+    do_install(&w, &host).await.unwrap();
+    assert_eq!(host.calls("call:verify:Staged"), 1, "{:?}", host.log());
+    assert_eq!(host.calls("call:verify:Live"), 1, "{:?}", host.log());
+    assert_eq!(host.calls("call:verify"), 2, "no third probe of any kind");
+    assert!(
+        host.position("call:verify:Staged").unwrap()
+            < host.position("rename.0.before").unwrap_or(usize::MAX),
+        "the staged probe precedes the first rename"
+    );
+
+    let w = world(Kind::Both);
+    let host = FakeHost::quiet();
+    drop_candidate(&w);
+    do_rollback(&w, &host).await.unwrap();
+    assert_eq!(
+        host.calls("call:verify"),
+        2,
+        "rollback verifies before and after too"
+    );
+
+    let w = world(Kind::Both);
+    let host = FakeHost::quiet();
+    drop_candidate(&w);
+    do_uninstall(&w, &host).await.unwrap();
+    assert_eq!(host.calls("call:verify"), 0, "uninstall executes nothing");
+}
+
+#[tokio::test]
+async fn the_gate_is_held_for_the_whole_model_lifecycle_inside_a_transaction() {
+    // Lock order: runtime gate first, then the model lifecycle (stop/restart
+    // take `server_lifecycle` inside the host). The engine must never be driven
+    // without the gate, and a second mutation must be rejected throughout.
+    let w = world(Kind::Both);
+    let host = FakeHost::quiet().running();
+    let gate = std::sync::Arc::new(RuntimeGate::default());
+    let mut guard = gate.try_begin(RuntimeOp::Update).unwrap();
+    let result = promote(&host, &mut guard, &w.paths, request(&w))
+        .await
+        .unwrap();
+    assert!(matches!(
+        result.outcome,
+        PromoteOutcome::Promoted { restarted: true }
+    ));
+    assert_eq!(
+        gate.current_owner(),
+        Some(RuntimeOp::Update),
+        "still held after the swap"
+    );
+    let busy = gate
+        .try_begin(RuntimeOp::Rollback)
+        .err()
+        .expect("second mutation rejected");
+    assert_eq!(busy.owner, RuntimeOp::Update);
+    drop(guard);
+    assert!(gate.try_begin(RuntimeOp::Rollback).is_ok());
+}

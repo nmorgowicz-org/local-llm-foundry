@@ -207,15 +207,16 @@ Nothing is stopped, renamed, or overwritten until the candidate exists in full.
 5. Take the runtime gate (409 {owner} if another mutation is running)
 6. promote():
    a. prepare the staged set (exec bits, strip macOS quarantine), write the manifest
-   b. verify the staged set (one probe, see "Verification")
-   c. write the journal (steps, fingerprints, restart intent), phase Begun
-   d. stop the running llama.cpp model, if any (intent already journaled)
+   b. write the journal (steps, fingerprints), phase Begun; the swap window opens
+   c. if a llama.cpp model is running: journal the restart intent, then stop it
+      (a loaded model would contend for the GPU with the probe)
+   d. verify the staged set (one probe, see "Verification")
    e. phase Swapping, renames in order: previous -> old-previous, live -> old-live, staged -> live
       (rollback: live -> old-live, previous -> live)
-   f. phase Committed, then verify the live set
-   g. restart the model with its previous config (inside the owner scope)
-   h. finalize: the old live set becomes `bin-previous`, the old previous set is deleted,
-      and the journal is archived as runtime-transaction.last.json
+   f. verify the live set, then phase Committed
+   g. retention: the old live set becomes `bin-previous`, the old previous set is deleted
+   h. restart the model with its previous config (inside the owner scope)
+   i. finalize: the journal is archived as runtime-transaction.last.json
 ```
 
 Download, extraction and staging never hold the gate, so a slow download cannot block a
@@ -320,8 +321,8 @@ instead of silently queuing extra tasks.
 When a llama.cpp model is running at update time:
 
 1. The running `ServerConfig` is captured when the host is created, before download.
-2. Download, extraction, staging and the staged-set verification run while the model keeps serving.
-3. The restart intent is journaled, then `stop_server` is called, only after the candidate passed verification.
+2. Download, extraction and staging run while the model keeps serving.
+3. Once the journal exists, the restart intent is journaled and then `stop_server` is called, before the staged probe (a loaded model would block or time out a second `llama-server` on Metal/CUDA).
 4. After the swap commits and the live set verifies, the model is restarted with the preserved config.
 5. If verification or the swap fails, recovery restores the previous directories and the model is restarted on them (`rolled_back`).
 6. If only the restart fails, the new runtime stays installed (`installed_restart_failed`); the user can retry or roll back.
