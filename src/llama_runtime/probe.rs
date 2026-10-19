@@ -84,6 +84,8 @@ pub struct ParsedProbe {
     /// Metal `has bfloat` (any device reporting false wins).
     pub metal_bf16: Option<bool>,
     pub build_number: Option<u32>,
+    /// Abbreviated commit from `build N (abcdef123)`.
+    pub build_commit: Option<String>,
 }
 
 /// Parse the `system_info` feature string into groups. Tokens are separated by
@@ -161,6 +163,13 @@ pub fn parse_probe_output(output: &str, probe_model_path: &str) -> ParsedProbe {
                 .take_while(char::is_ascii_digit)
                 .collect();
             parsed.build_number = digits.parse().ok();
+            let rest = &line[index + "common_params_print_info: build ".len() + digits.len()..];
+            parsed.build_commit = rest
+                .trim_start()
+                .strip_prefix('(')
+                .and_then(|r| r.split(')').next())
+                .map(|c| c.trim().to_string())
+                .filter(|c| !c.is_empty() && c.chars().all(|ch| ch.is_ascii_hexdigit()));
         }
         if line.contains("failed to open GGUF file") && line.contains(probe_model_path) {
             parsed.model_missing_diagnostic = true;
@@ -603,6 +612,7 @@ mod tests {
         let parsed = parse_probe_output(METAL_FIXTURE, MODEL);
         assert_eq!(parsed.metal_bf16, Some(true));
         assert_eq!(parsed.build_number, Some(11719));
+        assert_eq!(parsed.build_commit.as_deref(), Some("5aeac37a3"));
         let basis = kv_basis_from_probe(&parsed, None);
         assert_eq!(basis.metal_bf16.confirmed_value(), Some(&true));
         assert_eq!(basis.build_number, Some(11719));

@@ -1,7 +1,13 @@
 //! Management of the installed llama.cpp runtime.
 //!
-//! Phase 1 introduces the bounded runtime probe and closure identity used by
-//! K/V capability evidence. Shared promotion/rollback arrives in a later phase
-//! (`docs/plans/20261019-llamacpp_compilation.md` §4.3).
+//! - `probe`: bounded runtime probe and loaded-closure identity.
+//! - `verify`: the one staged/live runtime verifier.
+//! - `gate`: the single runtime-mutation gate and swap window.
+//! - `manifest`: provenance (never capability).
+//!
+//! Journaled promotion/rollback lives in `promote` (plan §4.3).
 
+pub mod gate;
+pub mod manifest;
 pub mod probe;
+pub mod verify;
