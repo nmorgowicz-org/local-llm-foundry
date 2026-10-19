@@ -981,4 +981,106 @@ Options:
         let fp2 = snap1.fingerprint();
         assert_ne!(fp1, fp2);
     }
+
+    #[test]
+    fn legacy_snapshot_json_never_manufactures_confirmed_kv_support() {
+        use crate::inference::kv_support::{Backend, Evidence};
+        let mut value = serde_json::to_value(CapabilitySnapshot::product_default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("kv_basis");
+        object.remove("runtime_identity");
+        // The removed gate, as an older build persisted it.
+        object.insert(
+            "mixed_main_kv".into(),
+            serde_json::json!({"supported": true, "reason": "build manifest", "source": "build_manifest"}),
+        );
+        let snapshot: CapabilitySnapshot = serde_json::from_value(value).unwrap();
+        assert_eq!(snapshot.kv_basis.backend, Backend::Unknown);
+        assert!(matches!(
+            snapshot.kv_basis.fa_pairs,
+            Evidence::Unavailable { .. }
+        ));
+        assert!(snapshot.runtime_identity.is_none());
+    }
+
+    #[test]
+    fn malformed_new_kv_basis_is_rejected_not_defaulted_to_support() {
+        let mut value = serde_json::to_value(CapabilitySnapshot::product_default()).unwrap();
+        value["kv_basis"] = serde_json::json!({"version": "nope", "backend": "cuda"});
+        assert!(serde_json::from_value::<CapabilitySnapshot>(value).is_err());
+    }
+
+    #[test]
+    fn new_kv_basis_round_trips() {
+        use crate::inference::kv_support::{
+            Backend, Evidence, KV_BASIS_VERSION, KvSupportBasis, compiled_fa_pairs,
+        };
+        let mut snapshot = CapabilitySnapshot::product_default();
+        snapshot.kv_basis = KvSupportBasis {
+            version: KV_BASIS_VERSION,
+            backend: Backend::Cuda,
+            fa_pairs: Evidence::confirmed(compiled_fa_pairs("all").unwrap(), "probe"),
+            runtime_identity: Some("abc".into()),
+            devices: vec!["CUDA0 : GPU".into()],
+        };
+        let round: CapabilitySnapshot =
+            serde_json::from_value(serde_json::to_value(&snapshot).unwrap()).unwrap();
+        assert_eq!(round.kv_basis, snapshot.kv_basis);
+    }
+
+    #[test]
+    fn plugin_only_replacement_invalidates_snapshot_validity_and_fingerprint() {
+        use crate::llama_runtime::probe::{LoadedBackend, RuntimeIdentity};
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("llama-server");
+        let plugin = dir.path().join("libggml-metal.so");
+        std::fs::write(&exe, b"exe").unwrap();
+        std::fs::write(&plugin, b"plugin-v1").unwrap();
+        let backends = [LoadedBackend {
+            name: "MTL".into(),
+            path: plugin.clone(),
+        }];
+        let identity = RuntimeIdentity::compute(&exe, &backends).unwrap();
+
+        let mut snapshot = CapabilitySnapshot::product_default();
+        let exe_identity = ExecutableIdentity::from_path(&exe).unwrap();
+        snapshot.executable_identity = exe_identity.clone();
+        snapshot.runtime_identity = Some(identity);
+        let fingerprint = snapshot.fingerprint();
+        assert!(snapshot.is_valid_for(&exe_identity));
+
+        // Replace only the plugin; the executable (and its hash) is unchanged.
+        std::fs::write(&plugin, b"plugin-v2-longer").unwrap();
+        let same_exe = ExecutableIdentity::from_path(&exe).unwrap();
+        assert_eq!(same_exe.file_hash, exe_identity.file_hash);
+        assert!(!snapshot.is_valid_for(&same_exe));
+
+        // A fresh closure identity gives a different fingerprint.
+        let mut fresh = snapshot.clone();
+        fresh.runtime_identity = Some(RuntimeIdentity::compute(&exe, &backends).unwrap());
+        assert_ne!(fresh.fingerprint(), fingerprint);
+    }
+
+    /// Opt-in: `LLAMA_SERVER_UNDER_TEST=/path/to/llama-server cargo test --lib real_binary -- --ignored`
+    #[tokio::test]
+    #[ignore = "needs a real llama-server binary"]
+    async fn real_binary_snapshot_has_runtime_evidence() {
+        let Ok(path) = std::env::var("LLAMA_SERVER_UNDER_TEST") else {
+            return;
+        };
+        let snapshot = generate_snapshot(Path::new(&path)).await.unwrap();
+        eprintln!(
+            "backend={:?} devices={:?}",
+            snapshot.kv_basis.backend, snapshot.kv_basis.devices
+        );
+        eprintln!("fa_pairs={:?}", snapshot.kv_basis.fa_pairs);
+        assert!(
+            snapshot.runtime_identity.is_some(),
+            "closure identity expected"
+        );
+        assert_ne!(
+            snapshot.kv_basis.backend,
+            crate::inference::kv_support::Backend::Unknown
+        );
+    }
 }
