@@ -187,7 +187,9 @@ fn backend_for_name(name: &str) -> Option<Backend> {
         "VULKAN" => Some(Backend::Vulkan),
         "CPU" => Some(Backend::Cpu),
         // BLAS is an accelerator for matmul only; it never decides the backend.
-        "BLAS" => None,
+        // RPC is a network transport to remote devices (the Windows CPU release
+        // ships and loads it); it is not a local accelerator either.
+        "BLAS" | "RPC" => None,
         // ROCm/MUSA/SYCL/etc.: an accelerator we have no K/V evidence for.
         _ => Some(Backend::Unknown),
     }
@@ -849,5 +851,19 @@ exit 1
                 .unwrap_err();
             assert!(matches!(err, ProbeError::Spawn(_)));
         }
+    }
+
+    /// Real capture, Windows b11734 `bin-win-cpu-x64` on ryne (2026-10-19): the
+    /// RPC plugin loads alongside the CPU plugin and must not make the backend
+    /// `Unknown`.
+    #[test]
+    fn rpc_alongside_cpu_is_a_cpu_backend_not_unknown() {
+        let output = r"0.00.015.468 I load_backend: loaded RPC backend from D:\p3-cpu\x\ggml-rpc.dll
+0.00.062.314 I load_backend: loaded CPU backend from D:\p3-cpu\x\ggml-cpu-haswell.dll
+0.00.062.370 I cmn  common_param: common_params_print_info: build 11734 (f3fb2fcdb) with Clang 20.1.8 for Windows
+0.00.062.433 I cmn  common_param: system_info: n_threads = 8 (n_threads_batch = 8) / 16 | CPU : SSE3 = 1 | SSSE3 = 1 |";
+        let parsed = parse_probe_output(output, "/nonexistent.gguf");
+        assert_eq!(detect_backend(&parsed), Backend::Cpu);
+        assert_eq!(parsed.build_number, Some(11734));
     }
 }
