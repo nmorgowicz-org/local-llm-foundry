@@ -31,17 +31,18 @@ pub fn restart_config(state: &AppState) -> Option<ServerConfig> {
 pub struct LiveHost {
     state: AppState,
     config: Arc<AppConfig>,
-    restart: Option<ServerConfig>,
+    restart: std::sync::Mutex<Option<ServerConfig>>,
+    manage_model: bool,
     cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl LiveHost {
     pub fn new(state: AppState, config: Arc<AppConfig>) -> Self {
-        let restart = restart_config(&state);
         Self {
             state,
             config,
-            restart,
+            restart: std::sync::Mutex::new(None),
+            manage_model: true,
             cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
@@ -52,14 +53,15 @@ impl LiveHost {
         Self {
             state,
             config,
-            restart: None,
+            restart: std::sync::Mutex::new(None),
+            manage_model: false,
             cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
     /// Whether a running llama.cpp model will be interrupted by this swap.
     pub fn restart_applicable(&self) -> bool {
-        self.restart.is_some()
+        self.restart.lock().unwrap().is_some()
     }
 
     pub fn cancel_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
@@ -68,12 +70,24 @@ impl LiveHost {
 }
 
 impl PromoteHost for LiveHost {
+    async fn prepare_model(&self) {
+        // The caller already owns the runtime gate, so no new launch can be
+        // admitted. Wait for any launch that passed its gate check to finish
+        // registering before deciding whether stop_model must run.
+        let _lifecycle = self.state.server_lifecycle.lock().await;
+        *self.restart.lock().unwrap() = if self.manage_model {
+            restart_config(&self.state)
+        } else {
+            None
+        };
+    }
+
     fn cancelled(&self) -> bool {
         self.cancel.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn model_running(&self) -> bool {
-        self.restart.is_some()
+        self.restart_applicable()
     }
 
     async fn stop_model(&self) -> Result<(), String> {
@@ -84,7 +98,8 @@ impl PromoteHost for LiveHost {
     }
 
     async fn restart_model(&self) -> Result<(), String> {
-        let Some(config) = self.restart.clone() else {
+        let restart = self.restart.lock().unwrap().clone();
+        let Some(config) = restart else {
             return Ok(());
         };
         self.state.push_log(
@@ -112,3 +127,7 @@ impl PromoteHost for LiveHost {
             .map_err(|e| e.to_string())
     }
 }
+
+#[cfg(test)]
+#[path = "host_tests.rs"]
+mod tests;

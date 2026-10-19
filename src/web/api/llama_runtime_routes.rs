@@ -117,9 +117,9 @@ async fn do_rollback(state: AppState, config: Arc<AppConfig>) -> super::llama_bi
     } else {
         LiveHost::new(state.clone(), config.clone())
     };
-    let restart_applicable = host.restart_applicable();
     state.push_log("[monitor] llama-binary/rollback: swapping to the previous runtime".into());
     let result = rollback(&host, &mut guard, &paths, exe_name()).await;
+    let restart_applicable = host.restart_applicable();
     drop(guard);
     let label = RuntimeManifest::read(&paths.live)
         .ok()

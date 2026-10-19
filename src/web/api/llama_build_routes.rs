@@ -289,13 +289,9 @@ async fn blocking<T: Send + 'static>(
 // Promote host
 // ---------------------------------------------------------------------------
 
-/// A [`LiveHost`] whose view of the running model is taken when the promotion
-/// starts, not when the build did. `LiveHost::new` snapshots the model at
-/// construction; after a many-minute compile that snapshot would be stale in
-/// both directions (a model started meanwhile would be swapped from under).
-/// The promote engine asks `cancelled`/`model_running` before it stops
-/// anything, so the first call is early enough. Cancellation is this host's own
-/// flag, the one the cancel route flips (`LiveHost`'s is never consulted).
+/// Defers the model snapshot until the promotion engine owns the runtime gate
+/// and has waited for any already-admitted launch. Cancellation remains this
+/// host's own flag, the one the cancel route flips.
 struct DeferredHost {
     state: AppState,
     config: Arc<AppConfig>,
@@ -327,6 +323,10 @@ impl DeferredHost {
 }
 
 impl PromoteHost for DeferredHost {
+    async fn prepare_model(&self) {
+        self.live().prepare_model().await;
+    }
+
     fn cancelled(&self) -> bool {
         self.cancel.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -371,12 +371,18 @@ async fn status(ctx: ApiCtx, auth: Option<String>) -> ApiReply {
         .map(|o| owner_name(o).to_string())
         .or_else(|| gate_owner.map(|o| o.label().to_string()));
     let idle = req.svc.is_idle() && gate_owner.is_none();
+    let installer_recovery = req.svc.installer_recovery_required();
     let svc = req.svc.clone();
     let build = req.ctx.clone();
     let result = blocking(move || {
         (
             svc.last_job(&build),
-            if idle {
+            if installer_recovery {
+                Some(format!(
+                    "Installer cleanup is unresolved. Stop any leftover installer processes, then clear the process record: {}",
+                    crate::llama_build::repair::REPAIR_ACTION
+                ))
+            } else if idle {
                 build.recovery_required()
             } else {
                 None
@@ -471,7 +477,8 @@ async fn fix(ctx: ApiCtx, auth: Option<String>, body: bytes::Bytes) -> ApiReply 
     }
     let svc = req.svc.clone();
     let packages = body.packages;
-    let result = match blocking(move || svc.brew_install(&packages)).await {
+    let build = req.ctx.clone();
+    let result = match blocking(move || svc.brew_install(&build, &packages)).await {
         Ok(r) => r,
         Err(r) => return r,
     };
@@ -990,13 +997,14 @@ mod tests {
     use super::*;
     use crate::config::TlsMode;
     use crate::llama_build::BuildPlan;
+    use crate::llama_build::cache::Owner;
     use crate::llama_build::job::Phase;
     use crate::llama_build::job::{
         JobDeps, PlanInputs, StepIo, StepResult, Toolchain, finish, new_shared, set_phase_public,
         with_state,
     };
     use crate::llama_build::prereqs::{Check, Collector, PrereqReport};
-    use crate::llama_build::service::{BuildEnv, ToolchainMode, ToolchainSpec};
+    use crate::llama_build::service::{BuildEnv, InstallFailure, ToolchainMode, ToolchainSpec};
     use crate::llama_build::source::ResolvedRef;
     use crate::web::auth::AuthManager;
     use std::sync::Mutex;
@@ -1015,6 +1023,7 @@ mod tests {
         fingerprint: Mutex<String>,
         validations: AtomicUsize,
         brew_calls: Mutex<Vec<Vec<String>>>,
+        brew_failure: Mutex<Option<InstallFailure>>,
         procs: Mutex<Vec<crate::llama_build::repair::ProcessInfo>>,
     }
 
@@ -1132,13 +1141,21 @@ mod tests {
             })
         }
 
-        fn brew_install(&self, packages: &[&str]) -> Result<String, String> {
+        fn brew_install(
+            &self,
+            packages: &[&str],
+            _: &BuildPaths,
+            _: &str,
+        ) -> Result<String, InstallFailure> {
             self.ctl
                 .brew_calls
                 .lock()
                 .unwrap()
                 .push(packages.iter().map(|p| p.to_string()).collect());
-            Ok("==> installed".into())
+            match self.ctl.brew_failure.lock().unwrap().take() {
+                Some(error) => Err(error),
+                None => Ok("==> installed".into()),
+            }
         }
 
         fn cuda_arch_auto(&self) -> Option<String> {
@@ -1748,6 +1765,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fix_retains_install_ownership_when_descendant_cleanup_is_unresolved() {
+        let rig = Rig::new(TargetOs::Macos);
+        *rig.ctl.brew_failure.lock().unwrap() = Some(InstallFailure {
+            output: "descendants survived; repair required".into(),
+            contained: false,
+        });
+        let (code, body) = rig
+            .call(
+                "POST",
+                "/api/llama-build/prereqs/fix",
+                Some(r#"{"action":"brew_install","packages":["cmake"]}"#),
+            )
+            .await;
+        assert_eq!(code, 500);
+        assert!(body["output"].as_str().unwrap().contains("repair required"));
+        assert!(!rig.state.llama_build.is_idle());
+        let (_, status) = rig.get("/api/llama-build/status").await;
+        assert!(
+            status["recovery_required"]
+                .as_str()
+                .unwrap()
+                .contains("Installer cleanup")
+        );
+        let (code, body) = rig.start(START_METAL).await;
+        assert_eq!(code, 409);
+        assert_eq!(body["owner"], "install");
+        let (code, body) = rig.call("DELETE", "/api/llama-build/cache", None).await;
+        assert_eq!(code, 409);
+        assert_eq!(body["owner"], "install");
+
+        // The installer is no longer executing in the service, so repair may
+        // inspect liveness using its retained exclusive lease.
+        write_records(&rig, &[(4_000_001, 100)]);
+        *rig.ctl.procs.lock().unwrap() = vec![crate::llama_build::repair::ProcessInfo {
+            pid: 4_000_001,
+            start_time: 100,
+            command: "brew install cmake".into(),
+            cwd: None,
+        }];
+        let (code, body) = rig.call("POST", REPAIR, Some(r#"{"confirm":true}"#)).await;
+        assert_eq!(code, 409, "{body}");
+        assert_eq!(body["processes"][0]["pid"], 4_000_001);
+        assert_eq!(rig.state.llama_build.owner(), Some(Owner::Install));
+
+        // An I/O failure must restore the lease too, not just a live process.
+        rig.ctl.procs.lock().unwrap().clear();
+        std::fs::remove_file(rig.paths().process_records).unwrap();
+        std::fs::create_dir(rig.paths().process_records).unwrap();
+        let (code, body) = rig.call("POST", REPAIR, Some(r#"{"confirm":true}"#)).await;
+        assert_eq!(code, 500, "{body}");
+        assert_eq!(rig.state.llama_build.owner(), Some(Owner::Install));
+        std::fs::remove_dir(rig.paths().process_records).unwrap();
+        write_records(&rig, &[(4_000_001, 100)]);
+
+        let (code, body) = rig.call("POST", REPAIR, Some(r#"{"confirm":true}"#)).await;
+        assert_eq!(code, 200, "{body}");
+        assert!(rig.state.llama_build.is_idle());
+        assert!(!rig.paths().process_records.exists());
+        let (code, body) = rig
+            .call(
+                "POST",
+                "/api/llama-build/prereqs/fix",
+                Some(r#"{"action":"brew_install","packages":["cmake"]}"#),
+            )
+            .await;
+        assert_eq!(code, 200, "{body}");
+    }
+
+    #[tokio::test]
+    async fn repair_cannot_bypass_a_genuinely_active_install() {
+        let rig = Rig::new(TargetOs::Macos);
+        let _lease = rig
+            .state
+            .llama_build
+            .ownership()
+            .try_acquire(Owner::Install, "active-installer")
+            .unwrap();
+        let (code, body) = rig.call("POST", REPAIR, Some(r#"{"confirm":true}"#)).await;
+        assert_eq!(code, 409, "{body}");
+        assert_eq!(body["owner"], "install");
+    }
+
+    #[tokio::test]
+    async fn fix_releases_install_ownership_after_a_contained_failure() {
+        let rig = Rig::new(TargetOs::Macos);
+        *rig.ctl.brew_failure.lock().unwrap() = Some(InstallFailure {
+            output: "timed out; tree reaped".into(),
+            contained: true,
+        });
+        let (code, _) = rig
+            .call(
+                "POST",
+                "/api/llama-build/prereqs/fix",
+                Some(r#"{"action":"brew_install","packages":["cmake"]}"#),
+            )
+            .await;
+        assert_eq!(code, 500);
+        assert!(rig.state.llama_build.is_idle());
+        let (code, _) = rig
+            .call(
+                "POST",
+                "/api/llama-build/prereqs/fix",
+                Some(r#"{"action":"brew_install","packages":["cmake"]}"#),
+            )
+            .await;
+        assert_eq!(code, 200);
+    }
+
+    #[tokio::test]
+    async fn fix_refuses_a_durable_unresolved_process_barrier() {
+        let rig = Rig::new(TargetOs::Macos);
+        std::fs::create_dir_all(rig.paths().root).unwrap();
+        std::fs::write(rig.paths().process_records, b"[]").unwrap();
+        let (code, _) = rig
+            .call(
+                "POST",
+                "/api/llama-build/prereqs/fix",
+                Some(r#"{"action":"brew_install","packages":["cmake"]}"#),
+            )
+            .await;
+        assert_eq!(code, 500);
+        assert!(rig.ctl.brew_calls.lock().unwrap().is_empty());
+        assert!(rig.state.llama_build.is_idle());
+    }
+
+    #[tokio::test]
     async fn fix_is_refused_off_macos() {
         for os in [TargetOs::Windows, TargetOs::Linux] {
             let rig = Rig::new(os);
@@ -2318,5 +2461,39 @@ mod tests {
         rig.call("POST", &format!("/api/llama-build/jobs/{id}/cancel"), None)
             .await;
         rig.wait_status(id, "cancelled").await;
+    }
+
+    #[tokio::test]
+    async fn deferred_host_waits_for_launch_registration_before_taking_its_snapshot() {
+        use crate::inference::launch::LocalLaunchRequest;
+        use crate::inference::llama_cpp::ServerConfig;
+        use crate::llama_runtime::gate::RuntimeOp;
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
+
+        let state = AppState::default();
+        let host = DeferredHost::new(
+            state.clone(),
+            Arc::new(AppConfig::for_test(None, None)),
+            true,
+        );
+        let lifecycle = state.server_lifecycle.lock().await;
+        let _guard = state.runtime_gate.try_begin(RuntimeOp::Promote).unwrap();
+        let mut preparation = Box::pin(host.prepare_model());
+        assert!(
+            poll_fn(|cx| Poll::Ready(preparation.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        let config = ServerConfig::default();
+        *state.server_config.lock().unwrap() = Some(config.clone());
+        *state.local_launch_request.lock().unwrap() =
+            Some(LocalLaunchRequest::LlamaCpp(Box::new(config)));
+        *state.local_server_running.lock().unwrap() = true;
+        drop(lifecycle);
+        tokio::time::timeout(Duration::from_secs(2), preparation)
+            .await
+            .unwrap();
+        assert!(host.model_running());
     }
 }

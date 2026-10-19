@@ -1171,7 +1171,6 @@ fn api_llama_binary_update(
                 } else {
                     LiveHost::new(state.clone(), cfg.clone())
                 };
-                let restart_applicable = host.restart_applicable();
                 state.push_log(format!(
                     "[monitor] llama-binary/update: installing {tag} to {}",
                     bin_dir.display()
@@ -1184,6 +1183,7 @@ fn api_llama_binary_update(
                     verification: VerificationIntent::prebuilt(backend),
                 };
                 let result = promote(&host, &mut guard, &paths, request).await;
+                let restart_applicable = host.restart_applicable();
                 drop(guard);
                 let _ = std::fs::remove_dir_all(&staging);
 

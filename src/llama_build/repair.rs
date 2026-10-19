@@ -165,19 +165,19 @@ pub fn repair_process_records(
 ) -> Result<RepairReport, RepairError> {
     let file = &paths.process_records;
     let temps = leftover_temp_files(file);
-    let present = std::fs::symlink_metadata(file).is_ok();
-    if !present {
-        for tmp in &temps {
-            remove_if_present(tmp)?;
-        }
-        return Ok(RepairReport {
-            cleared: 0,
-            corrupt: false,
-        });
-    }
-    let (records, corrupt): (Vec<ProcessRecord>, bool) = match load_records(file) {
-        Ok(records) => (records, false),
-        Err(_) => (Vec::new(), true),
+    let present = match std::fs::symlink_metadata(file) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(RepairError::Io(format!("{}: {error}", file.display()))),
+    };
+    // Even a missing record is not proof that a quarantined installer has
+    // stopped. Inspect directory references before releasing its lease.
+    let (records, corrupt): (Vec<ProcessRecord>, bool) = match present {
+        false => (Vec::new(), false),
+        true => match load_records(file) {
+            Ok(records) => (records, false),
+            Err(_) => (Vec::new(), true),
+        },
     };
 
     let me = lister.current_pid();
@@ -316,6 +316,17 @@ mod tests {
     }
 
     #[test]
+    fn missing_records_do_not_hide_a_process_still_using_the_build_directory() {
+        let (_t, paths) = rig();
+        let live = lister(vec![proc(77, 5, "installer", Some(&paths.root))]);
+        assert!(matches!(
+            repair_process_records(&paths, &live),
+            Err(RepairError::Live(l)) if l.len() == 1 && l[0].pid == 77
+        ));
+        assert!(repair_process_records(&paths, &lister(vec![])).is_ok());
+    }
+
+    #[test]
     fn a_recorded_pid_that_is_alive_with_the_same_creation_time_refuses() {
         let (_t, paths) = rig();
         write_records(&paths, &[("a", 500, 100)]);
@@ -409,9 +420,9 @@ mod tests {
     }
 
     #[test]
-    fn no_file_is_a_no_op_even_with_a_process_nearby() {
+    fn no_file_is_a_no_op_when_no_process_uses_the_directory() {
         let (_t, paths) = rig();
-        let live = lister(vec![proc(77, 5, "ninja", Some(&paths.root))]);
+        let live = lister(vec![proc(77, 5, "ninja", None)]);
         assert_eq!(
             repair_process_records(&paths, &live).unwrap(),
             RepairReport {

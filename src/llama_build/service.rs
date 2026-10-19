@@ -28,7 +28,7 @@ use crate::llama_runtime::gate::RuntimeGate;
 use crate::llama_runtime::promote::{JournalState, PromoteHost, RuntimePaths, read_journal};
 
 use super::cache::{
-    CleanError, CleanOptions, CleanReport, Conflict, LlamaBuildConfig, Owner, Ownership,
+    CleanError, CleanOptions, CleanReport, Conflict, Lease, LlamaBuildConfig, Owner, Ownership,
     cache_sizes, clean, dir_size,
 };
 use super::gpu;
@@ -41,8 +41,8 @@ use super::paths::{BuildPaths, list_job_records};
 use super::prereqs::PrereqReport;
 use super::prereqs_macos::validate_brew_packages;
 use super::source::ResolvedRef;
-use super::supervise::Launcher;
-use super::sysprobe::{RealSystem, SystemProbe, run_bounded};
+use super::supervise::{Launcher, Line, SpawnSpec, record_for, run_contained_with, update_records};
+use super::sysprobe::{RealSystem, SystemProbe};
 use super::{Accelerator, BuildOptions, RefChoice, TargetOs, effective_parallelism};
 
 /// How long `start` waits for the upstream revision to be pinned.
@@ -86,8 +86,13 @@ pub trait BuildEnv: Send + Sync {
     fn logical_cpus(&self) -> usize;
     fn toolchain(&self, spec: ToolchainSpec) -> Arc<dyn Toolchain>;
     /// Run `brew install <packages>` with direct argv. Only called with
-    /// allowlisted names on macOS. `Err` carries the command output.
-    fn brew_install(&self, packages: &[&str]) -> Result<String, String>;
+    /// allowlisted names on macOS, while holding install ownership.
+    fn brew_install(
+        &self,
+        packages: &[&str],
+        paths: &BuildPaths,
+        owner_id: &str,
+    ) -> Result<String, InstallFailure>;
     /// The CUDA architecture of the first detected NVIDIA GPU, when known.
     fn cuda_arch_auto(&self) -> Option<String>;
     /// The process table `repair-processes` consults before clearing records.
@@ -119,20 +124,26 @@ impl BuildEnv for HostEnv {
         )
     }
 
-    fn brew_install(&self, packages: &[&str]) -> Result<String, String> {
-        let sys = RealSystem;
-        let brew = sys
-            .which("brew")
-            .ok_or_else(|| "Homebrew was not found. Install it from https://brew.sh".to_string())?;
+    fn brew_install(
+        &self,
+        packages: &[&str],
+        paths: &BuildPaths,
+        owner_id: &str,
+    ) -> Result<String, InstallFailure> {
+        let brew = RealSystem.which("brew").ok_or_else(|| InstallFailure {
+            output: "Homebrew was not found. Install it from https://brew.sh".into(),
+            contained: true,
+        })?;
         let mut args = vec!["install"];
         args.extend_from_slice(packages);
-        let env = [
-            ("NONINTERACTIVE".to_string(), "1".to_string()),
-            ("HOMEBREW_NO_ENV_HINTS".to_string(), "1".to_string()),
-        ];
-        let out = run_bounded(&brew.to_string_lossy(), &args, BREW_TIMEOUT, &env)?;
-        let text = tail_chars(&out.combined(), 16 * 1024);
-        if out.ok() { Ok(text) } else { Err(text) }
+        run_installer(
+            &brew,
+            &args,
+            BREW_TIMEOUT,
+            &Launcher::current_exe(),
+            &paths.process_records,
+            owner_id,
+        )
     }
 
     fn cuda_arch_auto(&self) -> Option<String> {
@@ -143,12 +154,141 @@ impl BuildEnv for HostEnv {
     }
 }
 
-fn tail_chars(text: &str, max: usize) -> String {
-    let count = text.chars().count();
-    if count <= max {
-        return text.to_string();
+/// An installer failure retains the cleanup proof separately from its output.
+#[derive(Debug, Clone)]
+pub struct InstallFailure {
+    pub output: String,
+    /// `false` means ownership and any process record must be retained.
+    pub contained: bool,
+}
+
+const INSTALL_OUTPUT_BYTES: usize = 16 * 1024;
+
+fn installer_env(vars: impl IntoIterator<Item = (String, String)>) -> Vec<(String, String)> {
+    let mut env = super::toolchain_env::scrub_env(vars);
+    env.insert("NONINTERACTIVE".into(), "1".into());
+    env.insert("HOMEBREW_NO_ENV_HINTS".into(), "1".into());
+    env.into_iter().collect()
+}
+
+fn append_install_output(output: &mut String, text: &str) {
+    output.push_str(text);
+    output.push('\n');
+    if output.len() > INSTALL_OUTPUT_BYTES {
+        let mut start = output.len() - INSTALL_OUTPUT_BYTES;
+        while !output.is_char_boundary(start) {
+            start += 1;
+        }
+        drop(output.drain(..start));
     }
-    text.chars().skip(count - max).collect()
+}
+
+/// Run an installer with direct argv, bounded output and a contained deadline.
+///
+/// The caller holds install ownership until this returns, retaining that lease
+/// if `contained` is false. The supervisor also cleans up on app death; the
+/// durable process record is removed only after successful containment.
+/// Program and timeout are explicit so regressions need neither brew nor a
+/// fifteen-minute wait. The deadline starts termination, including its grace.
+pub fn run_installer(
+    program: &Path,
+    args: &[&str],
+    timeout: Duration,
+    launcher: &Launcher,
+    process_records: &Path,
+    owner_id: &str,
+) -> Result<String, InstallFailure> {
+    let mut spec = SpawnSpec::new(program, args);
+    spec.env = Some(installer_env(std::env::vars()));
+    // Establish a repair barrier before upstream code can write anything.
+    // If recording the spawned identity fails, even a torn/empty barrier
+    // still blocks reuse; never overwrite an earlier unresolved installation.
+    let barrier = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        if let Some(parent) = process_records.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(process_records)?;
+        file.write_all(b"[]")?;
+        file.sync_all()
+    })();
+    if let Err(error) = barrier {
+        return Err(InstallFailure {
+            output: format!("could not establish installer ownership: {error}"),
+            contained: true,
+        });
+    }
+    let mut output = String::new();
+    let pid = std::cell::Cell::new(0);
+    let started = Instant::now();
+    let result = run_contained_with(
+        &spec,
+        launcher,
+        &mut |line| {
+            let (Line::Stdout(text) | Line::Stderr(text)) = line;
+            append_install_output(&mut output, &text);
+        },
+        &|| started.elapsed() >= timeout,
+        &mut |p| {
+            pid.set(p);
+            let record = record_for(owner_id, p).ok_or_else(|| {
+                std::io::Error::other("could not establish installer process identity")
+            })?;
+            update_records(process_records, |all| all.push(record))
+        },
+    );
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            append_install_output(&mut output, &format!("installer failed: {error}"));
+            if pid.get() == 0 {
+                // spawn failed: nothing ever inherited the output/control pipes.
+                let _ = std::fs::remove_file(process_records);
+            }
+            return Err(InstallFailure {
+                output,
+                // A post-spawn I/O error is not proof that cleanup succeeded.
+                contained: pid.get() == 0,
+            });
+        }
+    };
+    if !outcome.contained {
+        append_install_output(
+            &mut output,
+            "installer descendants could not be contained; repair is required",
+        );
+        return Err(InstallFailure {
+            output,
+            contained: false,
+        });
+    }
+    if let Err(error) = update_records(process_records, |all| {
+        all.retain(|record| record.pid != pid.get());
+    }) {
+        append_install_output(
+            &mut output,
+            &format!("could not clear installer record: {error}"),
+        );
+        return Err(InstallFailure {
+            output,
+            contained: true,
+        });
+    }
+    if outcome.cancelled {
+        append_install_output(
+            &mut output,
+            &format!("installer timed out after {timeout:?}"),
+        );
+    } else if outcome.exit_code == Some(0) {
+        return Ok(output);
+    }
+    Err(InstallFailure {
+        output,
+        contained: true,
+    })
 }
 
 /// Paths and configuration for one request, resolved by the route layer.
@@ -236,6 +376,7 @@ struct Inner {
     active: Option<JobHandle>,
     last: Option<JobHandle>,
     validate: Option<ValidateHandle>,
+    retained_install: Option<Lease>,
     rechecks: HashMap<Accelerator, (Instant, String)>,
     refs: HashMap<&'static str, (Instant, ResolvedRef)>,
     logs: HashMap<String, LogIndex>,
@@ -405,6 +546,10 @@ impl BuildService {
 
     pub fn is_idle(&self) -> bool {
         self.ownership.holders().is_empty()
+    }
+
+    pub fn installer_recovery_required(&self) -> bool {
+        lock(&self.inner).retained_install.is_some()
     }
 
     /// What blocks starting a build right now: any holder but a read-only
@@ -801,7 +946,11 @@ impl BuildService {
     }
 
     /// `brew install` for allowlisted formulae (macOS only).
-    pub fn brew_install(&self, packages: &[String]) -> Result<FixOutcome, FixError> {
+    pub fn brew_install(
+        &self,
+        ctx: &BuildContext,
+        packages: &[String],
+    ) -> Result<FixOutcome, FixError> {
         if self.env.os() != TargetOs::Macos {
             return Err(FixError::Unsupported(
                 "one-click installs are only available on macOS".into(),
@@ -816,17 +965,33 @@ impl BuildService {
             .ownership
             .try_acquire(Owner::Install, &id)
             .map_err(FixError::Busy)?;
-        let result = self.env.brew_install(&allowed);
-        drop(lease);
+        if !containment_clear(&ctx.paths) {
+            return Err(FixError::Failed {
+                error: "unresolved process records block installation; repair is required".into(),
+                output: String::new(),
+            });
+        }
+        let result = self.env.brew_install(&allowed, &ctx.paths, &id);
+        if result.as_ref().is_err_and(|error| !error.contained) {
+            // Match build orchestration's fail-closed rule: no mutation of the
+            // toolchain is safe while an unresolved installer may still write.
+            lock(&self.inner).retained_install = Some(lease);
+        } else {
+            drop(lease);
+        }
         lock(&self.inner).rechecks.clear();
         match result {
             Ok(output) => Ok(FixOutcome {
                 installed: allowed.iter().map(|p| p.to_string()).collect(),
                 output,
             }),
-            Err(output) => Err(FixError::Failed {
-                error: "brew install failed".into(),
-                output,
+            Err(failure) => Err(FixError::Failed {
+                error: if failure.contained {
+                    "brew install failed".into()
+                } else {
+                    "brew install containment unresolved; repair is required".into()
+                },
+                output: failure.output,
             }),
         }
     }
@@ -908,12 +1073,38 @@ impl BuildService {
     ) -> Result<super::repair::RepairReport, RepairFailure> {
         let id = super::job::new_job_id()
             .map_err(|e| RepairFailure::Refused(super::repair::RepairError::Io(e)))?;
-        let lease = self
-            .ownership
-            .try_acquire(Owner::Repair, &id)
-            .map_err(RepairFailure::Busy)?;
+        // A quarantined install is no longer executing in this service, but
+        // its descendants may still write. Keep that exclusive lease alive
+        // while repair proves liveness and clears the durable barrier.
+        struct RestoreInstall<'a> {
+            inner: &'a Mutex<Inner>,
+            lease: Option<Lease>,
+        }
+        impl Drop for RestoreInstall<'_> {
+            fn drop(&mut self) {
+                if let Some(lease) = self.lease.take() {
+                    lock(self.inner).retained_install = Some(lease);
+                }
+            }
+        }
+        let mut retained = RestoreInstall {
+            inner: &self.inner,
+            lease: lock(&self.inner).retained_install.take(),
+        };
+        let lease = if retained.lease.is_none() {
+            Some(
+                self.ownership
+                    .try_acquire(Owner::Repair, &id)
+                    .map_err(RepairFailure::Busy)?,
+            )
+        } else {
+            None
+        };
         let lister = self.env.process_lister();
         let result = super::repair::repair_process_records(&ctx.paths, lister.as_ref());
+        if result.is_ok() {
+            drop(retained.lease.take());
+        }
         drop(lease);
         lock(&self.inner).rechecks.clear();
         result.map_err(RepairFailure::Refused)
@@ -1135,6 +1326,31 @@ mod tests {
         assert_eq!(default_accelerator(TargetOs::Macos), Accelerator::Metal);
         assert_eq!(default_accelerator(TargetOs::Windows), Accelerator::Cuda);
         assert_eq!(default_accelerator(TargetOs::Linux), Accelerator::Cpu);
+    }
+
+    #[test]
+    fn installer_environment_scrubs_secrets_and_overrides_interactive_settings() {
+        let env: std::collections::BTreeMap<_, _> = installer_env([
+            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("HOME".into(), "/home/build".into()),
+            ("GITHUB_TOKEN".into(), "secret".into()),
+            ("LOCAL_LLM_FOUNDRY_API_TOKEN".into(), "app-secret".into()),
+            ("LLAMA_MONITOR_PORT".into(), "7778".into()),
+            ("NONINTERACTIVE".into(), "0".into()),
+            ("HOMEBREW_NO_ENV_HINTS".into(), "0".into()),
+        ])
+        .into_iter()
+        .collect();
+        assert_eq!(env.get("PATH").map(String::as_str), Some("/usr/bin:/bin"));
+        assert_eq!(env.get("HOME").map(String::as_str), Some("/home/build"));
+        assert_eq!(env.get("NONINTERACTIVE").map(String::as_str), Some("1"));
+        assert_eq!(
+            env.get("HOMEBREW_NO_ENV_HINTS").map(String::as_str),
+            Some("1")
+        );
+        assert!(!env.contains_key("GITHUB_TOKEN"));
+        assert!(!env.contains_key("LOCAL_LLM_FOUNDRY_API_TOKEN"));
+        assert!(!env.contains_key("LLAMA_MONITOR_PORT"));
     }
 
     #[test]

@@ -784,6 +784,12 @@ pub trait PromoteHost: Send + Sync {
     fn cancelled(&self) -> bool {
         false
     }
+    /// Called with the runtime gate held, before recovery or any mutation.
+    /// Production waits for already-admitted launches and captures restart
+    /// intent here; modelless/test hosts need no lifecycle synchronization.
+    fn prepare_model(&self) -> impl Future<Output = ()> + Send {
+        async {}
+    }
     fn model_running(&self) -> bool;
     fn stop_model(&self) -> impl Future<Output = Result<(), String>> + Send;
     fn restart_model(&self) -> impl Future<Output = Result<(), String>> + Send;
@@ -1280,6 +1286,7 @@ pub async fn promote<H: PromoteHost>(
             paths.staging_prefix()
         )));
     }
+    host.prepare_model().await;
     ensure_clean(paths, host.faults())?;
     if !req.staged_dir.is_dir() {
         return Err(PromoteError::Prepare(
@@ -1325,6 +1332,7 @@ pub async fn rollback<H: PromoteHost>(
     paths: &RuntimePaths,
     exe_name: &str,
 ) -> Result<PromoteResult, PromoteError> {
+    host.prepare_model().await;
     ensure_clean(paths, host.faults())?;
     if !paths.previous.is_dir() {
         return Err(PromoteError::Prepare(
@@ -1351,6 +1359,7 @@ pub async fn uninstall<H: PromoteHost>(
     paths: &RuntimePaths,
     exe_name: &str,
 ) -> Result<PromoteResult, PromoteError> {
+    host.prepare_model().await;
     ensure_clean(paths, host.faults())?;
     if !paths.live.is_dir() && !paths.previous.is_dir() {
         return Err(PromoteError::Prepare(

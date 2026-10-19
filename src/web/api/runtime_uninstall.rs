@@ -224,6 +224,17 @@ fn llama_uninstall_route(ctx: ApiCtx) -> ApiRoute {
                         ));
                     }
                 };
+                // A launch may have passed its gate check before we acquired
+                // the gate, but not registered itself as running yet.
+                {
+                    let _lifecycle = state.server_lifecycle.lock().await;
+                    if *state.local_server_running.lock().unwrap() {
+                        return Ok(json_error(
+                            StatusCode::CONFLICT,
+                            "A server is running; stop it before uninstalling the binaries",
+                        ));
+                    }
+                }
                 let runtime = match RuntimePaths::for_live_dir(&config.app_paths.bin_dir()) {
                     Ok(p) => p,
                     Err(e) => {

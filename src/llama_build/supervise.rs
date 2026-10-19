@@ -20,9 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, mpsc};
-use std::time::Duration;
-#[cfg(unix)]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -179,6 +177,55 @@ impl Contained {
 /// must not grow the supervisor's memory without bound.
 pub const MAX_LINE_BYTES: usize = 64 * 1024;
 const TRUNCATION_MARKER: &str = " [line truncated]";
+const OUTPUT_CHANNEL_CAPACITY: usize = 256;
+/// Bound EOF confirmation even if a descendant escaped the original group.
+const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(5);
+
+/// Yield to cancellation/deadline checks even if writers never stop producing.
+fn drain_ready_output(rx: &mpsc::Receiver<Line>, sink: &mut dyn FnMut(Line)) {
+    for _ in 0..OUTPUT_CHANNEL_CAPACITY {
+        match rx.try_recv() {
+            Ok(line) => sink(line),
+            Err(_) => break,
+        }
+    }
+}
+
+fn finish_output(
+    rx: mpsc::Receiver<Line>,
+    readers: Vec<std::thread::JoinHandle<()>>,
+    contained: bool,
+    drain_timeout: Duration,
+    sink: &mut dyn FnMut(Line),
+) -> bool {
+    if contained {
+        // Drain BEFORE joining: a reader may be blocked sending final lines.
+        // An escaped/session-changing descendant can retain a pipe even after
+        // the original group is empty, so EOF confirmation has a total budget.
+        let deadline = Instant::now() + drain_timeout;
+        loop {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            match rx.recv_timeout(remaining) {
+                Ok(line) => sink(line),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => return false,
+            }
+        }
+        for reader in readers {
+            let _ = reader.join();
+        }
+        true
+    } else {
+        // An uncontained descendant may retain or continually write a pipe.
+        // Neither EOF nor an empty queue is guaranteed. Deliver at most one
+        // bounded batch, then drop the receiver and detach the readers.
+        // The durable ownership record still blocks reuse.
+        drain_ready_output(&rx, sink);
+        false
+    }
+}
 
 /// Split `reader` into lines, never holding more than `cap` bytes of one line.
 /// The rest of an over-long line is discarded and the kept part ends in a
@@ -248,7 +295,7 @@ pub fn run_contained_with(
         )));
     }
     let (stdout, stderr) = contained.take_output();
-    let (tx, rx) = mpsc::sync_channel::<Line>(256);
+    let (tx, rx) = mpsc::sync_channel::<Line>(OUTPUT_CHANNEL_CAPACITY);
     let mut readers = Vec::new();
     if let Some(out) = stdout {
         let tx = tx.clone();
@@ -271,9 +318,7 @@ pub fn run_contained_with(
     let mut cancelled = false;
     let mut contained_ok = true;
     let exit_code = loop {
-        while let Ok(line) = rx.try_recv() {
-            sink(line);
-        }
+        drain_ready_output(&rx, sink);
         if !cancelled && cancel() {
             cancelled = true;
             contained_ok = contained.terminate();
@@ -294,16 +339,7 @@ pub fn run_contained_with(
     if !cancelled {
         contained_ok = contained.terminate();
     }
-    for r in readers {
-        // An uncontained descendant may still hold a pipe open. Do not hang
-        // forever joining its reader: the durable record blocks future reuse.
-        if contained_ok {
-            let _ = r.join();
-        }
-    }
-    while let Ok(line) = rx.try_recv() {
-        sink(line);
-    }
+    contained_ok &= finish_output(rx, readers, contained_ok, OUTPUT_DRAIN_GRACE, sink);
     Ok(RunOutcome {
         exit_code: if cancelled { None } else { exit_code },
         cancelled,
@@ -847,6 +883,107 @@ pub fn recover_all(file: &Path) -> std::io::Result<Vec<(ProcessRecord, RecoveryA
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shutdown_drains_more_than_capacity_before_joining_readers() {
+        let (tx, rx) = mpsc::sync_channel(256);
+        // Full before shutdown starts: the producer cannot finish until drained.
+        for _ in 0..256 {
+            tx.send(Line::Stdout("out".into())).unwrap();
+        }
+        let reader = std::thread::spawn(move || {
+            for _ in 256..1024 {
+                tx.send(Line::Stderr("err".into())).unwrap();
+            }
+        });
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut counts = (0, 0);
+            let drained = finish_output(
+                rx,
+                vec![reader],
+                true,
+                Duration::from_secs(2),
+                &mut |line| match line {
+                    Line::Stdout(_) => counts.0 += 1,
+                    Line::Stderr(_) => counts.1 += 1,
+                },
+            );
+            assert!(drained, "output did not reach disconnect");
+            let _ = done_tx.send(counts);
+        });
+        // A join-before-drain mutation strands only detached test threads,
+        // not this test or the test process.
+        assert_eq!(
+            done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("shutdown deadlocked"),
+            (256, 768)
+        );
+    }
+
+    #[test]
+    fn unproven_containment_does_not_wait_for_an_inherited_pipe() {
+        let (tx, rx) = mpsc::sync_channel(256);
+        tx.send(Line::Stdout("buffered".into())).unwrap();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let reader = std::thread::spawn(move || {
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+            drop(tx);
+        });
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut count = 0;
+            assert!(!finish_output(
+                rx,
+                vec![reader],
+                false,
+                Duration::from_secs(2),
+                &mut |_| count += 1,
+            ));
+            let _ = done_tx.send(count);
+        });
+        let result = done_rx.recv_timeout(Duration::from_secs(5));
+        // Release the simulated pipe even on failure.
+        drop(release_tx);
+        assert_eq!(result.expect("waited for uncontained reader"), 1);
+    }
+
+    #[test]
+    fn apparently_contained_reader_without_eof_downgrades_containment() {
+        let (tx, rx) = mpsc::sync_channel::<Line>(256);
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let drained =
+                finish_output(rx, Vec::new(), true, Duration::from_millis(20), &mut |_| {});
+            let _ = done_tx.send(drained);
+        });
+        // Keep the sender alive throughout the assertion: no scheduling race
+        // can manufacture EOF. A blocking drain fails this finite outer wait.
+        let result = done_rx.recv_timeout(Duration::from_secs(5));
+        drop(tx);
+        assert!(!result.expect("EOF confirmation exceeded its budget"));
+    }
+
+    #[test]
+    fn continuous_output_yields_after_a_bounded_batch() {
+        let (tx, rx) = mpsc::sync_channel(256);
+        tx.send(Line::Stdout("initial".into())).unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut count = 0;
+            drain_ready_output(&rx, &mut |_| {
+                count += 1;
+                // The queue never becomes empty, without relying on scheduling.
+                tx.try_send(Line::Stdout("more".into())).unwrap();
+            });
+            let _ = done_tx.send(count);
+        });
+        let count = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("continuous output starved control polling");
+        assert!(count > 0 && count <= 256);
+    }
 
     #[test]
     fn display_quotes_only_what_needs_it() {

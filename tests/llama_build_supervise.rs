@@ -56,6 +56,112 @@ fn grandchild_script(pidfile: &Path) -> SpawnSpec {
     )
 }
 
+/// Re-execute only this test under a watchdog. Killing a stuck runner process
+/// also closes its control pipe, so the real supervisor cleans up its child.
+/// Unlike a timeout around a joined thread, this remains finite on the old code.
+fn under_runner_watchdog(test: &str, body: impl FnOnce()) {
+    const WORKER: &str = "FOUNDRY_SUPERVISE_REGRESSION_WORKER";
+    if std::env::var(WORKER).ok().as_deref() == Some(test) {
+        body();
+        return;
+    }
+    let mut worker = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture"])
+        .env(WORKER, test)
+        .stdin(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        match worker.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "{test}: worker failed: {status}");
+                return;
+            }
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            result => {
+                let _ = worker.kill();
+                let _ = worker.wait();
+                panic!("{test}: runner failed to finish: {result:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn shutdown_burst_preserves_more_than_capacity_on_both_pipes() {
+    under_runner_watchdog(
+        "shutdown_burst_preserves_more_than_capacity_on_both_pipes",
+        || {
+            let mut counts = (0, 0);
+            let out = run_contained(
+                &SpawnSpec::new(
+                    "sh",
+                    &[
+                        "-c",
+                        "i=0; while [ \"$i\" -lt 1024 ]; do printf 'o\\n'; printf 'e\\n' >&2; i=$((i+1)); done; exit 7",
+                    ],
+                ),
+                &launcher(),
+                &mut |line| match line {
+                    Line::Stdout(text) => {
+                        assert_eq!(text, "o");
+                        counts.0 += 1;
+                    }
+                    Line::Stderr(text) => {
+                        assert_eq!(text, "e");
+                        counts.1 += 1;
+                    }
+                },
+                &|| false,
+            )
+            .unwrap();
+            assert_eq!(out.exit_code, Some(7));
+            assert!(!out.cancelled && out.contained);
+            assert_eq!(counts, (1024, 1024));
+        },
+    );
+}
+
+#[test]
+fn cancellation_drains_a_term_burst_larger_than_capacity() {
+    under_runner_watchdog(
+        "cancellation_drains_a_term_burst_larger_than_capacity",
+        || {
+            let ready = std::cell::Cell::new(false);
+            let mut counts = (0, 0);
+            // Install the trap before announcing readiness. Output is emitted
+            // only in response to cancellation, while terminate() is waiting.
+            // 2048 bytes per pipe fits the Linux/macOS pipe buffers even while
+            // their reader is blocked on the full bounded channel.
+            let script = "trap 'i=0; while [ \"$i\" -lt 1024 ]; do printf \"o\\n\"; printf \"e\\n\" >&2; i=$((i+1)); done; exit 0' TERM; echo ready; while :; do :; done";
+            let out = run_contained(
+                &SpawnSpec::new("sh", &["-c", script]),
+                &launcher(),
+                &mut |line| match line {
+                    Line::Stdout(text) if text == "ready" => ready.set(true),
+                    Line::Stdout(text) => {
+                        assert_eq!(text, "o");
+                        counts.0 += 1;
+                    }
+                    Line::Stderr(text) => {
+                        assert_eq!(text, "e");
+                        counts.1 += 1;
+                    }
+                },
+                &|| ready.get(),
+            )
+            .unwrap();
+            assert!(ready.get());
+            assert!(out.cancelled && out.contained);
+            assert_eq!(out.exit_code, None);
+            assert_eq!(counts, (1024, 1024));
+        },
+    );
+}
+
 #[test]
 fn normal_exit_streams_lines_and_reports_the_code() {
     let mut lines = Vec::new();
