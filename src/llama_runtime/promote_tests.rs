@@ -852,27 +852,35 @@ fn orphans_are_swept_only_when_no_journal_references_them() {
 }
 
 #[test]
-fn legacy_timestamped_backups_fold_into_the_single_previous_slot() {
+fn the_newest_legacy_backup_is_adopted_into_an_empty_previous_slot_and_others_survive() {
     let w = world(Kind::LiveOnly);
     let older = w.paths.parent.join("bin-previous-b1-1-100");
     let newer = w.paths.parent.join("bin-previous-b2-1-200");
     make_set(&older, "legacy-old");
     std::thread::sleep(std::time::Duration::from_millis(20));
     make_set(&newer, "legacy-new");
-    sweep_orphans(&w.paths).unwrap();
+    let removed = sweep_orphans(&w.paths).unwrap();
+    assert!(
+        removed
+            .iter()
+            .all(|p| !p.to_string_lossy().contains("bin-previous")),
+        "no legacy backup is deleted: {removed:?}"
+    );
     assert_eq!(
         tag_of(&w.paths.previous).as_deref(),
         Some("legacy-new"),
-        "newest is adopted"
+        "newest is adopted by rename"
     );
-    assert!(!older.exists() && !newer.exists());
+    assert!(!newer.exists());
+    assert_eq!(tag_of(&older).as_deref(), Some("legacy-old"));
 
-    // A managed previous slot wins; every legacy backup is then redundant.
+    // A managed previous slot is never displaced, and no legacy backup is deleted.
     let w = world(Kind::Both);
-    make_set(&w.paths.parent.join("bin-previous-b1-1-100"), "legacy");
+    let legacy = w.paths.parent.join("bin-previous-b1-1-100");
+    make_set(&legacy, "legacy");
     sweep_orphans(&w.paths).unwrap();
     assert_eq!(tag_of(&w.paths.previous).as_deref(), Some("old-prev"));
-    assert!(!w.paths.parent.join("bin-previous-b1-1-100").exists());
+    assert_eq!(tag_of(&legacy).as_deref(), Some("legacy"));
 }
 
 #[tokio::test]

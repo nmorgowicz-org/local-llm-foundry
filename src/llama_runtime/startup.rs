@@ -37,7 +37,12 @@ fn candidate_roots(config: &AppConfig) -> Vec<PathBuf> {
     roots
 }
 
-pub fn recover_roots(roots: &[PathBuf]) -> Vec<StartupFinding> {
+/// Replay interrupted transactions in every candidate root, but only tidy
+/// (`sweep_orphans`) the root this process actually manages. A root the app is
+/// not using may belong to another install; its journal can only have come from
+/// an interrupted transaction, so replaying it is safe, while pruning or
+/// adopting its directories is not ours to do.
+pub fn recover_roots(roots: &[PathBuf], active_root: &std::path::Path) -> Vec<StartupFinding> {
     let mut findings = Vec::new();
     for root in roots {
         let live = root.join("bin");
@@ -92,7 +97,10 @@ pub fn recover_roots(roots: &[PathBuf]) -> Vec<StartupFinding> {
             });
         }
         // Orphans are only swept from a coherent runtime directory.
-        if !blocked && let Err(e) = sweep_orphans(&paths) {
+        if !blocked
+            && root.as_path() == active_root
+            && let Err(e) = sweep_orphans(&paths)
+        {
             findings.push(StartupFinding {
                 message: format!(
                     "llama.cpp runtime: could not clean leftover staging directories: {e}"
@@ -105,7 +113,7 @@ pub fn recover_roots(roots: &[PathBuf]) -> Vec<StartupFinding> {
 }
 
 pub fn recover_for_startup(config: &AppConfig) -> Vec<StartupFinding> {
-    recover_roots(&candidate_roots(config))
+    recover_roots(&candidate_roots(config), &config.app_paths.root)
 }
 
 #[cfg(test)]
@@ -117,7 +125,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("bin")).unwrap();
         let missing = root.path().join("does-not-exist");
-        assert!(recover_roots(&[root.path().to_path_buf(), missing]).is_empty());
+        assert!(recover_roots(&[root.path().to_path_buf(), missing], root.path()).is_empty());
     }
 
     #[test]
@@ -130,7 +138,7 @@ mod tests {
         let staging = root.path().join(".bin.staging-abc");
         std::fs::create_dir_all(&staging).unwrap();
 
-        let findings = recover_roots(&[root.path().to_path_buf()]);
+        let findings = recover_roots(&[root.path().to_path_buf()], root.path());
 
         assert!(
             findings
@@ -149,8 +157,31 @@ mod tests {
         let staging = root.path().join(".bin.staging-abc");
         std::fs::create_dir_all(&staging).unwrap();
 
-        recover_roots(&[root.path().to_path_buf()]);
+        recover_roots(&[root.path().to_path_buf()], root.path());
 
         assert!(!staging.exists());
+    }
+
+    #[test]
+    fn a_non_active_root_is_recovered_but_never_swept_or_adopted() {
+        let active = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(other.path().join("bin")).unwrap();
+        let staging = other.path().join(".bin.staging-abc");
+        let legacy = other.path().join("bin-previous-b1-1-1");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+
+        recover_roots(
+            &[active.path().to_path_buf(), other.path().to_path_buf()],
+            active.path(),
+        );
+
+        assert!(
+            staging.exists(),
+            "another install's directories are left alone"
+        );
+        assert!(legacy.exists());
+        assert!(!other.path().join("bin-previous").exists());
     }
 }

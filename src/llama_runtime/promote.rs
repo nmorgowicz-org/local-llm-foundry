@@ -662,9 +662,12 @@ pub fn recover(paths: &RuntimePaths, faults: &dyn Faults) -> Result<RecoveryRepo
 // Orphan and legacy cleanup (only ever after recovery succeeded)
 // ---------------------------------------------------------------------------
 
-/// Remove staging/transaction leftovers that no journal references, and fold
-/// pre-journal timestamped rollback backups into the single previous slot.
-/// Refuses to run while any journal (or a torn journal write) is present.
+/// Remove staging/transaction leftovers that no journal references, and adopt
+/// the newest pre-journal timestamped rollback backup into an *empty* previous
+/// slot. Other pre-journal backups are user data from an older updater: they
+/// are left exactly where they are (uninstall and the storage report still
+/// cover them). Refuses to run while any journal (or a torn journal write) is
+/// present.
 pub fn sweep_orphans(paths: &RuntimePaths) -> std::io::Result<Vec<PathBuf>> {
     let mut removed = Vec::new();
     if paths.journal.exists() {
@@ -699,18 +702,13 @@ pub fn sweep_orphans(paths: &RuntimePaths) -> std::io::Result<Vec<PathBuf>> {
             legacy_previous_dirs.push((path, modified));
         }
     }
-    // Exactly one previous set: keep the managed slot; if it is empty, adopt
-    // the newest pre-journal backup. Everything else is redundant.
+    // Adopt the newest pre-journal backup only when the managed slot is empty.
+    // This is a rename, never a deletion.
     legacy_previous_dirs.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
-    let mut iter = legacy_previous_dirs.into_iter();
     if !paths.previous.exists()
-        && let Some((newest, _)) = iter.next()
+        && let Some((newest, _)) = legacy_previous_dirs.into_iter().next()
     {
         std::fs::rename(&newest, &paths.previous)?;
-    }
-    for (path, _) in iter {
-        std::fs::remove_dir_all(&path)?;
-        removed.push(path);
     }
     Ok(removed)
 }
