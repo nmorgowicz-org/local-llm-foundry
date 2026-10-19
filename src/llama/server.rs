@@ -50,6 +50,8 @@ pub(crate) async fn start_backend(
     {
         state.server_logs.lock().unwrap().clear();
     }
+    // Log-derived K/V observations are per session.
+    crate::inference::kv_support::reset_session_observations();
     state.push_log(format!(
         "[monitor] start_server: launching local inference backend on port={port} model={model_identity}"
     ));

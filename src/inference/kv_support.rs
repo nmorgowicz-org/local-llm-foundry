@@ -444,6 +444,71 @@ pub fn parse_fa_quants_record(output: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Partial runtime confirmation from server logs
+// ---------------------------------------------------------------------------
+
+/// Something a running llama-server said about K/V execution. These are
+/// session-specific, nonblocking observations: the absence of a line proves
+/// nothing, and a line is never promoted to evidence for another model,
+/// device or pair.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum KvLogObservation {
+    /// CUDA converted K and V to f16 because no vector kernel was compiled.
+    CudaConversionFallback { k: String, v: String },
+    /// Flash attention was requested/auto but the runtime disabled it.
+    FlashAttnDisabled,
+}
+
+pub fn observe_log_line(line: &str) -> Option<KvLogObservation> {
+    const CONVERT: &str = "no FlashAttention vector kernel compiled for K/V types ";
+    if let Some(index) = line.find(CONVERT) {
+        let rest = &line[index + CONVERT.len()..];
+        let pair = rest.split([',', ' ']).next().unwrap_or("");
+        if let Some((k, v)) = pair.split_once('-')
+            && let (Some(k), Some(v)) = (KvType::parse(k), KvType::parse(v))
+        {
+            return Some(KvLogObservation::CudaConversionFallback {
+                k: k.name().into(),
+                v: v.name().into(),
+            });
+        }
+        return None;
+    }
+    if line.contains("flash_attn") && line.contains("not supported, set to disabled") {
+        return Some(KvLogObservation::FlashAttnDisabled);
+    }
+    None
+}
+
+static SESSION_OBSERVATIONS: std::sync::LazyLock<std::sync::Mutex<Vec<KvLogObservation>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+
+const MAX_SESSION_OBSERVATIONS: usize = 32;
+
+/// Record an observation from a log line, if it carries one. Bounded and
+/// de-duplicated.
+pub fn record_log_line(line: &str) {
+    let Some(observation) = observe_log_line(line) else {
+        return;
+    };
+    let mut store = SESSION_OBSERVATIONS.lock().unwrap();
+    if !store.contains(&observation) && store.len() < MAX_SESSION_OBSERVATIONS {
+        store.push(observation);
+    }
+}
+
+/// Observations since the last [`reset_session_observations`].
+pub fn session_observations() -> Vec<KvLogObservation> {
+    SESSION_OBSERVATIONS.lock().unwrap().clone()
+}
+
+/// Call when a new llama-server session starts.
+pub fn reset_session_observations() {
+    SESSION_OBSERVATIONS.lock().unwrap().clear();
+}
+
+// ---------------------------------------------------------------------------
 // Classification
 // ---------------------------------------------------------------------------
 
@@ -1281,6 +1346,51 @@ mod tests {
             .unwrap();
             assert!(!out.is_blocking(), "{mode:?}: {:?}", out.expected);
         }
+    }
+
+    #[test]
+    fn log_lines_yield_partial_observations_only() {
+        let convert = "W ggml_cuda_flash_attn_ext: no FlashAttention vector kernel compiled for K/V types q8_0-q4_0, converting K and V to f16 instead (slow). Add \"q8_0-q4_0\" to GGML_CUDA_FA_QUANTS to compile it.";
+        assert_eq!(
+            observe_log_line(convert),
+            Some(KvLogObservation::CudaConversionFallback {
+                k: "q8_0".into(),
+                v: "q4_0".into()
+            })
+        );
+        let disabled = "W llama_context: flash_attn not supported, set to disabled";
+        assert_eq!(
+            observe_log_line(disabled),
+            Some(KvLogObservation::FlashAttnDisabled)
+        );
+        // Unrelated or look-alike lines, and unknown types, are ignored.
+        assert_eq!(
+            observe_log_line("I srv  llama_server: initializing ..."),
+            None
+        );
+        assert_eq!(
+            observe_log_line("fused_gdn not supported, set to disabled"),
+            None
+        );
+        assert_eq!(
+            observe_log_line("no FlashAttention vector kernel compiled for K/V types zzz-q8_0, x"),
+            None
+        );
+    }
+
+    #[test]
+    fn session_observations_are_bounded_deduplicated_and_resettable() {
+        reset_session_observations();
+        for _ in 0..3 {
+            record_log_line("llama_context: flash_attn not supported, set to disabled");
+        }
+        record_log_line("unrelated");
+        assert_eq!(
+            session_observations(),
+            vec![KvLogObservation::FlashAttnDisabled]
+        );
+        reset_session_observations();
+        assert!(session_observations().is_empty());
     }
 
     #[test]

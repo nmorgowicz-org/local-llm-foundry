@@ -189,6 +189,9 @@ pub(crate) fn build_response(
         "device_identity": device.as_ref().map(|d| d.id.clone()),
         "model_metadata_identity": model.as_ref().map(|m| m.metadata_identity.clone()),
         "basis_version": basis.version,
+        // Partial, session-specific confirmation from server logs. Never feeds
+        // the classification; absence proves nothing.
+        "session_observations": crate::inference::kv_support::session_observations(),
     }))
 }
 

@@ -113,6 +113,7 @@ fn sensor_bridge_setup_available() -> bool {
 
 impl crate::inference::supervisor::BackendObserver for AppState {
     fn on_log_line(&self, line: &str) {
+        crate::inference::kv_support::record_log_line(line);
         self.push_log(line.to_string());
     }
     fn on_crash(&self, exit_status: std::process::ExitStatus, tail: Vec<String>) {
