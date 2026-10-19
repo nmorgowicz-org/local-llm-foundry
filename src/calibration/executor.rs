@@ -1007,7 +1007,7 @@ async fn run_job(
         let depths = vec![screen_workload.minimum_context.max(1)];
         let model_path_string = model_path.to_string_lossy().into_owned();
         let snapshot = calibration_capability_snapshot(&config).await;
-        let result = if let Some(error) = calibration_kv_policy_error(snapshot.as_ref(), &ctk, &ctv)
+        let result = if let Some(error) = calibration_kv_policy_error(snapshot.as_ref(), flash_attn, &ctk, &ctv)
         {
             Some(Err(error))
         } else {
@@ -1529,7 +1529,7 @@ pub async fn apply_with_validation(
     let depth = workload.minimum_context.clamp(1, 4096);
     let snapshot = calibration_capability_snapshot(config).await;
     let sweep_result =
-        if let Some(error) = calibration_kv_policy_error(snapshot.as_ref(), &ctk, &ctv) {
+        if let Some(error) = calibration_kv_policy_error(snapshot.as_ref(), flash_attn, &ctk, &ctv) {
             Err(error)
         } else {
             run_sweep_with_tokens_repetitions(
@@ -1729,6 +1729,7 @@ async fn run_preset_qualification(
         && let Some(issue) = presets::validation::validate_main_kv_policy(
             &server_config.ctk,
             &server_config.ctv,
+            crate::inference::kv_support::launch_flash_attn_mode(&server_config.flash_attn),
             snap,
         )
     {
@@ -1845,7 +1846,7 @@ async fn run_candidate_measurement(
     let depths = vec![workload.minimum_context.max(1)];
     let model_path_string = model_path.to_string_lossy().into_owned();
     let snapshot = calibration_capability_snapshot(config).await;
-    let result = if let Some(error) = calibration_kv_policy_error(snapshot.as_ref(), &ctk, &ctv) {
+    let result = if let Some(error) = calibration_kv_policy_error(snapshot.as_ref(), flash_attn, &ctk, &ctv) {
         Some(Err(error))
     } else {
         let bench = run_sweep_with_tokens_repetitions(
@@ -2267,11 +2268,17 @@ async fn calibration_capability_snapshot(
 /// rollback still triggers.
 fn calibration_kv_policy_error(
     snapshot: Option<&crate::inference::llama_cpp_capabilities::CapabilitySnapshot>,
+    flash_attn: &str,
     ctk: &str,
     ctv: &str,
 ) -> Option<String> {
     let snap = snapshot?;
-    let issue = presets::validation::validate_main_kv_policy(ctk, ctv, snap)?;
+    let issue = presets::validation::validate_main_kv_policy(
+        ctk,
+        ctv,
+        crate::inference::kv_support::FlashAttnMode::parse(flash_attn),
+        snap,
+    )?;
     Some(format!(
         "llama.cpp calibration launch blocked: {} ({})",
         issue.code, issue.message

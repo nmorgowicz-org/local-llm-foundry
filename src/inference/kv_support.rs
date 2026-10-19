@@ -135,6 +135,17 @@ impl FlashAttnMode {
     }
 }
 
+/// The mode a product launch actually requests: `LlamaCppAdapter` passes
+/// `-fa off` only when the preset says exactly `off`; everything else
+/// (empty, `auto`, `on`, legacy spellings) launches with `-fa on`.
+pub fn launch_flash_attn_mode(preset_value: &str) -> FlashAttnMode {
+    if preset_value == "off" {
+        FlashAttnMode::Off
+    } else {
+        FlashAttnMode::On
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Backend {

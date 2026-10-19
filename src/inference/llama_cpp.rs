@@ -2216,8 +2216,8 @@ mod tests {
             tools: Default::default(),
             speculation: Default::default(),
             typed: Default::default(),
-            mixed_main_kv:
-                crate::inference::llama_cpp_capabilities::MixedMainKv::product_default_denied(),
+            kv_basis: Default::default(),
+            runtime_identity: None,
             evidence_timestamp: 0,
             source:
                 crate::inference::llama_cpp_capabilities::CapabilitySnapshotSource::ManualOverride,

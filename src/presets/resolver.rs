@@ -765,13 +765,13 @@ pub struct ResolvedSelection {
 pub fn validate_runtime_selection(
     bundle: &PresetBundleSpec,
     selection: &PresetBundleSelection,
-    snapshot: &CapabilitySnapshot,
+    _snapshot: &CapabilitySnapshot,
     unified_memory: bool,
 ) -> Vec<String> {
     let mut issues = Vec::new();
-    if selection.kv_policy == LlamaKvPolicyId::MixedQ8Q4 && !snapshot.mixed_main_kv.supported {
-        issues.push("MIXED_MAIN_KV_UNSUPPORTED".to_string());
-    }
+    // Mixed K/V is no longer a bundle-level block: bundles launch with flash
+    // attention on, and only a known refusal (quantized V with FA off) blocks.
+    // See `presets::validation::validate_main_kv_policy`.
     if let Some(artifact) = bundle.artifact(&selection.artifact_id) {
         let metadata = &artifact.metadata;
         if let Some(n_cpu_moe) = selection.n_cpu_moe {
@@ -810,7 +810,7 @@ pub fn validate_runtime_selection(
 pub fn resolve_exact_selection(
     bundle: &PresetBundleSpec,
     selection: &PresetBundleSelection,
-    snapshot: Option<&CapabilitySnapshot>,
+    _snapshot: Option<&CapabilitySnapshot>,
 ) -> ResolvedSelection {
     let mut block_codes = Vec::new();
     let mut reasons = Vec::new();
@@ -891,12 +891,6 @@ pub fn resolve_exact_selection(
     ) {
         block_codes.push("unknown_workload_policy".into());
         reasons.push("unknown workload policy cannot authorize a launch".into());
-    }
-    if selection.kv_policy == LlamaKvPolicyId::MixedQ8Q4
-        && !snapshot.is_some_and(|value| value.mixed_main_kv.supported)
-    {
-        block_codes.push("MIXED_MAIN_KV_UNSUPPORTED".into());
-        reasons.push("mixed K/V requires a binary advertising mixed_main_kv support".into());
     }
     ResolvedSelection {
         selection: selection.clone(),

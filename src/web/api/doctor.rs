@@ -6,7 +6,8 @@ use crate::inference::llama_cpp::ServerConfig;
 use crate::inference::rapid_mlx::RapidMlxConfig;
 use crate::inference::rapid_mlx::capabilities::{CacheDiagnosticParams, ExtraState};
 use crate::memory_availability::MemoryAvailabilityState;
-use crate::presets::validation::validate_main_kv_policy;
+use crate::inference::kv_support::{Impact, KvSupport, launch_flash_attn_mode};
+use crate::presets::validation::{classify_main_kv, validate_main_kv_policy};
 use crate::state::{DoctorFinding, DoctorFindingType, DoctorSeverity, FixAction};
 
 pub fn routes(
@@ -85,16 +86,30 @@ fn llama_config_findings(
     let k = config.ctk.trim();
     let v = config.ctv.trim();
 
-    if let Some(snapshot) = snapshot
-        && let Some(issue) = validate_main_kv_policy(k, v, snapshot)
-    {
-        findings.push(DoctorFinding {
-            finding_type: DoctorFindingType::LlamaCpp,
-            severity: DoctorSeverity::Issue,
-            message: issue.message,
-            section: "llama.cpp cache".into(),
-            fix: None,
-        });
+    if let Some(snapshot) = snapshot {
+        let fa = launch_flash_attn_mode(&config.flash_attn);
+        if let Some(issue) = validate_main_kv_policy(k, v, fa, snapshot) {
+            findings.push(DoctorFinding {
+                finding_type: DoctorFindingType::LlamaCpp,
+                severity: DoctorSeverity::Issue,
+                message: issue.message,
+                section: "llama.cpp cache".into(),
+                fix: None,
+            });
+        } else if let Some(classification) = classify_main_kv(k, v, fa, snapshot)
+            && let KvSupport::Fallback { reason, impact } = &classification.expected
+            && *impact != Impact::NoFlashAttention
+        {
+            // An explicit `-fa off` choice is not worth a warning; a slower
+            // alternate path the user did not ask for is.
+            findings.push(DoctorFinding {
+                finding_type: DoctorFindingType::LlamaCpp,
+                severity: DoctorSeverity::Warning,
+                message: format!("K/V pair {k}/{v}: {reason}"),
+                section: "llama.cpp cache".into(),
+                fix: None,
+            });
+        }
     }
 
     let tool_enabled = config
@@ -308,10 +323,22 @@ mod tests {
     }
 
     fn llama_capability_snapshot(
-        mixed_main_kv_supported: bool,
+        cuda_pair_spec: Option<&str>,
     ) -> crate::inference::llama_cpp_capabilities::CapabilitySnapshot {
+        use crate::inference::kv_support::{
+            Backend, Evidence, KV_BASIS_VERSION, KvSupportBasis, compiled_fa_pairs,
+        };
         use crate::inference::llama_cpp_capabilities::{
-            CapabilitySnapshot, CapabilitySnapshotSource, ExecutableIdentity, MixedMainKv,
+            CapabilitySnapshot, CapabilitySnapshotSource, ExecutableIdentity,
+        };
+        let kv_basis = match cuda_pair_spec {
+            Some(spec) => KvSupportBasis {
+                version: KV_BASIS_VERSION,
+                backend: Backend::Cuda,
+                fa_pairs: Evidence::confirmed(compiled_fa_pairs(spec).unwrap(), "test"),
+                runtime_identity: None,
+            },
+            None => KvSupportBasis::default(),
         };
         CapabilitySnapshot {
             executable_identity: ExecutableIdentity {
@@ -331,29 +358,23 @@ mod tests {
             tools: Default::default(),
             speculation: Default::default(),
             typed: Default::default(),
-            mixed_main_kv: if mixed_main_kv_supported {
-                MixedMainKv {
-                    supported: true,
-                    reason: "build manifest proves support".into(),
-                    source: "build_manifest".into(),
-                }
-            } else {
-                MixedMainKv::product_default_denied()
-            },
+            kv_basis,
+            runtime_identity: None,
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::AutoProbed,
         }
     }
 
     #[test]
-    fn llama_mixed_kv_check_fires_independent_of_tool_enabled() {
+    fn llama_quantized_v_without_flash_attention_is_an_issue_independent_of_tools() {
         let config = ServerConfig {
             tool_call_format: None,
             ctk: "q8_0".into(),
             ctv: "q4_0".into(),
+            flash_attn: "off".into(),
             ..Default::default()
         };
-        let snapshot = llama_capability_snapshot(false);
+        let snapshot = llama_capability_snapshot(None);
         let findings = llama_config_findings(&config, Some(&snapshot));
         assert!(findings.iter().any(
             |finding| finding.finding_type == DoctorFindingType::LlamaCpp
@@ -362,16 +383,31 @@ mod tests {
     }
 
     #[test]
-    fn llama_mixed_kv_check_silent_when_binary_supports_pair() {
+    fn llama_mixed_kv_pair_is_silent_when_evidence_is_unknown_or_native() {
         let config = ServerConfig {
             tool_call_format: None,
             ctk: "q8_0".into(),
             ctv: "q4_0".into(),
             ..Default::default()
         };
-        let snapshot = llama_capability_snapshot(true);
+        for spec in [None, Some("all")] {
+            let snapshot = llama_capability_snapshot(spec);
+            assert!(llama_config_findings(&config, Some(&snapshot)).is_empty());
+        }
+    }
+
+    #[test]
+    fn llama_missing_compiled_pair_is_a_warning_not_an_issue() {
+        let config = ServerConfig {
+            tool_call_format: None,
+            ctk: "q8_0".into(),
+            ctv: "q4_0".into(),
+            ..Default::default()
+        };
+        let snapshot = llama_capability_snapshot(Some("q8_0-q8_0"));
         let findings = llama_config_findings(&config, Some(&snapshot));
-        assert!(findings.is_empty());
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, DoctorSeverity::Warning);
     }
 
     #[test]

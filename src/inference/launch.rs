@@ -440,6 +440,7 @@ pub async fn construct_adapter(
                 && let Some(issue) = crate::presets::validation::validate_main_kv_policy(
                     &config.ctk,
                     &config.ctv,
+                    crate::inference::kv_support::launch_flash_attn_mode(&config.flash_attn),
                     snap,
                 )
             {
@@ -447,13 +448,6 @@ pub async fn construct_adapter(
                     "llama.cpp launch blocked: {} ({})",
                     issue.code,
                     issue.message
-                );
-            }
-            if (config.ctk.eq_ignore_ascii_case("q8_0") && config.ctv.eq_ignore_ascii_case("q4_0"))
-                && snapshot.is_none()
-            {
-                anyhow::bail!(
-                    "llama.cpp launch blocked: capability probe unavailable for mixed main K/V"
                 );
             }
             let gpu_env = state.gpu_env.lock().unwrap().clone();

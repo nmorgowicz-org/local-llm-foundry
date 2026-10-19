@@ -469,7 +469,7 @@ mod tests {
     use super::*;
     use crate::inference::llama_cpp_capabilities::{
         CacheCapabilities, CapabilitySnapshot, CapabilitySnapshotSource, ConcurrencyCapabilities,
-        ContextCapabilities, EndpointCapabilities, ExecutableIdentity, MixedMainKv,
+        ContextCapabilities, EndpointCapabilities, ExecutableIdentity,
         SpeculationCapabilities, StreamingCapabilities, TemplateCapabilities, ToolCapabilities,
     };
 
@@ -492,7 +492,8 @@ mod tests {
             tools: ToolCapabilities::default(),
             speculation: SpeculationCapabilities::default(),
             typed: Default::default(),
-            mixed_main_kv: MixedMainKv::product_default_denied(),
+            kv_basis: Default::default(),
+            runtime_identity: None,
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::ManualOverride,
         }
