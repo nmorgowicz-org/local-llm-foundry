@@ -1,0 +1,9 @@
+I srv  llama_server: initializing ...
+I ggml_cuda_init: found 1 CUDA devices (Total VRAM: 32606 MiB):
+I   Device 0: NVIDIA GeForce RTX 5090, compute capability 12.0, VMM: yes, VRAM: 32606 MiB
+I load_backend: loaded CUDA backend from D:\AI\loaders\llamacpp\ggml-cuda.dll
+I load_backend: loaded CPU backend from D:\AI\loaders\llamacpp\ggml-cpu-alderlake.dll
+I cmn  common_param:   - CUDA0   : NVIDIA GeForce RTX 5090 (32606 MiB, 30900 MiB free)
+I cmn  common_param: system_info: n_threads = 12 (n_threads_batch = 12) / 24 | CUDA : ARCHS = 1200 | USE_GRAPHS = 1 | FA_QUANTS = all | BLACKWELL_NATIVE_FP4 = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMACPP_USE_LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 |
+E gguf_init_from_file: failed to open GGUF file '/nonexistent/foundry-probe-xyz.gguf' (No such file or directory)
+E srv  llama_server: exiting due to model loading error
