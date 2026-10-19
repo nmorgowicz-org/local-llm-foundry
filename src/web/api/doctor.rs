@@ -2,11 +2,11 @@ use warp::Filter;
 
 use super::common::{ApiCtx, check_api_token, unauthorized_api_token, with_app_config};
 use crate::config::AppConfig;
+use crate::inference::kv_support::{Impact, KvSupport, launch_flash_attn_mode};
 use crate::inference::llama_cpp::ServerConfig;
 use crate::inference::rapid_mlx::RapidMlxConfig;
 use crate::inference::rapid_mlx::capabilities::{CacheDiagnosticParams, ExtraState};
 use crate::memory_availability::MemoryAvailabilityState;
-use crate::inference::kv_support::{Impact, KvSupport, launch_flash_attn_mode};
 use crate::presets::validation::{classify_main_kv, validate_main_kv_policy};
 use crate::state::{DoctorFinding, DoctorFindingType, DoctorSeverity, FixAction};
 

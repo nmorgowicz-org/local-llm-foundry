@@ -469,8 +469,8 @@ mod tests {
     use super::*;
     use crate::inference::llama_cpp_capabilities::{
         CacheCapabilities, CapabilitySnapshot, CapabilitySnapshotSource, ConcurrencyCapabilities,
-        ContextCapabilities, EndpointCapabilities, ExecutableIdentity,
-        SpeculationCapabilities, StreamingCapabilities, TemplateCapabilities, ToolCapabilities,
+        ContextCapabilities, EndpointCapabilities, ExecutableIdentity, SpeculationCapabilities,
+        StreamingCapabilities, TemplateCapabilities, ToolCapabilities,
     };
 
     fn snapshot_with_flash() -> CapabilitySnapshot {

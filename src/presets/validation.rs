@@ -345,8 +345,8 @@ mod tests {
     use super::*;
     use crate::inference::llama_cpp_capabilities::{
         CacheCapabilities, CapabilitySnapshot, CapabilitySnapshotSource, ConcurrencyCapabilities,
-        ContextCapabilities, EndpointCapabilities, ExecutableIdentity,
-        SpeculationCapabilities, StreamingCapabilities, TemplateCapabilities, ToolCapabilities,
+        ContextCapabilities, EndpointCapabilities, ExecutableIdentity, SpeculationCapabilities,
+        StreamingCapabilities, TemplateCapabilities, ToolCapabilities,
     };
 
     fn base_snapshot() -> CapabilitySnapshot {
@@ -461,7 +461,10 @@ mod tests {
         p.flash_attn = "off".into();
         for snap in [base_snapshot(), cuda_snapshot("all")] {
             let issues = validate_llama_launch_policy(&p, Some(&snap));
-            assert!(issues.iter().any(|i| i.code == KV_PAIR_WONT_START), "{issues:?}");
+            assert!(
+                issues.iter().any(|i| i.code == KV_PAIR_WONT_START),
+                "{issues:?}"
+            );
         }
         // The same pair is fine when V is floating.
         p.ctv = "f16".into();
