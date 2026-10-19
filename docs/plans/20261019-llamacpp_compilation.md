@@ -1049,23 +1049,23 @@ always-amber CUDA assumption. Screenshots: `docs/screenshots/artifacts/llama-bui
 
 ### Phase 3: Shared promotion, retention, rollback
 
-1. [ ] `promote.rs` temp-dir fault tests on macOS **and Windows**: inject failure and process
+1. [x] `promote.rs` temp-dir fault tests on macOS **and Windows**: inject failure and process
    death before/after **each** intent flush, rename (including compensating renames and previous
    preservation), staged/live health/backend check, commit, restart and cleanup boundary.
    Replay startup recovery twice; assert last usable live and old previous survive uncommitted
    failure, no journal-referenced staging swept, committed state finishes retention. Include
    first install, disk-full journal write, locked DLL, corrupt/ambiguous journal and rollback twice.
-2. [ ] Extract shared verifier/promotion for prebuilt and source; preparation before execution,
+2. [x] Extract shared verifier/promotion for prebuilt and source; preparation before execution,
    sanitized loader closure, backend proof. Fake verifier records calls: no `job.verify` duplicate
    GPU probe. Test journaled restart intent precedes model stop, including death after stop.
-3. [ ] Runtime mutex across update/promote/rollback/uninstall/model lifecycle; fixed order tests,
+3. [x] Runtime mutex across update/promote/rollback/uninstall/model lifecycle; fixed order tests,
    cancel before journal vs rejection after. Assert compile/download do not hold runtime mutex.
-4. [ ] Test binary failure causes transactional restore, whereas model restart failure returns
+4. [x] Test binary failure causes transactional restore, whereas model restart failure returns
    `InstalledRestartFailed`, keeps installed binaries and exposes manual retry/rollback.
-5. [ ] Register startup recovery before model/API startup and orphan cleanup; add rollback API
+5. [x] Register startup recovery before model/API startup and orphan cleanup; add rollback API
    and conditional legacy retention sweep. Prebuilt manifest is provenance, never capability.
 
-**Gate:** macOS/Windows fault suite proves idempotent recovery at every boundary, including a
+**Gate (met, see `docs/plans/evidence/llamacpp-compilation/phase-3.md`):** macOS/Windows fault suite proves idempotent recovery at every boundary, including a
 failed rollback rename. Existing `llama_binary.rs:1471-1580` tests pass; manual prebuilt swap on
 both platforms leaves stable live/previous sets and reports restart failure distinctly.
 
