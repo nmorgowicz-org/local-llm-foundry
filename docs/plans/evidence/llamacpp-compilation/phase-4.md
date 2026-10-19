@@ -69,6 +69,21 @@ files; independent SHA-256 verification found no mismatches in either set. The n
 manifest correctly has no CUDA compiled-pair/architecture claim. No pending journal,
 staging directory, process record, or `refs/foundry/jobs/` pin remained.
 
+### Real Windows CUDA build (RTX 5090, qualification root `D:\llf-p4-cuda`)
+
+Run from the normal checkout at `5e7cfc76` (disposable `HOME` and app root):
+`llama-build --accelerator cuda --ref latest --jobs 8`, about 13.5 minutes.
+
+- First attempt failed in preflight: the CUDA smoke test passed a `\\?\` verbatim path to
+  nvcc, which cannot identify the compiler. Fixed in `5e7cfc76` (verbatim prefix stripped).
+- Resolved `b11739` (`0ce8cd11416c8840498e6701bcbe39ad4b858c2b`), built 565 steps, staged
+  and installed through the journaled promoter ("Installed b11739 . src . FA all").
+- Manifest: `fa_quants_spec: all`, `cuda_architectures: 120a-real`, 49 compiled K/V pairs.
+  Installed set includes cudart/cublas/cublasLt 13 DLLs, `ggml-cuda.dll` and all CPU variants.
+- Model run from the installed set (`llama-bench`, `-ngl 99 -fa 1 -ctk q8_0 -ctv q4_0`,
+  Qwen3.8-27B IQ3_XXS, 9.72 GiB): CUDA backend on RTX 5090 (cc 12.0); pp128 1649.21 t/s,
+  tg32 91.82 t/s. This exercises a mixed quantized K/V pair. One smoke, not a throughput claim.
+
 ### Model smoke (separate from installation proof)
 
 Sanitized environment (`env -i`, system PATH, disposable HOME/TMPDIR), installed `llama-bench`,
@@ -128,8 +143,7 @@ Phase 5 must independently enforce endpoint authentication, confirmations and ow
 - Unix crash recovery may require manual process inspection/record repair when group identity
   cannot be proven. Do not delete `processes.json` merely to bypass the barrier.
 - Linux CPU/CUDA code paths are explicitly untested.
-- Full Windows CUDA FA-all compile, installed CUDA model execution, and peak disk usage are
-  not claimed. The provisional Windows 20 GiB floor remains.
+- Peak disk usage is not measured. The provisional Windows 20 GiB floor remains.
 - Standalone CLI is model-less; it does not stop/restart an unrelated externally launched server.
   Stop those processes yourself before using their managed root.
 - CUDA compatibility uses the OS-specific minor-compatibility table, not the toolkit-bundled
