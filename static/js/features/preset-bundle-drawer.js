@@ -16,6 +16,7 @@ import { sessionState } from '../core/app-state.js';
 import { loadPresets, syncSelectedPresetSelection, openPresetModal } from './presets.js';
 import { showToast as appShowToast, showToastWithActions } from './toast.js';
 import { openEvidenceDrawer, evidenceFromLaunchObservation } from './evidence-drawer.js';
+import { createKvSupportController } from './kv-support.js';
 
 // ── The four known workload policies (wire ids), in display order ────────────
 const WORKLOAD_POLICIES = [
@@ -144,6 +145,10 @@ function buildDrawer() {
         const wrap = el('div', 'bundle-controls bundle-radio-group');
         wrap.dataset.slot = 'kv';
         row.appendChild(wrap);
+        const support = el('div', 'kv-support');
+        support.id = 'bundle-kv-support';
+        support.hidden = true;
+        row.appendChild(support);
         return row;
     })());
 
@@ -326,7 +331,11 @@ function apiHeaders(json = false) {
 // { field, value, reason }; a match means the option is unavailable and must be
 // rendered disabled (never hidden) with the reason wired via aria-describedby.
 function reasonFor(_bundleId, capabilityReasons, field, value) {
-    const match = (capabilityReasons || []).find(r => r && r.field === field && (value == null || r.value === value));
+    // Advisory entries (for example a K/V pair with an expected slower path) are
+    // guidance shown by the shared K/V line, never a reason to disable an option.
+    const match = (capabilityReasons || []).find(
+        r => r && r.severity !== 'advisory' && r.field === field && (value == null || r.value === value),
+    );
     return match ? match.reason || 'Unavailable' : null;
 }
 
@@ -550,7 +559,39 @@ function renderContext(d, bundle, reasons) {
     controls.appendChild(custom);
 }
 
+// The drawer's KV policy ids name an equal or mixed pair of cache types.
+const KV_POLICY_PAIRS = {
+    f16_f16: ['f16', 'f16'],
+    q8_0_q8_0: ['q8_0', 'q8_0'],
+    q4_0_q4_0: ['q4_0', 'q4_0'],
+    q8_0_q4_0: ['q8_0', 'q4_0'],
+};
+
+let kvController = null;
+let kvControllerContainer = null;
+
+// Same shared client and server-written text as the wizard and editor. Bundle
+// cards are redacted (no local paths), so no model id is sent: the line reports
+// runtime evidence and stays honest that model execution is unverified.
+function refreshKvSupport(d) {
+    const container = d.body.querySelector('#bundle-kv-support');
+    if (!container) return;
+    if (!kvController || kvControllerContainer !== container) {
+        kvControllerContainer = container;
+        kvController?.cancel();
+        kvController = createKvSupportController({
+            container,
+            getContext: async () => {
+                const pair = KV_POLICY_PAIRS[state.draftSelection?.kv_policy];
+                return pair ? { k: pair[0], v: pair[1], fa: '', modelId: '' } : null;
+            },
+        });
+    }
+    kvController.update();
+}
+
 function renderKv(d, bundle, reasons) {
+    refreshKvSupport(d);
     const wrap = d.body.querySelector('.bundle-row-kv .bundle-radio-group');
     wrap.textContent = '';
     d.body.querySelector('.bundle-row-kv').hidden = !(bundle?.kv_policy_options || []).length;

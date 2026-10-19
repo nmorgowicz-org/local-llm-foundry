@@ -36,6 +36,7 @@ pub const CSS_CHAT: &str = include_str!("../../static/css/chat.css");
 pub const CSS_COMMAND_PALETTE: &str = include_str!("../../static/css/command-palette.css");
 pub const CSS_COMPONENTS: &str = include_str!("../../static/css/components.css");
 pub const CSS_EVIDENCE_DRAWER: &str = include_str!("../../static/css/evidence-drawer.css");
+pub const CSS_KV_SUPPORT: &str = include_str!("../../static/css/kv-support.css");
 pub const CSS_LAYOUT: &str = include_str!("../../static/css/layout.css");
 pub const CSS_LOGS: &str = include_str!("../../static/css/logs.css");
 pub const CSS_MODAL_PREMIUM: &str = include_str!("../../static/css/modal-premium.css");
@@ -131,6 +132,9 @@ pub const FEATURES_FILE_BROWSER_LAUNCHER_JS: &str =
     include_str!("../../static/js/features/file-browser-launcher.js");
 pub const FEATURES_FILE_BROWSER_JS: &str = include_str!("../../static/js/features/file-browser.js");
 pub const FEATURES_HF_BROWSE_JS: &str = include_str!("../../static/js/features/hf-browse.js");
+pub const FEATURES_KV_SUPPORT_JS: &str = include_str!("../../static/js/features/kv-support.js");
+pub const FEATURES_LAUNCH_KV_CHIP_JS: &str =
+    include_str!("../../static/js/features/launch-kv-chip.js");
 pub const FEATURES_LHM_JS: &str = include_str!("../../static/js/features/lhm.js");
 pub const FEATURES_LLAMA_CPP_DETAILS_JS: &str =
     include_str!("../../static/js/features/llama-cpp-details.js");
@@ -145,6 +149,8 @@ pub const FEATURES_NETWORK_DETECTION_JS: &str =
     include_str!("../../static/js/features/network-detection.js");
 pub const FEATURES_PRESET_BUNDLE_DRAWER_JS: &str =
     include_str!("../../static/js/features/preset-bundle-drawer.js");
+pub const FEATURES_PRESET_EDITOR_KV_JS: &str =
+    include_str!("../../static/js/features/preset-editor-kv.js");
 pub const FEATURES_PRESET_EDITOR_MLX_JS: &str =
     include_str!("../../static/js/features/preset-editor-mlx.js");
 pub const FEATURES_PRESETS_JS: &str = include_str!("../../static/js/features/presets.js");
@@ -198,6 +204,8 @@ pub const FEATURES_SPAWN_WIZARD_HF_TAGS_JS: &str =
     include_str!("../../static/js/features/spawn-wizard-hf-tags.js");
 pub const FEATURES_SPAWN_WIZARD_IA_JS: &str =
     include_str!("../../static/js/features/spawn-wizard-ia.js");
+pub const FEATURES_SPAWN_WIZARD_KV_JS: &str =
+    include_str!("../../static/js/features/spawn-wizard-kv.js");
 pub const FEATURES_SPAWN_WIZARD_LLAMA_IA_JS: &str =
     include_str!("../../static/js/features/spawn-wizard-llama-ia.js");
 pub const FEATURES_SPAWN_WIZARD_MLX_IA_JS: &str =

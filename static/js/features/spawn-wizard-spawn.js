@@ -9,6 +9,7 @@ import {
 } from './spawn-wizard.js';
 import { _renderPresetParamsStep } from './spawn-wizard-review-step.js';
 import { _binaryReady } from './spawn-wizard-binary-prereq.js';
+import { applyKvLaunchGate, wizardKvBlockReason } from './spawn-wizard-kv.js';
 import { buildRapidMlxConfig } from './spawn-wizard-rapid-mlx.js';
 import { openEvidenceDrawer, evidenceFromCommandPreview } from './evidence-drawer.js';
 import { setTuneConfig, showTunePanel } from './tune-panel.js';
@@ -330,6 +331,11 @@ export async function spawnServer() {
     showErrorText('llama.cpp binary not found. Download it using the banner above.');
     return;
   }
+  const kvBlock = wizardKvBlockReason();
+  if (kvBlock) {
+    showErrorText(kvBlock);
+    return;
+  }
   wizardState.spawn.inFlight = true; wizardState.spawn.error = '';
   if (!dom.spawnServerBtn) return;
   dom.spawnServerBtn.disabled = true;
@@ -419,6 +425,7 @@ export async function spawnServer() {
   } finally {
     wizardState.spawn.inFlight = false;
     if (dom.spawnServerBtn) dom.spawnServerBtn.disabled = false;
+    applyKvLaunchGate();
   }
 }
 

@@ -11,6 +11,7 @@ import { showToast, showConfirmDialog, showPromptDialog } from './toast.js';
 import Router from './router.js';
 import { buildEstimateBody, rapidEstimatePolicyFromConfig } from './vram-estimate.js';
 import { openBundleDrawer } from './preset-bundle-drawer.js';
+import { hydrateKvChips } from './launch-kv-chip.js';
 import { attachRapidDownloadState, rapidModelInfo } from './rapid-model-download.js';
 import { engineDescriptor, engineHueStyle, renderEngineTag } from '../core/engine-descriptor.js';
 
@@ -932,6 +933,7 @@ export function renderLaunchGrid() {
 
     // Stamp last-launched timestamps if session data is already available
     _applyLastLaunchedToCards();
+    hydrateKvChips();
     // Memory bar and drop zone: init once (idempotent after first call)
     if (!document.getElementById('setup-drop-zone')?._dzInited) {
         initSetupDropZone();

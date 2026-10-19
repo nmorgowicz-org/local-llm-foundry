@@ -2587,9 +2587,18 @@ Response fields: `support` (`{kind: native | fallback | unverified | wont_start,
 compiled fused kernel, independent of expected execution), `reason`, `fix`,
 `buildable_missing` (a confirmed CUDA pair that a source build would add),
 `backend`, `effective_flash_attn`, `runtime_identity`, `device_identity`,
-`model_metadata_identity`, `basis_version`, `advisories` (reserved), and
+`model_metadata_identity`, `basis_version`, `device_source`, `advisories`, and
 `session_observations` (partial log-derived confirmation for the current
 server session; absence proves nothing).
+
+`device_id` defaults to the only accelerator the runtime enumerated (or several
+identical ones); `device_source` reports `requested`, `default_single_accelerator`
+or `unknown`, and an ambiguous device keeps the answer `unverified` rather than
+guessing. `advisories` is model-family guidance (id, severity, text, source). It
+is empty without a resolved model, never changes `support`, and is qualitative:
+the Gemma 4 entry is user/maintainer guidance for quantizing either K or V, and
+the Qwen3.8-27B entry is a maintainer observation for `q8_0`/`q4_0` on that model
+only.
 
 Only a quantized V cache with flash attention off is `wont_start` (llama.cpp
 refuses to start). Missing or malformed runtime evidence is `unverified` and

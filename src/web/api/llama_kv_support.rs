@@ -146,6 +146,40 @@ pub(crate) fn resolve_device(
     }))
 }
 
+fn is_accelerator_line(line: &str) -> bool {
+    let token = device_token(line).to_ascii_uppercase();
+    !(token.starts_with("CPU") || token.starts_with("BLAS"))
+}
+
+/// The device a launch would use when none is named: the only accelerator the
+/// runtime enumerated, or several of the same model (llama.cpp splits across
+/// them and the flash-attention rule is per backend). Anything ambiguous is
+/// left unknown, which keeps the classification `Unverified` rather than guessed.
+pub(crate) fn effective_device(basis: &KvSupportBasis) -> Option<DeviceEvidence> {
+    let accelerators: Vec<&String> = basis
+        .devices
+        .iter()
+        .filter(|line| is_accelerator_line(line))
+        .collect();
+    let first = accelerators.first()?;
+    let name = |line: &str| {
+        line.split(" : ")
+            .nth(1)
+            .map(|rest| rest.split(" (").next().unwrap_or(rest).trim().to_string())
+    };
+    let first_name = name(first)?;
+    if accelerators
+        .iter()
+        .any(|line| name(line).as_deref() != Some(first_name.as_str()))
+    {
+        return None;
+    }
+    Some(DeviceEvidence {
+        id: device_token(first).to_string(),
+        metal_bf16: basis.metal_bf16.clone(),
+    })
+}
+
 /// Build the JSON response. Pure: the caller supplies the snapshot and the
 /// already-resolved model.
 pub(crate) fn build_response(
@@ -165,7 +199,15 @@ pub(crate) fn build_response(
 
     let unavailable = KvSupportBasis::unavailable("no llama-server runtime evidence");
     let basis = snapshot.map(|s| &s.kv_basis).unwrap_or(&unavailable);
-    let device = resolve_device(basis, params.get("device_id").map(String::as_str))?;
+    let requested = resolve_device(basis, params.get("device_id").map(String::as_str))?;
+    let device_source = if requested.is_some() {
+        "requested"
+    } else if effective_device(basis).is_some() {
+        "default_single_accelerator"
+    } else {
+        "unknown"
+    };
+    let device = requested.or_else(|| effective_device(basis));
     let context = KvContext {
         basis,
         device: device.as_ref(),
@@ -189,6 +231,7 @@ pub(crate) fn build_response(
         "advisories": advisories_for(k, v, facts.as_ref()),
         "runtime_identity": basis.runtime_identity,
         "device_identity": device.as_ref().map(|d| d.id.clone()),
+        "device_source": device_source,
         "model_metadata_identity": model.as_ref().map(|m| m.metadata_identity.clone()),
         "basis_version": basis.version,
         // Partial, session-specific confirmation from server logs. Never feeds
@@ -208,13 +251,19 @@ async fn current_snapshot(config: &AppConfig) -> Option<CapabilitySnapshot> {
     if !config.llama_server_path.is_file() {
         return None;
     }
-    let _ = crate::inference::llama_cpp_capabilities::generate_snapshot(&config.llama_server_path)
-        .await;
-    crate::inference::llama_cpp_capabilities::ExecutableIdentity::from_path(
+    // The UI revalidates on every edit, so reuse the cached snapshot while it is
+    // still valid (path, executable hash and plugin closure all unchanged) and
+    // only probe again when it is missing or stale.
+    let identity = crate::inference::llama_cpp_capabilities::ExecutableIdentity::from_path(
         &config.llama_server_path,
     )
-    .ok()
-    .and_then(|identity| crate::inference::llama_cpp_capabilities::cached_snapshot(&identity))
+    .ok()?;
+    if let Some(snapshot) = crate::inference::llama_cpp_capabilities::cached_snapshot(&identity) {
+        return Some(snapshot);
+    }
+    crate::inference::llama_cpp_capabilities::generate_snapshot(&config.llama_server_path)
+        .await
+        .ok()
 }
 
 pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
@@ -487,6 +536,53 @@ mod tests {
         assert!(resolve_device(&basis, Some("CUDA")).is_err());
         assert!(resolve_device(&basis, Some("")).unwrap().is_none());
         assert!(resolve_device(&basis, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn effective_device_is_the_single_accelerator_or_unknown() {
+        let mut basis = cuda_snapshot().kv_basis;
+        assert_eq!(effective_device(&basis).unwrap().id, "CUDA0");
+        // CPU and BLAS lines never count as the accelerator.
+        basis.devices = vec![
+            "BLAS    : Accelerate (0 MiB, 0 MiB free)".into(),
+            "MTL0    : Apple M5 Max (57344 MiB, 57343 MiB free)".into(),
+            "CPU     : Apple M5 Max (65536 MiB, 65536 MiB free)".into(),
+        ];
+        assert_eq!(effective_device(&basis).unwrap().id, "MTL0");
+        // Two identical GPUs: still unambiguous.
+        basis.devices = vec![
+            "CUDA0 : NVIDIA GeForce RTX 5090 (32606 MiB)".into(),
+            "CUDA1 : NVIDIA GeForce RTX 5090 (32606 MiB)".into(),
+        ];
+        assert_eq!(effective_device(&basis).unwrap().id, "CUDA0");
+        // Different GPUs, or none: unknown, never guessed.
+        basis.devices = vec![
+            "CUDA0 : NVIDIA GeForce RTX 5090 (32606 MiB)".into(),
+            "CUDA1 : NVIDIA GeForce RTX 3060 (12288 MiB)".into(),
+        ];
+        assert!(effective_device(&basis).is_none());
+        basis.devices = vec!["CPU : AMD Ryzen (65461 MiB)".into()];
+        assert!(effective_device(&basis).is_none());
+        basis.devices.clear();
+        assert!(effective_device(&basis).is_none());
+    }
+
+    #[test]
+    fn omitted_device_uses_the_single_accelerator_so_native_is_reachable() {
+        let model = ModelEvidence {
+            metadata_identity: "m-1".into(),
+            head_dims: vec![128],
+        };
+        let body = build_response(
+            Some(&cuda_snapshot()),
+            &params(&[("k", "q8_0"), ("v", "q4_0"), ("fa", "on")]),
+            Some(model),
+            None,
+        )
+        .unwrap();
+        assert_eq!(body["support"]["kind"], "native");
+        assert_eq!(body["device_source"], "default_single_accelerator");
+        assert_eq!(body["device_identity"], "CUDA0");
     }
 
     #[test]

@@ -61,8 +61,41 @@ and MTP/capability renders) explicitly refresh the mirror; real `input` and
 `change` events use the same path. Guided custom-context edits write through
 the canonical context control. There is no polling or body-wide attribute
 observer: assigning `.value` or `.checked` does not mutate an HTML attribute.
-Asymmetric K/V configurations leave the symmetric KV tiles unselected and
-show both precisions in the sticky strip.
+A mixed pair highlights the **K q8_0 · V q4_0** tile when it is exactly that
+pair; any other asymmetric pair leaves the symmetric tiles unselected and shows
+both precisions in the sticky strip.
+
+#### K/V support line
+
+The wizard (`#hw-kv-support`, inside the KV cache precision card that Guided
+shows and Pro relocates into Memory & context), the preset editor
+(`#modal-kv-support`), the Configure drawer and the launch-card chip all call
+`GET /api/llama-binary/kv-support` through the shared `kv-support.js` client, so
+the same context renders the same server-written text. The line shows one of
+four states: fused attention (quiet), slower path (amber, with the reason),
+not verified (neutral), or won't start (red, with the fix). It also reports
+whether a fused kernel for the pair is compiled into the runtime, separately
+from how the pair is expected to execute, and lists model-family guidance
+beneath (guidance never changes the state).
+
+- **Start is gated, Save is not.** A known refusal (a quantized V cache with
+  flash attention off) disables the wizard's Start button with the reason and
+  fix. Saving a preset is never blocked, because presets are portable across
+  machines. A failed lookup renders nothing and blocks nothing.
+- **Model context.** The client sends a model id only when the model file is
+  inside the configured models directory; otherwise the capability is still
+  shown and model-specific evidence and advisories are omitted.
+- **Metal.** The mixed tile is hidden on Metal (its fused kernels cover equal
+  K/V pairs only and rebuilding does not add mixed kernels) unless a mixed pair
+  is already selected. No rebuild hint is ever shown for Metal or CPU.
+- **Freshness.** Every edit revalidates, answers for a context that changed
+  while in flight are discarded, and a changed runtime identity (plugin swap,
+  update) drops everything cached.
+- **Launch chip.** A launch card shows a chip only when there is something to
+  say: slower path, won't start, or a *mixed* pair that is unverified. An equal
+  pair that merely lacks device/model evidence stays quiet.
+- **Defaults.** New presets default to `q8_0`/`q8_0`. Stored presets keep their
+  values, including an empty value that means the server default.
 Capability rediscovery only seeds MTP when no explicit decision exists. It
 respects the canonical checkbox's `_mtpUserConfigured` authority, Guided
 radio edits, and an explicit speculative-mode selection; Pro edits survive

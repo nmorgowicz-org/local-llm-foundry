@@ -1031,12 +1031,12 @@ Tests green, migration reprobes, plugin-only change invalidates both backend and
 
 ### Phase 2: K/V UI + advisories + default unification
 
-1. [ ] Implement scoped advisory table and metadata matching tests: Gemma guidance for quantized
+1. [x] Implement scoped advisory table and metadata matching tests: Gemma guidance for quantized
    K **or** V, specific Qwen3.8-27B observation, no invented broad Qwen family evidence.
-2. [ ] Wire shared client into Guided, Pro, editor, bundle drawer and launch chip. Send resolved
+2. [x] Wire shared client into Guided, Pro, editor, bundle drawer and launch chip. Send resolved
    model id; empty/missing metadata still yields useful capability and no advisory.
-3. [ ] Unify only new defaults to q8_0/q8_0; preserve stored presets; remove stale tooltip.
-4. [ ] Playwright (`docs/agents/playwright.md`): CUDA Guided mixed tile and editor show quiet
+3. [x] Unify only new defaults to q8_0/q8_0; preserve stored presets; remove stale tooltip.
+4. [x] Playwright (`docs/agents/playwright.md`): CUDA Guided mixed tile and editor show quiet
    Native with adequate confirmed context, amber only for evidenced missing-kernel fallback,
    neutral Unverified for unknown execution (including compiled pair but unknown shape). Metal
    tile hidden, Pro contextual CPU-attention warning, no rebuild link. FA off + floating V is
@@ -1044,7 +1044,7 @@ Tests green, migration reprobes, plugin-only change invalidates both backend and
    V-only quantization, no-model advisory absence, model revision/device/plugin identity changes
    invalidating cached UI and discarding late responses.
 
-**Gate:** Guided/Pro/editor/bundles render identical evidence/text for identical context; no
+**Gate (met 2026-10-19; receipt `docs/plans/evidence/llamacpp-compilation/phase-2.md`):** Guided/Pro/editor/bundles render identical evidence/text for identical context; no
 always-amber CUDA assumption. Screenshots: `docs/screenshots/artifacts/llama-build/`.
 
 ### Phase 3: Shared promotion, retention, rollback

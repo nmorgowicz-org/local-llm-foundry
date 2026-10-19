@@ -1,0 +1,56 @@
+/* Shared K/V support line (kv-support.js). One look on every surface. */
+.kv-support {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+    padding: 6px 10px;
+    border: 1px solid var(--border-subtle);
+    border-left-width: 3px;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--neutral-soft-bg);
+    font-size: var(--text-xs, 12px);
+    line-height: 1.4;
+    color: var(--color-text-secondary);
+}
+.kv-support[hidden] { display: none; }
+
+.kv-support-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.kv-support-badge { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; white-space: nowrap; }
+.kv-support-icon { width: 1.1em; text-align: center; }
+.kv-support-reason { color: var(--color-text-secondary); }
+.kv-support-fix { color: var(--color-text-primary); font-weight: 500; }
+.kv-support-compiled,
+.kv-support-rebuild { color: var(--color-text-muted); }
+
+/* Native is deliberately quiet: no tint, muted badge. */
+.kv-support--native { border-left-color: var(--border-emphasis); }
+.kv-support--native .kv-support-badge { color: var(--color-text-muted); font-weight: 500; }
+
+.kv-support--fallback { border-left-color: var(--color-warning); }
+.kv-support--fallback .kv-support-badge { color: var(--color-warning); }
+
+/* Unverified is neutral information, never an alarm colour. */
+.kv-support--unverified { border-left-color: var(--accent-soft-border); }
+.kv-support--unverified .kv-support-badge { color: var(--color-text-secondary); }
+
+.kv-support--wont_start { border-left-color: var(--color-error); }
+.kv-support--wont_start .kv-support-badge { color: var(--color-error); }
+
+.kv-support-advisories { margin: 2px 0 0; padding-left: 16px; display: flex; flex-direction: column; gap: 2px; }
+.kv-support-advisory { cursor: help; }
+.kv-support-advisory--caution { color: var(--color-warning); }
+.kv-support-advisory--info { color: var(--color-text-secondary); }
+
+@media (prefers-reduced-motion: no-preference) {
+    .kv-support { transition: border-color 0.15s ease; }
+}
+
+/* Launch-card chip: only rendered when there is something to say. */
+.launch-chip--kv { cursor: help; }
+.launch-chip--kv-fallback { color: var(--color-warning); border-color: var(--color-warning); }
+.launch-chip--kv-wont_start { color: var(--color-error); border-color: var(--color-error); }
+.launch-chip--kv-unverified { color: var(--color-text-secondary); }
+
+/* The tile's own display rule would otherwise defeat the hidden attribute. */
+.hw-decision-tile[hidden] { display: none; }

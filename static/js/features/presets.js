@@ -32,6 +32,7 @@ import {
 import { openEstimateEvidenceDrawer } from './evidence-drawer.js';
 import { initCalibrationUi } from './calibration.js';
 import { FIELD_CATALOG } from './spawn-wizard-groups.js';
+import { refreshPresetEditorKv } from './preset-editor-kv.js';
 import {
     chatTemplateStatusText,
     openChatTemplateManageModal,
@@ -122,7 +123,7 @@ function configureCapabilityFields(snapshot, preset) {
     const cacheValues = snapshot?.cache?.kv_type_values || [];
     const editorId = key => FIELD_CATALOG.find(field => field.presetKey === key)?.editorId;
     const storedCtk = preset?.ctk || document.getElementById(editorId('ctk') || 'modal-ctk')?.value || 'q8_0';
-    const storedCtv = preset?.ctv || document.getElementById(editorId('ctv') || 'modal-ctv')?.value || 'f16';
+    const storedCtv = preset?.ctv || document.getElementById(editorId('ctv') || 'modal-ctv')?.value || 'q8_0';
     const advertised = new Set(cacheValues);
     const common = ['f16', 'q8_0', 'q4_0'];
     const buildKvOptions = (storedValue) => {
@@ -137,6 +138,7 @@ function configureCapabilityFields(snapshot, preset) {
     };
     replaceOptions(document.getElementById(editorId('ctk') || 'modal-ctk'), buildKvOptions(storedCtk), storedCtk);
     replaceOptions(document.getElementById(editorId('ctv') || 'modal-ctv'), buildKvOptions(storedCtv), storedCtv);
+    refreshPresetEditorKv();
 
     const effort = typed.reasoning_effort || {};
     const effortValues = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
@@ -1460,7 +1462,7 @@ async function autoSizePreset() {
             native_context_limit: _presetNativeContextLimit || null,
             n_ctx: parseInt(document.getElementById('modal-context-size')?.value) || 128000,
             ctk: document.getElementById('modal-ctk')?.value || 'q8_0',
-            ctv: document.getElementById('modal-ctv')?.value || 'f16',
+            ctv: document.getElementById('modal-ctv')?.value || 'q8_0',
             parallel_slots: parseInt(document.getElementById('modal-parallel-slots')?.value) || 1,
             ubatch_size: parseInt(document.getElementById('modal-ubatch-size')?.value) || 512,
             n_cpu_moe: parseInt(document.getElementById('modal-n-cpu-moe')?.value) || 0,
@@ -1529,7 +1531,7 @@ export function updatePresetVram() {
         updatePresetMmapHint();
         const nCtx = parseInt(document.getElementById('modal-context-size')?.value) || 131072;
         const ctk = document.getElementById('modal-ctk')?.value || 'q8_0';
-        const ctv = document.getElementById('modal-ctv')?.value || 'f16';
+        const ctv = document.getElementById('modal-ctv')?.value || 'q8_0';
         const parallelSlots = parseInt(document.getElementById('modal-parallel-slots')?.value) || 1;
         const ubatch = parseInt(document.getElementById('modal-ubatch-size')?.value) || 512;
         const nCpuMoe = parseInt(document.getElementById('modal-n-cpu-moe')?.value) || 0;
@@ -2132,7 +2134,8 @@ export function openPresetModal(mode, section, seedPreset = null) {
         if (newPresetSeed?.backend === 'rapid_mlx') numOrEmpty('modal-context-size', newPresetSeed.rapid_mlx?.context_length);
         else setVal('modal-context-size', presetContextSize(newPresetSeed) || 128000);
         setVal('modal-ctk', 'q8_0');
-        setVal('modal-ctv', 'f16');
+        // New presets default to an equal q8_0/q8_0 pair; stored presets keep their values.
+        setVal('modal-ctv', 'q8_0');
         setVal('modal-batch-size', 2048);
         setVal('modal-ubatch-size', 2048);
         setVal('modal-parallel-slots', 1);
@@ -2197,6 +2200,7 @@ export function openPresetModal(mode, section, seedPreset = null) {
     if (convertButton) convertButton.hidden = !supportsBundles || !document.getElementById('modal-preset-id')?.value;
     renderPresetBundleEditor();
     modal.classList.add('open');
+    refreshPresetEditorKv();
     // Navigate to specified section, or reset to first section
     const targetSection = section || 'model';
     document.querySelector(`.preset-nav-item[data-section="${targetSection}"]`)?.click();
