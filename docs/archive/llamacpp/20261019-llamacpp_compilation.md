@@ -1,9 +1,13 @@
 # llama.cpp From-Source Builds + Capability-Aware Mixed K/V
 
 **Date:** 2026-10-19
-**Status:** Implementation plan. Approved design retained; review contracts revised 2026-10-19. Prior spike observations in §9; FA-all peak disk usage remains unmeasured.
+**Status:** Archived after Phase 6 implementation and verification (2026-10-19). Approved design and historical acceptance criteria retained.
 **Last Verified:** 2026-10-19 against foundry `main` @ `fcf2b878`, llama.cpp `master` @ `098ce526b` (b11727-8),
 `../llama-local-tooling/scripts/llamacpp/` (build_llamacpp.py, Build-LlamaCpp.ps1, Install-LlamaCpp.ps1)
+
+**Closeout:** Phase 6 was the final implementation phase; no release has been published.
+Verification results and deferred manual QA are recorded in the [Phase 6 receipt](evidence/llamacpp-compilation/phase-6.md).
+Archival does not mean every manual QA gate below was executed.
 
 > **For agentic workers:** execute phases in order. Every phase lists files, tests, and a hard gate.
 > Do not start a phase until the previous gate passes. Tests come before product code (TDD).
@@ -986,7 +990,7 @@ log in `tests/fixtures/llama_build/`:
 The following tests/spikes/gates are **future implementation acceptance**, not work executed by
 this plan-only revision. Each implementation phase ends with touched-module `cargo test`,
 `cargo clippy -- -D warnings`, relevant UI tests, and a receipt in
-`docs/plans/evidence/llamacpp-compilation/phase-N.md` (baseline, files, commands + exit codes).
+`docs/archive/llamacpp/evidence/llamacpp-compilation/phase-N.md` (baseline, files, commands + exit codes).
 Track the checklist below; do not claim manual/model proof when it is deferred.
 
 ### Phase 0: Prior spikes (observations recorded 2026-10-19; peak disk budget still provisional)
@@ -1023,7 +1027,7 @@ Track the checklist below; do not claim manual/model proof when it is deferred.
    `validation.rs:382-400`, `bundle.rs:1242-1267`, `doctor.rs:296-376`, `launch.rs:816-820`,
    `llama_cpp.rs:2219`, `candidates.rs:495`.
 
-**Gate (met 2026-10-19; receipt `docs/plans/evidence/llamacpp-compilation/phase-1.md`):** confirmed `FA_QUANTS=all` gives confirmed compiled availability; only sufficient
+**Gate (met 2026-10-19; receipt `docs/archive/llamacpp/evidence/llamacpp-compilation/phase-1.md`):** confirmed `FA_QUANTS=all` gives confirmed compiled availability; only sufficient
 device/model evidence gives expected Native. Valid missing-pair CUDA fixture warns fallback;
 missing/malformed evidence is nonblocking Unverified. Metal warnings retain context; no universal
 slowdown. Quantized V/off is refused before spawn, floating V/off never called fused Native.
@@ -1044,7 +1048,7 @@ Tests green, migration reprobes, plugin-only change invalidates both backend and
    V-only quantization, no-model advisory absence, model revision/device/plugin identity changes
    invalidating cached UI and discarding late responses.
 
-**Gate (met 2026-10-19; receipt `docs/plans/evidence/llamacpp-compilation/phase-2.md`):** Guided/Pro/editor/bundles render identical evidence/text for identical context; no
+**Gate (met 2026-10-19; receipt `docs/archive/llamacpp/evidence/llamacpp-compilation/phase-2.md`):** Guided/Pro/editor/bundles render identical evidence/text for identical context; no
 always-amber CUDA assumption. Screenshots: `docs/screenshots/artifacts/llama-build/`.
 
 ### Phase 3: Shared promotion, retention, rollback
@@ -1065,7 +1069,7 @@ always-amber CUDA assumption. Screenshots: `docs/screenshots/artifacts/llama-bui
 5. [x] Register startup recovery before model/API startup and orphan cleanup; add rollback API
    and conditional legacy retention sweep. Prebuilt manifest is provenance, never capability.
 
-**Gate (met, see `docs/plans/evidence/llamacpp-compilation/phase-3.md`):** macOS/Windows fault suite proves idempotent recovery at every boundary, including a
+**Gate (met, see `docs/archive/llamacpp/evidence/llamacpp-compilation/phase-3.md`):** macOS/Windows fault suite proves idempotent recovery at every boundary, including a
 failed rollback rename. Existing `llama_binary.rs:1471-1580` tests pass; manual prebuilt swap on
 both platforms leaves stable live/previous sets and reports restart failure distinctly.
 

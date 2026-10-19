@@ -2,7 +2,7 @@
 //! launch and never changes the classification. Every entry names where it
 //! came from, and no entry claims more than its source supports.
 //!
-//! Plan: `docs/plans/20261019-llamacpp_compilation.md` §4.8.
+//! Plan: `docs/archive/llamacpp/20261019-llamacpp_compilation.md` §4.8.
 
 use serde::Serialize;
 

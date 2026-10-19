@@ -10,7 +10,7 @@
 //!
 //! Compiled pair availability is reported separately from expected execution:
 //! a compiled pair is evidence of availability, not proof that a given
-//! device/model executes it. See `docs/plans/20261019-llamacpp_compilation.md`
+//! device/model executes it. See `docs/archive/llamacpp/20261019-llamacpp_compilation.md`
 //! §4.6.1–§4.7.
 
 use std::collections::BTreeSet;
