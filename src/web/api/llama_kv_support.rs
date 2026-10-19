@@ -20,6 +20,7 @@ use warp::http::StatusCode;
 
 use super::{ApiCtx, ApiRoute, box_reply, check_api_token, unauthorized_api_token};
 use crate::config::AppConfig;
+use crate::inference::kv_advisories::{ModelFacts, advisories_for};
 use crate::inference::kv_support::{
     DeviceEvidence, KvContext, KvSupportBasis, KvType, ModelEvidence, classify_kv_pair,
     launch_flash_attn_mode,
@@ -151,6 +152,7 @@ pub(crate) fn build_response(
     snapshot: Option<&CapabilitySnapshot>,
     params: &HashMap<String, String>,
     model: Option<ModelEvidence>,
+    facts: Option<ModelFacts>,
 ) -> Result<serde_json::Value, KvQueryError> {
     let parse = |key: &str| -> Result<KvType, KvQueryError> {
         let raw = params.get(key).map(String::as_str).unwrap_or("");
@@ -183,8 +185,8 @@ pub(crate) fn build_response(
         "fix": classification.fix(),
         "buildable_missing": classification.buildable_missing,
         "backend": basis.backend,
-        // Model-family guidance arrives with the advisory table.
-        "advisories": [],
+        // Guidance only; never changes the classification. Empty without model facts.
+        "advisories": advisories_for(k, v, facts.as_ref()),
         "runtime_identity": basis.runtime_identity,
         "device_identity": device.as_ref().map(|d| d.id.clone()),
         "model_metadata_identity": model.as_ref().map(|m| m.metadata_identity.clone()),
@@ -256,11 +258,23 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
                             .await
                             .ok()
                             .and_then(Result::ok);
-                            meta.map(|meta| model_evidence(id, &resolved, &meta))
+                            meta.map(|meta| {
+                                let facts = ModelFacts {
+                                    architecture: meta.architecture.clone(),
+                                    file_name: resolved
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().into_owned()),
+                                };
+                                (model_evidence(id, &resolved, &meta), facts)
+                            })
                         }
                     };
+                    let (model, facts) = match model {
+                        Some((evidence, facts)) => (Some(evidence), Some(facts)),
+                        None => (None, None),
+                    };
                     let snapshot = current_snapshot(&config).await;
-                    match build_response(snapshot.as_ref(), &params, model) {
+                    match build_response(snapshot.as_ref(), &params, model, facts) {
                         Ok(body) => Ok(box_reply(warp::reply::json(&body))),
                         Err(KvQueryError::BadRequest(message)) => {
                             Ok(error_reply(StatusCode::BAD_REQUEST, &message))
@@ -364,6 +378,7 @@ mod tests {
             Some(&cuda_snapshot()),
             &params(&[("k", "q8_0"), ("v", "q4_0"), ("fa", "on")]),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(body["support"]["kind"], "unverified");
@@ -389,6 +404,7 @@ mod tests {
                 ("device_id", "CUDA0"),
             ]),
             Some(model),
+            None,
         )
         .unwrap();
         assert_eq!(body["support"]["kind"], "native");
@@ -401,6 +417,7 @@ mod tests {
         let body = build_response(
             Some(&cuda_snapshot()),
             &params(&[("k", "q8_0"), ("v", "q4_0"), ("fa", "off")]),
+            None,
             None,
         )
         .unwrap();
@@ -416,7 +433,7 @@ mod tests {
             if let Some(fa) = fa {
                 p.insert("fa".into(), fa.into());
             }
-            let body = build_response(Some(&cuda_snapshot()), &p, None).unwrap();
+            let body = build_response(Some(&cuda_snapshot()), &p, None, None).unwrap();
             assert_eq!(body["effective_flash_attn"], "on", "{fa:?}");
             assert_eq!(body["blocking"], false);
         }
@@ -424,7 +441,8 @@ mod tests {
 
     #[test]
     fn no_runtime_evidence_is_unverified_never_blocking() {
-        let body = build_response(None, &params(&[("k", "q8_0"), ("v", "q4_0")]), None).unwrap();
+        let body =
+            build_response(None, &params(&[("k", "q8_0"), ("v", "q4_0")]), None, None).unwrap();
         assert_eq!(body["support"]["kind"], "unverified");
         assert_eq!(body["blocking"], false);
         assert_eq!(body["compiled_pair"]["state"], "unavailable");
@@ -433,11 +451,12 @@ mod tests {
     #[test]
     fn unknown_types_and_devices_are_bad_requests() {
         let snapshot = cuda_snapshot();
-        assert!(build_response(Some(&snapshot), &params(&[("k", "q8_0")]), None).is_err());
+        assert!(build_response(Some(&snapshot), &params(&[("k", "q8_0")]), None, None).is_err());
         assert!(
             build_response(
                 Some(&snapshot),
                 &params(&[("k", "wat"), ("v", "q8_0")]),
+                None,
                 None
             )
             .is_err()
@@ -446,6 +465,7 @@ mod tests {
             Some(&snapshot),
             &params(&[("k", "q8_0"), ("v", "q8_0"), ("device_id", "CUDA9")]),
             None,
+            None,
         );
         assert!(err.is_err());
         // Without any enumerated devices a device id cannot be validated.
@@ -453,6 +473,7 @@ mod tests {
             build_response(
                 None,
                 &params(&[("k", "q8_0"), ("v", "q8_0"), ("device_id", "CUDA0")]),
+                None,
                 None
             )
             .is_err()
@@ -466,5 +487,29 @@ mod tests {
         assert!(resolve_device(&basis, Some("CUDA")).is_err());
         assert!(resolve_device(&basis, Some("")).unwrap().is_none());
         assert!(resolve_device(&basis, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn advisories_need_model_facts_and_never_change_the_classification() {
+        use crate::inference::kv_advisories::ModelFacts;
+        let p = params(&[("k", "q8_0"), ("v", "q4_0"), ("fa", "on")]);
+        let none = build_response(Some(&cuda_snapshot()), &p, None, None).unwrap();
+        assert_eq!(none["advisories"], serde_json::json!([]));
+
+        let gemma = ModelFacts {
+            architecture: Some("gemma4".into()),
+            file_name: Some("gemma-4-26B-A4B-it.gguf".into()),
+        };
+        let with = build_response(Some(&cuda_snapshot()), &p, None, Some(gemma)).unwrap();
+        assert_eq!(with["advisories"][0]["id"], "gemma4-quantized-kv");
+        assert_eq!(with["advisories"][0]["severity"], "caution");
+        assert!(
+            with["advisories"][0]["source"]
+                .as_str()
+                .unwrap()
+                .contains("qualitative")
+        );
+        assert_eq!(with["support"], none["support"]);
+        assert_eq!(with["blocking"], none["blocking"]);
     }
 }
