@@ -98,6 +98,17 @@ impl AppPaths {
         self.root.join("bin")
     }
 
+    /// The single retained previous runtime set. A sibling of `bin_dir()`, on
+    /// the same volume, so promotion and rollback are renames.
+    pub fn bin_previous_dir(&self) -> PathBuf {
+        self.root.join("bin-previous")
+    }
+
+    /// Journal of the in-flight (or last interrupted) runtime transaction.
+    pub fn runtime_transaction_file(&self) -> PathBuf {
+        self.root.join("runtime-transaction.json")
+    }
+
     /// Resolve the managed llama.cpp server while the application-root
     /// migration remains restartable. A healthy binary in either the canonical
     /// or legacy root must remain usable by every runtime consumer, not only by
@@ -283,6 +294,20 @@ mod tests {
     fn explicit_root_is_side_effect_free_and_exact() {
         let custom = PathBuf::from("/tmp/foundry-test-root");
         assert_eq!(AppPaths::resolve_root(Some(custom.clone())), custom);
+    }
+
+    #[test]
+    fn runtime_transaction_paths_are_same_volume_siblings_of_bin() {
+        let paths = AppPaths::from_root(PathBuf::from("/tmp/foundry-test-root"));
+        assert_eq!(paths.bin_previous_dir().parent(), paths.bin_dir().parent());
+        assert_eq!(
+            paths.runtime_transaction_file().parent(),
+            paths.bin_dir().parent()
+        );
+        let runtime =
+            crate::llama_runtime::promote::RuntimePaths::for_live_dir(&paths.bin_dir()).unwrap();
+        assert_eq!(runtime.previous, paths.bin_previous_dir());
+        assert_eq!(runtime.journal, paths.runtime_transaction_file());
     }
 
     #[test]

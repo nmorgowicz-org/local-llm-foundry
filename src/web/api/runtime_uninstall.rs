@@ -13,6 +13,9 @@ use warp::http::StatusCode;
 use super::common::{check_api_token, check_db_admin_token};
 use super::{ApiCtx, ApiReply, ApiRoute, unauthorized_api_token, unauthorized_db_admin_token};
 use crate::inference::rapid_mlx::updater::RapidMlxRuntimeManager;
+use crate::llama_runtime::gate::RuntimeOp;
+use crate::llama_runtime::host::LiveHost;
+use crate::llama_runtime::promote::{RuntimePaths, uninstall};
 
 /// Typed confirmations for the two destructive uninstall flows. Install and
 /// upgrade already demand a db-admin token plus an exact confirm string;
@@ -207,32 +210,66 @@ fn llama_uninstall_route(ctx: ApiCtx) -> ApiRoute {
                         "No managed llama.cpp binaries are installed",
                     ));
                 }
-                let result = tokio::task::spawn_blocking(move || {
-                    let mut removed = 0usize;
-                    for path in &paths {
-                        match if path.is_dir() {
-                            std::fs::remove_dir_all(path)
-                        } else {
-                            std::fs::remove_file(path)
-                        } {
-                            Ok(()) => removed += 1,
-                            Err(err) => {
-                                return Err(anyhow::anyhow!(
-                                    "Cannot remove {}: {err}",
-                                    path.display()
-                                ));
-                            }
+                // One gate for every runtime mutation: an update or rollback in
+                // flight makes this a 409 naming the owner, never a race.
+                let mut guard = match state.runtime_gate.try_begin(RuntimeOp::Uninstall) {
+                    Ok(guard) => guard,
+                    Err(busy) => {
+                        return Ok(json_error(
+                            StatusCode::CONFLICT,
+                            format!(
+                                "The llama.cpp runtime is busy ({} in progress)",
+                                busy.owner.label()
+                            ),
+                        ));
+                    }
+                };
+                let runtime = match RuntimePaths::for_live_dir(&config.app_paths.bin_dir()) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+                    }
+                };
+                let exe = if cfg!(windows) { "llama-server.exe" } else { "llama-server" };
+                let removed = usize::from(runtime.live.is_dir()) + usize::from(runtime.previous.is_dir());
+                if removed > 0 {
+                    let host = LiveHost::without_model(state.clone(), config.clone());
+                    match uninstall(&host, &mut guard, &runtime, exe).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            return Ok(json_error(StatusCode::CONFLICT, e.to_string()));
                         }
                     }
-                    Ok(removed)
+                }
+                drop(guard);
+                // Pre-journal leftovers (`bin-previous-<tag>-<pid>-<stamp>`) are
+                // not part of any transaction; remove them here.
+                let legacy = tokio::task::spawn_blocking(move || {
+                    let mut count = 0usize;
+                    for path in &paths {
+                        let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+                        let is_legacy = name.as_deref().is_some_and(|n| n.starts_with("bin-previous-"));
+                        if is_legacy && path.exists() {
+                            if path.is_dir() {
+                                std::fs::remove_dir_all(path)?;
+                            } else {
+                                std::fs::remove_file(path)?;
+                            }
+                            count += 1;
+                        }
+                    }
+                    Ok::<usize, std::io::Error>(count)
                 })
                 .await;
-                match result {
-                    Ok(Ok(removed)) => Ok(Box::new(warp::reply::json(&serde_json::json!({
+                match legacy {
+                    Ok(Ok(count)) => Ok(Box::new(warp::reply::json(&serde_json::json!({
                         "ok": true,
-                        "removed": removed,
+                        "removed": removed + count,
                     })))),
-                    Ok(Err(message)) => Ok(json_error(StatusCode::CONFLICT, message.to_string())),
+                    Ok(Err(e)) => Ok(json_error(
+                        StatusCode::CONFLICT,
+                        format!("Cannot remove leftover runtime backups: {e}"),
+                    )),
                     Err(_) => Ok(json_error(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "llama.cpp uninstall task failed",

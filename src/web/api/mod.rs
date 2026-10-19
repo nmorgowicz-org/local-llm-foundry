@@ -20,6 +20,7 @@ mod hf;
 mod lhm;
 mod llama_binary;
 mod llama_kv_support;
+mod llama_runtime_routes;
 mod metrics;
 mod models;
 mod preset_bundles;
@@ -88,6 +89,7 @@ pub fn api_routes(
     let runtime_uninstall_routes = runtime_uninstall::routes(ctx.clone());
     let llama_binary_routes = llama_binary::routes(ctx.clone());
     let llama_kv_support_routes = llama_kv_support::routes(ctx.clone());
+    let llama_runtime_routes = llama_runtime_routes::routes(ctx.clone());
 
     let models_routes = models::routes(ctx.clone());
     let config_routes = config::routes(ctx.clone());
@@ -119,6 +121,7 @@ pub fn api_routes(
         .or(tls_routes)
         .or(llama_binary_routes)
         .or(llama_kv_support_routes)
+        .or(llama_runtime_routes)
         .or(runtime_uninstall_routes)
         .or(spawn_wizard_routes)
         .or(vram_routes)

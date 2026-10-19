@@ -414,6 +414,16 @@ pub async fn construct_adapter(
 ) -> Result<BackendAdapter> {
     match request {
         LocalLaunchRequest::LlamaCpp(config) => {
+            // A model must not start against a runtime that is mid-swap. Only
+            // the promotion's own restart (which carries the owner token) passes.
+            if let Some(owner) = state.runtime_gate.current_owner()
+                && !crate::llama_runtime::gate::is_runtime_owner()
+            {
+                anyhow::bail!(
+                    "The llama.cpp runtime is busy ({} in progress); try again when it finishes",
+                    owner.label()
+                );
+            }
             // Capability claims must be tied to the exact selected llama-server
             // binary rather than the build bundled during development. Snapshot
             // generation is bounded; validation below remains the launch gate.

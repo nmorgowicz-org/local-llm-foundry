@@ -730,6 +730,15 @@ pub fn run() -> Result<()> {
         .thread_stack_size(8 * 1024 * 1024)
         .build()?;
 
+    // Finish or undo any runtime swap a crash interrupted, before anything can
+    // launch a model against a half-swapped runtime directory.
+    for finding in crate::llama_runtime::startup::recover_for_startup(&app_config) {
+        if finding.warning {
+            eprintln!("[warn] {}", finding.message);
+        }
+        state.push_log(format!("[monitor] {}", finding.message));
+    }
+
     // Llama metrics poller. It remains idle until the user starts a preset or
     // explicitly attaches to an endpoint.
     {

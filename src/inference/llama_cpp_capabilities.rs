@@ -308,6 +308,13 @@ pub fn cache_snapshot(snapshot: CapabilitySnapshot) {
 }
 
 pub async fn generate_snapshot(binary: &Path) -> Result<CapabilitySnapshot> {
+    // Never execute or hash a runtime directory that is mid-swap. Callers treat
+    // an error as "capability unavailable"; the cached snapshot stays valid.
+    if crate::llama_runtime::gate::swap_window_active()
+        && !crate::llama_runtime::gate::is_runtime_owner()
+    {
+        bail!("the llama.cpp runtime is being updated; capability probing is paused");
+    }
     let identity = ExecutableIdentity::from_path(binary)?;
 
     let version = probe_version(binary).await?;
