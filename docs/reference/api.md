@@ -2613,16 +2613,43 @@ Return the currently installed llama-server binary version.
 
 ### `POST /api/llama-binary/update`
 
-Download and install a specific llama.cpp release.
+Download and install a specific llama.cpp release as a journaled promotion.
 
 - Auth: `api-token`.
 - Request: `{ "tag": "b5700", "backend": "metal" }` — `tag` selects a specific
   release; omit it to auto-select the newest release that ships an asset for
   the requested `backend` (the platform default when `backend` is omitted).
 - Behavior:
-  - Downloads release archive to `bin/`.
-  - Applies `chmod 755` on Unix.
-  - Copies all files (CUDA/Vulkan/SYCL builds require co-located libs).
+  - Downloads and extracts the release, then stages the full file set beside `bin/`
+    (CUDA/Vulkan/SYCL builds require co-located libs).
+  - Verifies the staged set, stops a running llama.cpp model, swaps `bin/` and the single
+    retained `bin-previous/` by rename, verifies the live set, and restarts the model.
+  - A custom `llama_server_path` still installs to the managed `bin/`; the path is reported
+    as `custom_server_path`.
+- Response: `ok`, `outcome` (`promoted`, `installed_restart_failed`, `rolled_back`,
+  `failed`), `version`, `backend`, `arch`, `sha256`, `server_restarted`,
+  `restart_applicable`, `restart_error` (when the restart failed), `custom_server_path`,
+  `warnings`. `installed_restart_failed` keeps `ok: true`: the runtime is installed.
+- Errors: `409 {owner}` when another runtime mutation is in flight, or when an earlier
+  interrupted transaction is unresolved.
+- See `docs/reference/binary-lifecycle.md` for the transaction and recovery model.
+
+### `POST /api/llama-binary/rollback`
+
+Swap the live and previous runtime sets under the same gate and journal.
+
+- Auth: `api-token`.
+- Response: same shape as update. `outcome: "failed"` when there is no previous set.
+- Errors: `409 {owner}` when another runtime mutation is in flight.
+
+### `GET /api/llama-binary/runtime-status`
+
+Runtime state for the llama.cpp panel.
+
+- Auth: `api-token`.
+- Response: `ok`, `busy_owner`, `live` and `previous` (`{label}` or `null`),
+  `previous_available`, `transaction` (`state`: `clean` | `pending` | `blocked`, plus
+  `journal` or `reason`), `last` (the last finished transaction), `custom_server_path`.
 
 ### `POST /api/llama/restart`
 
@@ -3209,6 +3236,8 @@ Route handlers: `src/web/api/llama_binary.rs`.
 - `GET /api/llama-binary/version` — currently installed binary version.
 - `GET /api/llama-binary/latest` — latest available llama.cpp release.
 - `GET /api/llama-binary/releases` — list of recent releases.
+- `POST /api/llama-binary/rollback` — swap live and previous runtime sets.
+- `GET /api/llama-binary/runtime-status` — previous availability and transaction state.
 - `GET /api/llama-binary/release?build=N` — specific release info by build ID.
 - `GET /api/llama-binary/platform-info` — current platform/backend info.
 - `POST /api/llama-binary/update` — download and install a release.
