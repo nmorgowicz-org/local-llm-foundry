@@ -381,7 +381,9 @@ impl RealToolchain {
         tc: Option<&WindowsToolchain>,
     ) -> Result<String, String> {
         let dir = self.smoke_dir()?;
-        let root = std::fs::canonicalize(dir.path()).map_err(|e| e.to_string())?;
+        let root = std::fs::canonicalize(dir.path())
+            .map(|p| super::paths::without_verbatim_prefix(&p))
+            .map_err(|e| e.to_string())?;
         let cuda = accelerator == Accelerator::Cuda;
         let metal = accelerator == Accelerator::Metal;
         let (cmake_lists, source_name, source_body) = if cuda {
