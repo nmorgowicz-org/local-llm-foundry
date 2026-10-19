@@ -9,6 +9,8 @@ import { showToast } from './toast.js';
 import { setHtml } from '../core/set-html.js';
 import { wireUninstallButton } from './runtime-uninstall.js';
 import { attachModalFocusTrap, detachModalFocusTrap, fetchReleaseList, buildReleaseBadges } from './updater-shared.js';
+import { pillModel, isSourceBuild, effectiveBuild, jobIsActive } from './llama-runtime-state.js';
+import { openRuntimePanel, setRuntimePanelObserver, dismissedSet } from './llama-runtime-panel.js';
 
 const LLAMA_CPP_REPO = 'https://github.com/ggml-org/llama.cpp';
 const PR_LINK_RE = /#(\d+)/g;
@@ -24,10 +26,97 @@ let _currentBuild = null;
 let _latestBuild  = null;
 let _updating     = false;
 let _versionCheckTimer = null;
+let _provenance = null;
+let _buildJob = null;
+let _runtimeLast = null;
+let _pillModel = null;
+let _buildTimer = null;
+
+function apiHeaders() {
+  return window.authHeaders ? window.authHeaders() : {};
+}
+
+/** Draw the pill from the one shared view model. */
+function applyPill() {
+  const pill = document.getElementById('llama-pill');
+  const verSpan = document.getElementById('llama-pill-version');
+  if (!pill || !verSpan) return;
+  const model = pillModel({
+    build: _currentBuild,
+    latestBuild: _latestBuild,
+    provenance: _provenance,
+    job: _buildJob,
+    runtimeLast: _runtimeLast,
+    dismissed: dismissedSet(),
+  });
+  _pillModel = model;
+  if (!_currentBuild && !_provenance && !model.opensPanel) return;
+  verSpan.textContent = model.text;
+  pill.title = model.title;
+  pill.style.display = 'flex';
+  pill.dataset.state = model.state;
+  for (const cls of ['llama-pill-idle', 'llama-pill-update', 'llama-pill-building', 'llama-pill-error', 'llama-pill-warn']) {
+    pill.classList.remove(cls);
+  }
+  const cls = { idle: 'llama-pill-idle', update: 'llama-pill-update', building: 'llama-pill-building', error: 'llama-pill-error', 'restart-failed': 'llama-pill-warn', 'rolled-back': 'llama-pill-error' }[model.state];
+  pill.classList.add(cls);
+}
+
+async function refreshBuildState() {
+  try {
+    const headers = apiHeaders();
+    const sResp = await fetch('/api/llama-build/status', { headers });
+    if (sResp.ok) {
+      const status = await sResp.json();
+      const id = status.active_job_id || status.last_job?.id;
+      if (id) {
+        const jResp = await fetch(`/api/llama-build/jobs/${encodeURIComponent(id)}`, { headers });
+        if (jResp.ok) _buildJob = await jResp.json();
+      } else {
+        _buildJob = null;
+      }
+    }
+    const rResp = await fetch('/api/llama-binary/runtime-status', { headers });
+    if (rResp.ok) {
+      const rt = await rResp.json();
+      _runtimeLast = rt.last ? { id: rt.last.id, outcome: rt.last.outcome } : null;
+    }
+  } catch (_) {
+    // background refresh: keep the last known state
+  }
+  applyPill();
+  scheduleBuildRefresh();
+}
+
+function scheduleBuildRefresh() {
+  clearTimeout(_buildTimer);
+  if (document.hidden) return;
+  _buildTimer = setTimeout(refreshBuildState, jobIsActive(_buildJob) ? 2000 : 15000);
+}
 
 export function initLlamaUpdater() {
   const pill = document.getElementById('llama-pill');
-  if (pill) pill.addEventListener('click', openVersionModal);
+  if (pill) {
+    pill.addEventListener('click', () => {
+      if (_pillModel?.opensPanel) openRuntimePanel();
+      else openVersionModal();
+    });
+  }
+  for (const id of ['llama-open-runtime-panel', 'llama-build-from-source']) {
+    document.getElementById(id)?.addEventListener('click', () => {
+      closeVersionModal();
+      openRuntimePanel();
+    });
+  }
+  setRuntimePanelObserver(({ job, runtime, version }) => {
+    _buildJob = job || _buildJob;
+    if (runtime) _runtimeLast = runtime.last ? { id: runtime.last.id, outcome: runtime.last.outcome } : null;
+    if (version) {
+      _provenance = version.provenance ?? null;
+      _currentBuild = effectiveBuild(version.build ?? null, _provenance);
+    }
+    applyPill();
+  });
   wireUninstallButton(document.getElementById('llama-uninstall-btn'), 'llama_cpp');
 
   const closeBtn = document.getElementById('llama-version-modal-close');
@@ -74,8 +163,6 @@ function stopVersionPolling() {
 }
 
 async function checkVersion() {
-  const pill    = document.getElementById('llama-pill');
-  const verSpan = document.getElementById('llama-pill-version');
 
   try {
     const headers = window.authHeaders ? window.authHeaders() : {};
@@ -83,27 +170,17 @@ async function checkVersion() {
     const vResp = await fetch('/api/llama-binary/version', { headers });
     if (!vResp.ok) return;
     const vData = await vResp.json();
-    _currentBuild = vData.build ?? null;
-
-    if (_currentBuild) {
-      if (verSpan) verSpan.textContent = `llama.cpp · b${_currentBuild}`;
-      if (pill) pill.style.display = 'flex';
-    }
+    _provenance = vData.provenance ?? null;
+    _currentBuild = effectiveBuild(vData.build ?? null, _provenance);
+    applyPill();
 
     const lResp = await fetch('/api/llama-binary/latest', { headers });
     if (!lResp.ok) return;
     const lData = await lResp.json();
     if (lData.error) return;
     _latestBuild = lData.build ?? null;
-
-    if (_latestBuild && _currentBuild && _latestBuild > _currentBuild) {
-      if (verSpan) verSpan.textContent = `llama.cpp · ↑ b${_latestBuild}`;
-      if (pill) {
-        pill.classList.remove('llama-pill-idle');
-        pill.classList.add('llama-pill-update');
-        pill.title = `Update available: b${_currentBuild} → b${_latestBuild}. Click to manage.`;
-      }
-    }
+    applyPill();
+    refreshBuildState();
   } catch (_) {
     // silently ignore — background check
   }
@@ -129,6 +206,8 @@ async function openVersionModal() {
     }
   }
 
+  renderSourceRow();
+
   modal.style.display = 'flex';
   modal.classList.add('open');
   document.body.style.overflow = 'hidden';
@@ -141,6 +220,23 @@ async function openVersionModal() {
   attachModalFocusTrap(modal, closeVersionModal);
 
   await loadReleaseList();
+}
+
+/** Source-build entry points inside the version modal (the pill's popover). */
+function renderSourceRow() {
+  const row = document.getElementById('llama-source-row');
+  if (!row) return;
+  const source = isSourceBuild(_provenance);
+  const warn = document.getElementById('llama-source-warning');
+  if (warn) {
+    // Only a source build being replaced by a prebuilt gets the caution; no guessed pair list.
+    warn.hidden = !source;
+  }
+  const buildBtn = document.getElementById('llama-build-from-source');
+  if (buildBtn) {
+    buildBtn.classList.toggle('lrp-primary', source);
+    buildBtn.textContent = _latestBuild ? `Build b${_latestBuild} from source` : 'Build latest from source';
+  }
 }
 
 function closeVersionModal() {

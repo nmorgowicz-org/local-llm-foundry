@@ -19,6 +19,7 @@ mod doctor;
 mod hf;
 mod lhm;
 mod llama_binary;
+mod llama_build_routes;
 mod llama_kv_support;
 mod llama_runtime_routes;
 mod metrics;
@@ -90,6 +91,7 @@ pub fn api_routes(
     let llama_binary_routes = llama_binary::routes(ctx.clone());
     let llama_kv_support_routes = llama_kv_support::routes(ctx.clone());
     let llama_runtime_routes = llama_runtime_routes::routes(ctx.clone());
+    let llama_build_routes = llama_build_routes::routes(ctx.clone());
 
     let models_routes = models::routes(ctx.clone());
     let config_routes = config::routes(ctx.clone());
@@ -122,6 +124,7 @@ pub fn api_routes(
         .or(llama_binary_routes)
         .or(llama_kv_support_routes)
         .or(llama_runtime_routes)
+        .or(llama_build_routes)
         .or(runtime_uninstall_routes)
         .or(spawn_wizard_routes)
         .or(vram_routes)
@@ -1031,6 +1034,78 @@ mod tests {
             route_llama_binary_update,
             "POST",
             "/api/llama-binary/update",
+            Some("{}")
+        ),
+        (
+            route_llama_build_status,
+            "GET",
+            "/api/llama-build/status",
+            None
+        ),
+        (
+            route_llama_build_prereqs,
+            "GET",
+            "/api/llama-build/prereqs",
+            None
+        ),
+        (
+            route_llama_build_prereqs_validate,
+            "POST",
+            "/api/llama-build/prereqs/validate",
+            Some("{}")
+        ),
+        (
+            route_llama_build_prereqs_fix,
+            "POST",
+            "/api/llama-build/prereqs/fix",
+            Some("{}")
+        ),
+        (
+            route_llama_build_options,
+            "GET",
+            "/api/llama-build/options",
+            None
+        ),
+        (
+            route_llama_build_start,
+            "POST",
+            "/api/llama-build/start",
+            Some("{}")
+        ),
+        (
+            route_llama_build_job,
+            "GET",
+            "/api/llama-build/jobs/a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+            None
+        ),
+        (
+            route_llama_build_job_log,
+            "GET",
+            "/api/llama-build/jobs/a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/log",
+            None
+        ),
+        (
+            route_llama_build_job_cancel,
+            "POST",
+            "/api/llama-build/jobs/a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/cancel",
+            Some("{}")
+        ),
+        (
+            route_llama_build_cache,
+            "GET",
+            "/api/llama-build/cache",
+            None
+        ),
+        (
+            route_llama_build_cache_clean,
+            "DELETE",
+            "/api/llama-build/cache",
+            None
+        ),
+        (
+            route_llama_build_cache_cap,
+            "PUT",
+            "/api/llama-build/cache-cap",
             Some("{}")
         ),
         (

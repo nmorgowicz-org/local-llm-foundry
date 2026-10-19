@@ -1102,12 +1102,12 @@ checks and journaled promotion; record model smoke separately or mark deferred m
 
 ### Phase 5: Build API + UI
 
-1. [ ] Routes (§7): auth, single-flight/conflict owner, cancel boundary, model-id/path tests,
+1. [x] Routes (§7): auth, single-flight/conflict owner, cancel boundary, model-id/path tests,
    no estimated-time field, returned pinned commit, cache cap configuration with finite bounds.
-2. [ ] Panel/pill/popover + macOS install, distinguish installed/restart-failed, ownership-disabled
+2. [x] Panel/pill/popover + macOS install, distinguish installed/restart-failed, ownership-disabled
    clean/fix/validate and noncancellable promotion.
-3. [ ] Error catalog fixtures including disk exhaustion, closure/backend mismatch and recovery.
-4. [ ] Playwright: prereq Fail → disabled reason; failed job → red diagnostics; source success →
+3. [x] Error catalog fixtures including disk exhaustion, closure/backend mismatch and recovery.
+4. [x] Playwright: prereq Fail → disabled reason; failed job → red diagnostics; source success →
    provenance; conditional prebuilt downgrade, no guessed pair list; restart failure → installed
    amber state, retry/manual rollback; unknown capability never gets a rebuild link or launch block.
 

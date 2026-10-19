@@ -37,6 +37,7 @@
     <link rel="stylesheet" href="/css/protocol-docs.css">
     <link rel="stylesheet" href="/css/preset-bundle-drawer.css">
     <link rel="stylesheet" href="/css/kv-support.css">
+    <link rel="stylesheet" href="/css/llama-runtime-panel.css">
     <link rel="stylesheet" href="/css/modal-sizing.css">
 <!-- Self-hosted vendor scripts (no CDN) -->
 <script src="/vendor/js/marked.min.js"></script>
@@ -7711,6 +7712,13 @@
             <span class="llama-version-current-label">Installed</span>
             <span class="llama-version-current-build" id="llama-version-current-build">—</span>
             <button id="llama-uninstall-btn" class="runtime-uninstall-btn" type="button" title="Remove the managed llama.cpp binary from this machine (downloaded models are kept)">Uninstall…</button>
+        </div>
+        <div class="llama-source-row" id="llama-source-row">
+            <div class="llama-source-warning" id="llama-source-warning" hidden>Replacing a source build with a prebuilt: prebuilt FA kernels may differ. The candidate is probed first; confirmed missing CUDA kernels can use the slower conversion fallback.</div>
+            <div>
+                <button id="llama-build-from-source" class="lrp-btn" type="button">Build latest from source</button>
+                <button id="llama-open-runtime-panel" class="lrp-btn" type="button">Open llama.cpp Runtime…</button>
+            </div>
         </div>
         <div class="llama-version-modal-body">
             <div class="llama-version-panes">

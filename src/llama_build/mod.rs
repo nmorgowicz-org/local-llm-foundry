@@ -12,6 +12,8 @@
 //! - `stage`: collecting the build outputs into a promotable candidate.
 //! - `supervise`: owned process containment (Job Object / process group).
 //! - `job`: the single-flight job state machine over a `Toolchain`.
+//! - `service`: the process-wide owner of the active job, validation and caches
+//!   behind the HTTP routes.
 //!
 //! Promotion itself is `crate::llama_runtime::promote`; this module only
 //! produces a staged candidate and hands it over.
@@ -29,6 +31,7 @@ pub mod prereqs;
 pub mod prereqs_macos;
 pub mod prereqs_windows;
 pub mod real;
+pub mod service;
 pub mod source;
 pub mod stage;
 pub mod supervise;

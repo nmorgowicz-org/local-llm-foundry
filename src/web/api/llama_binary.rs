@@ -353,6 +353,73 @@ fn api_llama_binary_capabilities(
         })
 }
 
+/// Where the live runtime came from, read from the manifest beside it.
+///
+/// Provenance only: it never says what the runtime can do. `null` when there
+/// is no managed runtime to describe. A directory that no longer matches its
+/// manifest is `custom` (the manifest facts are withheld because they no
+/// longer describe it); one with no readable manifest is `unknown`.
+pub(super) fn runtime_provenance(config: &AppConfig) -> serde_json::Value {
+    let (bin_dir, custom) = managed_bin_dir(config);
+    // Hashing a half-swapped directory would report a false mismatch.
+    provenance_for(
+        &bin_dir,
+        custom.is_some(),
+        crate::llama_runtime::gate::swap_window_active(),
+    )
+}
+
+/// The pure part: `bin_dir` is already resolved, so tests never depend on the
+/// developer's real runtime roots.
+fn provenance_for(bin_dir: &Path, custom: bool, swap_active: bool) -> serde_json::Value {
+    use crate::llama_runtime::manifest::{ManifestCheck, check_manifest};
+
+    let empty = |source: &str, hashes_match: Option<bool>| {
+        serde_json::json!({
+            "source": source,
+            "label": serde_json::Value::Null,
+            "reference": serde_json::Value::Null,
+            "commit": serde_json::Value::Null,
+            "accelerator": serde_json::Value::Null,
+            "fa_quants_spec": serde_json::Value::Null,
+            "cuda_architectures": serde_json::Value::Null,
+            "hashes_match": hashes_match,
+        })
+    };
+    if custom {
+        return empty("custom", None);
+    }
+    let exe = if cfg!(windows) {
+        "llama-server.exe"
+    } else {
+        "llama-server"
+    };
+    if !bin_dir.join(exe).is_file() {
+        return serde_json::Value::Null;
+    }
+    if swap_active {
+        return empty("unknown", None);
+    }
+    let manifest = match RuntimeManifest::read(bin_dir) {
+        Ok(Some(manifest)) => manifest,
+        Ok(None) | Err(_) => return empty("unknown", None),
+    };
+    match check_manifest(bin_dir) {
+        ManifestCheck::Matches => serde_json::json!({
+            "source": manifest.source,
+            "label": manifest.label,
+            "reference": manifest.llama_cpp.reference,
+            "commit": manifest.llama_cpp.commit,
+            "accelerator": manifest.accelerator,
+            "fa_quants_spec": manifest.fa_quants_spec,
+            "cuda_architectures": manifest.cuda_architectures,
+            "hashes_match": true,
+        }),
+        ManifestCheck::Mismatch(_) => empty("custom", Some(false)),
+        ManifestCheck::Missing | ManifestCheck::Unreadable(_) => empty("unknown", None),
+    }
+}
+
 /// GET /api/llama-binary/version
 fn api_llama_binary_version(
     app_config: Arc<AppConfig>,
@@ -369,6 +436,12 @@ fn api_llama_binary_version(
 
                 let binary_path = managed_llama_server_path(&cfg);
                 let path_str = binary_path.display().to_string();
+                let provenance = {
+                    let cfg = cfg.clone();
+                    tokio::task::spawn_blocking(move || runtime_provenance(&cfg))
+                        .await
+                        .unwrap_or(serde_json::Value::Null)
+                };
 
                 let result = tokio::task::spawn_blocking(move || {
                     std::process::Command::new(&binary_path)
@@ -384,7 +457,8 @@ fn api_llama_binary_version(
                             warp::reply::json(&serde_json::json!({
                                 "build": serde_json::Value::Null,
                                 "version": serde_json::Value::Null,
-                                "path": path_str
+                                "path": path_str,
+                                "provenance": provenance
                             })),
                         ));
                     }
@@ -401,14 +475,16 @@ fn api_llama_binary_version(
                         warp::reply::json(&serde_json::json!({
                             "build": n,
                             "version": format!("b{}", n),
-                            "path": path_str
+                            "path": path_str,
+                            "provenance": provenance
                         })),
                     )),
                     None => Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
                         warp::reply::json(&serde_json::json!({
                             "build": serde_json::Value::Null,
                             "version": serde_json::Value::Null,
-                            "path": path_str
+                            "path": path_str,
+                            "provenance": provenance
                         })),
                     )),
                 }
@@ -1304,5 +1380,126 @@ mod tests {
         assert_eq!(parse_llama_build("build: 10576"), Some(10576));
         assert_eq!(parse_llama_build("version: 10576"), Some(10576));
         assert_eq!(parse_llama_build("version: 0.0.0"), None);
+    }
+
+    fn provenance_config(root: &std::path::Path) -> AppConfig {
+        use clap::Parser;
+        let mut config = AppConfig::from_args_pure(crate::cli::AppArgs::parse_from([
+            "llama-monitor",
+            "--llama-server-path",
+            "llama-server",
+            "--gpu-backend",
+            "none",
+        ]));
+        config.app_paths = crate::paths::AppPaths::from_root(root.to_path_buf());
+        let exe = if cfg!(windows) {
+            "llama-server.exe"
+        } else {
+            "llama-server"
+        };
+        config.llama_server_path = config.app_paths.bin_dir().join(exe);
+        config
+    }
+
+    fn write_runtime(config: &AppConfig, source: ManifestSource) -> std::path::PathBuf {
+        let bin = config.app_paths.bin_dir();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(&config.llama_server_path, b"exe").unwrap();
+        std::fs::write(bin.join("libggml.so"), b"lib").unwrap();
+        let mut manifest = RuntimeManifest::for_directory(
+            &bin,
+            source,
+            "b11727 source build",
+            LlamaCppRef {
+                reference: Some("b11727".into()),
+                commit: Some("098ce526b0000000000000000000000000000000".into()),
+                build_number: Some(11727),
+            },
+            Some("cuda".into()),
+        )
+        .unwrap();
+        manifest.fa_quants_spec = Some("all".into());
+        manifest.cuda_architectures = Some("120a-real".into());
+        manifest.write(&bin).unwrap();
+        bin
+    }
+
+    #[test]
+    fn provenance_is_unknown_during_a_runtime_swap() {
+        let root = tempfile::tempdir().unwrap();
+        let config = provenance_config(root.path());
+        write_runtime(&config, ManifestSource::FoundrySourceBuild);
+        assert_eq!(
+            provenance_for(&config.app_paths.bin_dir(), false, true)["source"],
+            "unknown"
+        );
+        assert_eq!(
+            provenance_for(&config.app_paths.bin_dir(), false, false)["source"],
+            "foundry_source_build"
+        );
+    }
+
+    #[test]
+    fn provenance_is_null_without_a_managed_runtime() {
+        let root = tempfile::tempdir().unwrap();
+        let config = provenance_config(root.path());
+        assert!(provenance_for(&config.app_paths.bin_dir(), false, false).is_null());
+    }
+
+    #[test]
+    fn provenance_reports_a_matching_source_build_manifest() {
+        let root = tempfile::tempdir().unwrap();
+        let config = provenance_config(root.path());
+        write_runtime(&config, ManifestSource::FoundrySourceBuild);
+        let p = provenance_for(&config.app_paths.bin_dir(), false, false);
+        assert_eq!(p["source"], "foundry_source_build");
+        assert_eq!(p["label"], "b11727 source build");
+        assert_eq!(p["reference"], "b11727");
+        assert_eq!(p["commit"], "098ce526b0000000000000000000000000000000");
+        assert_eq!(p["accelerator"], "cuda");
+        assert_eq!(p["fa_quants_spec"], "all");
+        assert_eq!(p["cuda_architectures"], "120a-real");
+        assert_eq!(p["hashes_match"], true);
+    }
+
+    #[test]
+    fn provenance_reports_an_upstream_prebuilt_manifest() {
+        let root = tempfile::tempdir().unwrap();
+        let config = provenance_config(root.path());
+        write_runtime(&config, ManifestSource::UpstreamPrebuilt);
+        assert_eq!(
+            provenance_for(&config.app_paths.bin_dir(), false, false)["source"],
+            "upstream_prebuilt"
+        );
+    }
+
+    #[test]
+    fn provenance_marks_a_modified_directory_custom_and_withholds_manifest_facts() {
+        let root = tempfile::tempdir().unwrap();
+        let config = provenance_config(root.path());
+        let bin = write_runtime(&config, ManifestSource::FoundrySourceBuild);
+        std::fs::write(bin.join("libggml.so"), b"swapped").unwrap();
+        let p = provenance_for(&config.app_paths.bin_dir(), false, false);
+        assert_eq!(p["source"], "custom");
+        assert_eq!(p["hashes_match"], false);
+        assert!(p["commit"].is_null() && p["label"].is_null());
+    }
+
+    #[test]
+    fn provenance_is_unknown_without_a_manifest_and_custom_for_an_external_path() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = provenance_config(root.path());
+        std::fs::create_dir_all(config.app_paths.bin_dir()).unwrap();
+        std::fs::write(&config.llama_server_path, b"exe").unwrap();
+        let p = provenance_for(&config.app_paths.bin_dir(), false, false);
+        assert_eq!(p["source"], "unknown");
+        assert!(p["hashes_match"].is_null());
+
+        config.llama_server_path = root.path().join("elsewhere").join("my-server");
+        let (bin, custom) = managed_bin_dir(&config);
+        assert_eq!(
+            provenance_for(&bin, custom.is_some(), false)["source"],
+            "custom"
+        );
     }
 }

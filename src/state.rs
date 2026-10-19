@@ -794,6 +794,9 @@ pub struct AppState {
     /// The single runtime-mutation gate (plan §4.3.1). Acquired before
     /// `server_lifecycle` whenever both are needed.
     pub runtime_gate: Arc<crate::llama_runtime::gate::RuntimeGate>,
+    /// Source-build jobs, prerequisite validation and cache ownership behind
+    /// `/api/llama-build/*`. Compile never holds `runtime_gate`.
+    pub llama_build: Arc<crate::llama_build::service::BuildService>,
     /// Monotonic ownership token for local process lifecycle operations.
     pub server_generation: Arc<std::sync::atomic::AtomicU64>,
     pub server_config: Arc<Mutex<Option<ServerConfig>>>,
@@ -905,6 +908,7 @@ impl Default for AppState {
             local_launch_request: Arc::new(Mutex::new(None)),
             server_lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             runtime_gate: Arc::new(crate::llama_runtime::gate::RuntimeGate::default()),
+            llama_build: Arc::new(crate::llama_build::service::BuildService::default()),
             server_generation: Arc::new(AtomicU64::new(0)),
             sleep_mode: Arc::new(AtomicU8::new(0)),
             sleep_mode_manual: Arc::new(AtomicBool::new(false)),
@@ -1025,6 +1029,7 @@ impl AppState {
             local_launch_request: Arc::new(Mutex::new(None)),
             server_lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             runtime_gate: Arc::new(crate::llama_runtime::gate::RuntimeGate::default()),
+            llama_build: Arc::new(crate::llama_build::service::BuildService::default()),
             server_generation: Arc::new(AtomicU64::new(0)),
             sleep_mode: Arc::new(AtomicU8::new(0)), // 0 = Off (full monitoring)
             sleep_mode_manual: Arc::new(AtomicBool::new(false)),
