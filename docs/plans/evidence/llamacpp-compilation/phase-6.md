@@ -52,9 +52,20 @@ Not changed (reported, not confirmed, or outside this feature): Origin-guard ord
 
 Final macOS chain: `cargo clippy --all-targets -- -D warnings`, `cargo test`,
 `npm run validate-js`, `npm run lint`, `git diff --check`, `cargo build --release`,
-`cargo fmt --check`; Playwright `llama-runtime-panel` plus existing pill/K-V specs.
-`cargo check --target x86_64-pc-windows-gnu` passes (library only; Windows tests were run
-in Phase 4 on the pre-review snapshot).
+`cargo fmt --check`; 40 Playwright tests passed across the runtime panel, pill, K/V,
+HTML integrity, performance, console-errors and security-auth specs.
+`cargo check --target x86_64-pc-windows-gnu` also passed (library only).
+
+Native Windows confirmation on ryne, normal checkout on `feat/llamacpp-source-builds`
+at `7d5b7af7`, with `CARGO_PROFILE_TEST_DEBUG=0`:
+
+- `cargo test --lib llama_build`: 292 passed.
+- `cargo test --lib llama_runtime`: 78 passed.
+- CLI integration: 8 passed; orchestration: 11 passed; Windows Job Object: 4 passed.
+- The first attempt did not update the checkout because generated files blocked the pull;
+  its old-snapshot results are not counted. After updating, one environment test assumed
+  `PATH` rather than Windows `Path`. The assertion was made case-insensitive in
+  `7d5b7af7`, and all five suites then passed.
 
 ## Manual QA matrix status (plan §10)
 
@@ -66,6 +77,6 @@ promotion disk exhaustion, failure before/after every rename, recovery twice, co
 ownership matrix, K/V matrix, legacy cache reprobe. Not run for real: the macOS one-click
 `brew install` with a genuinely missing tool, a real CUDA build driven through the panel, the
 Windows locked-DLL promote, restart mid-build on both platforms, and everything on Linux (no
-Linux machine). The Phase 4-6 fixes after the Windows run (repair, restart-on-reject, secrets
-scrub, journal path validation, fsync) were verified on macOS and by a Windows library compile
-check, not re-run on ryne.
+Linux machine). The post-review repair, restart-on-reject, secrets scrub, journal validation
+and durability changes have now also passed the native Windows suites above; a real CUDA
+compile/model smoke was not repeated after those changes.
