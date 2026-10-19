@@ -1236,8 +1236,9 @@ mod env_tests {
         let env = process_env();
         assert!(!env.contains_key("LLF_FIX4_WIRING_API_TOKEN"));
         assert!(!env.contains_key("LOCAL_LLM_FOUNDRY_FIX4_WIRING"));
-        if std::env::var_os("PATH").is_some() {
-            assert!(env.contains_key("PATH"));
+        // Windows names it `Path`; the scrub must keep it under whatever case the OS uses.
+        if std::env::vars().any(|(k, _)| k.eq_ignore_ascii_case("PATH")) {
+            assert!(env.keys().any(|k| k.eq_ignore_ascii_case("PATH")));
         }
         let root = tempfile::tempdir().unwrap();
         let app = crate::paths::AppPaths::from_root(root.path().join("app"));
