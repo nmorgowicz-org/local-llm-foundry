@@ -10,4 +10,5 @@
 pub mod gate;
 pub mod manifest;
 pub mod probe;
+pub mod promote;
 pub mod verify;

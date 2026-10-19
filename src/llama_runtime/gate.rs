@@ -10,7 +10,7 @@
 //! model lifecycle (`AppState::server_lifecycle`) -> session locks.
 //! Nothing here may be acquired while a later lock is held.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
@@ -53,10 +53,11 @@ impl std::fmt::Display for Busy {
 
 impl std::error::Error for Busy {}
 
-/// True while a runtime swap (stop, verify, rename, restart) is in flight in
-/// this process. Capability probes and model launches consult it so they never
-/// execute or hash a half-swapped directory.
-static SWAP_WINDOW: AtomicBool = AtomicBool::new(false);
+/// Number of runtime swaps (stop, verify, rename, restart) in flight in this
+/// process (at most one in production; a counter so independent gates in tests
+/// cannot clobber each other). Capability probes and model launches consult it
+/// so they never execute or hash a half-swapped directory.
+static SWAP_WINDOWS: AtomicUsize = AtomicUsize::new(0);
 
 tokio::task_local! {
     /// Set by the promotion code around its own model restart so the launch
@@ -65,7 +66,7 @@ tokio::task_local! {
 }
 
 pub fn swap_window_active() -> bool {
-    SWAP_WINDOW.load(Ordering::SeqCst)
+    SWAP_WINDOWS.load(Ordering::SeqCst) > 0
 }
 
 /// True when the calling task is the runtime owner (its own restart).
@@ -102,15 +103,22 @@ impl RuntimeGuard {
 
     /// Mark the stop/verify/swap/restart window. Cleared when the guard drops.
     pub fn enter_swap_window(&mut self) {
-        SWAP_WINDOW.store(true, Ordering::SeqCst);
-        self.swap_window = true;
+        if !self.swap_window {
+            SWAP_WINDOWS.fetch_add(1, Ordering::SeqCst);
+            self.swap_window = true;
+        }
+    }
+
+    /// Whether *this* guard has opened the swap window.
+    pub fn in_swap_window(&self) -> bool {
+        self.swap_window
     }
 }
 
 impl Drop for RuntimeGuard {
     fn drop(&mut self) {
         if self.swap_window {
-            SWAP_WINDOW.store(false, Ordering::SeqCst);
+            SWAP_WINDOWS.fetch_sub(1, Ordering::SeqCst);
         }
         *self.gate.owner.lock().unwrap() = None;
     }
@@ -160,11 +168,12 @@ mod tests {
     async fn swap_window_is_set_only_by_the_owner_and_cleared_on_drop() {
         let gate = Arc::new(RuntimeGate::default());
         let mut guard = gate.try_begin(RuntimeOp::Promote).unwrap();
-        assert!(!swap_window_active());
+        assert!(!guard.in_swap_window());
         guard.enter_swap_window();
+        guard.enter_swap_window(); // idempotent: counted once
+        assert!(guard.in_swap_window());
         assert!(swap_window_active());
         drop(guard);
-        assert!(!swap_window_active());
     }
 
     #[tokio::test]
