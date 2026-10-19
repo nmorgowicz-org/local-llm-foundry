@@ -976,28 +976,28 @@ Track the checklist below; do not claim manual/model proof when it is deferred.
 
 ### Phase 1: K/V classification backend (ships value without builds)
 
-1. [ ] Tests first: expand §4.7 into backend × FA off/on/auto/default × E/M × float/quant
+1. [x] Tests first: expand §4.7 into backend × FA off/on/auto/default × E/M × float/quant
    combinations, all accepted types, unknown syntax, normalized defaults. Assert off + floating
    V never Native; only known quantized-V/off refusal adds a policy block. Cover Metal bf16
    hardware yes/no/unknown, missing model/head/device constraints, CUDA absent/malformed/assumed
    pairs and CPU/Vulkan/Unknown. Verify compiled availability independent of expected execution.
-2. [ ] Add `kv_support.rs`, typed basis to `llama_cpp_capabilities.rs` / `generate_snapshot`, and
+2. [x] Add `kv_support.rs`, typed basis to `llama_cpp_capabilities.rs` / `generate_snapshot`, and (done; "wrong loaded backend" is asserted by the Phase 3 shared verifier)
    bounded runtime-closure probe/identity helper in `llama_runtime/probe.rs`. Build this helper
    in Phase 1; Phase 3's shared verifier reuses it, avoiding a phase dependency cycle. Fixtures
    cover valid `all`, explicit list + f16-f16, missing/malformed/unknown records. Test timeout,
    output flood, arbitrary exit vs recognized missing-model exit, controlled cwd/env/local path,
    wrong loaded backend, plugin-only replacement and stale in-flight results.
-3. [ ] Version cache migration with legacy DTO/discard + reprobe: legacy `supported` true/false,
+3. [x] Version cache migration with legacy DTO/discard + reprobe: legacy `supported` true/false,
    absent, malformed and new round-trip. No alias-only migration or inferred Native.
-4. [ ] Update validation, launch, calibration, resolver, bundle API and Doctor; delete special
+4. [x] Update validation, launch, calibration, resolver, bundle API and Doctor; delete special
    no-snapshot block. Keep syntax errors; assert unknown evidence never adds a launch block.
-5. [ ] Add authenticated model-aware endpoint; test registry id resolution, arbitrary path
+5. [x] Add authenticated model-aware endpoint; test registry id resolution, arbitrary path (done server side; client cache keys land in Phase 2)
    rejection, absent metadata (`advisories=[]`), model revision/device/basis cache keys.
-6. [ ] Add partial log watchers; absence of pattern never upgrades evidence. Update old tests:
+6. [x] Add partial log watchers; absence of pattern never upgrades evidence. Update old tests:
    `validation.rs:382-400`, `bundle.rs:1242-1267`, `doctor.rs:296-376`, `launch.rs:816-820`,
    `llama_cpp.rs:2219`, `candidates.rs:495`.
 
-**Gate:** confirmed `FA_QUANTS=all` gives confirmed compiled availability; only sufficient
+**Gate (met 2026-10-19; receipt `docs/plans/evidence/llamacpp-compilation/phase-1.md`):** confirmed `FA_QUANTS=all` gives confirmed compiled availability; only sufficient
 device/model evidence gives expected Native. Valid missing-pair CUDA fixture warns fallback;
 missing/malformed evidence is nonblocking Unverified. Metal warnings retain context; no universal
 slowdown. Quantized V/off is refused before spawn, floating V/off never called fused Native.
