@@ -21,6 +21,13 @@ use serde::{Deserialize, Serialize};
 /// of persisted evidence changes; older cached evidence is then discarded.
 pub const KV_BASIS_VERSION: u32 = 1;
 
+/// llama.cpp builds whose Metal flash-attention support rule was verified:
+/// `ggml_metal_device_supports_op` returns false for `FLASH_ATTN_EXT` when the
+/// K and V types differ (source read at b11719), and mixed pairs measured on an
+/// M5 Max at b11719 ran attention on the CPU. A build outside this range is
+/// `Unverified` until the rule is re-checked and the range is extended.
+pub const METAL_FA_RULE_VERIFIED_BUILDS: std::ops::RangeInclusive<u32> = 11719..=11719;
+
 /// Head dimensions for which the fused FlashAttention paths are considered
 /// adequate. Deliberately conservative: an unlisted or unknown dimension means
 /// the classification stays `Unverified`, never blocked.
@@ -105,9 +112,10 @@ impl KvType {
         FA_TYPES.contains(&self)
     }
 
-    /// Whether the Metal FlashAttention kernels cover this type (equal pairs only).
+    /// Whether the Metal FlashAttention kernels cover this type (equal pairs
+    /// only). `iq4_nl` has no Metal FA kernel; f32 does.
     fn is_metal_fa_type(self) -> bool {
-        self.is_fa_buildable()
+        self == Self::F32 || self.is_fa_buildable()
     }
 }
 
@@ -224,6 +232,13 @@ pub struct KvSupportBasis {
     /// evidence was read from.
     #[serde(default)]
     pub runtime_identity: Option<String>,
+    /// llama.cpp build number the evidence was read from.
+    #[serde(default)]
+    pub build_number: Option<u32>,
+    /// Metal `has bfloat` as reported by the device at startup. This is the
+    /// flag the Metal flash-attention support check consults for bf16.
+    #[serde(default)]
+    pub metal_bf16: Evidence<bool>,
     /// Devices the loaded runtime enumerated (`"CUDA0 : NVIDIA ..."`). Detected
     /// device ids sent by clients are validated against this list.
     #[serde(default)]
@@ -238,8 +253,18 @@ impl KvSupportBasis {
             backend: Backend::Unknown,
             fa_pairs: Evidence::unavailable(reason),
             runtime_identity: None,
+            build_number: None,
+            metal_bf16: Evidence::unavailable(reason),
             devices: Vec::new(),
         }
+    }
+
+    /// Whether this runtime's Metal flash-attention support rule was verified.
+    pub fn metal_rule_verified(&self) -> bool {
+        self.backend == Backend::Metal
+            && self
+                .build_number
+                .is_some_and(|build| METAL_FA_RULE_VERIFIED_BUILDS.contains(&build))
     }
 }
 
@@ -596,10 +621,13 @@ fn expected_with_fa(
             let equal_in_set = k == v && k.is_metal_fa_type();
             if equal_in_set {
                 if k == KvType::Bf16 {
-                    let bf16 = ctx.device.and_then(|d| d.metal_bf16.confirmed_value());
+                    let bf16 = ctx
+                        .device
+                        .and_then(|d| d.metal_bf16.confirmed_value())
+                        .or_else(|| ctx.basis.metal_bf16.confirmed_value());
                     if bf16 != Some(&true) {
                         return unverified(
-                            "bf16 FlashAttention on Metal needs bf16 hardware support, which is not confirmed for the selected device.",
+                            "bf16 FlashAttention on Metal needs bf16 hardware support, which the runtime did not confirm for this device.",
                         );
                     }
                 }
@@ -614,7 +642,16 @@ fn expected_with_fa(
             let observed = ctx
                 .observations
                 .and_then(|o| o.metal_mixed_cpu_attention.confirmed_value());
-            if observed == Some(&true) {
+            if ctx.basis.metal_rule_verified() {
+                KvSupport::Fallback {
+                    reason: format!(
+                        "Metal flash attention supports equal K/V types only, so {}/{} attention runs on the CPU. {METAL_MIXED_MEASUREMENT_NOTE}",
+                        k.name(),
+                        v.name()
+                    ),
+                    impact: Impact::CpuAttention,
+                }
+            } else if observed == Some(&true) {
                 KvSupport::Fallback {
                     reason: format!(
                         "Metal has no fused kernel for {}/{}; attention was observed running on the CPU. {METAL_MIXED_MEASUREMENT_NOTE}",
@@ -668,6 +705,19 @@ fn expected_for_mode(
             // A quantized V forces flash attention to be requested.
             if v.is_quantized() {
                 return expected_with_fa(k, v, ctx, compiled);
+            }
+            // Metal with a verified rule: a pair without a fused kernel makes
+            // auto disable flash attention (observed on q8_0/bf16 at b11719:
+            // "Flash Attention is assigned to device CPU ... set to disabled").
+            if ctx.basis.metal_rule_verified() && !(k == v && k.is_metal_fa_type()) {
+                return KvSupport::Fallback {
+                    reason: format!(
+                        "Metal has no flash attention kernel for {}/{}, so -fa auto disables flash attention for this pair.",
+                        k.name(),
+                        v.name()
+                    ),
+                    impact: Impact::NoFlashAttention,
+                };
             }
             match ctx
                 .observations
@@ -769,7 +819,7 @@ mod tests {
             backend: Backend::Cuda,
             fa_pairs: Evidence::confirmed(compiled_fa_pairs(spec).unwrap(), "probe"),
             runtime_identity: Some("test".into()),
-            devices: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -779,7 +829,7 @@ mod tests {
             backend,
             fa_pairs: Evidence::unavailable("not applicable"),
             runtime_identity: Some("test".into()),
-            devices: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -1235,6 +1285,105 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn verified_metal_basis() -> KvSupportBasis {
+        KvSupportBasis {
+            build_number: Some(11719),
+            metal_bf16: Evidence::confirmed(true, "probe"),
+            ..backend_basis(Backend::Metal)
+        }
+    }
+
+    #[test]
+    fn verified_metal_build_makes_every_mixed_pair_a_cpu_attention_fallback() {
+        // Measured at b11719 / M5 Max / Qwen3.8-27B, 8k depth: every mixed pair,
+        // including float/float (bf16/f16), collapsed to CPU attention.
+        let basis = verified_metal_basis();
+        let (d, m) = (device(None), model(Some(256)));
+        let c = ctx(&basis, Some(&d), Some(&m));
+        for (k, v) in [
+            (KvType::Q8_0, KvType::Q4_0),
+            (KvType::Q8_0, KvType::Bf16),
+            (KvType::Bf16, KvType::Q8_0),
+            (KvType::Bf16, KvType::F16),
+            (KvType::Q8_0, KvType::F16),
+        ] {
+            let out = classify(k, v, FlashAttnMode::On, &c);
+            assert!(
+                matches!(
+                    out,
+                    KvSupport::Fallback {
+                        impact: Impact::CpuAttention,
+                        ..
+                    }
+                ),
+                "{k:?}/{v:?}: {out:?}"
+            );
+            assert!(!out.is_blocking());
+        }
+        // Quantized V with auto also requests FA, so the same CPU path applies.
+        assert!(matches!(
+            classify(KvType::Q8_0, KvType::Q4_0, FlashAttnMode::Auto, &c),
+            KvSupport::Fallback {
+                impact: Impact::CpuAttention,
+                ..
+            }
+        ));
+        // Floating V with auto: the runtime disables flash attention (GPU, unfused).
+        assert!(matches!(
+            classify(KvType::Q8_0, KvType::Bf16, FlashAttnMode::Auto, &c),
+            KvSupport::Fallback {
+                impact: Impact::NoFlashAttention,
+                ..
+            }
+        ));
+        // Equal pairs keep their fused path.
+        for t in [KvType::Q8_0, KvType::F16, KvType::Bf16, KvType::F32] {
+            assert_eq!(
+                classify(t, t, FlashAttnMode::On, &c),
+                KvSupport::Native,
+                "{t:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unverified_metal_builds_stay_unverified_for_mixed_pairs() {
+        let (d, m) = (device(None), model(Some(256)));
+        for build in [None, Some(11718), Some(11720), Some(99999)] {
+            let basis = KvSupportBasis {
+                build_number: build,
+                ..backend_basis(Backend::Metal)
+            };
+            let c = ctx(&basis, Some(&d), Some(&m));
+            assert!(
+                matches!(
+                    classify(KvType::Q8_0, KvType::Q4_0, FlashAttnMode::On, &c),
+                    KvSupport::Unverified { .. }
+                ),
+                "build {build:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn metal_bf16_uses_the_runtime_reported_device_flag() {
+        let m = model(Some(128));
+        for (flag, native) in [(true, true), (false, false)] {
+            let basis = KvSupportBasis {
+                metal_bf16: Evidence::confirmed(flag, "probe"),
+                ..verified_metal_basis()
+            };
+            let d = device(None); // no per-device evidence: the basis flag is used
+            let c = ctx(&basis, Some(&d), Some(&m));
+            let out = classify(KvType::Bf16, KvType::Bf16, FlashAttnMode::On, &c);
+            assert_eq!(
+                out == KvSupport::Native,
+                native,
+                "has bfloat={flag}: {out:?}"
+            );
+        }
     }
 
     #[test]

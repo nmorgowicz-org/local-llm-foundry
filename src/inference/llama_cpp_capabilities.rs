@@ -1022,6 +1022,7 @@ Options:
             fa_pairs: Evidence::confirmed(compiled_fa_pairs("all").unwrap(), "probe"),
             runtime_identity: Some("abc".into()),
             devices: vec!["CUDA0 : GPU".into()],
+            ..Default::default()
         };
         let round: CapabilitySnapshot =
             serde_json::from_value(serde_json::to_value(&snapshot).unwrap()).unwrap();
@@ -1074,6 +1075,12 @@ Options:
             snapshot.kv_basis.backend, snapshot.kv_basis.devices
         );
         eprintln!("fa_pairs={:?}", snapshot.kv_basis.fa_pairs);
+        eprintln!(
+            "build={:?} metal_bf16={:?} metal_rule_verified={}",
+            snapshot.kv_basis.build_number,
+            snapshot.kv_basis.metal_bf16,
+            snapshot.kv_basis.metal_rule_verified()
+        );
         assert!(
             snapshot.runtime_identity.is_some(),
             "closure identity expected"

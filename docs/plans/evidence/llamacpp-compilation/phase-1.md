@@ -50,8 +50,20 @@ Baseline: `fcf2b878` (main). Branch `feat/llamacpp-source-builds`, result `82675
 6. **The legacy snapshot is never persisted**, so migration is a serde default plus tests, not a
    DTO.
 
+## Addendum: Metal bf16 and mixed pairs (same day)
+
+- Probe now parses `ggml_metal_device_init: has bfloat` and the build number; the real install
+  reports `build=11719 metal_bf16=Confirmed(true) metal_rule_verified=true`.
+- Depth benchmarks (plan S1b) show every mixed pair on Metal runs CPU attention, including
+  bf16/f16. Source confirms the K==V requirement. The classifier now returns
+  `Fallback{CpuAttention}` on a verified build instead of `Unverified`.
+- The verified range is a single build (`METAL_FA_RULE_VERIFIED_BUILDS = 11719..=11719`); newer
+  builds stay `Unverified` until re-checked.
+- The final lib run had one failure, `rapid_mlx::model_resolver::tests::template_overlay_does_not_mutate_original_model_dir`,
+  in code this branch does not touch. It passed alone and in two further full runs (1673 passed).
+
 ## Not done in Phase 1
 
 - Advisories (Phase 2); the endpoint returns `advisories: []`.
-- Metal bf16 hardware probing; bf16 on Metal stays Unverified.
+- Per-device (multi-GPU) Metal bf16; any device reporting false wins.
 - Device/model evidence in non-endpoint callers: those stay Unverified when they would need it.

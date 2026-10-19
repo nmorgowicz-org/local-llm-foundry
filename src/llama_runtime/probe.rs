@@ -81,6 +81,9 @@ pub struct ParsedProbe {
     pub features: FeatureGroups,
     pub system_info_seen: bool,
     pub model_missing_diagnostic: bool,
+    /// Metal `has bfloat` (any device reporting false wins).
+    pub metal_bf16: Option<bool>,
+    pub build_number: Option<u32>,
 }
 
 /// Parse the `system_info` feature string into groups. Tokens are separated by
@@ -139,6 +142,25 @@ pub fn parse_probe_output(output: &str, probe_model_path: &str) -> ParsedProbe {
             {
                 parsed.devices.push(device.trim().to_string());
             }
+        }
+        if line.contains("ggml_metal_device_init:")
+            && let Some(index) = line.find("has bfloat")
+            && let Some((_, value)) = line[index..].split_once('=')
+        {
+            match value.trim() {
+                "true" => parsed.metal_bf16 = Some(parsed.metal_bf16.unwrap_or(true)),
+                "false" => parsed.metal_bf16 = Some(false),
+                _ => {}
+            }
+        }
+        if parsed.build_number.is_none()
+            && let Some(index) = line.find("common_params_print_info: build ")
+        {
+            let digits: String = line[index + "common_params_print_info: build ".len()..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            parsed.build_number = digits.parse().ok();
         }
         if line.contains("failed to open GGUF file") && line.contains(probe_model_path) {
             parsed.model_missing_diagnostic = true;
@@ -203,6 +225,16 @@ pub fn kv_basis_from_probe(
         backend,
         fa_pairs,
         runtime_identity: identity.map(RuntimeIdentity::fingerprint),
+        build_number: parsed.build_number,
+        metal_bf16: match (backend, parsed.metal_bf16) {
+            (Backend::Metal, Some(flag)) => {
+                Evidence::confirmed(flag, "runtime probe: ggml_metal_device_init has bfloat")
+            }
+            (Backend::Metal, None) => {
+                Evidence::unavailable("the Metal backend reported no bfloat flag")
+            }
+            _ => Evidence::unavailable("only probed for Metal"),
+        },
         devices: parsed.devices.clone(),
     }
 }
@@ -564,6 +596,35 @@ mod tests {
         let basis = kv_basis_from_probe(&parsed, None);
         assert_eq!(basis.backend, Backend::Metal);
         assert!(!basis.fa_pairs.is_confirmed());
+    }
+
+    #[test]
+    fn real_metal_output_reports_bfloat_and_build() {
+        let parsed = parse_probe_output(METAL_FIXTURE, MODEL);
+        assert_eq!(parsed.metal_bf16, Some(true));
+        assert_eq!(parsed.build_number, Some(11719));
+        let basis = kv_basis_from_probe(&parsed, None);
+        assert_eq!(basis.metal_bf16.confirmed_value(), Some(&true));
+        assert_eq!(basis.build_number, Some(11719));
+        assert!(basis.metal_rule_verified());
+    }
+
+    #[test]
+    fn metal_bfloat_false_or_missing_never_confirms_support() {
+        let base = "load_backend: loaded MTL backend from /x/libggml-metal.so\ncmn common_param: system_info: n = 1 | MTL : EMBED_LIBRARY = 1 |\n";
+        let none = parse_probe_output(base, MODEL);
+        assert!(!kv_basis_from_probe(&none, None).metal_bf16.is_confirmed());
+        let off = format!("I ggml_metal_device_init: has bfloat            = false\n{base}");
+        let basis = kv_basis_from_probe(&parse_probe_output(&off, MODEL), None);
+        assert_eq!(basis.metal_bf16.confirmed_value(), Some(&false));
+        // Two devices: any false wins.
+        let mixed = format!(
+            "I ggml_metal_device_init: has bfloat            = true\nI ggml_metal_device_init: has bfloat            = false\n{base}"
+        );
+        assert_eq!(parse_probe_output(&mixed, MODEL).metal_bf16, Some(false));
+        // CUDA never reports a Metal flag.
+        let cuda = parse_probe_output(CUDA_FIXTURE, MODEL);
+        assert!(!kv_basis_from_probe(&cuda, None).metal_bf16.is_confirmed());
     }
 
     #[test]

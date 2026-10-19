@@ -108,6 +108,27 @@ than q8_0/q8_0 in this experiment. Other Mac presets need contextual classificat
 slowdown claim. The editor's "f16 can be faster than q8_0 on Apple Silicon with Qwen3" tooltip
 overgeneralizes: the observed equal-pair f16/f16 advantage (+13% pp, +9% tg) is model/device-specific.
 
+**S1b (2026-10-19, same b11719 / M5 Max / Qwen3.8-27B IQ4_XS, `llama-bench -fa on -d 8192`).**
+Short prompts hide CPU attention (at 256 tokens q8_0/bf16 still benched 553 pp), so these are depth runs:
+
+| K/V | pp512 | tg32 |
+| --- | ---: | ---: |
+| q8_0/q8_0 | 570 | 28.5 |
+| bf16/bf16 | 549 | 26.5 |
+| f16/f16 | 514 | 28.6 |
+| q8_0/bf16 | 22 | 6.2 |
+| bf16/q8_0 | 9 | 4.7 |
+| bf16/f16 | 14 | 5.5 |
+
+Every mixed pair collapses, including float/float (bf16/f16). Source explains it: the Metal
+`FLASH_ATTN_EXT` support check returns false when `src[1]->type != src[2]->type`
+(`ggml-metal-device.m`, rule present since the Metal refactor #15995). `-fa auto` with q8_0/bf16 logs
+"Flash Attention is assigned to device CPU ... set to disabled"; `-fa auto` with bf16/bf16 logs
+"Flash Attention enabled". bf16 hardware support is reported by the device at startup
+(`ggml_metal_device_init: has bfloat = true`), which is the same flag the support check consults.
+The classifier gates the Metal rule on a verified build range (`METAL_FA_RULE_VERIFIED_BUILDS`,
+currently b11719 only); other builds stay `Unverified` until re-checked.
+
 ### 2.2 CUDA: missing compiled pairs can use a conversion fallback
 
 Upstream PR #28079 (`5a4d0feca`, 2026-09-09) replaced `GGML_CUDA_FA_ALL_QUANTS` with:
@@ -646,7 +667,10 @@ do not infer kernel support from acceptance or invent additional `WontStart` rul
 | Unknown | on/auto | E/M, all four classes | Unverified; backend discovery failure is nonblocking. |
 | any | unknown effective default | any accepted pair | Resolve modes as above; if not uniquely evidenced, Unverified, no new block. |
 
-For Metal bf16, a compile flag/Apple Silicon label alone is not hardware execution evidence.
+For Metal bf16, a compile flag/Apple Silicon label alone is not hardware execution evidence; the
+runtime's `has bfloat` device line is. On a build in `METAL_FA_RULE_VERIFIED_BUILDS`, a mixed pair is
+`Fallback{CpuAttention}` with FA on (or auto with quantized V) and `Fallback{NoFlashAttention}` with
+auto and floating V; any other build is `Unverified`.
 Pair lists omit shape, attention implementation, offload selection and device restrictions; absence
 of required context prevents a universal Native promise. Confirmed runtime observations may
 refine expected execution only for their identity/model/device context.

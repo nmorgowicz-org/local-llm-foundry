@@ -435,7 +435,7 @@ mod tests {
             backend: Backend::Cuda,
             fa_pairs: Evidence::confirmed(compiled_fa_pairs(spec).unwrap(), "test"),
             runtime_identity: None,
-            devices: Vec::new(),
+            ..Default::default()
         };
         snap
     }

@@ -21,7 +21,7 @@ use warp::http::StatusCode;
 use super::{ApiCtx, ApiRoute, box_reply, check_api_token, unauthorized_api_token};
 use crate::config::AppConfig;
 use crate::inference::kv_support::{
-    DeviceEvidence, Evidence, KvContext, KvSupportBasis, KvType, ModelEvidence, classify_kv_pair,
+    DeviceEvidence, KvContext, KvSupportBasis, KvType, ModelEvidence, classify_kv_pair,
     launch_flash_attn_mode,
 };
 use crate::inference::llama_cpp_capabilities::CapabilitySnapshot;
@@ -140,8 +140,8 @@ pub(crate) fn resolve_device(
     }
     Ok(Some(DeviceEvidence {
         id: id.to_string(),
-        // Hardware bf16 support is not probed; never assumed.
-        metal_bf16: Evidence::unavailable("Metal bf16 hardware support is not probed"),
+        // Reported by the runtime's own Metal device init; unavailable otherwise.
+        metal_bf16: basis.metal_bf16.clone(),
     }))
 }
 
@@ -275,7 +275,7 @@ pub(crate) fn routes(ctx: ApiCtx) -> ApiRoute {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::kv_support::{Backend, KV_BASIS_VERSION, compiled_fa_pairs};
+    use crate::inference::kv_support::{Backend, Evidence, KV_BASIS_VERSION, compiled_fa_pairs};
 
     fn params(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
@@ -292,6 +292,7 @@ mod tests {
             fa_pairs: Evidence::confirmed(compiled_fa_pairs("all").unwrap(), "test"),
             runtime_identity: Some("rt-1".into()),
             devices: vec!["CUDA0 : NVIDIA GeForce RTX 5090 (32606 MiB)".into()],
+            ..Default::default()
         };
         snapshot
     }

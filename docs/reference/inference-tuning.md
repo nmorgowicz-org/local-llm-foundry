@@ -143,9 +143,11 @@ bytes/token = 2 (K+V) × n_layers × n_kv_heads × head_dim × bytes_per_elem
 - **f16** = 2 bytes/elem, **q8_0** = ~1, **q4_0** = ~0.5.
 - **Quantized V requires flash attention** (`-fa on`); llama.cpp refuses to start
   without it. **Equal K/V types** (`-ctk q8_0 -ctv q8_0`) are the safe default for
-  the fast fused kernel. Mixed pairs can start, but on Metal the fused kernels
-  cover equal pairs only: in one measurement (b11719, M5 Max, Qwen3.8-27B IQ4_XS)
-  a mixed quantized pair ran attention on the CPU at roughly 21× slower prefill.
+  the fast fused kernel. Mixed pairs can start, but Metal's fused attention covers
+  equal K/V types only (llama.cpp rejects the flash-attention op when K and V differ),
+  so any mixed pair, even bf16/f16, runs attention on the CPU. Measured at 8k depth
+  (b11719, M5 Max, Qwen3.8-27B IQ4_XS): about 550 t/s prefill for equal pairs against
+  9–22 t/s for mixed ones.
   On CUDA a pair that was not compiled in falls back to an f16 conversion; a
   source build with `GGML_CUDA_FA_QUANTS=all` compiles every pair.
 - Presets store KV types in the canonical `ctk`/`ctv` fields (the `-ctk`/`-ctv`
