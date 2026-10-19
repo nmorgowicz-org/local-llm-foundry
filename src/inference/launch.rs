@@ -406,6 +406,20 @@ pub fn request_from_session(
     Ok(request)
 }
 
+/// A model must not start against a runtime that is mid-swap. Only the
+/// promotion's own restart (which carries the owner token) passes.
+fn ensure_runtime_available(state: &AppState) -> Result<()> {
+    if let Some(owner) = state.runtime_gate.current_owner()
+        && !crate::llama_runtime::gate::is_runtime_owner()
+    {
+        anyhow::bail!(
+            "The llama.cpp runtime is busy ({} in progress); try again when it finishes",
+            owner.label()
+        );
+    }
+    Ok(())
+}
+
 /// The only production adapter construction point for local inference.
 pub async fn construct_adapter(
     request: &LocalLaunchRequest,
@@ -414,16 +428,7 @@ pub async fn construct_adapter(
 ) -> Result<BackendAdapter> {
     match request {
         LocalLaunchRequest::LlamaCpp(config) => {
-            // A model must not start against a runtime that is mid-swap. Only
-            // the promotion's own restart (which carries the owner token) passes.
-            if let Some(owner) = state.runtime_gate.current_owner()
-                && !crate::llama_runtime::gate::is_runtime_owner()
-            {
-                anyhow::bail!(
-                    "The llama.cpp runtime is busy ({} in progress); try again when it finishes",
-                    owner.label()
-                );
-            }
+            ensure_runtime_available(state)?;
             // Capability claims must be tied to the exact selected llama-server
             // binary rather than the build bundled during development. Snapshot
             // generation is bounded; validation below remains the launch gate.
@@ -732,6 +737,25 @@ pub async fn launch_local_with_resolved_preset(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn launch_is_refused_while_the_runtime_gate_is_held_except_for_its_owner() {
+        use crate::llama_runtime::gate::{RUNTIME_OWNER, RuntimeOp};
+        let state = AppState::default();
+        assert!(ensure_runtime_available(&state).is_ok());
+
+        let guard = state.runtime_gate.try_begin(RuntimeOp::Update).unwrap();
+        let err = ensure_runtime_available(&state).unwrap_err().to_string();
+        assert!(err.contains("update"), "{err}");
+        // The promotion's own restart carries the owner token.
+        let owned = RUNTIME_OWNER
+            .scope(true, async { ensure_runtime_available(&state) })
+            .await;
+        assert!(owned.is_ok());
+
+        drop(guard);
+        assert!(ensure_runtime_available(&state).is_ok());
+    }
+
     use super::*;
     use clap::Parser;
 

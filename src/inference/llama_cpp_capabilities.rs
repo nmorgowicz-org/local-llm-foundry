@@ -742,6 +742,31 @@ fn hash_file(path: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn snapshot_generation_is_refused_during_a_swap_window_but_not_for_the_owner() {
+        use crate::llama_runtime::gate::{RUNTIME_OWNER, RuntimeGate, RuntimeOp};
+        let gate = std::sync::Arc::new(RuntimeGate::default());
+        let mut guard = gate.try_begin(RuntimeOp::Update).unwrap();
+        guard.enter_swap_window();
+
+        let missing = std::path::Path::new("/nonexistent/llama-server");
+        let err = generate_snapshot(missing).await.unwrap_err().to_string();
+        assert!(err.contains("being updated"), "{err}");
+
+        // The owner is allowed through (and then fails on the missing binary,
+        // not on the swap window).
+        let owner_err = RUNTIME_OWNER
+            .scope(true, generate_snapshot(missing))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(!owner_err.contains("being updated"), "{owner_err}");
+
+        drop(guard);
+        let after = generate_snapshot(missing).await.unwrap_err().to_string();
+        assert!(!after.contains("being updated"), "{after}");
+    }
+
     use super::*;
 
     #[test]
