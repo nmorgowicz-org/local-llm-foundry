@@ -1076,10 +1076,10 @@ Options:
         );
         eprintln!("fa_pairs={:?}", snapshot.kv_basis.fa_pairs);
         eprintln!(
-            "build={:?} metal_bf16={:?} metal_rule_verified={}",
+            "build={:?} metal_bf16={:?} metal_rule_applies={}",
             snapshot.kv_basis.build_number,
             snapshot.kv_basis.metal_bf16,
-            snapshot.kv_basis.metal_rule_verified()
+            snapshot.kv_basis.metal_rule_applies()
         );
         assert!(
             snapshot.runtime_identity.is_some(),

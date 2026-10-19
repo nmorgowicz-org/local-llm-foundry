@@ -606,7 +606,7 @@ mod tests {
         let basis = kv_basis_from_probe(&parsed, None);
         assert_eq!(basis.metal_bf16.confirmed_value(), Some(&true));
         assert_eq!(basis.build_number, Some(11719));
-        assert!(basis.metal_rule_verified());
+        assert!(basis.metal_rule_applies());
     }
 
     #[test]

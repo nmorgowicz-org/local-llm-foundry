@@ -53,12 +53,13 @@ Baseline: `fcf2b878` (main). Branch `feat/llamacpp-source-builds`, result `82675
 ## Addendum: Metal bf16 and mixed pairs (same day)
 
 - Probe now parses `ggml_metal_device_init: has bfloat` and the build number; the real install
-  reports `build=11719 metal_bf16=Confirmed(true) metal_rule_verified=true`.
+  reports `build=11719 metal_bf16=Confirmed(true) metal_rule_applies=true`.
 - Depth benchmarks (plan S1b) show every mixed pair on Metal runs CPU attention, including
   bf16/f16. Source confirms the K==V requirement. The classifier now returns
   `Fallback{CpuAttention}` on a verified build instead of `Unverified`.
-- The verified range is a single build (`METAL_FA_RULE_VERIFIED_BUILDS = 11719..=11719`); newer
-  builds stay `Unverified` until re-checked.
+- Rule applies from b11719 onward (`METAL_FA_RULE_FROM_BUILD`); builds above the measured one carry a
+  "not re-tested" note. `METAL_FA_MIXED_KERNELS_FROM_BUILD` (None) is the escape hatch to return
+  newer builds to `Unverified` once upstream adds mixed kernels. Re-check command is documented on the constant.
 - The final lib run had one failure, `rapid_mlx::model_resolver::tests::template_overlay_does_not_mutate_original_model_dir`,
   in code this branch does not touch. It passed alone and in two further full runs (1673 passed).
 

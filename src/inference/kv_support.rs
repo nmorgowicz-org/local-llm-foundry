@@ -21,12 +21,23 @@ use serde::{Deserialize, Serialize};
 /// of persisted evidence changes; older cached evidence is then discarded.
 pub const KV_BASIS_VERSION: u32 = 1;
 
-/// llama.cpp builds whose Metal flash-attention support rule was verified:
+/// First llama.cpp build at which the Metal flash-attention rule was checked:
 /// `ggml_metal_device_supports_op` returns false for `FLASH_ATTN_EXT` when the
 /// K and V types differ (source read at b11719), and mixed pairs measured on an
-/// M5 Max at b11719 ran attention on the CPU. A build outside this range is
-/// `Unverified` until the rule is re-checked and the range is extended.
-pub const METAL_FA_RULE_VERIFIED_BUILDS: std::ops::RangeInclusive<u32> = 11719..=11719;
+/// M5 Max at b11719 ran attention on the CPU. Later builds are assumed to keep
+/// the rule (the failure mode is a stale warning, never a block) but are
+/// reported as not re-tested. Builds below this are `Unverified`.
+pub const METAL_FA_RULE_FROM_BUILD: u32 = 11719;
+
+/// The build that was actually measured and read. Builds above it carry a
+/// "not re-tested" qualifier in user text.
+pub const METAL_FA_RULE_MEASURED_BUILD: u32 = 11719;
+
+/// Escape hatch: set to the first build that ships mixed K/V Metal flash
+/// attention kernels once a changelog or re-test shows it. Builds from there on
+/// go back to `Unverified`. Re-check with
+/// `grep -n 'src\[1\]->type != op->src\[2\]->type' ggml/src/ggml-metal/ggml-metal-device.m`.
+pub const METAL_FA_MIXED_KERNELS_FROM_BUILD: Option<u32> = None;
 
 /// Head dimensions for which the fused FlashAttention paths are considered
 /// adequate. Deliberately conservative: an unlisted or unknown dimension means
@@ -259,13 +270,34 @@ impl KvSupportBasis {
         }
     }
 
-    /// Whether this runtime's Metal flash-attention support rule was verified.
-    pub fn metal_rule_verified(&self) -> bool {
-        self.backend == Backend::Metal
-            && self
-                .build_number
-                .is_some_and(|build| METAL_FA_RULE_VERIFIED_BUILDS.contains(&build))
+    /// Whether the Metal "K and V types must match" rule applies to this
+    /// runtime: a Metal build at or after the checked build and before any
+    /// known mixed-kernel build.
+    pub fn metal_rule_applies(&self) -> bool {
+        metal_rule_applies_to(
+            self.backend,
+            self.build_number,
+            METAL_FA_MIXED_KERNELS_FROM_BUILD,
+        )
     }
+
+    /// Qualifier for user text: empty for the measured build, otherwise says the
+    /// rule was not re-tested on this one.
+    pub fn metal_rule_qualifier(&self) -> &'static str {
+        match self.build_number {
+            Some(build) if build > METAL_FA_RULE_MEASURED_BUILD => {
+                " This build has not been re-tested; the rule was checked on b11719."
+            }
+            _ => "",
+        }
+    }
+}
+
+fn metal_rule_applies_to(backend: Backend, build: Option<u32>, mixed_from: Option<u32>) -> bool {
+    backend == Backend::Metal
+        && build.is_some_and(|build| {
+            build >= METAL_FA_RULE_FROM_BUILD && mixed_from.is_none_or(|from| build < from)
+        })
 }
 
 impl Default for KvSupportBasis {
@@ -642,12 +674,13 @@ fn expected_with_fa(
             let observed = ctx
                 .observations
                 .and_then(|o| o.metal_mixed_cpu_attention.confirmed_value());
-            if ctx.basis.metal_rule_verified() {
+            if ctx.basis.metal_rule_applies() {
                 KvSupport::Fallback {
                     reason: format!(
-                        "Metal flash attention supports equal K/V types only, so {}/{} attention runs on the CPU. {METAL_MIXED_MEASUREMENT_NOTE}",
+                        "Metal flash attention supports equal K/V types only, so {}/{} attention runs on the CPU. {METAL_MIXED_MEASUREMENT_NOTE}{}",
                         k.name(),
-                        v.name()
+                        v.name(),
+                        ctx.basis.metal_rule_qualifier()
                     ),
                     impact: Impact::CpuAttention,
                 }
@@ -709,7 +742,7 @@ fn expected_for_mode(
             // Metal with a verified rule: a pair without a fused kernel makes
             // auto disable flash attention (observed on q8_0/bf16 at b11719:
             // "Flash Attention is assigned to device CPU ... set to disabled").
-            if ctx.basis.metal_rule_verified() && !(k == v && k.is_metal_fa_type()) {
+            if ctx.basis.metal_rule_applies() && !(k == v && k.is_metal_fa_type()) {
                 return KvSupport::Fallback {
                     reason: format!(
                         "Metal has no flash attention kernel for {}/{}, so -fa auto disables flash attention for this pair.",
@@ -1349,9 +1382,66 @@ mod tests {
     }
 
     #[test]
+    fn newer_metal_builds_keep_the_fallback_with_a_not_retested_qualifier() {
+        let (d, m) = (device(None), model(Some(256)));
+        for (build, qualified) in [(11719, false), (11720, true), (99999, true)] {
+            let basis = KvSupportBasis {
+                build_number: Some(build),
+                ..backend_basis(Backend::Metal)
+            };
+            let c = ctx(&basis, Some(&d), Some(&m));
+            let KvSupport::Fallback { reason, impact } =
+                classify(KvType::Q8_0, KvType::Q4_0, FlashAttnMode::On, &c)
+            else {
+                panic!("build {build} should fall back");
+            };
+            assert_eq!(impact, Impact::CpuAttention);
+            assert_eq!(
+                reason.contains("not been re-tested"),
+                qualified,
+                "{build}: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn escape_hatch_returns_builds_with_mixed_kernels_to_unverified() {
+        // The constant is None today; exercise the rule function directly.
+        for (build, expect) in [
+            (Some(11718), false),
+            (Some(11719), true),
+            (Some(12000), true),
+            (None, false),
+        ] {
+            assert_eq!(
+                metal_rule_applies_to(Backend::Metal, build, None),
+                expect,
+                "{build:?}"
+            );
+        }
+        for (build, expect) in [
+            (Some(11719), true),
+            (Some(12049), true),
+            (Some(12050), false),
+            (Some(13000), false),
+        ] {
+            assert_eq!(
+                metal_rule_applies_to(Backend::Metal, build, Some(12050)),
+                expect,
+                "{build:?}"
+            );
+        }
+        assert!(!metal_rule_applies_to(Backend::Cuda, Some(11719), None));
+        assert_eq!(
+            METAL_FA_MIXED_KERNELS_FROM_BUILD, None,
+            "update the docs when this is set"
+        );
+    }
+
+    #[test]
     fn unverified_metal_builds_stay_unverified_for_mixed_pairs() {
         let (d, m) = (device(None), model(Some(256)));
-        for build in [None, Some(11718), Some(11720), Some(99999)] {
+        for build in [None, Some(11718), Some(100)] {
             let basis = KvSupportBasis {
                 build_number: build,
                 ..backend_basis(Backend::Metal)

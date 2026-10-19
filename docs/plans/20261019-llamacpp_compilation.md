@@ -126,8 +126,12 @@ Every mixed pair collapses, including float/float (bf16/f16). Source explains it
 "Flash Attention is assigned to device CPU ... set to disabled"; `-fa auto` with bf16/bf16 logs
 "Flash Attention enabled". bf16 hardware support is reported by the device at startup
 (`ggml_metal_device_init: has bfloat = true`), which is the same flag the support check consults.
-The classifier gates the Metal rule on a verified build range (`METAL_FA_RULE_VERIFIED_BUILDS`,
-currently b11719 only); other builds stay `Unverified` until re-checked.
+The classifier applies the Metal rule to builds at or after b11719 (`METAL_FA_RULE_FROM_BUILD`);
+builds above the measured one say "not re-tested". Failing toward the warning is deliberate: a stale
+warning is harmless, a missing one costs 20-50x prefill. If upstream ships mixed Metal kernels, set
+`METAL_FA_MIXED_KERNELS_FROM_BUILD` and those builds return to `Unverified`. Builds below b11719 stay
+`Unverified`. Re-check with `grep -n 'src\[1\]->type != op->src\[2\]->type'
+ggml/src/ggml-metal/ggml-metal-device.m` when a release note mentions Metal or flash attention.
 
 ### 2.2 CUDA: missing compiled pairs can use a conversion fallback
 
@@ -327,7 +331,6 @@ constructs it from the resolved job/release operation, not client free text or m
 Source CUDA always requires observed FA-all; no API option relaxes D9. A prebuilt/rollback
 uses its actual feature evidence and reports uncertainty without inferring an upstream default.
 
-
 **One verification owner:** `promote` invokes a shared staged-runtime verifier for both source
 and prebuilt installs; `job.rs` does not independently launch `generate_snapshot` or repeat GPU
 probing. Pure hash/configure checks may happen before this handoff. Preparation (exec bits,
@@ -409,7 +412,6 @@ Fixed order whenever multiple guards are needed: toolchain lease → checkout/bu
 Never acquire an earlier lock while holding a later one. Downloads need only their own job/temp
 ownership; compile needs build/toolchain ownership, not runtime ownership. Prebuilt promotion
 needs no build-tree lock. Hold runtime ownership only for coordinated verification/swap/restart.
-
 
 ### 4.4 Build job
 
@@ -668,9 +670,9 @@ do not infer kernel support from acceptance or invent additional `WontStart` rul
 | any | unknown effective default | any accepted pair | Resolve modes as above; if not uniquely evidenced, Unverified, no new block. |
 
 For Metal bf16, a compile flag/Apple Silicon label alone is not hardware execution evidence; the
-runtime's `has bfloat` device line is. On a build in `METAL_FA_RULE_VERIFIED_BUILDS`, a mixed pair is
+runtime's `has bfloat` device line is. On a build at or after `METAL_FA_RULE_FROM_BUILD` (before any `METAL_FA_MIXED_KERNELS_FROM_BUILD`), a mixed pair is
 `Fallback{CpuAttention}` with FA on (or auto with quantized V) and `Fallback{NoFlashAttention}` with
-auto and floating V; any other build is `Unverified`.
+auto and floating V; an older or unknown build is `Unverified`.
 Pair lists omit shape, attention implementation, offload selection and device restrictions; absence
 of required context prevents a universal Native promise. Confirmed runtime observations may
 refine expected execution only for their identity/model/device context.
