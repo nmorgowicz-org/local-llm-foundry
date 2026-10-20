@@ -367,7 +367,14 @@ jobs:
         timeout-minutes: 60
         env:
           PLAYWRIGHT_HTML_OUTPUT_DIR: ${{ env.UI_JOB_DIR }}/playwright-report
-        run: npm test -- --workers=1 --shard=${{ matrix.shard }}/2 --output="$UI_JOB_DIR/test-results"
+          # Adding the `ui-smoke` label next to `ready-to-test` runs the short smoke tier
+          # (tests/ui/playwright.smoke.config.js) instead of the full suite. Without it the
+          # full suite runs, exactly as before.
+          UI_SMOKE: ${{ contains(github.event.pull_request.labels.*.name, 'ui-smoke') }}
+        run: |
+          script="test"
+          if [ "$UI_SMOKE" = "true" ]; then script="test:smoke"; fi
+          npm run "$script" -- --workers=1 --shard=${{ matrix.shard }}/2 --output="$UI_JOB_DIR/test-results"
 
       - name: Stop isolated UI server
         if: always()

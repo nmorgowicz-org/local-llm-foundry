@@ -38,6 +38,10 @@ function take(flag) {
   return value;
 }
 
+// Allow `npm run test:parallel -- --procs 4 -- <playwright args>` style separators.
+const sep = args.indexOf('--');
+if (sep !== -1) args.splice(sep, 1);
+
 const cpuDefault = Math.max(1, Math.min(4, Math.floor(availableParallelism() / 4)));
 const procs = Math.max(1, Number(take('--procs') ?? process.env.UI_PROCS ?? cpuDefault));
 const [outerIndex, outerTotal] = (take('--shard') ?? '1/1').split('/').map(Number);
