@@ -305,22 +305,41 @@ fn redact(key: &str, value: &str) -> String {
     value.to_string()
 }
 
-/// Replace `scheme://user:pass@host` credentials with `scheme://[redacted]@`.
-/// Values without a `://`, without userinfo, or where the first `@` sits
-/// beyond the authority (a `/`, `?` or `#` first) pass through untouched.
+/// Replace `[scheme://]user:pass@host` credentials with `[scheme://][redacted]@`.
+///
+/// Proxies accept both the URL form and the shorter `user:pass@host`, and list
+/// variables separate entries with spaces, commas or semicolons, so every
+/// entry is considered. The split is at the *last* `@` of an entry: a raw `@`
+/// inside a password must not leave the tail exposed.
 fn redact_url_userinfo(value: &str) -> String {
-    let Some(scheme_end) = value.find("://") else {
-        return value.to_string();
-    };
-    let authority = &value[scheme_end + 3..];
-    let Some(at) = authority.find('@') else {
-        return value.to_string();
-    };
-    let (userinfo, tail) = authority.split_at(at);
-    if userinfo.is_empty() || userinfo.contains(['/', '?', '#']) {
-        return value.to_string();
+    let mut out = String::with_capacity(value.len());
+    let mut entry = String::new();
+    for ch in value.chars() {
+        if matches!(ch, ' ' | ',' | ';') {
+            out.push_str(&redact_entry(&entry));
+            out.push(ch);
+            entry.clear();
+        } else {
+            entry.push(ch);
+        }
     }
-    format!("{}://[redacted]{}", &value[..scheme_end], tail)
+    out.push_str(&redact_entry(&entry));
+    out
+}
+
+fn redact_entry(entry: &str) -> String {
+    let Some(at) = entry.rfind('@') else {
+        return entry.to_string();
+    };
+    let (userinfo, tail) = entry.split_at(at);
+    let candidate = userinfo.rsplit("://").next().unwrap_or(userinfo);
+    // Only a `user:pass` pair is a credential; an `@` in a path, query or
+    // fragment is left alone.
+    if !candidate.contains(':') || candidate.contains(['/', '?', '#']) {
+        return entry.to_string();
+    }
+    let scheme = &userinfo[..userinfo.len() - candidate.len()];
+    format!("{scheme}[redacted]{tail}")
 }
 
 /// A redacted diff of `child` against `parent` for the phase header line.
@@ -329,10 +348,24 @@ pub fn redacted_env_diff(
     child: &BTreeMap<String, String>,
 ) -> Vec<String> {
     let mut out = Vec::new();
+    // Windows upper-cases every key in the child environment while `parent` is
+    // the app's raw environment, so a case-only difference would otherwise be
+    // logged as a change (and carry a proxy value into the job log).
+    let parent_ci: std::collections::BTreeMap<String, &String> = parent
+        .iter()
+        .map(|(k, v)| (k.to_ascii_uppercase(), v))
+        .collect();
     for (k, v) in child {
-        if parent.get(k) != Some(v) {
-            out.push(format!("{k}={}", redact(k, v)));
+        if parent.get(k) == Some(v) {
+            continue;
         }
+        if parent_ci
+            .get(&k.to_ascii_uppercase())
+            .is_some_and(|same| *same == v)
+        {
+            continue;
+        }
+        out.push(format!("{k}={}", redact(k, v)));
     }
     for k in parent.keys() {
         if !child.contains_key(k) {
@@ -628,6 +661,40 @@ mod tests {
                 .iter()
                 .any(|l| l.contains("user:secret") || l.contains("u2:p2"))
         );
+    }
+
+    #[test]
+    fn schemeless_and_list_valued_proxy_credentials_are_redacted() {
+        assert_eq!(
+            redact_url_userinfo("user:pass@proxy.local:8080"),
+            "[redacted]@proxy.local:8080"
+        );
+        assert_eq!(
+            redact_url_userinfo("http://u:p@a.local,https://v:q@b.local"),
+            "http://[redacted]@a.local,https://[redacted]@b.local"
+        );
+        // A raw `@` inside the password must not expose the tail.
+        assert_eq!(
+            redact_url_userinfo("u:p@ss@proxy.local"),
+            "[redacted]@proxy.local"
+        );
+        // No credentials: unchanged, including an `@` in a path.
+        assert_eq!(redact_url_userinfo("proxy.local:8080"), "proxy.local:8080");
+        assert_eq!(
+            redact_url_userinfo("http://host/path?x=a@b"),
+            "http://host/path?x=a@b"
+        );
+    }
+
+    #[test]
+    fn a_case_only_key_difference_is_not_logged_as_a_change() {
+        let parent = BTreeMap::from([("https_proxy".to_string(), "http://u:p@a".to_string())]);
+        let child = BTreeMap::from([("HTTPS_PROXY".to_string(), "http://u:p@a".to_string())]);
+        let lines = redacted_env_diff(&parent, &child);
+        // The renamed key is not logged as a change, and no value leaks; the
+        // value-less removal line for the old spelling is harmless.
+        assert!(!lines.iter().any(|l| l.starts_with("HTTPS_PROXY=")));
+        assert!(!lines.iter().any(|l| l.contains("u:p@")));
     }
 
     #[test]
