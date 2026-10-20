@@ -28,6 +28,10 @@ use crate::llama_runtime::promote::VerifyStage;
 /// (the previous health check allowed 30 s for the same reason).
 pub const VERIFY_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Prefix of the note emitted when only `--help` could be verified. A later
+/// stage with full evidence drops it (see `promote::absorb_report`).
+pub const EVIDENCE_NOTE_PREFIX: &str = "Runtime evidence could not be read";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstallKind {
@@ -407,7 +411,7 @@ pub async fn verify_runtime_at(
                     build_commit: None,
                     identity_fingerprint: None,
                     notes: vec![format!(
-                        "Runtime evidence could not be read ({other}); only --help was verified."
+                        "{EVIDENCE_NOTE_PREFIX} ({other}); only --help was verified."
                     )],
                     evidence_unavailable: true,
                 }
@@ -435,6 +439,14 @@ pub async fn verify_runtime_at(
 fn commit_token(text: &str) -> Option<String> {
     let lower = text.to_ascii_lowercase();
     for (idx, _) in lower.match_indices("commit") {
+        // `precommit`/`decommit` are not the keyword.
+        if lower[..idx]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            continue;
+        }
         let rest = lower[idx + "commit".len()..].trim_start_matches([' ', ':', '=']);
         let token: String = rest
             .chars()
@@ -464,16 +476,16 @@ async fn check_bench_commit(
     } else {
         "llama-bench"
     });
-    if !bench.is_file() {
-        return Ok(if intent.kind == InstallKind::Prebuilt {
-            Some("llama-bench is absent from this prebuilt set; its commit was not checked.".into())
-        } else {
-            None
-        });
-    }
+    // Without a pin (prebuilt, rollback) there is nothing to cross-check, so
+    // no note either.
     let Some(pinned) = intent.pinned_commit.clone() else {
         return Ok(None);
     };
+    if !bench.is_file() {
+        return Ok(Some(
+            "llama-bench is absent from this runtime set; its commit was not checked.".into(),
+        ));
+    }
     let pinned_is_hash =
         (7..=40).contains(&pinned.len()) && pinned.chars().all(|c| c.is_ascii_hexdigit());
     if !pinned_is_hash {
