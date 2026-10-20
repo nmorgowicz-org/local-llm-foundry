@@ -1343,6 +1343,9 @@ async fn begin<H: PromoteHost>(
 
     // Journal creation begins the noncancellable transaction.
     guard.enter_swap_window();
+    // Probes that began before the window must finish before anything is
+    // stopped or renamed; later ones see the window and stand down.
+    crate::llama_runtime::gate::drain_read_leases().await;
     let candidate = match op {
         Op::Install => staged.map(Path::to_path_buf),
         Op::Rollback => Some(paths.previous.clone()),

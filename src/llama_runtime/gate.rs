@@ -74,6 +74,50 @@ pub fn is_runtime_owner() -> bool {
     RUNTIME_OWNER.try_with(|owner| *owner).unwrap_or(false)
 }
 
+/// Shared leases held by anything that executes or hashes the live runtime
+/// (capability and K/V probes). A swap drains them after it opens its window,
+/// so it never renames files a probe has open and no probe straddles two
+/// runtime versions.
+static READ_LEASES: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+
+/// Held for the whole of a probe. Dropping it releases the runtime to a swap.
+pub struct RuntimeReadLease {
+    _held: Option<tokio::sync::RwLockReadGuard<'static, ()>>,
+}
+
+/// A swap is in progress; the probe must not run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimePaused;
+
+impl std::fmt::Display for RuntimePaused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the llama.cpp runtime is being updated")
+    }
+}
+
+impl std::error::Error for RuntimePaused {}
+
+/// Take a read lease, or report that a swap owns the runtime. The window is
+/// checked only after the lease is held: a swap opens its window and then
+/// drains leases, so a probe either sees the window or is waited for.
+pub async fn acquire_read_lease() -> Result<RuntimeReadLease, RuntimePaused> {
+    if is_runtime_owner() {
+        // The swap's own restart runs inside the window it opened.
+        return Ok(RuntimeReadLease { _held: None });
+    }
+    let held = READ_LEASES.read().await;
+    if swap_window_active() {
+        return Err(RuntimePaused);
+    }
+    Ok(RuntimeReadLease { _held: Some(held) })
+}
+
+/// Wait for every outstanding read lease. Call after opening the swap window;
+/// probes arriving later see the window and stand down.
+pub async fn drain_read_leases() {
+    drop(READ_LEASES.write().await);
+}
+
 #[derive(Debug)]
 pub struct RuntimeGate {
     mutex: Arc<AsyncMutex<()>>,
@@ -173,6 +217,22 @@ mod tests {
         guard.enter_swap_window(); // idempotent: counted once
         assert!(guard.in_swap_window());
         assert!(swap_window_active());
+        drop(guard);
+    }
+
+    #[tokio::test]
+    async fn a_swap_waits_for_an_open_probe_and_later_probes_stand_down() {
+        // Taken directly: other tests' swap windows share the global counter.
+        let lease = READ_LEASES.read().await;
+        let gate = Arc::new(RuntimeGate::default());
+        let mut guard = gate.try_begin(RuntimeOp::Promote).unwrap();
+        guard.enter_swap_window();
+        let drained = tokio::spawn(drain_read_leases());
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!drained.is_finished(), "the swap must wait for the probe");
+        drop(lease);
+        drained.await.unwrap();
+        assert_eq!(acquire_read_lease().await.err(), Some(RuntimePaused));
         drop(guard);
     }
 

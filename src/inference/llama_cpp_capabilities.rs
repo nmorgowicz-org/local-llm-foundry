@@ -310,11 +310,13 @@ pub fn cache_snapshot(snapshot: CapabilitySnapshot) {
 pub async fn generate_snapshot(binary: &Path) -> Result<CapabilitySnapshot> {
     // Never execute or hash a runtime directory that is mid-swap. Callers treat
     // an error as "capability unavailable"; the cached snapshot stays valid.
-    if crate::llama_runtime::gate::swap_window_active()
-        && !crate::llama_runtime::gate::is_runtime_owner()
-    {
-        bail!("the llama.cpp runtime is being updated; capability probing is paused");
-    }
+    // The lease spans every probe below, so a swap waits for them and none
+    // collects evidence from two runtime versions.
+    let _lease = crate::llama_runtime::gate::acquire_read_lease()
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("the llama.cpp runtime is being updated; capability probing is paused")
+        })?;
     let identity = ExecutableIdentity::from_path(binary)?;
 
     let version = probe_version(binary).await?;
