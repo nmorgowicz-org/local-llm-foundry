@@ -554,6 +554,35 @@ mod tests {
             None
         );
         assert_eq!(commit_token("no hex here"), None);
+        // Only the keyword, not a word that ends in it.
+        assert_eq!(commit_token("precommit 1234567"), None);
+        assert_eq!(commit_token("decommit 1234abc"), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_absent_bench_is_noted_only_when_a_commit_is_pinned() {
+        let dir = tempfile::tempdir().unwrap();
+        // No pinned commit (prebuilt, rollback): nothing to check, no note.
+        assert!(
+            check_bench_commit(dir.path(), &VerificationIntent::prebuilt("metal"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // A pinned install without llama-bench is exactly the anomaly worth
+        // reporting, and it is a note rather than a failure.
+        let mut intent = VerificationIntent::prebuilt("metal");
+        intent.kind = InstallKind::Source;
+        intent.pinned_commit = Some("deadbeef00000000000000000000000000000000".into());
+        let note = check_bench_commit(dir.path(), &intent).await.unwrap();
+        assert!(note.is_some_and(|n| n.contains("absent")));
+        // A pin that is not a hash is a note too.
+        let bench_dir = tempfile::tempdir().unwrap();
+        write_bench(bench_dir.path(), "#!/bin/sh\necho nope\n");
+        intent.pinned_commit = Some("unknown".into());
+        let note = check_bench_commit(bench_dir.path(), &intent).await.unwrap();
+        assert!(note.is_some_and(|n| n.contains("not a hash")));
     }
 
     #[cfg(unix)]

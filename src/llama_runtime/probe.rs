@@ -869,14 +869,16 @@ exit 1
             use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
             let exe = dir.path().join("silent-child");
-            std::fs::write(&exe, "#!/bin/sh\nexec 1>&- 2>&-\nsleep 60\n").unwrap();
+            // `exec` keeps it one killable process; closing both pipes first
+            // exercises the post-EOF reap specifically.
+            std::fs::write(&exe, "#!/bin/sh\nexec 1>&- 2>&-\nexec sleep 60\n").unwrap();
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
             let started = std::time::Instant::now();
             let out = capture_version(&exe, Duration::from_secs(10)).await;
-            assert!(out.is_ok(), "{out:?}");
+            assert!(out.unwrap().trim().is_empty());
             assert!(
-                started.elapsed() < Duration::from_secs(10),
-                "the reap must be bounded"
+                started.elapsed() < Duration::from_secs(5),
+                "the reap must stay near its 2 s bound"
             );
         }
 

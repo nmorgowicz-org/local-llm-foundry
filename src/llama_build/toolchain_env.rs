@@ -313,6 +313,11 @@ fn redact(key: &str, value: &str) -> String {
 /// inside userinfo; within a token the userinfo is the run before the last
 /// `@` that lies inside the authority. That covers a raw `@` in a password
 /// while leaving an `@` in a path or query alone.
+///
+/// Known limits, both credential-safe but log-imprecise: a comma list whose
+/// later entry carries scheme-less credentials can attribute the redaction to
+/// the last entry, and a raw `/`, `?`, `#` or space inside a password (invalid
+/// URL syntax; it must be percent-encoded) can leave part of it visible.
 fn redact_url_userinfo(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut token = String::new();
@@ -748,9 +753,9 @@ mod tests {
         let parent = BTreeMap::from([("https_proxy".to_string(), "http://u:p@a".to_string())]);
         let child = BTreeMap::from([("HTTPS_PROXY".to_string(), "http://u:p@a".to_string())]);
         let lines = redacted_env_diff(&parent, &child);
-        // The renamed key is not logged as a change, and no value leaks; the
-        // value-less removal line for the old spelling is harmless.
+        // Neither a change line nor a removal line for the old spelling.
         assert!(!lines.iter().any(|l| l.starts_with("HTTPS_PROXY=")));
+        assert!(!lines.iter().any(|l| l == "-https_proxy"));
         assert!(!lines.iter().any(|l| l.contains("u:p@")));
     }
 
