@@ -470,6 +470,57 @@ pub async fn probe_runtime(
     probe_runtime_with_timeout(executable, policy, PROBE_TIMEOUT).await
 }
 
+/// Run `program --version` in the sanitized environment, from a neutral working
+/// directory, capturing at most [`PROBE_MAX_OUTPUT`] bytes within `timeout`.
+///
+/// Verification side-checks use this so an inherited `PATH`,
+/// `DYLD_LIBRARY_PATH` or build-tree CWD cannot change which library or
+/// build-info object answers.
+pub async fn capture_version(program: &Path, timeout: Duration) -> Result<String, ProbeError> {
+    let temp = std::env::temp_dir();
+    let mut cmd = Command::new(program);
+    cmd.arg("--version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    configure_env(&mut cmd, EnvPolicy::Sanitized, &temp);
+    crate::platform::no_window_tokio(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| ProbeError::Spawn(e.to_string()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ProbeError::Io("no stdout".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| ProbeError::Io("no stderr".into()))?;
+    let used = Arc::new(AtomicUsize::new(0));
+    let readers = async {
+        tokio::join!(
+            read_budgeted(stdout, used.clone()),
+            read_budgeted(stderr, used.clone())
+        )
+    };
+    match tokio::time::timeout(timeout, readers).await {
+        Ok((Ok(out), Ok(err))) => {
+            let _ = child.wait().await;
+            Ok(format!(
+                "{}{}",
+                String::from_utf8_lossy(&out),
+                String::from_utf8_lossy(&err)
+            ))
+        }
+        Ok((Err(e), _)) | Ok((_, Err(e))) => {
+            let _ = child.kill().await;
+            Err(e)
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            Err(ProbeError::Timeout)
+        }
+    }
+}
+
 pub async fn probe_runtime_with_timeout(
     executable: &Path,
     policy: EnvPolicy,

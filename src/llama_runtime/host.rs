@@ -9,7 +9,7 @@ use crate::inference::llama_cpp::ServerConfig;
 use crate::llama::server::{start_server, stop_server};
 use crate::llama_runtime::gate::RUNTIME_OWNER;
 use crate::llama_runtime::promote::{PromoteHost, VerifyStage};
-use crate::llama_runtime::verify::{VerificationIntent, VerificationReport, verify_runtime};
+use crate::llama_runtime::verify::{VerificationIntent, VerificationReport, verify_runtime_at};
 use crate::state::AppState;
 
 /// The local llama.cpp launch config to restart after the swap, when a
@@ -120,9 +120,9 @@ impl PromoteHost for LiveHost {
         dir: &Path,
         exe_name: &str,
         intent: &VerificationIntent,
-        _stage: VerifyStage,
+        stage: VerifyStage,
     ) -> Result<VerificationReport, String> {
-        verify_runtime(dir, exe_name, intent)
+        verify_runtime_at(dir, exe_name, intent, stage)
             .await
             .map_err(|e| e.to_string())
     }

@@ -13,7 +13,7 @@ use crate::llama_runtime::gate::{RuntimeGate, RuntimeOp};
 use crate::llama_runtime::promote::{
     PromoteError, PromoteHost, PromoteOutcome, PromoteRequest, VerifyStage, promote,
 };
-use crate::llama_runtime::verify::{VerificationIntent, VerificationReport, verify_runtime};
+use crate::llama_runtime::verify::{VerificationIntent, VerificationReport, verify_runtime_at};
 
 use super::BuildOptions;
 use super::cache::{Conflict, Ownership};
@@ -50,9 +50,9 @@ impl PromoteHost for ModellessHost {
         dir: &Path,
         exe_name: &str,
         intent: &VerificationIntent,
-        _stage: VerifyStage,
+        stage: VerifyStage,
     ) -> Result<VerificationReport, String> {
-        verify_runtime(dir, exe_name, intent)
+        verify_runtime_at(dir, exe_name, intent, stage)
             .await
             .map_err(|e| e.to_string())
     }

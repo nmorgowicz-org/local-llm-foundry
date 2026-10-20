@@ -22,6 +22,7 @@ use crate::inference::kv_support::{Backend, compiled_fa_pairs};
 use crate::llama_runtime::probe::{
     EnvPolicy, ProbeError, RuntimeProbe, probe_runtime_with_timeout,
 };
+use crate::llama_runtime::promote::VerifyStage;
 
 /// A cold macOS Metal start can take well over the 10 s ordinary probe limit
 /// (the previous health check allowed 30 s for the same reason).
@@ -114,6 +115,13 @@ pub enum VerifyError {
         pinned: String,
         found: Option<String>,
     },
+    /// `llama-bench` carries a different commit than the server. Kept apart
+    /// from [`VerifyError::CommitMismatch`] because the message must name the
+    /// executable that disagreed.
+    BenchCommitMismatch {
+        pinned: String,
+        found: Option<String>,
+    },
     FaQuantsNotAll(String),
     DeviceNotEnumerated(String),
     EvidenceRequired(String),
@@ -136,6 +144,11 @@ impl std::fmt::Display for VerifyError {
             Self::CommitMismatch { pinned, found } => write!(
                 f,
                 "the runtime reports commit {} but {pinned} was pinned",
+                found.as_deref().unwrap_or("(none)")
+            ),
+            Self::BenchCommitMismatch { pinned, found } => write!(
+                f,
+                "llama-bench reports commit {} but {pinned} was pinned",
                 found.as_deref().unwrap_or("(none)")
             ),
             Self::FaQuantsNotAll(why) => {
@@ -354,11 +367,22 @@ async fn help_runs(exe: &Path) -> Result<(), String> {
     }
 }
 
-/// Verify the runtime in `dir`. The caller has already prepared it.
+/// Verify the runtime in `dir` at the staged stage (bench cross-check
+/// included). The caller has already prepared it.
 pub async fn verify_runtime(
     dir: &Path,
     exe_name: &str,
     intent: &VerificationIntent,
+) -> Result<VerificationReport, VerifyError> {
+    verify_runtime_at(dir, exe_name, intent, VerifyStage::Staged).await
+}
+
+/// Verify the runtime in `dir`. The caller has already prepared it.
+pub async fn verify_runtime_at(
+    dir: &Path,
+    exe_name: &str,
+    intent: &VerificationIntent,
+    stage: VerifyStage,
 ) -> Result<VerificationReport, VerifyError> {
     let exe = dir.join(exe_name);
     if !exe.is_file() {
@@ -390,34 +414,47 @@ pub async fn verify_runtime(
             }
         };
     // Plan §4.6.1: both built executables carry the pinned commit. Check
-    // llama-bench alongside llama-server; a prebuilt set that does not ship it
-    // is noted, never failed.
-    if let Some(note) = check_bench_commit(dir, intent).await? {
+    // llama-bench alongside llama-server once, before the swap; a prebuilt set
+    // that does not ship it is noted, never failed.
+    if stage == VerifyStage::Staged
+        && let Some(note) = check_bench_commit(dir, intent).await?
+    {
         report.notes.push(note);
     }
     Ok(report)
 }
 
-/// Extract the `(commit)` token from a `--version` line: 7–40 hex chars.
+/// Extract the commit from llama.cpp's `--version` line
+/// (`version: 0.0.0-dev (build 1234, commit 0123456789ab)`).
+///
+/// Anchored on the `commit` keyword. An unanchored "first hex run" would pick
+/// up compiler dates (`built with AppleClang 21.0.0.21000101`) or a future
+/// build number, and a metadata-less build's `commit unknown` would then
+/// surface as a mismatch. `-dirty` is tolerated; anything unrecognized yields
+/// `None`, which callers treat as a note rather than a failure.
 fn commit_token(text: &str) -> Option<String> {
-    let mut current = String::new();
-    for ch in text.chars().chain([' ']) {
-        let hex = ch.is_ascii_hexdigit();
-        if hex {
-            current.push(ch);
-        } else {
-            if (7..=40).contains(&current.len()) {
-                return Some(current);
-            }
-            current.clear();
+    let lower = text.to_ascii_lowercase();
+    for (idx, _) in lower.match_indices("commit") {
+        let rest = lower[idx + "commit".len()..].trim_start_matches([' ', ':', '=']);
+        let token: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit())
+            .take(41)
+            .collect();
+        if (7..=40).contains(&token.len()) {
+            return Some(token);
         }
     }
     None
 }
 
 /// Commit cross-check for `llama-bench` (plan §4.6.1 "check both built
-/// executables"). `Ok(None)` means nothing to report; a mismatch is an error,
-/// an absent or unreadable llama-bench is a note, never a failure.
+/// executables"). Runs at the staged stage only: the swapped set is the same
+/// bytes, and a parsing miss after a completed swap would roll back a
+/// verified install.
+///
+/// `Ok(None)` means nothing to report. A *parsed* mismatch is an error; an
+/// absent, unrunnable or unrecognized llama-bench is a note, never a failure.
 async fn check_bench_commit(
     dir: &Path,
     intent: &VerificationIntent,
@@ -437,63 +474,121 @@ async fn check_bench_commit(
     let Some(pinned) = intent.pinned_commit.clone() else {
         return Ok(None);
     };
-    let ran = tokio::time::timeout(VERIFY_PROBE_TIMEOUT, async {
-        let mut cmd = tokio::process::Command::new(&bench);
-        cmd.arg("--version")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        crate::platform::no_window_tokio(&mut cmd);
-        cmd.output().await
-    })
-    .await
-    .ok()
-    .and_then(|r| r.ok());
-    let Some(output) = ran else {
+    let pinned_is_hash =
+        (7..=40).contains(&pinned.len()) && pinned.chars().all(|c| c.is_ascii_hexdigit());
+    if !pinned_is_hash {
+        return Ok(Some(format!(
+            "llama-bench was not checked: the pinned commit {pinned:?} is not a hash."
+        )));
+    }
+    let text =
+        match crate::llama_runtime::probe::capture_version(&bench, VERIFY_PROBE_TIMEOUT).await {
+            Ok(text) => text,
+            Err(e) => {
+                return Ok(Some(format!(
+                    "llama-bench could not be run to confirm its commit ({e})."
+                )));
+            }
+        };
+    let Some(found) = commit_token(&text) else {
         return Ok(Some(
-            "llama-bench could not be run to confirm its commit.".into(),
+            "llama-bench ran but its commit could not be read; the check was skipped.".into(),
         ));
     };
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let found = commit_token(&text);
-    let matches = found
-        .as_deref()
-        .is_some_and(|short| short.len() >= 7 && pinned.starts_with(short));
-    if !matches {
-        return Err(VerifyError::CommitMismatch { pinned, found });
+    if !(pinned.starts_with(&found) || found.starts_with(&pinned)) {
+        return Err(VerifyError::BenchCommitMismatch {
+            pinned,
+            found: Some(found),
+        });
     }
     Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn commit_token_extracts_hex_runs_of_seven_to_forty() {
-        assert_eq!(
-            commit_token("version: 1234abc (v1.2)"),
-            Some("1234abc".into())
-        );
-        assert_eq!(
-            commit_token("commit 0123456789abcdef0123456789abcdef01234567"),
-            Some("0123456789abcdef0123456789abcdef01234567".into())
-        );
-        assert_eq!(commit_token("short abc"), None);
-        assert_eq!(
-            commit_token("too long 0123456789abcdef0123456789abcdef012345678"),
-            None
-        );
-        assert_eq!(commit_token("no hex here"), None);
-    }
     use super::*;
     use crate::llama_runtime::probe::{
         LoadedBackend, ParsedProbe, kv_basis_from_probe, parse_probe_output,
     };
 
     const MODEL: &str = "/nonexistent/foundry-probe-xyz.gguf";
+
+    #[test]
+    fn commit_token_is_anchored_on_the_commit_keyword() {
+        assert_eq!(
+            commit_token("version: 0.0.0-dev (build 11719, commit 0123456789)"),
+            Some("0123456789".into())
+        );
+        assert_eq!(
+            commit_token("version: 0.0.0-dev (build 11719, commit abc1234-dirty)"),
+            Some("abc1234".into())
+        );
+        // A compiler date or build number must not be mistaken for a commit.
+        assert_eq!(
+            commit_token(
+                "version: 0.0.0-dev (build 11719, commit unknown)\nbuilt with AppleClang 21.0.0.21000101"
+            ),
+            None
+        );
+        assert_eq!(commit_token("built with AppleClang 21.0.0.21000101"), None);
+        assert_eq!(
+            commit_token("commit 0123456789abcdef0123456789abcdef01234567"),
+            Some("0123456789abcdef0123456789abcdef01234567".into())
+        );
+        // Too short or too long is not a commit.
+        assert_eq!(commit_token("commit abc"), None);
+        assert_eq!(
+            commit_token("commit 0123456789abcdef0123456789abcdef012345678"),
+            None
+        );
+        assert_eq!(commit_token("no hex here"), None);
+    }
+
+    #[cfg(unix)]
+    fn write_bench(dir: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let bench = dir.join("llama-bench");
+        std::fs::write(&bench, body).unwrap();
+        std::fs::set_permissions(&bench, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unparseable_bench_commit_is_a_note_never_a_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut intent = VerificationIntent::prebuilt("metal");
+        intent.pinned_commit = Some("deadbeef00000000000000000000000000000000".into());
+
+        // A metadata-less build says `commit unknown`; the compiler date must
+        // not be mistaken for a commit, and the result is a note.
+        write_bench(
+            dir.path(),
+            "#!/bin/sh\necho 'version: 0.0.0-dev (build 1, commit unknown)'\necho 'built with AppleClang 21.0.0.21000101'\n",
+        );
+        let note = check_bench_commit(dir.path(), &intent).await.unwrap();
+        assert!(note.is_some_and(|n| n.contains("could not be read")));
+
+        // A short matching commit passes silently.
+        write_bench(
+            dir.path(),
+            "#!/bin/sh\necho 'version: 0.0.0-dev (build 1, commit deadbee)'\n",
+        );
+        assert!(
+            check_bench_commit(dir.path(), &intent)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // A parsed, different commit is a failure that names llama-bench.
+        write_bench(
+            dir.path(),
+            "#!/bin/sh\necho 'version: 0.0.0-dev (build 1, commit 1111111)'\n",
+        );
+        let err = check_bench_commit(dir.path(), &intent).await.unwrap_err();
+        assert!(matches!(err, VerifyError::BenchCommitMismatch { .. }));
+        assert!(err.to_string().contains("llama-bench"));
+    }
 
     fn probe_for(dir: &Path, text: &str) -> RuntimeProbe {
         let rewritten = text.replace("/opt/llama", &dir.to_string_lossy());
