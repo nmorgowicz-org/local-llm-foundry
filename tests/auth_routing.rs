@@ -17,6 +17,7 @@ use llama_monitor::{
     web::{
         api::{check_api_token, check_elevated_token},
         auth::{AuthCredentials, AuthManager},
+        guard_admits,
     },
 };
 
@@ -947,6 +948,97 @@ fn llama_build_gates_hold_with_form_login_and_basic_auth_enabled() {
         assert!(!check_elevated_token(
             &basic_header("admin", "secret"),
             &cfg
+        ));
+    }
+}
+
+const FIX: &str = "/api/llama-build/prereqs/fix";
+
+/// Outer guard and the route's own elevated gate, together.
+fn install_admitted(
+    auth: &AuthManager,
+    cfg: &AppConfig,
+    header: Option<&str>,
+    cookie: Option<&str>,
+) -> bool {
+    guard_admits(auth, cfg, header, cookie, FIX)
+        && check_elevated_token(&header.map(String::from), cfg)
+}
+
+#[test]
+fn the_admin_bearer_installs_through_every_login_mode() {
+    let cfg = cfg_both();
+    let admin = bearer(TEST_DB_ADMIN_TOKEN);
+    for auth in [auth_none(), auth_form(), auth_basic()] {
+        assert!(
+            install_admitted(&auth, &cfg, admin.as_deref(), None),
+            "the admin bearer must pass both gates (has_any={})",
+            auth.has_any()
+        );
+    }
+}
+
+#[test]
+fn the_api_token_reaches_the_route_but_is_refused_there() {
+    let cfg = cfg_both();
+    for auth in [auth_form(), auth_basic()] {
+        let api = bearer(TEST_API_TOKEN);
+        assert!(guard_admits(&auth, &cfg, api.as_deref(), None, FIX));
+        assert!(!install_admitted(&auth, &cfg, api.as_deref(), None));
+    }
+}
+
+#[test]
+fn the_guard_admits_the_admin_bearer_on_the_elevated_route_only() {
+    let cfg = cfg_both();
+    let admin = bearer(TEST_DB_ADMIN_TOKEN);
+    for auth in [auth_form(), auth_basic()] {
+        assert!(guard_admits(&auth, &cfg, admin.as_deref(), None, FIX));
+        for other in [
+            "/api/llama-build/start",
+            "/api/settings",
+            "/api/llama-build/prereqs/fix/x",
+        ] {
+            assert!(
+                !guard_admits(&auth, &cfg, admin.as_deref(), None, other),
+                "{other}"
+            );
+        }
+        assert!(!guard_admits(
+            &auth,
+            &cfg,
+            bearer("wrong").as_deref(),
+            None,
+            FIX
+        ));
+        assert!(!guard_admits(&auth, &cfg, None, None, FIX));
+    }
+}
+
+#[test]
+fn basic_credentials_still_pass_the_guard_but_cannot_install() {
+    // The panel swaps Basic for the admin bearer; Basic alone is refused by
+    // the route's elevated gate.
+    let cfg = cfg_both();
+    let auth = auth_basic();
+    let basic = basic_header("admin", "secret");
+    assert!(guard_admits(&auth, &cfg, basic.as_deref(), None, FIX));
+    assert!(!install_admitted(&auth, &cfg, basic.as_deref(), None));
+}
+
+#[test]
+fn without_an_admin_token_the_api_token_installs_through_the_guard() {
+    let cfg = cfg_api_only();
+    for auth in [auth_form(), auth_basic()] {
+        let api = bearer(TEST_API_TOKEN);
+        assert!(install_admitted(&auth, &cfg, api.as_deref(), None));
+        // An absent admin token never makes the admin path a bypass.
+        assert!(!guard_admits(
+            &auth,
+            &cfg,
+            bearer("anything").as_deref(),
+            None,
+            FIX
         ));
     }
 }

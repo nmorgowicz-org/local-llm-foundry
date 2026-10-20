@@ -2754,6 +2754,8 @@ macOS only. Install allowlisted Homebrew formulae after an explicit click.
 - Elevated: send the `db-admin-token` as the bearer (the `api-token` is refused once an admin
   token exists; with none configured the `api-token` is the gate). The body must also carry
   `"confirm": "brew_install"`.
+  With Basic Auth or Form Login enabled, the outer login guard also accepts the admin bearer on
+  this path only, so the panel can send it in place of the Basic header.
 - Request: `{"action": "brew_install", "confirm": "brew_install", "packages": ["cmake", "ninja"]}`.
 - Allowlist: `git`, `cmake`, `ninja`, `ccache`. The server runs `brew install` with a direct
   argument vector (no shell), de-duplicated and in a fixed order; free text is never passed on.

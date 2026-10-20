@@ -192,7 +192,7 @@ function validate() {
     });
 }
 
-/** The db-admin-token, which package installs require; null when unavailable. */
+/** The db-admin-token, which package installs require; null when none is configured. */
 async function adminToken() {
     try {
         const resp = await fetch('/api/db/admin-token', { headers: headers() });
@@ -205,14 +205,12 @@ async function adminToken() {
 
 function brewInstall(packages) {
     return act('fix', async () => {
+        // With no admin token configured the server falls back to the api-token,
+        // so the normal headers are the right ones to send.
         const token = await adminToken();
-        if (!token) {
-            showToast('Install failed', 'error', 'Authentication required. Could not retrieve the admin token.');
-            return;
-        }
         const r = await api('/api/llama-build/prereqs/fix', {
             method: 'POST',
-            headers: { Authorization: `Bearer ${token}` },
+            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
             body: { action: 'brew_install', confirm: 'brew_install', packages },
         });
         if (!r.ok) errorToast('Install failed', r);

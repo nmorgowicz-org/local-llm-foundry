@@ -217,38 +217,71 @@ fn auth_guard(
 ) -> impl Filter<Extract = ((),), Error = warp::Rejection> + Clone {
     warp::header::optional::<String>("Authorization")
         .and(warp::header::optional::<String>("cookie"))
+        .and(warp::path::full())
         .and_then(
-            move |auth_header: Option<String>, cookie_header: Option<String>| {
+            move |auth_header: Option<String>,
+                  cookie_header: Option<String>,
+                  path: warp::path::FullPath| {
                 let auth_manager = auth_manager.clone();
                 let cfg = app_config.clone();
                 async move {
-                    // No auth configured: allow all requests.
-                    if !auth_manager.has_any() {
+                    if guard_admits(
+                        &auth_manager,
+                        &cfg,
+                        auth_header.as_deref(),
+                        cookie_header.as_deref(),
+                        path.as_str(),
+                    ) {
                         return Ok(());
                     }
-
-                    // Allow if Form Login session is valid.
-                    if auth_manager
-                        .authenticate_request(auth_header.as_deref(), cookie_header.as_deref())
-                    {
-                        return Ok(());
-                    }
-
-                    // Allow if a valid api-token is present (Bearer).
-                    // This lets internal/API callers (chat, remote-agent, etc.) bypass
-                    // the UI-level auth guard while still enforcing their own token auth.
-                    if let Some(token) = extract_bearer_token(auth_header.as_deref())
-                        && api::check_api_token(&Some(format!("Bearer {token}")), &cfg)
-                    {
-                        return Ok(());
-                    }
-
                     Err(warp::reject::custom(AuthReject {
                         challenge_basic: auth_manager.has_basic() && !auth_manager.has_form(),
                     }))
                 }
             },
         )
+}
+
+/// Routes whose own handler demands the db-admin-token. A request carries one
+/// `Authorization` header, so the admin bearer cannot travel with Basic
+/// credentials; for these paths the guard accepts that bearer itself and the
+/// handler remains the authority on whether it is the right one.
+const ELEVATED_PATHS: &[&str] = &["/api/llama-build/prereqs/fix"];
+
+/// The outer (UI-level) decision behind `auth_guard`, separated so tests can
+/// exercise the real logic.
+pub fn guard_admits(
+    auth_manager: &AuthManager,
+    cfg: &AppConfig,
+    auth_header: Option<&str>,
+    cookie_header: Option<&str>,
+    path: &str,
+) -> bool {
+    // No auth configured: allow all requests.
+    if !auth_manager.has_any() {
+        return true;
+    }
+    // Form Login session or Basic Auth.
+    if auth_manager.authenticate_request(auth_header, cookie_header) {
+        return true;
+    }
+    // A valid api-token (Bearer) lets internal/API callers bypass the UI-level
+    // guard while still enforcing their own token auth.
+    let bearer = extract_bearer_token(auth_header).map(|t| Some(format!("Bearer {t}")));
+    if let Some(header) = &bearer
+        && api::check_api_token(header, cfg)
+    {
+        return true;
+    }
+    // The admin bearer, on elevated routes only.
+    if let Some(header) = &bearer
+        && ELEVATED_PATHS.contains(&path)
+        && cfg.live_db_admin_token().is_some_and(|t| !t.is_empty())
+        && api::check_db_admin_token(header, cfg)
+    {
+        return true;
+    }
+    false
 }
 
 fn extract_bearer_token(header: Option<&str>) -> Option<&str> {
