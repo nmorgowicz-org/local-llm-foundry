@@ -237,6 +237,8 @@ test.describe('@in-memory-test K/V support: wizard', () => {
     await setKv(page, { k: 'q8_0', v: 'q4_0', fa: 'on' });
     await expect(page.locator('#hw-kv-support')).toHaveAttribute('data-kv-state', 'native');
     await expect(page.locator('#spawn-server-btn')).toHaveAttribute('data-kv-blocked', 'false');
+    await expect(page.locator('#spawn-server-btn')).toBeEnabled();
+    await expect(page.locator('#spawn-server-btn')).not.toHaveAttribute('title', /flash attention/);
   });
 
   test('Gemma guidance appears for K-only and V-only quantization; absent without model metadata', async ({ page }) => {

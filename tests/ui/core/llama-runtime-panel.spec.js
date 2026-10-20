@@ -61,8 +61,15 @@ async function boot(page, api) {
     if (path === '/api/llama-binary/releases') return json({ releases: [] });
     if (path === '/api/llama-binary/runtime-status') return json(api.runtime);
     if (path === '/api/llama-build/status') return json(api.status);
-    if (path === '/api/llama-build/prereqs') return json(api.prereqs);
-    if (path === '/api/llama-build/options') return json(api.options);
+    const asked = new URL(route.request().url()).searchParams.get('accelerator');
+    if (path === '/api/llama-build/prereqs') {
+      (api.prereqsAsked ||= []).push(asked);
+      return json({ ...api.prereqs, accelerator: asked });
+    }
+    if (path === '/api/llama-build/options') {
+      (api.optionsAsked ||= []).push(asked);
+      return json({ ...api.options, accelerator: asked });
+    }
     if (path === '/api/llama-build/cache') return json(api.cache);
     if (path.startsWith('/api/llama-build/jobs/') && path.endsWith('/log')) return json(api.log);
     if (path.startsWith('/api/llama-build/jobs/')) return json(api.job);
@@ -222,6 +229,43 @@ test.describe('llama.cpp runtime panel', () => {
     await openPanel(page);
     await expect(page.locator('[data-lrp="cuda-controls"]')).toHaveCount(0);
     await expect(page.locator('#lrp-arch')).toHaveCount(0);
+  });
+
+  test('every offered build target can be chosen, and its checks reload', async ({ page }) => {
+    const api = makeApi({ status: { ...IDLE_STATUS, os: 'linux', accelerators: ['cuda', 'cpu'], default_accelerator: 'cuda' } });
+    await boot(page, api);
+    await openPanel(page);
+    const target = page.locator('#lrp-accelerator');
+    await expect(target.locator('option')).toHaveText(['CUDA (NVIDIA GPU)', 'CPU only']);
+    await expect(target).toHaveValue('cuda');
+    await target.selectOption('cpu');
+    await expect.poll(() => api.prereqsAsked.at(-1)).toBe('cpu');
+    await expect.poll(() => api.optionsAsked.at(-1)).toBe('cpu');
+    await page.locator('[data-lrp="build"]').click();
+    await expect.poll(() => api.startBody).toMatchObject({ accelerator: 'cpu' });
+  });
+
+  test('a single-target platform shows no target selector', async ({ page }) => {
+    await boot(page, makeApi());
+    await openPanel(page);
+    await expect(page.locator('[data-lrp="build"]')).toBeVisible();
+    await expect(page.locator('#lrp-accelerator')).toHaveCount(0);
+  });
+
+  test('a custom server path is named, with the reason a build will not become active', async ({ page }) => {
+    const api = makeApi();
+    api.runtime = { ...api.runtime, custom_server_path: '/opt/llama/llama-server' };
+    await boot(page, api);
+    await openPanel(page);
+    const note = page.locator('[data-lrp="custom-server"]');
+    await expect(note).toContainText('/opt/llama/llama-server');
+    await expect(note).toContainText('will not become active');
+  });
+
+  test('no custom-server notice without a custom path', async ({ page }) => {
+    await boot(page, makeApi());
+    await openPanel(page);
+    await expect(page.locator('[data-lrp="custom-server"]')).toHaveCount(0);
   });
 
   test('a rolled-back update shows the pill and a dismissible banner (real journal shape)', async ({ page }) => {

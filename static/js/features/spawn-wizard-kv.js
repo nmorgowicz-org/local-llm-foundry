@@ -8,6 +8,7 @@
 // K/V row is hidden in both profiles and carries no line.
 
 import { wizardState } from './spawn-wizard.js';
+import { _updateSpawnBtnForPrereq } from './spawn-wizard-binary-prereq.js';
 import {
   blocksStart,
   createKvSupportController,
@@ -54,11 +55,15 @@ export function applyKvLaunchGate() {
   if (!button) return;
   const blocked = isLlamaCpp() && blocksStart(lastResult);
   button.dataset.kvBlocked = blocked ? 'true' : 'false';
+  const wasBlocked = button.dataset.kvBlockedTitle === 'true';
   if (blocked) {
     button.disabled = true;
     button.title = [lastResult.reason, lastResult.fix].filter(Boolean).join(' ');
-  } else if (button.dataset.kvBlockedTitle === 'true') {
-    button.removeAttribute('title');
+  } else if (wasBlocked) {
+    // This gate disabled Start; hand it back to every other launch
+    // requirement (engine, binary, a launch in flight) rather than enabling it.
+    _updateSpawnBtnForPrereq();
+    if (wizardState.spawn?.inFlight) button.disabled = true;
   }
   button.dataset.kvBlockedTitle = blocked ? 'true' : 'false';
 }

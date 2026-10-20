@@ -70,6 +70,8 @@ function overlay() {
     return document.getElementById(OVERLAY_ID);
 }
 
+const ACCELERATOR_LABEL = { cuda: 'CUDA (NVIDIA GPU)', metal: 'Metal (Apple GPU)', cpu: 'CPU only' };
+
 const STATUS_ICON = { pass: '✔', warn: '⚠', fail: '✖', skipped: '–' };
 
 // ── Data loading ────────────────────────────────────────────────────────────
@@ -114,6 +116,18 @@ async function loadOptions() {
     if (!view.accelerator) return;
     const r = await api(`/api/llama-build/options?accelerator=${encodeURIComponent(view.accelerator)}`);
     if (r.ok) view.options = r.data;
+}
+
+async function chooseAccelerator(next) {
+    if (!next || next === view.accelerator) return;
+    view.accelerator = next;
+    view.prereqs = null;
+    view.options = null;
+    view.form.cudaArch = 'auto';
+    render();
+    await Promise.all([loadPrereqs(), loadOptions()]);
+    render();
+    notifyChange();
 }
 
 async function loadSide() {
@@ -359,6 +373,7 @@ function currentSection() {
             el('span', { class: 'lrp-v', 'data-lrp': 'current-line', text: currentRuntimeLine(provenance, view.version?.build) })),
         provenance && provenance.hashes_match != null && el('div', { class: mismatch ? 'lrp-warn-text' : 'lrp-muted', 'data-lrp': 'provenance-hashes', text: mismatch ? '⚠ Installed files do not match the recorded provenance hashes.' : 'Provenance hashes match.' }),
         provenance?.commit && el('div', { class: 'lrp-muted', text: `commit ${provenance.commit.slice(0, 12)}` }),
+        view.runtime?.custom_server_path && el('div', { class: 'lrp-warn-text', 'data-lrp': 'custom-server', text: `A custom llama-server is configured (${view.runtime.custom_server_path}). Launches keep using it, so a build or update installed here will not become active until you change the server setting.` }),
         label && el('button', { type: 'button', class: 'lrp-btn', 'data-lrp': 'rollback', disabled: !!owner || view.busy.has('rollback'), title: owner ? `Busy: ${owner}` : undefined, text: label, onclick: rollback }));
 }
 
@@ -409,6 +424,10 @@ function buildSection() {
     const cudaShown = !!options?.show_cuda && view.accelerator === 'cuda';
     const refs = options?.refs?.length ? options.refs : [{ id: 'latest_release', label: 'Latest release' }, { id: 'master', label: 'master HEAD' }];
     const form = el('div', { class: 'lrp-form' },
+        (view.status?.accelerators?.length > 1) && el('div', { class: 'lrp-row', 'data-lrp': 'accelerator' },
+            el('label', { class: 'lrp-k', for: 'lrp-accelerator', text: 'Target' }),
+            el('select', { id: 'lrp-accelerator', onchange: e => { chooseAccelerator(e.target.value); } },
+                view.status.accelerators.map(a => el('option', { value: a, selected: a === view.accelerator, text: ACCELERATOR_LABEL[a] || a })))),
         el('div', { class: 'lrp-row' }, el('span', { class: 'lrp-k', text: 'Source' }), refs.map(refRadio)),
         options?.refs_error && el('div', { class: 'lrp-muted', text: `Could not look up upstream: ${options.refs_error}` }),
         cudaShown && el('div', { class: 'lrp-row', 'data-lrp': 'cuda-controls' },

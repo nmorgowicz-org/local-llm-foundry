@@ -4,6 +4,7 @@ import { showToast } from './toast.js';
 import { dom, wizardState } from './spawn-wizard.js';
 import { _mtpUserConfigured } from './spawn-wizard-mtp-draft.js';
 import { refreshGuidedCards } from './spawn-wizard-guided.js';
+import { wizardKvBlockReason } from './spawn-wizard-kv.js';
 
 export let _binaryReady  = false;
 export let _platformInfo = null;   // cached result of /api/llama-binary/platform-info
@@ -182,6 +183,12 @@ export function _updateSpawnBtnForPrereq() {
   } else {
     dom.spawnServerBtn.disabled = false;
     dom.spawnServerBtn.title = '';
+  }
+  // A known K/V refusal keeps Start off whatever else is ready.
+  const kvBlock = wizardKvBlockReason();
+  if (kvBlock) {
+    dom.spawnServerBtn.disabled = true;
+    dom.spawnServerBtn.title = kvBlock;
   }
 }
 
