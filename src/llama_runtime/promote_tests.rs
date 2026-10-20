@@ -1169,6 +1169,58 @@ async fn a_rejected_install_whose_model_restarts_fine_reports_no_restart_failure
 }
 
 #[test]
+fn full_live_evidence_drops_the_staged_help_only_note() {
+    let mut notes = vec![format!(
+        "{} (timed out); only --help was verified.",
+        crate::llama_runtime::verify::EVIDENCE_NOTE_PREFIX
+    )];
+    notes.push("llama-bench is absent from this runtime set; its commit was not checked.".into());
+    let mut evidence = true;
+    absorb_report(
+        &mut notes,
+        &mut evidence,
+        crate::llama_runtime::verify::VerificationReport {
+            backend: crate::inference::kv_support::Backend::Unknown,
+            build_number: None,
+            build_commit: None,
+            identity_fingerprint: None,
+            notes: vec!["live note".into()],
+            evidence_unavailable: false,
+        },
+    );
+    assert!(!evidence);
+    assert!(
+        !notes
+            .iter()
+            .any(|n| n.contains(crate::llama_runtime::verify::EVIDENCE_NOTE_PREFIX))
+    );
+    assert!(notes.iter().any(|n| n.contains("llama-bench is absent")));
+    assert!(notes.contains(&"live note".to_string()));
+}
+
+#[test]
+fn absent_bench_and_uncertain_stages_are_not_duplicated() {
+    let mut notes = Vec::new();
+    let mut evidence = false;
+    for _ in 0..2 {
+        absorb_report(
+            &mut notes,
+            &mut evidence,
+            crate::llama_runtime::verify::VerificationReport {
+                backend: crate::inference::kv_support::Backend::Unknown,
+                build_number: None,
+                build_commit: None,
+                identity_fingerprint: None,
+                notes: vec!["only --help was verified.".into()],
+                evidence_unavailable: true,
+            },
+        );
+    }
+    assert!(evidence);
+    assert_eq!(notes, vec!["only --help was verified.".to_string()]);
+}
+
+#[test]
 fn rename_retry_targets_only_windows_handle_errors() {
     assert!(is_windows_handle_error(Some(5)));
     assert!(is_windows_handle_error(Some(32)));

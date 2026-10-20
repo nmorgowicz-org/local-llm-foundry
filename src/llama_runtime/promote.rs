@@ -427,8 +427,27 @@ pub enum ReconcileKind {
 /// Windows can refuse a directory rename while another process holds an open
 /// handle inside it: an antivirus scan, a shell whose CWD is `bin/`, or an
 /// externally launched `llama-server.exe` (ERROR_ACCESS_DENIED /
-/// ERROR_SHARING_VIOLATION). Retry those two codes briefly so recovery can
-/// converge instead of wedging until the handle is gone.
+/// ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION). Retry those codes briefly
+/// so recovery can converge instead of wedging until the handle is gone.
+/// Absorb one stage's verification report. The live pass is authoritative:
+/// full evidence there clears a staged "--help only" note, while other notes
+/// accumulate once.
+pub(crate) fn absorb_report(
+    notes: &mut Vec<String>,
+    evidence_unavailable: &mut bool,
+    report: VerificationReport,
+) {
+    if !report.evidence_unavailable {
+        notes.retain(|n| !n.starts_with(crate::llama_runtime::verify::EVIDENCE_NOTE_PREFIX));
+    }
+    *evidence_unavailable = report.evidence_unavailable;
+    for note in report.notes {
+        if !notes.contains(&note) {
+            notes.push(note);
+        }
+    }
+}
+
 pub(crate) fn is_windows_handle_error(raw_os_error: Option<i32>) -> bool {
     // 5 ERROR_ACCESS_DENIED, 32 ERROR_SHARING_VIOLATION and 33
     // ERROR_LOCK_VIOLATION all surface when another process holds the
@@ -455,7 +474,7 @@ fn rename_retry_delay_ms(attempt: usize) -> Option<u64> {
     }
 }
 
-const BLOCKED_RENAME_HINT: &str = "the runtime directory is in use (an open file handle, antivirus, or another process using the path); close editors, scanners and terminals using it, or remove the conflicting directory";
+const BLOCKED_RENAME_HINT: &str = "the runtime directory is in use (an open file handle, antivirus, or another process using the path); close editors, scanners and terminals using it";
 
 fn rename_dir(from: &Path, to: &Path, faults: &dyn Faults, label: &str) -> Result<(), Interrupt> {
     point(faults, &format!("{label}.before"))?;
@@ -1114,15 +1133,11 @@ impl<H: PromoteHost> Running<'_, H> {
             .await
         {
             Ok(report) => {
-                // The live pass is authoritative: full evidence there clears a
-                // staged "--help only" uncertainty. Notes are deduped so the
-                // same observation from both stages is reported once.
-                self.evidence_unavailable = report.evidence_unavailable;
-                for note in report.notes {
-                    if !self.verification_notes.contains(&note) {
-                        self.verification_notes.push(note);
-                    }
-                }
+                absorb_report(
+                    &mut self.verification_notes,
+                    &mut self.evidence_unavailable,
+                    report,
+                );
                 Flow::Done
             }
             Err(e) => Flow::Abort(e),
