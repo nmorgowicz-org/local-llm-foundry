@@ -296,7 +296,31 @@ fn redact(key: &str, value: &str) -> String {
     {
         return "<redacted>".into();
     }
+    // A proxy or netrc-style URL can carry `scheme://user:pass@host`
+    // credentials under an innocently named variable. The child still needs
+    // the proxy to reach the network; only the log loses the userinfo.
+    if upper.ends_with("_PROXY") || upper.ends_with("_NETRC") {
+        return redact_url_userinfo(value);
+    }
     value.to_string()
+}
+
+/// Replace `scheme://user:pass@host` credentials with `scheme://[redacted]@`.
+/// Values without a `://`, without userinfo, or where the first `@` sits
+/// beyond the authority (a `/`, `?` or `#` first) pass through untouched.
+fn redact_url_userinfo(value: &str) -> String {
+    let Some(scheme_end) = value.find("://") else {
+        return value.to_string();
+    };
+    let authority = &value[scheme_end + 3..];
+    let Some(at) = authority.find('@') else {
+        return value.to_string();
+    };
+    let (userinfo, tail) = authority.split_at(at);
+    if userinfo.is_empty() || userinfo.contains(['/', '?', '#']) {
+        return value.to_string();
+    }
+    format!("{}://[redacted]{}", &value[..scheme_end], tail)
 }
 
 /// A redacted diff of `child` against `parent` for the phase header line.
@@ -582,6 +606,27 @@ mod tests {
             !lines
                 .iter()
                 .any(|l| l.contains("Bearer abc") || l.contains("hf_secret"))
+        );
+    }
+
+    #[test]
+    fn proxy_credentials_are_redacted_in_the_env_diff() {
+        let parent = BTreeMap::new();
+        let mut child = BTreeMap::new();
+        child.insert(
+            "HTTPS_PROXY".into(),
+            "http://user:secret@proxy.local:8080".into(),
+        );
+        child.insert("https_proxy".into(), "http://u2:p2@proxy2.local".into());
+        child.insert("NO_PROXY".into(), "http://plain.local".into());
+        let lines = redacted_env_diff(&parent, &child);
+        assert!(lines.contains(&"HTTPS_PROXY=http://[redacted]@proxy.local:8080".to_string()));
+        assert!(lines.contains(&"https_proxy=http://[redacted]@proxy2.local".to_string()));
+        assert!(lines.contains(&"NO_PROXY=http://plain.local".to_string()));
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("user:secret") || l.contains("u2:p2"))
         );
     }
 
