@@ -51,6 +51,21 @@ pub fn run_bounded(
     timeout: Duration,
     env: &[(String, String)],
 ) -> Result<CmdOutput, String> {
+    run_bounded_with_grace(program, args, timeout, env, PROBE_EOF_GRACE)
+}
+
+/// Bound EOF confirmation after the direct child exits: a grandchild can
+/// inherit the pipes and outlive it. Mirrors the contained supervisor's
+/// `OUTPUT_DRAIN_GRACE`, which fixed the same join-before-EOF hang.
+const PROBE_EOF_GRACE: Duration = Duration::from_secs(5);
+
+fn run_bounded_with_grace(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+    env: &[(String, String)],
+    eof_grace: Duration,
+) -> Result<CmdOutput, String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
 
@@ -66,21 +81,23 @@ pub fn run_bounded(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("could not start {program}: {e}"))?;
-    let mut out = child.stdout.take();
-    let mut err = child.stderr.take();
-    let out_thread = std::thread::spawn(move || {
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    let out = child.stdout.take();
+    std::thread::spawn(move || {
         let mut buf = Vec::new();
-        if let Some(o) = out.as_mut() {
+        if let Some(o) = out {
             let _ = o.take(4 * 1024 * 1024).read_to_end(&mut buf);
         }
-        buf
+        let _ = out_tx.send(buf);
     });
-    let err_thread = std::thread::spawn(move || {
+    let (err_tx, err_rx) = std::sync::mpsc::channel();
+    let err = child.stderr.take();
+    std::thread::spawn(move || {
         let mut buf = Vec::new();
-        if let Some(e) = err.as_mut() {
+        if let Some(e) = err {
             let _ = e.take(4 * 1024 * 1024).read_to_end(&mut buf);
         }
-        buf
+        let _ = err_tx.send(buf);
     });
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -89,8 +106,8 @@ pub fn run_bounded(
             Ok(None) if Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = out_thread.join();
-                let _ = err_thread.join();
+                // Readers may be parked on a pipe a grandchild still holds;
+                // never join them unconditionally.
                 return Err(format!(
                     "{program} did not finish within {}s",
                     timeout.as_secs()
@@ -100,13 +117,29 @@ pub fn run_bounded(
             Err(e) => return Err(format!("waiting for {program}: {e}")),
         }
     };
-    let stdout = out_thread.join().unwrap_or_default();
-    let stderr = err_thread.join().unwrap_or_default();
+    // The direct child is gone, but a grandchild can still hold the pipes:
+    // bound EOF confirmation instead of joining. What misses the budget is
+    // lost and marked truncated; the reader thread is left detached.
+    let eof_deadline = Instant::now() + eof_grace;
+    let stdout = recv_bounded(&out_rx, eof_deadline);
+    let stderr = recv_bounded(&err_rx, eof_deadline);
+    let truncated = stdout.is_none() || stderr.is_none();
+    let mut stderr = stderr.unwrap_or_default();
+    if truncated {
+        stderr.extend_from_slice(b" [output truncated: a descendant still holds the pipe]");
+    }
     Ok(CmdOutput {
         status: status.code(),
-        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stdout: String::from_utf8_lossy(&stdout.unwrap_or_default()).into_owned(),
         stderr: String::from_utf8_lossy(&stderr).into_owned(),
     })
+}
+
+/// Take a reader's result if its EOF arrives before `deadline`. `None` means
+/// the pipe was still held past the budget; the reader stays detached.
+fn recv_bounded(rx: &std::sync::mpsc::Receiver<Vec<u8>>, deadline: Instant) -> Option<Vec<u8>> {
+    let remaining = deadline.checked_duration_since(Instant::now())?;
+    rx.recv_timeout(remaining).ok()
 }
 
 pub struct RealSystem;
@@ -364,6 +397,35 @@ mod tests {
             let err = run_bounded("sleep", &["30"], Duration::from_millis(150), &[]).unwrap_err();
             assert!(err.contains("did not finish"), "{err}");
             assert!(started.elapsed() < Duration::from_secs(10));
+        }
+    }
+
+    #[test]
+    fn a_grandchild_holding_the_pipe_cannot_hang_the_probe() {
+        #[cfg(unix)]
+        {
+            // `sh` exits immediately; the background `sleep` inherits the
+            // pipes and keeps them open past the grace budget.
+            let started = Instant::now();
+            let out = run_bounded_with_grace(
+                "sh",
+                &["-c", "sleep 2 & exit 0"],
+                Duration::from_secs(10),
+                &[],
+                Duration::from_millis(300),
+            )
+            .unwrap();
+            assert!(out.ok(), "{}", out.combined());
+            assert!(
+                out.stderr.contains("output truncated"),
+                "{}",
+                out.combined()
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "probe took {:?}",
+                started.elapsed()
+            );
         }
     }
 
