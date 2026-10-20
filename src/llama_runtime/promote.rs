@@ -424,11 +424,6 @@ pub enum ReconcileKind {
     Completed,
 }
 
-/// Windows can refuse a directory rename while another process holds an open
-/// handle inside it: an antivirus scan, a shell whose CWD is `bin/`, or an
-/// externally launched `llama-server.exe` (ERROR_ACCESS_DENIED /
-/// ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION). Retry those codes briefly
-/// so recovery can converge instead of wedging until the handle is gone.
 /// Absorb one stage's verification report. The live pass is authoritative:
 /// full evidence there clears a staged "--help only" note, while other notes
 /// accumulate once.
@@ -448,6 +443,11 @@ pub(crate) fn absorb_report(
     }
 }
 
+/// Windows can refuse a directory rename while another process holds an open
+/// handle inside it: an antivirus scan, a shell whose CWD is `bin/`, or an
+/// externally launched `llama-server.exe` (ERROR_ACCESS_DENIED /
+/// ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION). Retry those codes briefly
+/// so recovery can converge instead of wedging until the handle is gone.
 pub(crate) fn is_windows_handle_error(raw_os_error: Option<i32>) -> bool {
     // 5 ERROR_ACCESS_DENIED, 32 ERROR_SHARING_VIOLATION and 33
     // ERROR_LOCK_VIOLATION all surface when another process holds the
