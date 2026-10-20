@@ -4450,6 +4450,15 @@ export function initPresets() {
 
     window.closePresetsPanel = closePresetsPanel;
 
+    // Listeners rather than inline onclick attributes: the page CSP blocks inline handlers.
+    const presetsOverlay = document.getElementById('presets-panel-overlay');
+    if (presetsOverlay) {
+        presetsOverlay.addEventListener('click', e => {
+            if (e.target === e.currentTarget) closePresetsPanel();
+        });
+    }
+    document.getElementById('presets-panel-close')?.addEventListener('click', closePresetsPanel);
+
     // Clear field errors on input
     ['modal-name', 'modal-model-path'].forEach(id => {
         const el = document.getElementById(id);
