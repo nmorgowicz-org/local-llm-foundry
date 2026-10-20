@@ -43,12 +43,12 @@ pub(crate) mod upstream;
 mod vram;
 
 pub(crate) use common::ApiError;
-pub use common::check_api_token;
 pub(crate) use common::{ApiCtx, ApiReply, ApiRoute, box_reply, record_activity};
 pub(crate) use common::{
     bearer_matches_api_token, bearer_matches_db_admin_token, check_db_admin_token, extract_bearer,
     unauthorized_api_token, unauthorized_db_admin_token, with_app_config,
 };
+pub use common::{check_api_token, check_elevated_token};
 pub use tokens::public_tokens_routes;
 #[cfg(test)]
 use tokens::token_bootstrap_allowed;

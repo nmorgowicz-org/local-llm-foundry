@@ -270,6 +270,25 @@ test.describe('llama.cpp runtime panel', () => {
     await expect(page.locator('#lrp-arch')).toBeVisible();
   });
 
+  test('Install sends the admin token and an explicit confirmation', async ({ page }) => {
+    const brew = { id: 'cmake', title: 'CMake', status: 'fail', detail: 'missing', fix: { kind: 'action', id: 'brew_install:cmake,ninja', label: 'brew install cmake ninja' }, evidence: [] };
+    const api = makeApi({
+      prereqs: { ok: true, accelerator: 'metal', report: report([brew]), stale: false, validating: false },
+    });
+    await boot(page, api);
+    await page.route('**/api/db/admin-token', route => route.fulfill({ json: { token: 'admin-xyz' } }));
+    await page.route('**/api/llama-build/prereqs/fix', route => {
+      api.fix = { auth: route.request().headers().authorization, body: route.request().postDataJSON() };
+      return route.fulfill({ json: { ok: true, installed: ['cmake', 'ninja'], output: '' } });
+    });
+    await openPanel(page);
+    await page.locator('[data-lrp="brew-install"]').click();
+    await expect.poll(() => api.fix).toMatchObject({
+      auth: 'Bearer admin-xyz',
+      body: { action: 'brew_install', confirm: 'brew_install', packages: ['cmake', 'ninja'] },
+    });
+  });
+
   test('a single-target platform shows no target selector', async ({ page }) => {
     await boot(page, makeApi());
     await openPanel(page);

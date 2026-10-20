@@ -2751,11 +2751,14 @@ Run the full report, including the compile smoke test, in the background.
 
 macOS only. Install allowlisted Homebrew formulae after an explicit click.
 
-- Request: `{"action": "brew_install", "packages": ["cmake", "ninja"]}`.
+- Elevated: send the `db-admin-token` as the bearer (the `api-token` is refused once an admin
+  token exists; with none configured the `api-token` is the gate). The body must also carry
+  `"confirm": "brew_install"`.
+- Request: `{"action": "brew_install", "confirm": "brew_install", "packages": ["cmake", "ninja"]}`.
 - Allowlist: `git`, `cmake`, `ninja`, `ccache`. The server runs `brew install` with a direct
   argument vector (no shell), de-duplicated and in a fixed order; free text is never passed on.
 - Response: `{ok, installed, output}` (`output` is the tail of brew's output).
-- Errors: `400` for any other action, an empty or non-allowlisted package list, or a non-macOS
+- Errors: `401` without the elevated token; `400` for a missing or wrong `confirm`, any other action, an empty or non-allowlisted package list, or a non-macOS
   host; `409 {owner}` while anything else owns the toolchain; `500 {error, output}` when brew
   fails. Windows installs are never automated: the report gives a copyable command or link.
 

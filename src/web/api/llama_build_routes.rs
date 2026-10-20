@@ -24,7 +24,10 @@ use warp::Filter;
 use warp::http::StatusCode;
 
 use super::llama_binary::managed_bin_dir;
-use super::{ApiCtx, ApiReply, ApiRoute, box_reply, check_api_token, unauthorized_api_token};
+use super::{
+    ApiCtx, ApiReply, ApiRoute, box_reply, check_api_token, check_elevated_token,
+    unauthorized_api_token, unauthorized_db_admin_token,
+};
 use crate::config::AppConfig;
 use crate::llama_build::cache::{
     CleanError, CleanOptions, Conflict, LlamaBuildConfig, MAX_CCACHE_BYTES, MIN_CCACHE_BYTES,
@@ -267,6 +270,19 @@ fn begin(ctx: &ApiCtx, auth: &Option<String>) -> Result<Request, ApiReply> {
     if !check_api_token(auth, &ctx.config) {
         return Err(unauthorized_api_token());
     }
+    begin_authorized(ctx)
+}
+
+/// Like [`begin`] for elevated routes: the db-admin-token gate replaces the
+/// api-token one (a bearer cannot equal both).
+fn begin_elevated(ctx: &ApiCtx, auth: &Option<String>) -> Result<Request, ApiReply> {
+    if !check_elevated_token(auth, &ctx.config) {
+        return Err(unauthorized_db_admin_token());
+    }
+    begin_authorized(ctx)
+}
+
+fn begin_authorized(ctx: &ApiCtx) -> Result<Request, ApiReply> {
     let build = build_context(&ctx.config)
         .map_err(|e| error_reply(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Request {
@@ -458,13 +474,18 @@ async fn validate(ctx: ApiCtx, auth: Option<String>, body: bytes::Bytes) -> ApiR
 
 #[derive(Deserialize)]
 struct FixBody {
+    /// Must be exactly `brew_install`: a package install is never implied.
+    #[serde(default)]
+    confirm: String,
     action: String,
     #[serde(default)]
     packages: Vec<String>,
 }
 
 async fn fix(ctx: ApiCtx, auth: Option<String>, body: bytes::Bytes) -> ApiReply {
-    let req = match begin(&ctx, &auth) {
+    // Installing system packages is elevated: db-admin-token plus an explicit
+    // confirmation field, so an api-token holder cannot trigger it.
+    let req = match begin_elevated(&ctx, &auth) {
         Ok(r) => r,
         Err(r) => return r,
     };
@@ -472,6 +493,9 @@ async fn fix(ctx: ApiCtx, auth: Option<String>, body: bytes::Bytes) -> ApiReply 
         Ok(b) => b,
         Err(r) => return r,
     };
+    if body.confirm != "brew_install" {
+        return bad_request(r#"installing packages needs {"confirm": "brew_install"}"#);
+    }
     if body.action != "brew_install" {
         return bad_request("action must be `brew_install`");
     }
@@ -1013,6 +1037,7 @@ mod tests {
 
     const COMMIT: &str = "098ce526b0000000000000000000000000000000";
     const TOKEN: &str = "test-token";
+    const ADMIN: &str = "test-admin-token";
 
     #[derive(Default)]
     struct Control {
@@ -1185,7 +1210,7 @@ mod tests {
         fn new(os: TargetOs) -> Self {
             let tmp = tempfile::tempdir().unwrap();
             let root = std::fs::canonicalize(tmp.path()).unwrap();
-            let mut config = AppConfig::for_test(Some(TOKEN.into()), None);
+            let mut config = AppConfig::for_test(Some(TOKEN.into()), Some(ADMIN.into()));
             config.app_paths = crate::paths::AppPaths::from_root(root.clone());
             config.config_dir = root.clone();
             let exe = if cfg!(windows) {
@@ -1229,10 +1254,17 @@ mod tests {
         }
 
         async fn call(&self, method: &str, path: &str, body: Option<&str>) -> (u16, Value) {
-            let mut req = warp::test::request()
-                .method(method)
-                .path(path)
-                .header("authorization", format!("Bearer {TOKEN}"));
+            let mut req = warp::test::request().method(method).path(path).header(
+                "authorization",
+                format!(
+                    "Bearer {}",
+                    if path.ends_with("/prereqs/fix") {
+                        ADMIN
+                    } else {
+                        TOKEN
+                    }
+                ),
+            );
             if let Some(b) = body {
                 req = req.header("content-type", "application/json").body(b);
             }
@@ -1731,11 +1763,11 @@ mod tests {
     async fn fix_only_installs_allowlisted_packages_with_direct_argv_on_macos() {
         let rig = Rig::new(TargetOs::Macos);
         for body in [
-            r#"{"action":"brew_install","packages":["cmake;rm -rf /"]}"#,
-            r#"{"action":"brew_install","packages":["wget"]}"#,
-            r#"{"action":"brew_install","packages":["cmake","--HEAD"]}"#,
-            r#"{"action":"brew_install","packages":[]}"#,
-            r#"{"action":"brew_install"}"#,
+            r#"{"confirm":"brew_install","action":"brew_install","packages":["cmake;rm -rf /"]}"#,
+            r#"{"confirm":"brew_install","action":"brew_install","packages":["wget"]}"#,
+            r#"{"confirm":"brew_install","action":"brew_install","packages":["cmake","--HEAD"]}"#,
+            r#"{"confirm":"brew_install","action":"brew_install","packages":[]}"#,
+            r#"{"confirm":"brew_install","action":"brew_install"}"#,
             r#"{"action":"shell","packages":["cmake"]}"#,
             "garbage",
         ] {
@@ -1750,7 +1782,7 @@ mod tests {
             .call(
                 "POST",
                 "/api/llama-build/prereqs/fix",
-                Some(r#"{"action":"brew_install","packages":["ninja","cmake","cmake"]}"#),
+                Some(r#"{"confirm":"brew_install","action":"brew_install","packages":["ninja","cmake","cmake"]}"#),
             )
             .await;
         assert_eq!(code, 200);
@@ -1765,6 +1797,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fix_needs_the_admin_token_and_an_explicit_confirmation() {
+        let rig = Rig::new(TargetOs::Macos);
+        let body = r#"{"confirm":"brew_install","action":"brew_install","packages":["cmake"]}"#;
+        // The api-token (and no token) are refused before anything runs.
+        for bearer in [Some(TOKEN), None, Some("wrong")] {
+            let mut req = warp::test::request()
+                .method("POST")
+                .path("/api/llama-build/prereqs/fix")
+                .header("content-type", "application/json")
+                .body(body);
+            if let Some(b) = bearer {
+                req = req.header("authorization", format!("Bearer {b}"));
+            }
+            let resp = req.reply(&rig.routes).await;
+            assert_eq!(resp.status().as_u16(), 401, "{bearer:?}");
+        }
+        assert!(rig.ctl.brew_calls.lock().unwrap().is_empty());
+        // The admin token without the confirmation field is refused too.
+        for bad in [
+            r#"{"action":"brew_install","packages":["cmake"]}"#,
+            r#"{"confirm":"yes","action":"brew_install","packages":["cmake"]}"#,
+            r#"{"confirm":true,"action":"brew_install","packages":["cmake"]}"#,
+        ] {
+            let (code, _) = rig
+                .call("POST", "/api/llama-build/prereqs/fix", Some(bad))
+                .await;
+            assert_eq!(code, 400, "{bad}");
+        }
+        assert!(rig.ctl.brew_calls.lock().unwrap().is_empty());
+        let (code, _) = rig
+            .call("POST", "/api/llama-build/prereqs/fix", Some(body))
+            .await;
+        assert_eq!(code, 200);
+    }
+
+    #[tokio::test]
     async fn fix_retains_install_ownership_when_descendant_cleanup_is_unresolved() {
         let rig = Rig::new(TargetOs::Macos);
         *rig.ctl.brew_failure.lock().unwrap() = Some(InstallFailure {
@@ -1775,7 +1843,7 @@ mod tests {
             .call(
                 "POST",
                 "/api/llama-build/prereqs/fix",
-                Some(r#"{"action":"brew_install","packages":["cmake"]}"#),
+                Some(r#"{"confirm":"brew_install","action":"brew_install","packages":["cmake"]}"#),
             )
             .await;
         assert_eq!(code, 500);
@@ -1827,7 +1895,7 @@ mod tests {
             .call(
                 "POST",
                 "/api/llama-build/prereqs/fix",
-                Some(r#"{"action":"brew_install","packages":["cmake"]}"#),
+                Some(r#"{"confirm":"brew_install","action":"brew_install","packages":["cmake"]}"#),
             )
             .await;
         assert_eq!(code, 200, "{body}");
@@ -1858,7 +1926,7 @@ mod tests {
             .call(
                 "POST",
                 "/api/llama-build/prereqs/fix",
-                Some(r#"{"action":"brew_install","packages":["cmake"]}"#),
+                Some(r#"{"confirm":"brew_install","action":"brew_install","packages":["cmake"]}"#),
             )
             .await;
         assert_eq!(code, 500);
@@ -1867,7 +1935,7 @@ mod tests {
             .call(
                 "POST",
                 "/api/llama-build/prereqs/fix",
-                Some(r#"{"action":"brew_install","packages":["cmake"]}"#),
+                Some(r#"{"confirm":"brew_install","action":"brew_install","packages":["cmake"]}"#),
             )
             .await;
         assert_eq!(code, 200);
@@ -1882,7 +1950,7 @@ mod tests {
             .call(
                 "POST",
                 "/api/llama-build/prereqs/fix",
-                Some(r#"{"action":"brew_install","packages":["cmake"]}"#),
+                Some(r#"{"confirm":"brew_install","action":"brew_install","packages":["cmake"]}"#),
             )
             .await;
         assert_eq!(code, 500);
@@ -1898,7 +1966,7 @@ mod tests {
                 .call(
                     "POST",
                     "/api/llama-build/prereqs/fix",
-                    Some(r#"{"action":"brew_install","packages":["cmake"]}"#),
+                    Some(r#"{"confirm":"brew_install","action":"brew_install","packages":["cmake"]}"#),
                 )
                 .await;
             assert_eq!(code, 400);
@@ -1923,7 +1991,7 @@ mod tests {
             .call(
                 "POST",
                 "/api/llama-build/prereqs/fix",
-                Some(r#"{"action":"brew_install","packages":["cmake"]}"#),
+                Some(r#"{"confirm":"brew_install","action":"brew_install","packages":["cmake"]}"#),
             )
             .await;
         assert_eq!(code, 409);
@@ -2144,7 +2212,7 @@ mod tests {
             .call(
                 "POST",
                 "/api/llama-build/prereqs/fix",
-                Some(r#"{"action":"brew_install","packages":["cmake"]}"#),
+                Some(r#"{"confirm":"brew_install","action":"brew_install","packages":["cmake"]}"#),
             )
             .await;
         assert_eq!((code, &other["owner"]), (409, &json!("build")));

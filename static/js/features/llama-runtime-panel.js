@@ -39,10 +39,10 @@ function headers(json = false) {
     return json ? { ...base, 'Content-Type': 'application/json' } : base;
 }
 
-async function api(path, { method = 'GET', body } = {}) {
+async function api(path, { method = 'GET', body, headers: extra } = {}) {
     const resp = await fetch(path, {
         method,
-        headers: headers(body !== undefined),
+        headers: { ...headers(body !== undefined), ...(extra || {}) },
         body: body === undefined ? undefined : JSON.stringify(body),
     });
     let data = {};
@@ -192,9 +192,29 @@ function validate() {
     });
 }
 
+/** The db-admin-token, which package installs require; null when unavailable. */
+async function adminToken() {
+    try {
+        const resp = await fetch('/api/db/admin-token', { headers: headers() });
+        const data = resp.ok ? await resp.json().catch(() => ({})) : {};
+        return data.token || null;
+    } catch (_) {
+        return null;
+    }
+}
+
 function brewInstall(packages) {
     return act('fix', async () => {
-        const r = await api('/api/llama-build/prereqs/fix', { method: 'POST', body: { action: 'brew_install', packages } });
+        const token = await adminToken();
+        if (!token) {
+            showToast('Install failed', 'error', 'Authentication required. Could not retrieve the admin token.');
+            return;
+        }
+        const r = await api('/api/llama-build/prereqs/fix', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+            body: { action: 'brew_install', confirm: 'brew_install', packages },
+        });
         if (!r.ok) errorToast('Install failed', r);
         else showToast('Installed', 'success', packages.join(', '));
     });

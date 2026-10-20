@@ -15,7 +15,7 @@
 use llama_monitor::{
     config::AppConfig,
     web::{
-        api::check_api_token,
+        api::{check_api_token, check_elevated_token},
         auth::{AuthCredentials, AuthManager},
     },
 };
@@ -891,5 +891,62 @@ mod model_endpoint_routes {
                 case.1
             );
         }
+    }
+}
+
+// ===================== LLAMA BUILD ENDPOINTS =====================
+
+// `/api/llama-build/*` and `/api/llama-binary/*` mutations take the api-token.
+// `POST /api/llama-build/prereqs/fix` (Homebrew installs) is elevated: it takes
+// the db-admin-token (plus a `confirm` field) and is never opened by the
+// api-token once an admin token exists.
+
+#[test]
+fn llama_build_no_auth_mode_leaves_both_gates_open() {
+    let cfg = cfg_no_tokens();
+    assert!(!auth_none().has_any());
+    assert!(check_api_token(&None, &cfg));
+    assert!(check_elevated_token(&None, &cfg));
+}
+
+#[test]
+fn llama_build_api_token_only_caller_can_build_but_install_follows_the_api_token() {
+    // No admin token configured: the elevated gate falls back to the api-token,
+    // so a missing or wrong bearer still cannot reach it.
+    let cfg = cfg_api_only();
+    assert!(check_api_token(&bearer(TEST_API_TOKEN), &cfg));
+    assert!(!check_api_token(&None, &cfg));
+    assert!(check_elevated_token(&bearer(TEST_API_TOKEN), &cfg));
+    assert!(!check_elevated_token(&None, &cfg));
+    assert!(!check_elevated_token(&bearer("wrong"), &cfg));
+}
+
+#[test]
+fn llama_build_install_rejects_the_api_token_once_an_admin_token_exists() {
+    let cfg = cfg_both();
+    assert!(check_api_token(&bearer(TEST_API_TOKEN), &cfg));
+    assert!(
+        !check_elevated_token(&bearer(TEST_API_TOKEN), &cfg),
+        "the api-token must not authorize a package install"
+    );
+    assert!(!check_elevated_token(&None, &cfg));
+    assert!(check_elevated_token(&bearer(TEST_DB_ADMIN_TOKEN), &cfg));
+}
+
+#[test]
+fn llama_build_gates_hold_with_form_login_and_basic_auth_enabled() {
+    // Form Login / Basic Auth sessions do not substitute for either token:
+    // the per-endpoint checks run regardless of `auth_guard`.
+    for auth in [auth_form(), auth_basic()] {
+        let cfg = cfg_both();
+        assert!(auth.has_any());
+        assert!(!auth.authenticate_request(bearer(TEST_DB_ADMIN_TOKEN).as_deref(), None));
+        assert!(check_api_token(&bearer(TEST_API_TOKEN), &cfg));
+        assert!(check_elevated_token(&bearer(TEST_DB_ADMIN_TOKEN), &cfg));
+        assert!(!check_elevated_token(&bearer(TEST_API_TOKEN), &cfg));
+        assert!(!check_elevated_token(
+            &basic_header("admin", "secret"),
+            &cfg
+        ));
     }
 }
