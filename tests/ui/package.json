@@ -21,8 +21,8 @@
     "capture:manifest": "node capture/cli-manifest.mjs"
   },
   "devDependencies": {
-    "@axe-core/playwright": "4.13.0",
-    "@playwright/test": "1.64.0",
-    "puppeteer": "25.13.0"
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.64.1",
+    "puppeteer": "25.14.0"
   }
 }
