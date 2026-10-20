@@ -220,6 +220,8 @@ test.describe('@in-memory-test K/V support: wizard', () => {
 
   test('FA off: floating V is no-FA (not blocked); quantized V blocks Start with the fix', async ({ page }) => {
     await mockKv(page, (p) => (p.fa === 'off' && p.v === 'q4_0' ? WONT_START : p.fa === 'off' ? NO_FA : NATIVE));
+    // Start also needs an installed binary; CI has none, so state it explicitly.
+    await page.route('**/api/llama-binary/version', route => route.fulfill({ json: { ok: true, build: 1234 } }));
     await openWizard(page);
     await setKv(page, { k: 'q8_0', v: 'f16', fa: 'off' });
     await expect(page.locator('#hw-kv-support')).toHaveAttribute('data-kv-state', 'fallback');
