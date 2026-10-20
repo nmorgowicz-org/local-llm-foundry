@@ -480,6 +480,7 @@ pub async fn capture_version(program: &Path, timeout: Duration) -> Result<String
     let temp = std::env::temp_dir();
     let mut cmd = Command::new(program);
     cmd.arg("--version")
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -503,9 +504,17 @@ pub async fn capture_version(program: &Path, timeout: Duration) -> Result<String
     };
     match tokio::time::timeout(timeout, readers).await {
         Ok((Ok(out), Ok(err))) => {
-            let _ = child.wait().await;
+            // The pipes closed, but a child can still fail to exit. Bound the
+            // reap exactly like the main probe, or promotion would hold the
+            // runtime gate forever.
+            match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+                Ok(_) => {}
+                Err(_) => {
+                    let _ = child.kill().await;
+                }
+            }
             Ok(format!(
-                "{}{}",
+                "{}\n{}",
                 String::from_utf8_lossy(&out),
                 String::from_utf8_lossy(&err)
             ))
@@ -852,6 +861,23 @@ exit 1
             let exe = fake_server(dir.path(), body);
             let err = probe_runtime(&exe, EnvPolicy::Inherited).await.unwrap_err();
             assert!(matches!(err, ProbeError::Unrecognized(_)), "{err:?}");
+        }
+
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn capture_version_reaps_a_child_that_closes_its_pipes_without_exiting() {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let exe = dir.path().join("silent-child");
+            std::fs::write(&exe, "#!/bin/sh\nexec 1>&- 2>&-\nsleep 60\n").unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let started = std::time::Instant::now();
+            let out = capture_version(&exe, Duration::from_secs(10)).await;
+            assert!(out.is_ok(), "{out:?}");
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the reap must be bounded"
+            );
         }
 
         #[tokio::test]
