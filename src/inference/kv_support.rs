@@ -637,14 +637,24 @@ fn expected_with_fa(
                     v.name()
                 )),
             },
-            Evidence::Confirmed { value: false, .. } => KvSupport::Fallback {
-                reason: format!(
-                    "No FlashAttention vector kernel is compiled for {}/{}. llama.cpp converts K and V to f16 instead, which is slower. A source build with every pair compiled removes this.",
-                    k.name(),
-                    v.name()
-                ),
-                impact: Impact::SlowerDecode,
-            },
+            Evidence::Confirmed { value: false, .. } => {
+                // A source build can only add kernels FA_TYPES can build
+                // (§4.7); never promise a rebuild for types like iq4_nl or
+                // f32, whose conversion fallback is permanent.
+                let rebuild_fix = if k.is_fa_buildable() && v.is_fa_buildable() {
+                    " A source build with every pair compiled removes this."
+                } else {
+                    ""
+                };
+                KvSupport::Fallback {
+                    reason: format!(
+                        "No FlashAttention vector kernel is compiled for {}/{}. llama.cpp converts K and V to f16 instead, which is slower.{rebuild_fix}",
+                        k.name(),
+                        v.name()
+                    ),
+                    impact: Impact::SlowerDecode,
+                }
+            }
             _ => unverified(
                 "The compiled FlashAttention pair list could not be read from this runtime.",
             ),
@@ -1096,6 +1106,12 @@ mod tests {
                 ..
             }
         ));
+        if let KvSupport::Fallback { reason, .. } = &out.expected {
+            assert!(
+                reason.contains("A source build with every pair compiled removes this."),
+                "{reason}"
+            );
+        }
         assert_eq!(out.compiled_pair.confirmed_value(), Some(&false));
         assert!(out.buildable_missing);
         assert!(!out.is_blocking());
@@ -1111,6 +1127,12 @@ mod tests {
                 matches!(out.expected, KvSupport::Fallback { .. }),
                 "{out:?}"
             );
+            if let KvSupport::Fallback { reason, .. } = &out.expected {
+                assert!(
+                    !reason.contains("A source build"),
+                    "{k:?}/{v:?} promised a rebuild it cannot deliver: {reason}"
+                );
+            }
             assert!(!out.buildable_missing, "{k:?}/{v:?} cannot be built");
         }
     }
