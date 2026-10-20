@@ -142,12 +142,16 @@ jobs:
         run: npm run lint
 
   ui-build:
-    needs: [paths-filter, check, check-windows]
+    # Builds in parallel with `check` and `check-windows` (depends only on
+    # paths-filter): the release build is the longest serial stage, so waiting for
+    # the checks first added their whole duration to every run. The expensive part
+    # of the pipeline is still gated: `ui` needs `check`, `check-windows` AND this
+    # job, so no UI shard starts if a check fails. The cost is that a failing check
+    # still pays for one wasted release build.
+    needs: paths-filter
     timeout-minutes: 90
     if: >-
       always() &&
-      needs.check.result != 'failure' &&
-      needs.check-windows.result != 'failure' &&
       !startsWith(github.event.pull_request.head.ref, 'release-please--') &&
       (github.event.action != 'labeled' || github.event.label.name == 'ready-to-test') &&
       needs.paths-filter.outputs.ui == 'true' &&
