@@ -1010,7 +1010,7 @@ await page.locator('#spawn-kv-unified').evaluate((el) => { el.value = 'false'; e
 
         // fit On shows target input and auto-populates '2048'
 await page.locator('#spawn-fit-enable').evaluate((el) => { el.value = 'true'; el.dispatchEvent(new Event('change', { bubbles: true })); });
-        await page.waitForTimeout(400);
+        await expect(page.locator('#spawn-fit-target')).toHaveValue('2048');
 
         const fitTargetValue = await page.evaluate(() =>
             document.getElementById('spawn-fit-target')?.value ?? ''

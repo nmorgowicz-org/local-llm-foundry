@@ -9,6 +9,14 @@ import { openSettings } from '../helpers.js';
 // 260ms window, which is what made the full suite fail 2-3 tests at random.
 //
 // These tests reopen deliberately fast and then wait past the old teardown window.
+// Resolves once the page's own 260ms teardown timer has had its chance to fire. The delay is
+// scheduled in the page, after the close, so timer ordering guarantees the (earlier-deadline)
+// teardown timer has run before this resolves, whatever the load on the machine. A Node-side
+// waitForTimeout only guarantees wall-clock time. This is an intentional negative wait: the
+// assertion is that the stale timer does NOT change the modal, so there is nothing to poll for.
+const pastTeardownWindow = (page) =>
+  page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+
 test.describe('modal reopen does not race its own close animation', () => {
   test('@in-memory-test settings survives close then immediate reopen', async ({ page }) => {
     await page.goto('/');
@@ -26,7 +34,7 @@ test.describe('modal reopen does not race its own close animation', () => {
 
     const modal = page.locator('#settings-modal');
     // Past the 260ms teardown: a stale timer would have fired by now.
-    await page.waitForTimeout(500);
+    await pastTeardownWindow(page);
     await expect(modal).toHaveClass(/\bopen\b/);
     await expect(modal).not.toHaveClass(/\bclosing\b/);
     await expect(modal).toBeVisible();
@@ -50,14 +58,14 @@ test.describe('modal reopen does not race its own close animation', () => {
       mod.closeSettingsModal();
       mod.closeSettingsModal();
     });
-    await page.waitForTimeout(500);
+    await pastTeardownWindow(page);
     await expect(page.locator('#settings-modal')).not.toHaveClass(/\bopen\b/);
 
     await page.evaluate(async () => {
       const mod = await import('/js/features/settings.js');
       mod.openSettingsModal();
     });
-    await page.waitForTimeout(500);
+    await pastTeardownWindow(page);
     await expect(page.locator('#settings-modal')).toHaveClass(/\bopen\b/);
     await expect(page.locator('#settings-modal')).toBeVisible();
   });

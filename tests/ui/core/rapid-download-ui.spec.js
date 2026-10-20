@@ -290,6 +290,7 @@ test.describe('@fake-data-bypass Rapid-MLX wizard download step', () => {
 
   test('changing the source detaches explicitly, says so, and a stale poll cannot touch the new model', async ({ page }) => {
     const fake = await fakeBackend(page);
+    await freezePollClock(page);
     await openWizard(page);
     await select(page, 'alias-a');
     await page.locator('#rapid-dlp-download-btn').click();
@@ -299,7 +300,9 @@ test.describe('@fake-data-bypass Rapid-MLX wizard download step', () => {
     // Hold the next poll response so it resolves only after the user switched models.
     let release;
     fake.holdPoll = new Promise(resolve => { release = resolve; });
-    await expect.poll(() => fake.polls['job-1']).toBeGreaterThan(1);
+    const pollsBeforeHold = fake.polls['job-1'] || 0;
+    await nextPoll(page, fake, 'job-1', false);
+    expect(fake.polls['job-1']).toBeGreaterThan(pollsBeforeHold);
     await select(page, 'alias-b');
     await expect(page.locator('#rapid-dlp-idle')).toBeVisible();
     await expect(page.locator('#rapid-dlp-repo')).toContainText(REPO_B);
@@ -309,15 +312,21 @@ test.describe('@fake-data-bypass Rapid-MLX wizard download step', () => {
     // The late response for the old repo reports completion; it must be ignored.
     fake.jobs['job-1'] = { state: 'complete', bytes_done: 4 * GiB, bytes_total: 4 * GiB };
     fake.holdPoll = null;
+    const lateResponse = page.waitForResponse(resp =>
+      new URL(resp.url()).pathname === '/api/models/downloads/job-1' && resp.request().method() === 'GET');
     release();
-    await page.waitForTimeout(300);
+    await (await lateResponse).finished();
+    await page.evaluate(() => {}); // let the page consume the late response before asserting
     await expect(page.locator('#rapid-dlp-idle')).toBeVisible();
     await expect(page.locator('#rapid-dlp-complete')).toBeHidden();
     expect(await missingRepo(page)).toBe(REPO_B);
 
-    // Detached means no more polling for the old job.
+    // Detached means no more polling for the old job. Intentional negative check, run on the
+    // virtual clock: advance well past the poll interval and the back-off cap (30s) instead of
+    // sleeping in real time.
     const before = fake.polls['job-1'];
-    await page.waitForTimeout(1800);
+    await page.clock.runFor(30_000);
+    await page.evaluate(() => {});
     expect(fake.polls['job-1']).toBe(before);
     expect(fake.starts).toEqual([REPO_A]);
   });
@@ -584,15 +593,21 @@ test.describe('@fake-data-bypass Rapid-MLX preset card download state', () => {
 
   test('poll loop stops when the card is re-rendered, and the replacement resumes the same job', async ({ page }) => {
     const fake = await fakeBackend(page);
+    await freezePollClock(page);
     await mountCard(page, 'card-1');
     await page.locator('#card-1 .launch-card-dl-btn').click();
     await expect(page.locator('#card-1 .launch-card-dl-label')).toContainText('Downloading 25%');
     await page.evaluate(() => document.getElementById('card-1').remove()); // grid re-render drops the card
 
     // The detached card's loop tears down on its next tick instead of polling forever.
-    await page.waitForTimeout(1800);
+    // Intentional negative checks, run on the virtual clock rather than in real time: one
+    // poll interval (+margin) lets the loop reach its next tick, then a long window must see
+    // no further polls.
+    await page.clock.runFor(1800);
+    await page.evaluate(() => {});
     const settled = fake.polls['job-1'];
-    await page.waitForTimeout(1800);
+    await page.clock.runFor(30_000);
+    await page.evaluate(() => {});
     expect(fake.polls['job-1']).toBe(settled);
 
     // The replacement card resumes the running job; no duplicate start.
@@ -719,8 +734,17 @@ test.describe('@fake-data-bypass Rapid-MLX preset card download state', () => {
     const fake = await fakeBackend(page);
     await mountCard(page, 'card-1');
     // The cancel button is hidden until a job exists; a stray activation must not POST /null/cancel.
-    await page.evaluate(() => document.querySelector('#card-1 .launch-card-dl-cancel').click());
-    await page.waitForTimeout(200);
+    // The click handler returns synchronously when there is no job, and any fetch it made would
+    // be issued synchronously inside the click, so a fetch spy is a complete, wait-free check.
+    const cancelFetches = await page.evaluate(() => {
+      const urls = [];
+      const realFetch = window.fetch;
+      window.fetch = (...args) => { urls.push(String(args[0])); return realFetch(...args); };
+      document.querySelector('#card-1 .launch-card-dl-cancel').click();
+      window.fetch = realFetch;
+      return urls.filter(url => url.includes('/cancel'));
+    });
+    expect(cancelFetches).toEqual([]);
     expect(fake.cancels).toEqual([]);
   });
 

@@ -491,13 +491,12 @@ test.describe('gender token substitution', () => {
     const femalePill = page.locator('#chat-behavior-panel .chat-gender-pill[data-gender="female"]');
     if (await femalePill.count() > 0) {
       await femalePill.click();
-      await page.waitForTimeout(400);
 
-      const gender = await page.evaluate(async () => {
+      // onGenderChange writes the tab synchronously; poll the state instead of sleeping.
+      await expect.poll(() => page.evaluate(async () => {
         const { activeChatTab } = await import('/js/features/chat-state.js');
         return activeChatTab()?.ai_gender ?? null;
-      });
-      expect(gender).toBe('female');
+      })).toBe('female');
     } else {
       test.skip(true, 'Gender pills not present in this build.');
     }
@@ -546,14 +545,12 @@ test.describe('custom role boundary', () => {
 
     // Edit value
     await textarea.fill('CUSTOM ROLE BOUNDARY TEXT');
-    await page.waitForTimeout(600);
 
-    // Confirm custom value stored on tab
-    const custom = await page.evaluate(async () => {
+    // Confirm custom value stored on tab (the input handler writes it synchronously).
+    await expect.poll(() => page.evaluate(async () => {
       const { activeChatTab } = await import('/js/features/chat-state.js');
       return activeChatTab()?.role_boundary_custom ?? null;
-    });
-    expect(custom).toBe('CUSTOM ROLE BOUNDARY TEXT');
+    })).toBe('CUSTOM ROLE BOUNDARY TEXT');
   });
 
   test('reset restores default role boundary', async ({ page }) => {
@@ -571,19 +568,18 @@ test.describe('custom role boundary', () => {
 
     // Set custom value
     await textarea.fill('CUSTOM');
-    await page.waitForTimeout(600);
+    const roleBoundaryCustom = () => page.evaluate(async () => {
+      const { activeChatTab } = await import('/js/features/chat-state.js');
+      return activeChatTab()?.role_boundary_custom ?? null;
+    });
+    // Prove the custom value landed first, so the null below can only come from the reset.
+    await expect.poll(roleBoundaryCustom).toBe('CUSTOM');
 
     // Reset
     const resetBtn = page.locator('#chat-role-boundary-reset');
     if (await resetBtn.count() > 0) {
       await resetBtn.click();
-      await page.waitForTimeout(400);
-
-      const custom = await page.evaluate(async () => {
-        const { activeChatTab } = await import('/js/features/chat-state.js');
-        return activeChatTab()?.role_boundary_custom ?? null;
-      });
-      expect(custom).toBeNull();
+      await expect.poll(roleBoundaryCustom).toBeNull();
     }
   });
 });

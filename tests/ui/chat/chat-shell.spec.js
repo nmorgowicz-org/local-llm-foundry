@@ -248,30 +248,27 @@ test.describe('pin and favorite tabs', () => {
 
     // Hover and confirm pin button is present
     await itemByTitle().hover();
-    await page.waitForTimeout(150);
     const pinBtn = itemByTitle().locator('button[data-action="pin"]');
     await expect(pinBtn).toBeVisible();
 
     // Initially unpinned
-    expect(await pinBtn.textContent()).toContain('⊙');
-    expect(await pinBtn.getAttribute('title')).toBe('Pin');
+    await expect(pinBtn).toHaveText('⊙');
+    await expect(pinBtn).toHaveAttribute('title', 'Pin');
 
     // Pin it → now pinned, sidebar refreshes; re-hover
     await pinBtn.click();
     await itemByTitle().hover();
-    await page.waitForTimeout(150);
     const pinBtn2 = itemByTitle().locator('button[data-action="pin"]');
     await expect(pinBtn2).toBeVisible();
-    expect(await pinBtn2.getAttribute('title')).toBe('Unpin');
+    await expect(pinBtn2).toHaveAttribute('title', 'Unpin');
 
     // Unpin → back to unpinned
     await pinBtn2.click();
     // After unpinning the hover may be lost again
     await itemByTitle().hover();
-    await page.waitForTimeout(150);
     const pinBtn3 = itemByTitle().locator('button[data-action="pin"]');
     await expect(pinBtn3).toBeVisible();
-    expect(await pinBtn3.getAttribute('title')).toBe('Pin');
+    await expect(pinBtn3).toHaveAttribute('title', 'Pin');
 
     // Cleanup
     await page.evaluate(async (title) => {

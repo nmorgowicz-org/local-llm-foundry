@@ -375,6 +375,8 @@ test('configuration explains local executable, GPU, and explicit SSH flow', asyn
     await sshSummary.scrollIntoViewIfNeeded();
     await sshSummary.click();
     await page.locator('#set-remote-agent-ssh-target').fill('user@192.0.2.16');
+    // Intentional negative wait: nothing may be fired by typing, so there is no condition to
+    // wait on; 250ms outlasts the app's longest input debounce (kv-support's DEFAULT_DEBOUNCE_MS).
     await page.waitForTimeout(250);
     expect(detectCalls).toBe(0);
 

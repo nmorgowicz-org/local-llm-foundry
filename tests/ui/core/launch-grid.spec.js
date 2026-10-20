@@ -241,7 +241,8 @@ test.describe('launch grid and filters', () => {
 
     if (!isChecked) {
       await groupToggle.check();
-      await page.waitForTimeout(300);
+      // The change handler re-renders the grid synchronously; check() already verified the state.
+      await expect(groupToggle).toBeChecked();
     }
 
     // When grouping is active, we expect at least one group header in the grid
@@ -271,6 +272,9 @@ test.describe('launch grid and filters', () => {
     });
 
     await (await familyPills.last()).click();
+    // Intentional negative wait: asserting that no console error is raised, so there is no
+    // condition to wait on. 200ms covers the pill click's synchronous re-render and the first
+    // two staggered card-entry timers (120ms apart).
     await page.waitForTimeout(200);
 
     const hasError = await page.evaluate(() => window.__lc_filter_error ?? false);
