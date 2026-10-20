@@ -245,6 +245,31 @@ test.describe('llama.cpp runtime panel', () => {
     await expect.poll(() => api.startBody).toMatchObject({ accelerator: 'cpu' });
   });
 
+  test('a slow reply for an abandoned target cannot overwrite the current one', async ({ page }) => {
+    const api = makeApi({ status: { ...IDLE_STATUS, os: 'linux', accelerators: ['cuda', 'cpu'], default_accelerator: 'cuda' } });
+    api.options = { ...api.options, show_cuda: true, cuda_arch_auto: '120a-real', cuda_arch_choices: ['120a-real'] };
+    let releaseCpu;
+    const cpuHeld = new Promise(r => { releaseCpu = r; });
+    await boot(page, api);
+    // Hold the CPU options reply, answering CUDA immediately.
+    await page.route('**/api/llama-build/options?*', async route => {
+      const acc = new URL(route.request().url()).searchParams.get('accelerator');
+      if (acc === 'cpu') {
+        await cpuHeld;
+        return route.fulfill({ json: { ...api.options, accelerator: 'cpu', show_cuda: false } });
+      }
+      return route.fulfill({ json: { ...api.options, accelerator: 'cuda' } });
+    });
+    await openPanel(page);
+    await expect(page.locator('#lrp-arch')).toBeVisible();
+    await page.locator('#lrp-accelerator').selectOption('cpu');
+    await page.locator('#lrp-accelerator').selectOption('cuda');
+    await expect(page.locator('#lrp-arch')).toBeVisible();
+    releaseCpu();
+    await page.waitForTimeout(300);
+    await expect(page.locator('#lrp-arch')).toBeVisible();
+  });
+
   test('a single-target platform shows no target selector', async ({ page }) => {
     await boot(page, makeApi());
     await openPanel(page);

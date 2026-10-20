@@ -107,15 +107,18 @@ async function loadLog() {
 }
 
 async function loadPrereqs() {
-    if (!view.accelerator) return;
-    const r = await api(`/api/llama-build/prereqs?accelerator=${encodeURIComponent(view.accelerator)}`);
-    if (r.ok) view.prereqs = r.data;
+    const wanted = view.accelerator;
+    if (!wanted) return;
+    const r = await api(`/api/llama-build/prereqs?accelerator=${encodeURIComponent(wanted)}`);
+    // The target moved on while this was in flight: the newer request owns the view.
+    if (r.ok && view.accelerator === wanted) view.prereqs = r.data;
 }
 
 async function loadOptions() {
-    if (!view.accelerator) return;
-    const r = await api(`/api/llama-build/options?accelerator=${encodeURIComponent(view.accelerator)}`);
-    if (r.ok) view.options = r.data;
+    const wanted = view.accelerator;
+    if (!wanted) return;
+    const r = await api(`/api/llama-build/options?accelerator=${encodeURIComponent(wanted)}`);
+    if (r.ok && view.accelerator === wanted) view.options = r.data;
 }
 
 async function chooseAccelerator(next) {
