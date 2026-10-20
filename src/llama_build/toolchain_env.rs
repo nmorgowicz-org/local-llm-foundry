@@ -305,41 +305,63 @@ fn redact(key: &str, value: &str) -> String {
     value.to_string()
 }
 
-/// Replace `[scheme://]user:pass@host` credentials with `[scheme://][redacted]@`.
+/// Replace `[scheme://]user:pass@host` credentials with
+/// `[scheme://][redacted]@host`.
 ///
-/// Proxies accept both the URL form and the shorter `user:pass@host`, and list
-/// variables separate entries with spaces, commas or semicolons, so every
-/// entry is considered. The split is at the *last* `@` of an entry: a raw `@`
-/// inside a password must not leave the tail exposed.
+/// Proxies accept both the URL form and the shorter `user:pass@host`. Tokens
+/// are only split on whitespace because `,` and `;` are legal characters
+/// inside userinfo; within a token the userinfo is the run before the last
+/// `@` that lies inside the authority. That covers a raw `@` in a password
+/// while leaving an `@` in a path or query alone.
 fn redact_url_userinfo(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
-    let mut entry = String::new();
+    let mut token = String::new();
     for ch in value.chars() {
-        if matches!(ch, ' ' | ',' | ';') {
-            out.push_str(&redact_entry(&entry));
+        if ch.is_whitespace() {
+            out.push_str(&redact_token(&token));
             out.push(ch);
-            entry.clear();
+            token.clear();
         } else {
-            entry.push(ch);
+            token.push(ch);
         }
     }
-    out.push_str(&redact_entry(&entry));
+    out.push_str(&redact_token(&token));
     out
 }
 
-fn redact_entry(entry: &str) -> String {
-    let Some(at) = entry.rfind('@') else {
-        return entry.to_string();
-    };
-    let (userinfo, tail) = entry.split_at(at);
-    let candidate = userinfo.rsplit("://").next().unwrap_or(userinfo);
-    // Only a `user:pass` pair is a credential; an `@` in a path, query or
-    // fragment is left alone.
-    if !candidate.contains(':') || candidate.contains(['/', '?', '#']) {
-        return entry.to_string();
+fn redact_token(token: &str) -> String {
+    let mut out = String::with_capacity(token.len());
+    let mut rest = token;
+    loop {
+        let Some(at) = rest.find('@') else {
+            out.push_str(rest);
+            return out;
+        };
+        let (scheme, after_scheme) = match rest[..at].rfind("://") {
+            Some(i) => (&rest[..i + 3], &rest[i + 3..]),
+            None => ("", rest),
+        };
+        let authority_end = after_scheme
+            .find(['/', '?', '#'])
+            .unwrap_or(after_scheme.len());
+        let authority = &after_scheme[..authority_end];
+        let Some(delim) = authority.rfind('@') else {
+            // This `@` is past the authority: keep it and keep scanning.
+            out.push_str(&rest[..at + 1]);
+            rest = &rest[at + 1..];
+            continue;
+        };
+        if !authority[..delim].contains(':') {
+            // A username only, or an `@` inside a path or query.
+            let keep = scheme.len() + delim + 1;
+            out.push_str(&rest[..keep]);
+            rest = &rest[keep..];
+            continue;
+        }
+        out.push_str(scheme);
+        out.push_str("[redacted]");
+        rest = &after_scheme[delim..];
     }
-    let scheme = &userinfo[..userinfo.len() - candidate.len()];
-    format!("{scheme}[redacted]{tail}")
 }
 
 /// A redacted diff of `child` against `parent` for the phase header line.
@@ -367,10 +389,22 @@ pub fn redacted_env_diff(
         }
         out.push(format!("{k}={}", redact(k, v)));
     }
-    for k in parent.keys() {
-        if !child.contains_key(k) {
-            out.push(format!("-{k}"));
+    let child_ci: std::collections::BTreeMap<String, &String> = child
+        .iter()
+        .map(|(k, v)| (k.to_ascii_uppercase(), v))
+        .collect();
+    for (k, v) in parent {
+        if child.contains_key(k) {
+            continue;
         }
+        // A case-only rename with an unchanged value is not a removal.
+        if child_ci
+            .get(&k.to_ascii_uppercase())
+            .is_some_and(|same| *same == v)
+        {
+            continue;
+        }
+        out.push(format!("-{k}"));
     }
     out
 }
@@ -677,6 +711,29 @@ mod tests {
         assert_eq!(
             redact_url_userinfo("u:p@ss@proxy.local"),
             "[redacted]@proxy.local"
+        );
+        // `,` and `;` are legal inside userinfo, so they must not split it.
+        assert_eq!(
+            redact_url_userinfo("http://u:pa,ss@host"),
+            "http://[redacted]@host"
+        );
+        assert_eq!(
+            redact_url_userinfo("http://u:pa;ss@host"),
+            "http://[redacted]@host"
+        );
+        // An `@` after the authority (path/query) must not hide the credential.
+        assert_eq!(
+            redact_url_userinfo("http://u:p@host/path@x"),
+            "http://[redacted]@host/path@x"
+        );
+        assert_eq!(
+            redact_url_userinfo("http://u:p@host?x=a@b"),
+            "http://[redacted]@host?x=a@b"
+        );
+        // Newline-separated lists redact every entry.
+        assert_eq!(
+            redact_url_userinfo("http://u:p@a\nhttp://v:q@b"),
+            "http://[redacted]@a\nhttp://[redacted]@b"
         );
         // No credentials: unchanged, including an `@` in a path.
         assert_eq!(redact_url_userinfo("proxy.local:8080"), "proxy.local:8080");
