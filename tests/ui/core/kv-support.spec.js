@@ -271,8 +271,13 @@ test.describe('@in-memory-test K/V support: wizard', () => {
   test('late responses are discarded; a changed runtime or model identity replaces cached evidence', async ({ page }) => {
     let releaseFirst;
     const gate = new Promise(resolve => { releaseFirst = resolve; });
-    const calls = await mockKv(page, async (p, n) => {
-      if (p.v === 'q4_0' && n === 1) {
+    // Hold the FIRST q4_0 lookup, not "call number 1": opening the wizard issues its own
+    // initial lookup (q8_0/q8_0 is the default), so keying on the call count would hold
+    // nothing and leave this test asserting against an answer that was never late.
+    let heldStale = false;
+    const calls = await mockKv(page, async (p) => {
+      if (p.v === 'q4_0' && !heldStale) {
+        heldStale = true;
         await gate; // the stale answer for the first selection arrives last
         return { ...CUDA_FALLBACK };
       }
@@ -280,7 +285,7 @@ test.describe('@in-memory-test K/V support: wizard', () => {
     });
     await openWizard(page);
     await setKv(page, { k: 'q8_0', v: 'q4_0' });
-    await expect.poll(() => calls.length).toBeGreaterThan(0);
+    await expect.poll(() => heldStale).toBe(true);
     await setKv(page, { k: 'q8_0', v: 'q8_0' });
     await expect(page.locator('#hw-kv-support')).toHaveAttribute('data-kv-state', 'native');
     const staleResponse = page.waitForResponse(r =>
