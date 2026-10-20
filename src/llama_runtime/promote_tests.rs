@@ -1167,3 +1167,27 @@ async fn a_rejected_install_whose_model_restarts_fine_reports_no_restart_failure
         }
     ));
 }
+
+#[test]
+fn rename_retry_targets_only_windows_handle_errors() {
+    assert!(is_windows_handle_error(Some(5)));
+    assert!(is_windows_handle_error(Some(32)));
+    assert!(!is_windows_handle_error(Some(13)));
+    assert!(!is_windows_handle_error(None));
+    // Off Windows nothing is retried: these codes never arrive as handle
+    // contention there, and the delay stays `None`.
+    if !cfg!(windows) {
+        assert!(!rename_blocked_by_open_handle(Some(32)));
+        assert_eq!(rename_retry_delay_ms(0), None);
+    }
+}
+
+#[test]
+fn rename_backoff_is_bounded_and_terminates() {
+    if !cfg!(windows) {
+        return;
+    }
+    assert_eq!(rename_retry_delay_ms(0), Some(250));
+    assert_eq!(rename_retry_delay_ms(3), Some(1000));
+    assert_eq!(rename_retry_delay_ms(4), None);
+}

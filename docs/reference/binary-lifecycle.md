@@ -141,7 +141,9 @@ Response:
   "server_restarted": true,
   "restart_applicable": true,
   "custom_server_path": null,
-  "warnings": []
+  "warnings": [],
+  "evidence_unavailable": false,
+  "verification_notes": []
 }
 ```
 
@@ -154,6 +156,10 @@ Response:
     `ok` is `false` and `error` carries the reason.
   - `failed`: nothing was changed (for example the journal could not be written).
 - `sha256`: SHA256 of the installed llama-server binary.
+- `evidence_unavailable`: `true` when the runtime's probe output could not be read and only
+  `--help` was verified — the uncertainty is reported, never hidden (plan §4.3).
+  `verification_notes` carries the verifier's notes (including an absent or unchecked
+  `llama-bench`); the UI surfaces both with the install result.
 - `server_restarted`: true when the backend already restarted the server with its previous
   config; the frontend must skip its own restart call when this is true.
 - `restart_applicable`: false when no llama.cpp model was running (including Rapid-MLX).
@@ -252,6 +258,15 @@ app root and the canonical and legacy default roots. An interrupted model stop i
 (`the model ... was not restarted; start it again`) rather than automatically relaunched,
 because the journal deliberately stores no launch credentials or configuration.
 
+Windows can refuse a directory rename with `ERROR_ACCESS_DENIED` /
+`ERROR_SHARING_VIOLATION` while anything holds an open handle inside it — an antivirus
+scan, a shell whose CWD is inside `bin/`, an externally launched `llama-server.exe`. The
+swap's renames retry those two codes with backoff (~2.5 s total) before failing closed as
+`Interrupted`; the surfaced reason then names the open-file-handle cause. Separately, on
+Windows the journal's parent-directory fsync is a no-op: rename durability relies on NTFS
+metadata journaling, and a lost phase-update write replays conservatively (undo), so
+correctness is unaffected.
+
 Set identity in the journal is a metadata fingerprint (relative path, size, mtime), not a
 content hash, so it follows a directory rename without hashing gigabytes at each boundary.
 
@@ -269,10 +284,11 @@ probe reports.
 The entire extracted archive (the executable, co-located dylibs, and Metal shaders) can carry
 the `com.apple.quarantine` attribute. Gatekeeper enforces it at `dlopen()` time, so stripping
 only the executable is insufficient: the process launches, loads a quarantined dylib, and is
-killed by a signal (no exit code). `prepare_runtime_dir` strips the attribute recursively from
-the whole staged set before it is executed. `start_server` applies the same best-effort strip
-to the binary's parent directory before its own `--help` check, which covers manually placed
-binaries.
+killed by a signal (no exit code). Staged preparation strips the attribute
+recursively from the whole staged set (`strip_quarantine`, invoked inside the
+blocking preparation) before it is executed.
+`start_server` applies the same best-effort strip to the binary's parent directory before
+its own `--help` check, which covers manually placed binaries.
 
 ### Ownership and lock order
 
@@ -283,6 +299,15 @@ builds). Acquisition order is: toolchain, checkout/build/cache, **runtime gate**
 gate: while a swap is in flight a llama.cpp launch is refused immediately (the promotion's own
 restart passes via the owner token), and capability snapshot generation returns an error
 instead of executing or hashing a half-swapped directory. The cached snapshot stays valid.
+
+
+**Known limitation — one mutating process per root.** The gate is in-process. Build/cache
+leases exclude standalone builders (the CLI takes an exclusive lease) but deliberately
+grant *shared* leases to running app and agent processes, so two app instances sharing one
+runtime root could each pass their own in-memory gate and interleave a swap; startup
+recovery also replays journals found in non-active roots on the assumption their owner is
+gone. The supported configuration is one app instance (or the CLI) mutating a given runtime
+root at a time; an OS-level swap lock for multi-instance setups is tracked as a follow-up.
 
 ## Model-file download stability
 

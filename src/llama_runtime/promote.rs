@@ -424,9 +424,59 @@ pub enum ReconcileKind {
     Completed,
 }
 
+/// Windows can refuse a directory rename while another process holds an open
+/// handle inside it: an antivirus scan, a shell whose CWD is `bin/`, or an
+/// externally launched `llama-server.exe` (ERROR_ACCESS_DENIED /
+/// ERROR_SHARING_VIOLATION). Retry those two codes briefly so recovery can
+/// converge instead of wedging until the handle is gone.
+pub(crate) fn is_windows_handle_error(raw_os_error: Option<i32>) -> bool {
+    matches!(raw_os_error, Some(5) | Some(32))
+}
+
+pub(crate) fn rename_blocked_by_open_handle(raw_os_error: Option<i32>) -> bool {
+    cfg!(windows) && is_windows_handle_error(raw_os_error)
+}
+
+/// Backoff for a blocked rename: ~250 ms growing to ~1 s, then give up.
+/// Always `None` off Windows, so other platforms retry nothing.
+fn rename_retry_delay_ms(attempt: usize) -> Option<u64> {
+    if !cfg!(windows) {
+        return None;
+    }
+    match attempt {
+        0 => Some(250),
+        1 => Some(500),
+        2 => Some(750),
+        3 => Some(1000),
+        _ => None,
+    }
+}
+
+const BLOCKED_RENAME_HINT: &str = "the runtime directory is blocked by an open file handle; close editors, antivirus scanners and terminals using it";
+
 fn rename_dir(from: &Path, to: &Path, faults: &dyn Faults, label: &str) -> Result<(), Interrupt> {
     point(faults, &format!("{label}.before"))?;
-    std::fs::rename(from, to)?;
+    let mut attempt = 0usize;
+    loop {
+        match std::fs::rename(from, to) {
+            Ok(()) => break,
+            Err(e) if rename_blocked_by_open_handle(e.raw_os_error()) => {
+                match rename_retry_delay_ms(attempt) {
+                    Some(ms) => {
+                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                        attempt += 1;
+                    }
+                    None => {
+                        // Fail-closed `Interrupted` semantics are preserved; the
+                        // enriched message reaches the promote error and the
+                        // recovery status surfaces.
+                        return Err(Interrupt::Failed(format!("{e}; {BLOCKED_RENAME_HINT}")));
+                    }
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
     sync_dir(to.parent().unwrap_or(to))?;
     point(faults, &format!("{label}.after"))?;
     Ok(())
@@ -619,10 +669,13 @@ pub fn finalize(
     let mut last = j.clone();
     last.outcome = Some(outcome);
     point(faults, "finalize.last.before")?;
-    std::fs::write(
-        paths.last_journal(),
-        serde_json::to_vec_pretty(&last).map_err(|e| Interrupt::Failed(e.to_string()))?,
-    )?;
+    {
+        let bytes =
+            serde_json::to_vec_pretty(&last).map_err(|e| Interrupt::Failed(e.to_string()))?;
+        let mut file = std::fs::File::create(paths.last_journal())?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+    }
     point(faults, "finalize.last.after")?;
     point(faults, "finalize.remove.before")?;
     match std::fs::remove_file(&paths.journal) {
@@ -835,6 +888,12 @@ pub struct PromoteResult {
     pub outcome: PromoteOutcome,
     /// Non-fatal: for example retention left for the next startup.
     pub warnings: Vec<String>,
+    /// The verified runtime could only prove that `--help` runs: the probe
+    /// output was not recognized (plan §4.3 "report uncertainty"). The install
+    /// still stands; callers must surface this instead of discarding it.
+    pub verification_evidence_unavailable: bool,
+    /// Notes from the verifier (`VerificationReport::notes`).
+    pub verification_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -983,6 +1042,10 @@ struct Running<'a, H: PromoteHost> {
     intent: &'a VerificationIntent,
     journal: Journal,
     warnings: Vec<String>,
+    /// Verification uncertainty from `VerificationReport`: it must reach the
+    /// caller, not stop at `Ok(())`.
+    evidence_unavailable: bool,
+    verification_notes: Vec<String>,
 }
 
 enum Flow {
@@ -1031,7 +1094,7 @@ impl<H: PromoteHost> Running<'_, H> {
         Flow::Done
     }
 
-    async fn verify(&self, dir: &Path, stage: VerifyStage) -> Flow {
+    async fn verify(&mut self, dir: &Path, stage: VerifyStage) -> Flow {
         let label = match stage {
             VerifyStage::Staged => "verify.staged",
             VerifyStage::Live => "verify.live",
@@ -1044,7 +1107,13 @@ impl<H: PromoteHost> Running<'_, H> {
             .verify(dir, self.exe_name, self.intent, stage)
             .await
         {
-            Ok(_) => Flow::Done,
+            Ok(report) => {
+                if report.evidence_unavailable {
+                    self.evidence_unavailable = true;
+                }
+                self.verification_notes.extend(report.notes);
+                Flow::Done
+            }
             Err(e) => Flow::Abort(e),
         }
     }
@@ -1091,6 +1160,8 @@ impl<H: PromoteHost> Running<'_, H> {
                         restart_failed,
                     },
                     warnings: self.warnings,
+                    verification_evidence_unavailable: self.evidence_unavailable,
+                    verification_notes: self.verification_notes,
                 })
             }
         }
@@ -1153,6 +1224,8 @@ impl<H: PromoteHost> Running<'_, H> {
         Ok(PromoteResult {
             outcome,
             warnings: self.warnings,
+            verification_evidence_unavailable: self.evidence_unavailable,
+            verification_notes: self.verification_notes,
         })
     }
 }
@@ -1256,6 +1329,8 @@ async fn begin<H: PromoteHost>(
         intent,
         journal,
         warnings: Vec::new(),
+        evidence_unavailable: false,
+        verification_notes: Vec::new(),
     };
     if let Err(i) = running.write("begin") {
         let _ = std::fs::remove_file(paths.tmp_journal());
@@ -1299,6 +1374,10 @@ pub async fn promote<H: PromoteHost>(
     let manifest = req.manifest.clone();
     tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         let inventory = prepare_runtime_dir(&staged, &exe)?;
+        // macOS: clear Gatekeeper quarantine from the whole set (dylibs and
+        // Metal shaders included) before anything executes it. Best-effort.
+        #[cfg(target_os = "macos")]
+        crate::llama_runtime::verify::strip_quarantine(&staged);
         if inventory.executable.is_none() {
             return Err(std::io::Error::other(format!(
                 "{exe} is missing from the staged runtime"

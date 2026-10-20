@@ -182,8 +182,27 @@ pub(super) fn promote_reply(
     let fields = body.as_object_mut().expect("object literal");
     let mut status = warp::http::StatusCode::OK;
     match result {
-        Ok(PromoteResult { outcome, warnings }) => {
+        Ok(PromoteResult {
+            outcome,
+            warnings,
+            verification_evidence_unavailable,
+            verification_notes,
+        }) => {
             fields.insert("warnings".into(), serde_json::json!(warnings));
+            fields.insert(
+                "evidence_unavailable".into(),
+                verification_evidence_unavailable.into(),
+            );
+            fields.insert(
+                "verification_notes".into(),
+                serde_json::json!(verification_notes),
+            );
+            if verification_evidence_unavailable {
+                state.push_log(format!(
+                    "[monitor] llama-binary/update: installed {} with limited evidence: only --help was verified; the loaded backend could not be confirmed",
+                    ctx.tag
+                ));
+            }
             match outcome {
                 PromoteOutcome::Promoted { restarted } => {
                     state.push_log(format!(
@@ -1185,15 +1204,22 @@ fn api_llama_binary_update(
                 let result = promote(&host, &mut guard, &paths, request).await;
                 let restart_applicable = host.restart_applicable();
                 drop(guard);
-                let _ = std::fs::remove_dir_all(&staging);
-
+                // Cleanup and the install hash are blocking filesystem work:
+                // keep them off the request worker. The gate is already
+                // dropped, and that ordering is preserved.
+                let staging_cleanup = staging.clone();
                 let installed_binary = bin_dir.join(binary_name);
-                let sha256_hex = std::fs::read(&installed_binary).ok().map(|bytes| {
-                    use sha2::Digest;
-                    let mut hasher = sha2::Sha256::new();
-                    hasher.update(&bytes);
-                    hasher.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
-                });
+                let sha256_hex = tokio::task::spawn_blocking(move || {
+                    let _ = std::fs::remove_dir_all(&staging_cleanup);
+                    std::fs::read(&installed_binary).ok().map(|bytes| {
+                        use sha2::Digest;
+                        let mut hasher = sha2::Sha256::new();
+                        hasher.update(&bytes);
+                        hasher.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+                    })
+                })
+                .await
+                .unwrap_or(None);
                 let custom = custom_path.as_ref().map(|p| p.display().to_string());
                 Ok(promote_reply(
                     &state,
@@ -1396,6 +1422,8 @@ mod tests {
                 restart_failed: Some("model failed to start".into()),
             },
             warnings: Vec::new(),
+            verification_evidence_unavailable: false,
+            verification_notes: Vec::new(),
         });
         let body = reply_json(promote_reply(&state, result, reply_ctx())).await;
         assert_eq!(body["ok"], false);
@@ -1413,10 +1441,33 @@ mod tests {
                 restart_failed: None,
             },
             warnings: Vec::new(),
+            verification_evidence_unavailable: false,
+            verification_notes: Vec::new(),
         });
         let body = reply_json(promote_reply(&state, result, reply_ctx())).await;
         assert_eq!(body["outcome"], "rolled_back");
         assert!(body.get("restart_error").is_none(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn prebuilt_help_only_evidence_is_surfaced_in_the_reply() {
+        let state = AppState::default();
+        let result = Ok(PromoteResult {
+            outcome: PromoteOutcome::Promoted { restarted: false },
+            warnings: Vec::new(),
+            verification_evidence_unavailable: true,
+            verification_notes: vec![
+                "Runtime evidence could not be read (timeout); only --help was verified.".into(),
+            ],
+        });
+        let body = reply_json(promote_reply(&state, result, reply_ctx())).await;
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["outcome"], "promoted");
+        assert_eq!(body["evidence_unavailable"], true);
+        assert_eq!(
+            body["verification_notes"][0],
+            "Runtime evidence could not be read (timeout); only --help was verified."
+        );
     }
 
     #[test]

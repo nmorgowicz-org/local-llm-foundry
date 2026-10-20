@@ -161,9 +161,8 @@ pub struct Inventory {
     pub executable: Option<PathBuf>,
 }
 
-/// Preparation that must precede any staged execution: executable bits and, on
-/// macOS, removing Gatekeeper quarantine from the whole set (executable,
-/// dylibs and Metal shaders alike). Synchronous and execution-free.
+/// Preparation that must precede any staged execution: executable bits.
+/// Synchronous and execution-free.
 pub fn prepare_runtime_dir(dir: &Path, exe_name: &str) -> std::io::Result<Inventory> {
     let mut files = 0usize;
     let mut stack = vec![dir.to_path_buf()];
@@ -196,17 +195,22 @@ pub fn prepare_runtime_dir(dir: &Path, exe_name: &str) -> std::io::Result<Invent
             }
         }
     }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("xattr")
-            .args(["-rd", "com.apple.quarantine"])
-            .arg(dir)
-            .output();
-    }
     Ok(Inventory {
         files,
         executable: executable.is_file().then_some(executable),
     })
+}
+
+/// Strip Gatekeeper quarantine from the whole set (executable, co-located
+/// dylibs and Metal shaders alike). Runs the `xattr` subprocess, so callers
+/// keep it inside a blocking section; best-effort, like `start_server`'s own
+/// strip.
+#[cfg(target_os = "macos")]
+pub fn strip_quarantine(dir: &Path) {
+    let _ = std::process::Command::new("xattr")
+        .args(["-rd", "com.apple.quarantine"])
+        .arg(dir)
+        .output();
 }
 
 /// Canonicalize `path`, resolving symlinks (`/var` -> `/private/var`) even when
@@ -360,34 +364,130 @@ pub async fn verify_runtime(
     if !exe.is_file() {
         return Err(VerifyError::MissingExecutable(exe));
     }
-    match probe_runtime_with_timeout(&exe, EnvPolicy::Sanitized, VERIFY_PROBE_TIMEOUT).await {
-        Ok(probe) => evaluate_probe(&probe, dir, intent),
-        Err(ProbeError::Spawn(e)) => Err(VerifyError::CannotRun(e)),
-        Err(other) => {
-            // The runtime started but we could not read its evidence.
-            if intent.kind == InstallKind::Source {
-                return Err(VerifyError::EvidenceRequired(other.to_string()));
+    let mut report =
+        match probe_runtime_with_timeout(&exe, EnvPolicy::Sanitized, VERIFY_PROBE_TIMEOUT).await {
+            Ok(probe) => evaluate_probe(&probe, dir, intent)?,
+            Err(ProbeError::Spawn(e)) => return Err(VerifyError::CannotRun(e)),
+            Err(other) => {
+                // The runtime started but we could not read its evidence.
+                if intent.kind == InstallKind::Source {
+                    return Err(VerifyError::EvidenceRequired(other.to_string()));
+                }
+                if intent.pinned_commit.is_some() || intent.require_fa_all {
+                    return Err(VerifyError::EvidenceRequired(other.to_string()));
+                }
+                help_runs(&exe).await.map_err(VerifyError::CannotRun)?;
+                VerificationReport {
+                    backend: Backend::Unknown,
+                    build_number: None,
+                    build_commit: None,
+                    identity_fingerprint: None,
+                    notes: vec![format!(
+                        "Runtime evidence could not be read ({other}); only --help was verified."
+                    )],
+                    evidence_unavailable: true,
+                }
             }
-            if intent.pinned_commit.is_some() || intent.require_fa_all {
-                return Err(VerifyError::EvidenceRequired(other.to_string()));
+        };
+    // Plan §4.6.1: both built executables carry the pinned commit. Check
+    // llama-bench alongside llama-server; a prebuilt set that does not ship it
+    // is noted, never failed.
+    if let Some(note) = check_bench_commit(dir, intent).await? {
+        report.notes.push(note);
+    }
+    Ok(report)
+}
+
+/// Extract the `(commit)` token from a `--version` line: 7–40 hex chars.
+fn commit_token(text: &str) -> Option<String> {
+    let mut current = String::new();
+    for ch in text.chars().chain([' ']) {
+        let hex = ch.is_ascii_hexdigit();
+        if hex {
+            current.push(ch);
+        } else {
+            if (7..=40).contains(&current.len()) {
+                return Some(current);
             }
-            help_runs(&exe).await.map_err(VerifyError::CannotRun)?;
-            Ok(VerificationReport {
-                backend: Backend::Unknown,
-                build_number: None,
-                build_commit: None,
-                identity_fingerprint: None,
-                notes: vec![format!(
-                    "Runtime evidence could not be read ({other}); only --help was verified."
-                )],
-                evidence_unavailable: true,
-            })
+            current.clear();
         }
     }
+    None
+}
+
+/// Commit cross-check for `llama-bench` (plan §4.6.1 "check both built
+/// executables"). `Ok(None)` means nothing to report; a mismatch is an error,
+/// an absent or unreadable llama-bench is a note, never a failure.
+async fn check_bench_commit(
+    dir: &Path,
+    intent: &VerificationIntent,
+) -> Result<Option<String>, VerifyError> {
+    let bench = dir.join(if cfg!(windows) {
+        "llama-bench.exe"
+    } else {
+        "llama-bench"
+    });
+    if !bench.is_file() {
+        return Ok(if intent.kind == InstallKind::Prebuilt {
+            Some("llama-bench is absent from this prebuilt set; its commit was not checked.".into())
+        } else {
+            None
+        });
+    }
+    let Some(pinned) = intent.pinned_commit.clone() else {
+        return Ok(None);
+    };
+    let ran = tokio::time::timeout(VERIFY_PROBE_TIMEOUT, async {
+        let mut cmd = tokio::process::Command::new(&bench);
+        cmd.arg("--version")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        crate::platform::no_window_tokio(&mut cmd);
+        cmd.output().await
+    })
+    .await
+    .ok()
+    .and_then(|r| r.ok());
+    let Some(output) = ran else {
+        return Ok(Some(
+            "llama-bench could not be run to confirm its commit.".into(),
+        ));
+    };
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let found = commit_token(&text);
+    let matches = found
+        .as_deref()
+        .is_some_and(|short| short.len() >= 7 && pinned.starts_with(short));
+    if !matches {
+        return Err(VerifyError::CommitMismatch { pinned, found });
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn commit_token_extracts_hex_runs_of_seven_to_forty() {
+        assert_eq!(
+            commit_token("version: 1234abc (v1.2)"),
+            Some("1234abc".into())
+        );
+        assert_eq!(
+            commit_token("commit 0123456789abcdef0123456789abcdef01234567"),
+            Some("0123456789abcdef0123456789abcdef01234567".into())
+        );
+        assert_eq!(commit_token("short abc"), None);
+        assert_eq!(
+            commit_token("too long 0123456789abcdef0123456789abcdef012345678"),
+            None
+        );
+        assert_eq!(commit_token("no hex here"), None);
+    }
     use super::*;
     use crate::llama_runtime::probe::{
         LoadedBackend, ParsedProbe, kv_basis_from_probe, parse_probe_output,

@@ -2650,7 +2650,10 @@ Download and install a specific llama.cpp release as a journaled promotion.
 - Response: `ok`, `outcome` (`promoted`, `installed_restart_failed`, `rolled_back`,
   `failed`), `version`, `backend`, `arch`, `sha256`, `server_restarted`,
   `restart_applicable`, `restart_error` (when the restart failed), `custom_server_path`,
-  `warnings`. `installed_restart_failed` keeps `ok: true`: the runtime is installed.
+  `warnings`, `evidence_unavailable`, `verification_notes`. `installed_restart_failed`
+  keeps `ok: true`: the runtime is installed. `evidence_unavailable` is `true` when the
+  probe output was unrecognized and only `--help` was verified; `verification_notes`
+  carries the verifier's notes.
 - Errors: `409 {owner}` when another runtime mutation is in flight, or when an earlier
   interrupted transaction is unresolved.
 - See `docs/reference/binary-lifecycle.md` for the transaction and recovery model.
