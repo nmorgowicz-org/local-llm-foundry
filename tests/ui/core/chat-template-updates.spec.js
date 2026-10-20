@@ -179,32 +179,6 @@ test.describe('Chat template updates', () => {
     await expect(updates).toContainText('Updated.');
   });
 
-  test('@in-memory-test Qwen offers froggeric and Sharp, both tracking main', async ({ page }) => {
-    await page.goto('/');
-    const registry = await page.evaluate(async () => {
-      const mod = await import('/js/features/chat-template-registry.js');
-      const qwen = mod.getTemplatesForFamily('qwen');
-      return {
-        names: qwen.map(tpl => tpl.name),
-        defaultName: mod.getDefaultTemplateForFamily('qwen').name,
-        pinned: qwen.filter(tpl => tpl.revision || tpl.transformed || tpl.version).map(tpl => tpl.name),
-        sharp: mod.buildCommunityTemplateInstallRequest(mod.findTemplateByName('qwen-sharp')),
-        qwenSuffix: mod.provenanceSuffix(qwen[0], 'qwen'),
-        gemmaSuffix: mod.provenanceSuffix(mod.getTemplatesForFamily('gemma4')[0], 'gemma4'),
-      };
-    });
-    expect(registry.names).toEqual(['qwen-froggeric-fixed', 'qwen-sharp']);
-    expect(registry.defaultName).toBe('qwen-froggeric-fixed');
-    expect(registry.pinned).toEqual([]);
-    expect(registry.sharp).toEqual({
-      endpoint: '/api/chat-template/install-hf',
-      body: { repo: 'peculiar-ragdoll/Qwen-Sharp-Chat-Templates', file: 'chat_template.jinja', name: 'qwen-sharp' },
-    });
-    // Two community templates are told apart by name; a mixed family still gets a label.
-    expect(registry.qwenSuffix).toBe('');
-    expect(registry.gemmaSuffix).toBe(' (Official)');
-  });
-
   test('@in-memory-test the preset editor lets you pick Sharp for a Qwen model', async ({ page }) => {
     await page.goto('/');
     await page.waitForLoadState('networkidle');

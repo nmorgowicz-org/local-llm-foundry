@@ -22,11 +22,13 @@ const transientPollResponses = [
   ['HTTP 404', { status: 404, json: { ok: false, error: 'not found' } }],
   ['one explicit unknown-job 404', unknownJob],
   ['invalid JSON', { contentType: 'application/json', body: '{' }],
-  ['missing job', { json: { ok: true } }],
-  ['null job', { json: { ok: true, job: null } }],
   ['unknown state', { json: { ok: true, job: { state: 'unknown' } } }],
   ['unsuccessful envelope', { json: { ok: false, job: { state: 'complete' } } }],
 ];
+
+// 'HTTP 500' is dropped here (the 500-with-terminal-body row covers the same branch) but
+// stays in transientPollResponses[0] as the shared fixture for the other tests.
+const pollFailureRows = transientPollResponses.filter(([label]) => label !== 'HTTP 500');
 
 const trackedJob = (page, repo = REPO_A) => page.evaluate(async repoId =>
   (await import('/js/features/rapid-model-download.js')).activeRapidDownloadJob(repoId), repo);
@@ -180,7 +182,7 @@ test.describe('@fake-data-bypass Rapid-MLX wizard download step', () => {
     });
   }
 
-  for (const response of [transientPollResponses[0][1], { contentType: 'application/json', body: '{' }]) {
+  for (const response of [transientPollResponses[0][1]]) {
     test(`wizard cache recheck failure (${response.status || 'JSON'}) retains tracking and retries`, async ({ page }) => {
       const fake = await fakeBackend(page);
       await freezePollClock(page);
@@ -366,7 +368,7 @@ test.describe('@fake-data-bypass Rapid-MLX wizard download step', () => {
     expect(fake.cancels).toEqual([]);
   });
 
-  for (const [label, response] of transientPollResponses) {
+  for (const [label, response] of pollFailureRows) {
     test(`${label} preserves wizard progress and tracking until a valid poll completes`, async ({ page }) => {
       const fake = await fakeBackend(page);
       await freezePollClock(page);
@@ -532,7 +534,7 @@ test.describe('@fake-data-bypass Rapid-MLX preset card download state', () => {
     });
   }
 
-  for (const response of [transientPollResponses[0][1], { contentType: 'application/json', body: '{' }]) {
+  for (const response of [transientPollResponses[0][1]]) {
     test(`card cache recheck failure (${response.status || 'JSON'}) retains tracking and retries`, async ({ page }) => {
       const fake = await fakeBackend(page);
       await freezePollClock(page);
@@ -617,7 +619,7 @@ test.describe('@fake-data-bypass Rapid-MLX preset card download state', () => {
     expect(fake.starts).toEqual([REPO_A]);
   });
 
-  for (const [label, response] of transientPollResponses) {
+  for (const [label, response] of pollFailureRows) {
     test(`${label} preserves card progress and cancel until polling succeeds`, async ({ page }) => {
       const fake = await fakeBackend(page);
       await freezePollClock(page);

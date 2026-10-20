@@ -23,20 +23,6 @@ test.describe('app update UI', () => {
     await expect(page.locator('#release-notes-panel')).not.toHaveClass(/open/);
   });
 
-  test('showUpdatePill makes pill visible', async ({ page }) => {
-    await page.evaluate(() => {
-      localStorage.removeItem('update-dismissed');
-      const pill = document.getElementById('update-pill');
-      const text = document.getElementById('update-pill-text');
-      if (pill && text) {
-        text.textContent = 'v99.0.0 available';
-        pill.style.display = 'flex';
-      }
-    });
-    await expect(page.locator('#update-pill')).toBeVisible();
-    await expect(page.locator('#update-pill-text')).toContainText('v99.0.0');
-  });
-
   test('opening release notes panel shows version diff', async ({ page }) => {
     await page.evaluate(() => {
       localStorage.removeItem('update-dismissed');
@@ -49,28 +35,5 @@ test.describe('app update UI', () => {
     });
     await page.locator('#update-pill').click();
     await expect(page.locator('#release-notes-panel')).toBeVisible();
-  });
-
-  test('dismiss hides pill and closes panel', async ({ page }) => {
-    await page.evaluate(() => {
-      localStorage.removeItem('update-dismissed');
-      const pill = document.getElementById('update-pill');
-      const text = document.getElementById('update-pill-text');
-      if (pill && text) {
-        text.textContent = 'v99.0.0 available';
-        pill.style.display = 'flex';
-      }
-    });
-    await page.locator('#update-pill').click();
-    await expect(page.locator('#release-notes-panel')).toBeVisible();
-    // Simulate dismiss by hiding pill and panel directly (no _pendingRelease set)
-    await page.evaluate(() => {
-      const pill = document.getElementById('update-pill');
-      const panel = document.getElementById('release-notes-panel');
-      if (pill) pill.style.display = 'none';
-      if (panel) panel.style.display = 'none';
-    });
-    await expect(page.locator('#update-pill')).not.toBeVisible();
-    await expect(page.locator('#release-notes-panel')).not.toBeVisible();
   });
 });

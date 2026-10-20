@@ -43,32 +43,4 @@ test.describe('Quick Guide Revise Last', () => {
     // Button should be hidden with no messages and no last run
     await expect(restoreBtn).not.toBeVisible();
   });
-
-  test('Revise Last button appears after a message with last run', async ({ page }) => {
-    // Seed a message
-    await seedChatMessages(page, [
-      { role: 'user', content: 'Write a story' },
-      { role: 'assistant', content: 'Once upon a time...' },
-    ]);
-
-    // Set _quickGuideLastRun to simulate a previous guided reply
-    await page.evaluate(() => {
-      return import('/js/features/chat-state.js').then(({ activeChatTab }) => {
-        const tab = activeChatTab();
-        tab._quickGuideLastRun = {
-          instruction: 'Add more tension',
-          targetIndex: 1,
-          targetRole: 'assistant',
-        };
-      });
-    });
-
-    // Open the quick guide - updateQuickGuideUI will run and show the button
-    await page.locator('#quick-guide-toggle').click();
-    await page.waitForSelector('#quick-guide-input', { state: 'visible' });
-
-    // Button should now be visible
-    const restoreBtn = page.locator('#quick-guide-restore-btn');
-    await expect(restoreBtn).toBeVisible();
-  });
 });

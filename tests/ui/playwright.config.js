@@ -31,6 +31,9 @@
 /** @type {import('@playwright/test').PlaywrightTestConfig} */
 const config = {
   testDir: '.',
+  // unit/ holds node:test files (npm run test:unit); Playwright's default *.test.mjs match would
+  // otherwise load them as UI specs. The smoke config spreads this object and inherits it.
+  testIgnore: ['unit/**'],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   // Local runs must be AT LEAST AS STRICT as CI, never looser and never differently
