@@ -1172,6 +1172,7 @@ async fn a_rejected_install_whose_model_restarts_fine_reports_no_restart_failure
 fn rename_retry_targets_only_windows_handle_errors() {
     assert!(is_windows_handle_error(Some(5)));
     assert!(is_windows_handle_error(Some(32)));
+    assert!(is_windows_handle_error(Some(33)));
     assert!(!is_windows_handle_error(Some(13)));
     assert!(!is_windows_handle_error(None));
     // Off Windows nothing is retried: these codes never arrive as handle

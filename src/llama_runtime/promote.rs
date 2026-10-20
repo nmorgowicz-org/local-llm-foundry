@@ -430,7 +430,10 @@ pub enum ReconcileKind {
 /// ERROR_SHARING_VIOLATION). Retry those two codes briefly so recovery can
 /// converge instead of wedging until the handle is gone.
 pub(crate) fn is_windows_handle_error(raw_os_error: Option<i32>) -> bool {
-    matches!(raw_os_error, Some(5) | Some(32))
+    // 5 ERROR_ACCESS_DENIED, 32 ERROR_SHARING_VIOLATION and 33
+    // ERROR_LOCK_VIOLATION all surface when another process holds the
+    // directory or a file inside it.
+    matches!(raw_os_error, Some(5) | Some(32) | Some(33))
 }
 
 pub(crate) fn rename_blocked_by_open_handle(raw_os_error: Option<i32>) -> bool {
@@ -452,7 +455,7 @@ fn rename_retry_delay_ms(attempt: usize) -> Option<u64> {
     }
 }
 
-const BLOCKED_RENAME_HINT: &str = "the runtime directory is blocked by an open file handle; close editors, antivirus scanners and terminals using it";
+const BLOCKED_RENAME_HINT: &str = "the runtime directory is in use (an open file handle, antivirus, or another process using the path); close editors, scanners and terminals using it, or remove the conflicting directory";
 
 fn rename_dir(from: &Path, to: &Path, faults: &dyn Faults, label: &str) -> Result<(), Interrupt> {
     point(faults, &format!("{label}.before"))?;
@@ -676,6 +679,9 @@ pub fn finalize(
         file.write_all(&bytes)?;
         file.sync_all()?;
     }
+    // The last-journal write must be durable before the real journal is
+    // unlinked; otherwise a crash between the two can lose both records.
+    sync_dir(&paths.parent)?;
     point(faults, "finalize.last.after")?;
     point(faults, "finalize.remove.before")?;
     match std::fs::remove_file(&paths.journal) {
@@ -1108,10 +1114,15 @@ impl<H: PromoteHost> Running<'_, H> {
             .await
         {
             Ok(report) => {
-                if report.evidence_unavailable {
-                    self.evidence_unavailable = true;
+                // The live pass is authoritative: full evidence there clears a
+                // staged "--help only" uncertainty. Notes are deduped so the
+                // same observation from both stages is reported once.
+                self.evidence_unavailable = report.evidence_unavailable;
+                for note in report.notes {
+                    if !self.verification_notes.contains(&note) {
+                        self.verification_notes.push(note);
+                    }
                 }
-                self.verification_notes.extend(report.notes);
                 Flow::Done
             }
             Err(e) => Flow::Abort(e),
