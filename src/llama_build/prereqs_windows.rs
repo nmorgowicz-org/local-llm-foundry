@@ -479,8 +479,13 @@ pub fn windows_checks(
 ) -> (Collector, WindowsToolchain) {
     let mut c = Collector::default();
     let mut tc = WindowsToolchain::default();
+    // The CUDA toolkit, driver and GPU architecture only matter to a CUDA
+    // build; a CPU build needs just the MSVC toolchain.
+    let cuda = ctx.disk.accelerator == Accelerator::Cuda;
     vs_checks(sys, &mut c, &mut tc);
-    cuda_checks(sys, &mut c, &mut tc, ctx);
+    if cuda {
+        cuda_checks(sys, &mut c, &mut tc, ctx);
+    }
     git_check(sys, &mut c, &mut tc);
 
     let estimate = estimate_disk(&ctx.disk);
@@ -497,11 +502,10 @@ pub fn windows_checks(
     let toolchain_ok = tc.vcvars.is_some()
         && tc.cmake.is_some()
         && tc.ninja.is_some()
-        && tc.nvcc.is_some()
         && tc.git.is_some()
-        && tc.cuda_architectures.is_some();
+        && (!cuda || (tc.nvcc.is_some() && tc.cuda_architectures.is_some()));
     c.push(if toolchain_ok {
-        smoke_check(smoke.run(Accelerator::Cuda, Some(&tc)), true)
+        smoke_check(smoke.run(ctx.disk.accelerator, Some(&tc)), true)
     } else {
         smoke_check(Err(String::new()), false)
     });
@@ -673,6 +677,27 @@ mod tests {
             tc.nvcc.unwrap().to_string_lossy(),
             format!(r"{CUDA}\bin\nvcc.exe")
         );
+    }
+
+    #[test]
+    fn a_cpu_build_needs_no_cuda_toolkit() {
+        let mut sys = ryne();
+        sys.env.remove("CUDA_PATH");
+        let mut context = ctx(Path::new(r"C:\app"));
+        context.disk.accelerator = Accelerator::Cpu;
+        let (c, tc) = windows_checks(&sys, &context, &Smoke(Ok("ok".into())));
+        assert!(
+            c.checks.iter().all(|ch| ch.status != Status::Fail),
+            "{:?}",
+            c.checks
+                .iter()
+                .filter(|ch| ch.status == Status::Fail)
+                .map(|ch| &ch.id)
+                .collect::<Vec<_>>()
+        );
+        assert!(c.checks.iter().all(|ch| ch.id != "cuda_toolkit"));
+        assert_eq!(by_id(&c, "smoke").status, Status::Pass);
+        assert!(tc.nvcc.is_none());
     }
 
     #[test]
