@@ -52,6 +52,10 @@ pub trait Git {
 pub struct RealGit {
     pub program: PathBuf,
     pub timeout: Duration,
+    /// The remote this instance operates on, when known. Local-path remotes
+    /// (test fixtures) are the only ones allowed to re-enable git's file
+    /// transport; production remotes are https and keep git's safe default.
+    remote: Option<String>,
 }
 
 impl RealGit {
@@ -59,7 +63,15 @@ impl RealGit {
         Self {
             program,
             timeout: Duration::from_secs(600),
+            remote: None,
         }
+    }
+
+    /// Record the remote so `protocol.file.allow` stays scoped to local paths
+    /// (CVE-2022-39253 class stays closed for https remotes).
+    pub fn with_remote(mut self, url: impl Into<String>) -> Self {
+        self.remote = Some(url.into());
+        self
     }
 }
 
@@ -74,10 +86,13 @@ impl Git for RealGit {
             "advice.detachedHead=false",
             "gc.auto=0",
             "core.longpaths=true",
-            "protocol.file.allow=always",
         ] {
             full.push("-c".into());
             full.push(c.into());
+        }
+        if allows_local_file_transport(self.remote.as_deref(), args) {
+            full.push("-c".into());
+            full.push("protocol.file.allow=always".into());
         }
         full.extend(args.iter().cloned());
         let refs: Vec<&str> = full.iter().map(String::as_str).collect();
@@ -376,6 +391,38 @@ pub fn default_remote() -> &'static str {
     LLAMA_CPP_REPO_URL
 }
 
+/// `protocol.file.allow=always` re-opens the indirect `file://` transport
+/// class git closed after CVE-2022-39253. It is only acceptable while every
+/// remote involved is a local path (test fixtures); https remotes keep git's
+/// safe default. A remote URL counts as local when it carries no network
+/// scheme, and an argument counts when it is itself a local path or `file://`
+/// URL (`fetch` by remote name hides the URL, so the remote must be known).
+pub(crate) fn allows_local_file_transport(remote: Option<&str>, args: &[String]) -> bool {
+    remote.is_some_and(is_local_remote_url) || args.iter().any(|a| is_local_transport_arg(a))
+}
+
+fn is_local_remote_url(url: &str) -> bool {
+    const NETWORK_SCHEMES: [&str; 6] = [
+        "https://", "http://", "ssh://", "git://", "ftp://", "ftps://",
+    ];
+    !NETWORK_SCHEMES.iter().any(|scheme| url.starts_with(scheme)) && !url.starts_with("git@")
+}
+
+fn is_local_transport_arg(arg: &str) -> bool {
+    let windows_drive = {
+        let bytes = arg.as_bytes();
+        bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && (bytes[2] == b'\\' || bytes[2] == b'/')
+    };
+    arg.starts_with('/')
+        || arg.starts_with("./")
+        || arg.starts_with("../")
+        || arg.starts_with("file://")
+        || windows_drive
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,10 +483,12 @@ mod tests {
     }
 
     fn remote() -> Option<Remote> {
-        let git = real_git()?;
         let dir = tempfile::tempdir().unwrap();
         let bare = dir.path().join("remote.git");
         let work = dir.path().join("work");
+        // The fixture remote is a local path; recording it keeps the
+        // file-transport allowance scoped to fixtures only.
+        let git = real_git()?.with_remote(bare.to_string_lossy().into_owned());
         std::fs::create_dir_all(&bare).unwrap();
         std::fs::create_dir_all(&work).unwrap();
         sh(
@@ -710,6 +759,50 @@ mod tests {
             matches!(err, SourceError::Git { ref command, .. } if command.starts_with("fetch")),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn file_transport_allowance_stays_scoped_to_local_remotes() {
+        assert!(is_local_remote_url("/tmp/fixture.git"));
+        assert!(is_local_remote_url("file:///tmp/fixture.git"));
+        assert!(!is_local_remote_url(
+            "https://github.com/ggml-org/llama.cpp"
+        ));
+        assert!(!is_local_remote_url(
+            "git@github.com:ggml-org/llama.cpp.git"
+        ));
+        assert!(!is_local_remote_url(
+            "ssh://git@github.com/ggml-org/llama.cpp.git"
+        ));
+        // A bare `fetch origin <sha>` hides the URL; only remote knowledge
+        // can enable the flag.
+        assert!(allows_local_file_transport(
+            Some("/tmp/fixture.git"),
+            &[
+                "fetch".into(),
+                "--quiet".into(),
+                "origin".into(),
+                "abc".into()
+            ]
+        ));
+        assert!(!allows_local_file_transport(
+            Some("https://github.com/ggml-org/llama.cpp"),
+            &[
+                "fetch".into(),
+                "--quiet".into(),
+                "origin".into(),
+                "abc".into()
+            ]
+        ));
+        // A local path given directly in argv also enables it.
+        assert!(allows_local_file_transport(
+            None,
+            &["ls-remote".into(), "/tmp/fixture.git".into()]
+        ));
+        assert!(!allows_local_file_transport(
+            None,
+            &["update-ref".into(), "refs/jobs/j1".into(), "abc123".into()]
+        ));
     }
 
     #[test]

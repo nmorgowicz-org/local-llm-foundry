@@ -538,10 +538,13 @@ impl Git for SupervisedGit<'_, '_> {
             "advice.detachedHead=false",
             "gc.auto=0",
             "core.longpaths=true",
-            "protocol.file.allow=always",
         ] {
             full.push("-c".into());
             full.push(c.into());
+        }
+        if source::allows_local_file_transport(Some(&self.tc.remote), args) {
+            full.push("-c".into());
+            full.push("protocol.file.allow=always".into());
         }
         full.extend(args.iter().cloned());
         let mut env = self.env.clone();
