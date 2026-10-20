@@ -176,7 +176,11 @@ pub fn repair_process_records(
         false => (Vec::new(), false),
         true => match load_records(file) {
             Ok(records) => (records, false),
-            Err(_) => (Vec::new(), true),
+            // `load_records` maps JSON parse failures to `ErrorKind::Other`:
+            // torn records still get the directory-reference scan below. Any
+            // other read error proves nothing and must not skip it.
+            Err(error) if error.kind() == std::io::ErrorKind::Other => (Vec::new(), true),
+            Err(error) => return Err(RepairError::Io(format!("{}: {error}", file.display()))),
         },
     };
 
@@ -278,6 +282,25 @@ mod tests {
         let paths = BuildPaths::new(&AppPaths::from_root(root));
         std::fs::create_dir_all(&paths.root).unwrap();
         (tmp, paths)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_records_file_refuses_repair_instead_of_clearing() {
+        let (_tmp, paths) = rig();
+        write_records(&paths, &[("job1", 4242, 100)]);
+        let file = &paths.process_records;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root (and some CI setups) reads through mode 000; only assert
+        // where the permission actually holds.
+        if std::fs::read(file).is_err() {
+            let lister = Fake {
+                me: ME,
+                procs: Vec::new(),
+            };
+            assert!(repair_process_records(&paths, &lister).is_err());
+        }
     }
 
     fn write_records(paths: &BuildPaths, records: &[(&str, u32, u64)]) {

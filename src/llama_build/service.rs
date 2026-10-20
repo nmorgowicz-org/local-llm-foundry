@@ -213,7 +213,14 @@ pub fn run_installer(
             .create_new(true)
             .open(process_records)?;
         file.write_all(b"[]")?;
-        file.sync_all()
+        file.sync_all()?;
+        // Mirror the promote journal's durability: the barrier's directory
+        // entry must survive power loss too, or brew may already be running
+        // with no trace of ownership left on disk.
+        if let Some(parent) = process_records.parent() {
+            crate::llama_runtime::durable::sync_dir(parent)?;
+        }
+        Ok(())
     })();
     if let Err(error) = barrier {
         return Err(InstallFailure {

@@ -863,8 +863,10 @@ pub fn recover_record(record: &ProcessRecord) -> RecoveryAction {
     }
 }
 
-/// Reap every saved record. Records whose processes are gone or reused are
-/// dropped; failures are kept so reuse stays blocked.
+/// Reap every saved record. Only records whose processes are provably gone
+/// are dropped; everything else — failures and reused-identity mismatches
+/// alike, since a reused PID cannot prove the old descendants died — is kept
+/// so reuse stays blocked.
 pub fn recover_all(file: &Path) -> std::io::Result<Vec<(ProcessRecord, RecoveryAction)>> {
     let records = load_records(file)?;
     let mut keep = Vec::new();
