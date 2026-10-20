@@ -197,7 +197,11 @@ pub(super) fn promote_reply(
                 "verification_notes".into(),
                 serde_json::json!(verification_notes),
             );
-            if verification_evidence_unavailable {
+            let installed = matches!(
+                outcome,
+                PromoteOutcome::Promoted { .. } | PromoteOutcome::InstalledRestartFailed { .. }
+            );
+            if verification_evidence_unavailable && installed {
                 state.push_log(format!(
                     "[monitor] llama-binary/update: installed {} with limited evidence: only --help was verified; the loaded backend could not be confirmed",
                     ctx.tag
@@ -254,6 +258,11 @@ pub(super) fn promote_reply(
             }
             fields.insert("ok".into(), false.into());
             fields.insert("outcome".into(), "failed".into());
+            fields.insert("evidence_unavailable".into(), false.into());
+            fields.insert(
+                "verification_notes".into(),
+                serde_json::json!([] as [&str; 0]),
+            );
             fields.insert("error".into(), error.to_string().into());
         }
     }

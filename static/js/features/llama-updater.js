@@ -515,11 +515,18 @@ async function installRelease(btn, release) {
 
     // Plan §4.3: a prebuilt whose probe output was unreadable installed on
     // --help alone — surface that uncertainty instead of discarding it.
-    if (data.evidence_unavailable) {
-      const note = Array.isArray(data.verification_notes) && data.verification_notes.length
-        ? data.verification_notes.join(' ')
+    const verificationNotes = Array.isArray(data.verification_notes)
+      ? data.verification_notes
+      : [];
+    if (data.evidence_unavailable || verificationNotes.length) {
+      const note = verificationNotes.length
+        ? verificationNotes.join(' ')
         : 'Only --help was verified; the loaded backend could not be confirmed.';
-      showToast('Limited verification', 'info', note);
+      showToast(
+        data.evidence_unavailable ? 'Limited verification' : 'Verification notes',
+        'info',
+        note,
+      );
     }
 
     // Refresh pill

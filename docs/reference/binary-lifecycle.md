@@ -279,16 +279,22 @@ against the intent (expected backend, pinned commit, flash-attention evidence). 
 is provenance only; a hash mismatch marks provenance `custom` and never changes what the
 probe reports.
 
+Source and pinned installs also cross-check the second built executable: `llama-bench
+--version` must report the pinned commit. That check runs once, before the swap, in the same
+sanitized environment and with the same output budget as the probe. A *parsed* mismatch fails
+the staged verification (the previous runtime stays live). An absent `llama-bench`, output
+whose commit cannot be parsed, or a pin that is not a hash is a verification note, never a
+failure — notes and `evidence_unavailable` are reported in the reply and surfaced by the UI.
+
 ### Gatekeeper quarantine strip (macOS)
 
 The entire extracted archive (the executable, co-located dylibs, and Metal shaders) can carry
 the `com.apple.quarantine` attribute. Gatekeeper enforces it at `dlopen()` time, so stripping
 only the executable is insufficient: the process launches, loads a quarantined dylib, and is
-killed by a signal (no exit code). Staged preparation strips the attribute
-recursively from the whole staged set (`strip_quarantine`, invoked inside the
-blocking preparation) before it is executed.
-`start_server` applies the same best-effort strip to the binary's parent directory before
-its own `--help` check, which covers manually placed binaries.
+killed by a signal (no exit code). Staged preparation strips the attribute recursively from
+the whole staged set (`strip_quarantine`, invoked inside the blocking preparation) before
+anything executes it. `start_server` applies the same best-effort strip to the binary's
+parent directory before its own `--help` check, which covers manually placed binaries.
 
 ### Ownership and lock order
 
@@ -299,7 +305,6 @@ builds). Acquisition order is: toolchain, checkout/build/cache, **runtime gate**
 gate: while a swap is in flight a llama.cpp launch is refused immediately (the promotion's own
 restart passes via the owner token), and capability snapshot generation returns an error
 instead of executing or hashing a half-swapped directory. The cached snapshot stays valid.
-
 
 **Known limitation — one mutating process per root.** The gate is in-process. Build/cache
 leases exclude standalone builders (the CLI takes an exclusive lease) but deliberately
