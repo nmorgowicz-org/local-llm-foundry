@@ -146,7 +146,7 @@ fn stage_release_files(src: &Path, staging: &Path) -> std::io::Result<()> {
             if path.is_dir() {
                 copy_all(&path, dest)?;
             } else if let Some(name) = path.file_name() {
-                std::fs::copy(&path, dest.join(name))?;
+                crate::llama_runtime::durable::copy_file(&path, &dest.join(name))?;
             }
         }
         Ok(())
@@ -156,6 +156,19 @@ fn stage_release_files(src: &Path, staging: &Path) -> std::io::Result<()> {
     }
     std::fs::create_dir_all(staging)?;
     copy_all(src, staging)
+}
+
+/// Remove a finished transaction's staging directory, but never while a
+/// journal exists: an unfinished one may still name it as the candidate, and
+/// recovery reads a missing candidate as "the rename already happened".
+fn discard_staging_unless_journaled(staging: &Path, journal: &Path) {
+    let journal_absent = matches!(
+        std::fs::symlink_metadata(journal),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    );
+    if journal_absent {
+        let _ = std::fs::remove_dir_all(staging);
+    }
 }
 
 pub(super) struct PromoteReplyContext<'a> {
@@ -1217,9 +1230,10 @@ fn api_llama_binary_update(
                 // keep them off the request worker. The gate is already
                 // dropped, and that ordering is preserved.
                 let staging_cleanup = staging.clone();
+                let journal_path = paths.journal.clone();
                 let installed_binary = bin_dir.join(binary_name);
                 let sha256_hex = tokio::task::spawn_blocking(move || {
-                    let _ = std::fs::remove_dir_all(&staging_cleanup);
+                    discard_staging_unless_journaled(&staging_cleanup, &journal_path);
                     std::fs::read(&installed_binary).ok().map(|bytes| {
                         use sha2::Digest;
                         let mut hasher = sha2::Sha256::new();
@@ -1620,6 +1634,49 @@ mod tests {
         assert_eq!(
             provenance_for(&bin, custom.is_some(), false)["source"],
             "custom"
+        );
+    }
+}
+
+#[cfg(test)]
+mod staging_cleanup_tests {
+    use super::{discard_staging_unless_journaled, stage_release_files};
+
+    #[test]
+    fn staging_is_kept_while_a_journal_exists_and_removed_once_it_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().join(".bin.staging-t1");
+        let journal = dir.path().join(".runtime-transaction.json");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("llama-server"), b"x").unwrap();
+        std::fs::write(&journal, b"{}").unwrap();
+
+        discard_staging_unless_journaled(&staging, &journal);
+        assert!(
+            staging.join("llama-server").is_file(),
+            "recovery still needs it"
+        );
+
+        std::fs::remove_file(&journal).unwrap();
+        discard_staging_unless_journaled(&staging, &journal);
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn staged_prebuilt_files_are_flushed_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("extracted/sub");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("llama-server"), b"binary").unwrap();
+        std::fs::write(src.join("libggml.so"), b"lib").unwrap();
+        let staging = dir.path().join("staging");
+
+        let before = crate::llama_runtime::durable::syncs();
+        stage_release_files(&dir.path().join("extracted"), &staging).unwrap();
+        assert_eq!(crate::llama_runtime::durable::syncs() - before, 2);
+        assert_eq!(
+            std::fs::read(staging.join("llama-server")).unwrap(),
+            b"binary"
         );
     }
 }
