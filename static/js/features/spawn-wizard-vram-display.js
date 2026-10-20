@@ -586,7 +586,10 @@ async function renderLlamaCppScenarioCards(_modelBytes, _arch, availVram, token)
     card.className = 'vram-scenario-card' + (s.rec ? ' scenario-rec' : '') + (isActive ? ' selected' : '');
     card.setAttribute('tabindex', '0');
     card.setAttribute('role', 'button');
-    card.setAttribute('aria-label', `${s.mode}${selectable ? ': ' + formatCtx(ctx) + ' tokens' : ' — may not fit current context'} — ${s.desc}`);
+    // No aria-label: a role=button's accessible name must contain its visible text
+    // (WCAG 2.5.3 Label in Name), and these cards show the mode, detail, context and a
+    // warning. The visible content names the button, so what a voice-control user says
+    // is what a sighted user reads.
 
     let desc = s.desc;
     if (!selectable) {
@@ -758,7 +761,10 @@ async function renderMlxScenarioCards(modelBytes, _arch, availVram, token) {
       + (s.rec ? ' scenario-rec' : '') + (isActive ? ' selected' : '');
     card.setAttribute('tabindex', '0');
     card.setAttribute('role', 'button');
-    card.setAttribute('aria-label', `${s.mode}: ${s.detail}`);
+    // No aria-label: a role=button's accessible name must contain its visible text
+    // (WCAG 2.5.3 Label in Name), and these cards show the mode, detail, context and a
+    // warning. The visible content names the button, so what a voice-control user says
+    // is what a sighted user reads.
 
     let desc = s.detail;
     if (over) desc = 'At your current context, this may not fit VRAM. Lower context or reduce concurrency.';
