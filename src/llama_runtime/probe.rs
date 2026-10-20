@@ -873,8 +873,21 @@ exit 1
             // exercises the post-EOF reap specifically.
             std::fs::write(&exe, "#!/bin/sh\nexec 1>&- 2>&-\nexec sleep 60\n").unwrap();
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let started = std::time::Instant::now();
-            let out = capture_version(&exe, Duration::from_secs(10)).await;
+            // A concurrent test thread can fork while our write fd is still open,
+            // so exec of the just-written script may transiently fail with
+            // ETXTBSY ("Text file busy"). Retry only that spawn failure.
+            let mut attempts = 0;
+            let (started, out) = loop {
+                let started = std::time::Instant::now();
+                let out = capture_version(&exe, Duration::from_secs(10)).await;
+                match &out {
+                    Err(ProbeError::Spawn(msg)) if msg.contains("busy") && attempts < 20 => {
+                        attempts += 1;
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    _ => break (started, out),
+                }
+            };
             assert!(out.unwrap().trim().is_empty());
             assert!(
                 started.elapsed() < Duration::from_secs(5),
