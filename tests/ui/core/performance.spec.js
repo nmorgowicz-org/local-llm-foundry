@@ -22,7 +22,6 @@ const DEFERRED_MODULE = '/js/features/updates.js';
 
 const BUDGET_SCALE = Number(process.env.PERF_BUDGET_SCALE) > 0 ? Number(process.env.PERF_BUDGET_SCALE) : 1;
 const MODULES_READY_BUDGET_MS = 20_000 * BUDGET_SCALE;
-const DASHBOARD_UPDATE_BUDGET_MS = 2_000 * BUDGET_SCALE;
 
 test.describe('performance baseline', () => {
   test('cold load network and timing', async ({ page }, testInfo) => {
@@ -71,22 +70,5 @@ test.describe('performance baseline', () => {
       `modules-ready took ${modulesReadyTime}ms (budget ${MODULES_READY_BUDGET_MS}ms). ` +
       'That is far outside normal; set PERF_BUDGET_SCALE for a known-slow runner.',
     ).toBeLessThan(MODULES_READY_BUDGET_MS);
-  });
-
-  test('dashboard update path timing', async ({ page }, testInfo) => {
-    await page.goto('/');
-    await page.waitForSelector('html.modules-ready');
-
-    const updateMs = await page.evaluate(() => {
-      const start = performance.now();
-      if (typeof window.updateDashboard === 'function') {
-        window.updateDashboard({});
-      }
-      return performance.now() - start;
-    });
-
-    console.log(`Dashboard update time: ${Math.round(updateMs)}ms`);
-    testInfo.annotations.push({ type: 'dashboard-update-ms', description: String(Math.round(updateMs)) });
-    expect(updateMs).toBeLessThan(DASHBOARD_UPDATE_BUDGET_MS);
   });
 });

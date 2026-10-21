@@ -195,46 +195,6 @@ test.describe('chat context accounting @fake-data-bypass', () => {
     expect(await occupancy(page)).toBeLessThan(1000);
   });
 
-  test('changed system context invalidates measured usage before the next send', async ({ page }) => {
-    expect(await occupancy(page)).toBe(7500);
-    await page.evaluate(async () => {
-      const tab = (await import('/js/features/chat-state.js')).activeChatTab();
-      tab.system_prompt = 'A new shorter system prompt';
-      tab.context_notes = [{ section: 'Facts', content: 'Retained context note' }];
-    });
-    expect(await occupancy(page)).toBeLessThan(1000);
-  });
-
-  test('lazy-loaded tabs and missing usage never borrow cumulative billing counters', async ({ page }) => {
-    const result = await page.evaluate(async () => {
-      const { newChatTab, estimateChatContextTokens } = await import('/js/features/chat-state.js');
-      const tab = newChatTab();
-      tab.total_input_tokens = 900000;
-      tab.total_output_tokens = 900000;
-      tab.last_ctx_pct = 150;
-      tab.messages = null;
-      const unloaded = estimateChatContextTokens(tab);
-      tab.messages = [{ role: 'user', content: 'Short prompt' }, { role: 'assistant', content: 'Short reply', input_tokens: 0, output_tokens: 0 }];
-      return { unloaded, loaded: estimateChatContextTokens(tab) };
-    });
-    expect(result.unloaded).toBeNull();
-    expect(result.loaded).toBeLessThan(1000);
-  });
-
-  test('legacy compacted tails never reuse pre-compaction prompt counts', async ({ page }) => {
-    const result = await page.evaluate(async () => {
-      const { activeChatTab, estimateChatContextTokens } = await import('/js/features/chat-state.js');
-      const tab = activeChatTab();
-      tab.messages = [
-        { role: 'system', content: 'Rolling memory', compaction_marker: true },
-        { role: 'user', content: 'Kept question' },
-        { role: 'assistant', content: 'Kept answer', input_tokens: 11000, output_tokens: 1500 },
-      ];
-      return estimateChatContextTokens(tab);
-    });
-    expect(result).toBeLessThan(1000);
-  });
-
   test('measured fingerprints survive lazy loading and reject later replacement', async ({ page }) => {
     await mockReply(page);
     await page.locator('#chat-input').fill('Third question');

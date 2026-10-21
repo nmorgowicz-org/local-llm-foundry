@@ -31,6 +31,9 @@
 /** @type {import('@playwright/test').PlaywrightTestConfig} */
 const config = {
   testDir: '.',
+  // unit/ holds node:test files (npm run test:unit); Playwright's default *.test.mjs match would
+  // otherwise load them as UI specs. The smoke config spreads this object and inherits it.
+  testIgnore: ['unit/**'],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   // Local runs must be AT LEAST AS STRICT as CI, never looser and never differently
@@ -39,11 +42,16 @@ const config = {
   // concurrency the suite is configured never to have, and manufacture failures in specs
   // that are fine — which cost real time chasing "races" that did not exist.
   //
-  // So: one worker everywhere. Retries stay at 0 locally, which is stricter than CI's 2,
+  // So: one worker everywhere. Retries stay at 0 locally, which is stricter than CI's 1,
   // so a local pass implies a CI pass. Set PLAYWRIGHT_PARALLEL=1 to opt into parallelism
   // deliberately; results from such a run do not predict CI and should not be reported as
   // if they do.
-  retries: process.env.CI ? 2 : 0,
+  //
+  // CI allows ONE retry, not two: a deterministic failure used to run three times
+  // (console-errors burned three attempts to fail identically), while a genuine flake
+  // almost always passes on the second attempt. Playwright reports a pass-on-retry as
+  // "flaky", so it stays visible.
+  retries: process.env.CI ? 1 : 0,
   workers: process.env.PLAYWRIGHT_PARALLEL ? undefined : 1,
   reporter: [['list'], ['html', { open: 'never' }]],
   use: {

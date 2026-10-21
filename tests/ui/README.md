@@ -28,7 +28,7 @@ will never reproduce them because CI never runs that way.
 If you want parallelism deliberately, set `PLAYWRIGHT_PARALLEL=1`. Results from such a run
 are for your own iteration speed only and must not be reported as a suite status.
 
-Local retries are 0 where CI uses 2, on purpose: local is stricter, so a local pass implies
+Local retries are 0 where CI uses 1, on purpose: local is stricter, so a local pass implies
 a CI pass. A local failure is worth investigating; it is not automatically a CI failure.
 
 To exercise form-auth mode, pass extra server args through `LLAMA_MONITOR_TEST_ARGS`:
@@ -66,7 +66,7 @@ cargo build --release
 ### Environment variables
 
 | Variable | Default | Description |
-|----------|---------|-------------|
+| ---------- | --------- | ------------- |
 | `SCREENSHOT_PORT` | `8892` | Base port to try for the spawned dashboard |
 | `REMOTE_SERVER` | `http://192.168.2.16:8001` | Remote llama.cpp server used by attach-based scenarios |
 | `SCREENSHOT_FORM_AUTH` | `admin:secret123` | Credentials used for the auth-shell still captured by the `welcome` scenario |
@@ -95,7 +95,7 @@ Rapid wizard stills belong in `artifacts/wizard-rapidmlx`; llama.cpp wizard stil
 ### Current scenarios
 
 | Scenario | Purpose |
-|----------|---------|
+| ---------- | --------- |
 | `welcome` | Welcome/setup screen plus form-auth shell without remote attach |
 | `free-cache` | Native Free Cache confirmation shown over the welcome/setup screen |
 | `chat` | Core chat view, telemetry overlay, and logs |
@@ -166,7 +166,7 @@ SCREENSHOT_PORT=8899 node tests/ui/capture/index.mjs --scenario smoke
 ### Useful options
 
 | Option | Description |
-|--------|-------------|
+| -------- | ------------- |
 | `--gpu-only` | For `gifs`, capture only GPU/system animation |
 | `--inference-only` | For `gifs`, capture only inference animation |
 | `--no-attach` | Skip remote attach for scenarios that can run locally |

@@ -4,6 +4,7 @@
 //! database, initializes tokens, or chooses between divergent roots.
 
 use std::fs;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -298,7 +299,9 @@ pub fn load_migration_request_from_parent(
     if !path.is_file() {
         return Ok(None);
     }
-    Ok(Some(serde_json::from_reader(fs::File::open(path)?)?))
+    Ok(Some(serde_json::from_reader(BufReader::new(
+        fs::File::open(path)?,
+    ))?))
 }
 
 pub fn migration_journal_path(plan: &AppHomeMigrationPlan) -> PathBuf {
@@ -396,7 +399,8 @@ pub fn execute_application_home(plan: &AppHomeMigrationPlan) -> Result<AppHomeMi
     validate_root(&plan.source, "source")?;
     if let Ok(receipt_file) = fs::File::open(migration_receipt_path(plan)) {
         let receipt: AppHomeMigrationReceipt =
-            serde_json::from_reader(receipt_file).context("migration receipt is unreadable")?;
+            serde_json::from_reader(BufReader::new(receipt_file))
+                .context("migration receipt is unreadable")?;
         if receipt.plan_id == plan.plan_id {
             let all_present = receipt.copied_entries.iter().all(|relative| {
                 let destination = plan.destination.join(relative);
@@ -429,7 +433,9 @@ pub fn execute_application_home(plan: &AppHomeMigrationPlan) -> Result<AppHomeMi
     let journal_path = migration_journal_path(plan);
     let resuming = fs::File::open(&journal_path)
         .ok()
-        .and_then(|file| serde_json::from_reader::<_, AppHomeMigrationJournal>(file).ok())
+        .and_then(|file| {
+            serde_json::from_reader::<_, AppHomeMigrationJournal>(BufReader::new(file)).ok()
+        })
         .is_some_and(|journal| {
             journal.plan_id == plan.plan_id
                 && matches!(
@@ -555,7 +561,8 @@ pub fn plan_application_home_rollback(
                 && fs::File::open(path)
                     .ok()
                     .and_then(|file| {
-                        serde_json::from_reader::<_, AppHomeMigrationReceipt>(file).ok()
+                        serde_json::from_reader::<_, AppHomeMigrationReceipt>(BufReader::new(file))
+                            .ok()
                     })
                     .is_some_and(|receipt| {
                         receipt.destination == canonical_root && receipt.source == legacy_root
@@ -653,7 +660,9 @@ pub fn load_rollback_request_for_root(
     if !path.is_file() {
         return Ok(None);
     }
-    Ok(Some(serde_json::from_reader(fs::File::open(path)?)?))
+    Ok(Some(serde_json::from_reader(BufReader::new(
+        fs::File::open(path)?,
+    ))?))
 }
 
 pub fn execute_queued_rollback(request: &AppHomeRollbackRequest) -> Result<()> {
@@ -728,7 +737,9 @@ pub fn load_cleanup_request_for_root(canonical_root: &Path) -> Result<Option<App
     if !path.is_file() {
         return Ok(None);
     }
-    Ok(Some(serde_json::from_reader(fs::File::open(path)?)?))
+    Ok(Some(serde_json::from_reader(BufReader::new(
+        fs::File::open(path)?,
+    ))?))
 }
 
 pub fn execute_queued_cleanup(plan: &AppHomeCleanupPlan) -> Result<()> {
@@ -743,7 +754,7 @@ fn load_or_create_journal(
 ) -> Result<AppHomeMigrationJournal> {
     if journal_path.is_file() {
         let journal: AppHomeMigrationJournal =
-            serde_json::from_reader(fs::File::open(journal_path)?)?;
+            serde_json::from_reader(BufReader::new(fs::File::open(journal_path)?))?;
         if journal.plan_id != plan.plan_id {
             bail!("migration journal plan does not match the requested preview");
         }
@@ -870,7 +881,9 @@ pub fn plan_application_home(source: &Path, destination: &Path) -> Result<AppHom
         total_seen_bytes: 0,
     }))
     .ok()
-    .and_then(|file| serde_json::from_reader::<_, AppHomeMigrationJournal>(file).ok())
+    .and_then(|file| {
+        serde_json::from_reader::<_, AppHomeMigrationJournal>(BufReader::new(file)).ok()
+    })
     .is_some_and(|journal| {
         journal.plan_id == plan_id
             && matches!(
@@ -1120,7 +1133,15 @@ fn has_completed_receipt(canonical_root: &Path, legacy_root: &Path) -> bool {
         let Ok(file) = fs::File::open(entry.path()) else {
             return false;
         };
-        let Ok(receipt) = serde_json::from_reader::<_, AppHomeMigrationReceipt>(file) else {
+        // Only the two roots matter here. A completed receipt lists every copied
+        // entry and can reach tens of MB, and this runs on every status poll, so
+        // decode just the roots (serde skips the rest) through a buffered reader.
+        #[derive(Deserialize)]
+        struct ReceiptRoots {
+            source: PathBuf,
+            destination: PathBuf,
+        }
+        let Ok(receipt) = serde_json::from_reader::<_, ReceiptRoots>(BufReader::new(file)) else {
             return false;
         };
         receipt.destination == canonical_root && receipt.source == legacy_root
@@ -1142,6 +1163,36 @@ mod tests {
         fs::create_dir_all(&canonical).unwrap();
         fs::create_dir_all(&legacy).unwrap();
         (canonical, legacy)
+    }
+
+    #[test]
+    fn completed_receipt_check_reads_only_the_roots_and_is_fast() {
+        let (canonical, legacy) = fixture("receipt-fast");
+        fs::write(canonical.join("presets.json"), "[]").unwrap();
+        fs::write(legacy.join("presets.json"), "[]").unwrap();
+        let parent = canonical.parent().unwrap();
+        // A receipt far larger than any real one, in a layout the full struct
+        // would reject (no schema_version): only the roots may be consulted.
+        let entries = (0..200_000)
+            .map(|i| format!("\"models/file-{i}.gguf\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        fs::write(
+            parent.join(format!(".{PRODUCT_SLUG}-migration-abc.json")),
+            format!(
+                "{{\"source\":{:?},\"destination\":{:?},\"copied_entries\":[{entries}]}}",
+                legacy.to_string_lossy(),
+                canonical.to_string_lossy(),
+            ),
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        let state = inspect_roots(&canonical, &legacy, false).unwrap().state;
+        assert_eq!(state, RootState::RollbackAvailable);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(1500),
+            "status inspection must not scan the receipt byte by byte"
+        );
     }
 
     #[test]

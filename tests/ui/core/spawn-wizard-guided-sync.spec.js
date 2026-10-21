@@ -276,6 +276,28 @@ test('@fake-data-bypass backend roundtrips keep llama-only sampling out of Rapid
   await expect(page.locator('#all-settings-group #spawn-sampling-block')).toHaveCount(1);
 });
 
+// Resolves once the work a projector change schedules has drained: the 150ms scheduleVramUpdate
+// debounce has fired and every request it (and the estimate -> auto-size chain) issued has
+// completed. Needs window.__pendingFetches, installed by trackPendingFetches().
+const trackPendingFetches = (page) => page.evaluate(() => {
+  window.__pendingFetches = 0;
+  const realFetch = window.fetch;
+  window.fetch = (...args) => {
+    window.__pendingFetches += 1;
+    return realFetch(...args).finally(() => { window.__pendingFetches -= 1; });
+  };
+});
+const settleVramWork = (page) => page.evaluate(async () => {
+  const hop = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  // Timers fire in deadline order, so 200ms scheduled now runs after the 150ms debounce.
+  await hop(200);
+  // Chained requests start a microtask after the previous one resolves: require the queue to be
+  // empty on several consecutive turns, not just once.
+  for (let quiet = 0; quiet < 3;) {
+    if (window.__pendingFetches > 0) { quiet = 0; await hop(20); } else { quiet += 1; await hop(0); }
+  }
+});
+
 test('@fake-data-bypass user-selected projector sticks in Guided and Pro', async ({ page }) => {
   await openGuided(page);
   await page.evaluate(async () => {
@@ -287,19 +309,22 @@ test('@fake-data-bypass user-selected projector sticks in Guided and Pro', async
     ];
     renderMmprojSection();
   });
+  await trackPendingFetches(page);
   const state = () => page.evaluate(async () => {
     const { wizardState } = await import('/js/features/spawn-wizard.js');
     return wizardState.model.mmprojPath;
   });
   for (const id of ['#hw-vision-select', '#hw-mmproj-select']) {
     await page.locator(id).selectOption('/tmp/mmproj-Q8_0.gguf', { force: true });
-    await page.waitForTimeout(1500); // let debounced VRAM/autosize work settle
+    // Intentional negative wait: the assertions below are that the debounced VRAM/auto-size work
+    // does NOT overwrite the selection, so it has to have run first.
+    await settleVramWork(page);
     expect(await state(), id).toBe('/tmp/mmproj-Q8_0.gguf');
     expect(await page.evaluate(async () => (await import('/js/features/spawn-wizard.js')).wizardState.arch.mmprojBytes), id).toBe(644_000_000);
     await expect(page.locator('#hw-vision-select')).toHaveValue('/tmp/mmproj-Q8_0.gguf');
     await expect(page.locator('#hw-mmproj-select')).toHaveValue('/tmp/mmproj-Q8_0.gguf');
     await page.locator(id).selectOption('/tmp/mmproj-BF16.gguf', { force: true });
-    await page.waitForTimeout(300);
+    await settleVramWork(page);
   }
 });
 

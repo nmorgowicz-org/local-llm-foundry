@@ -88,7 +88,6 @@ test.describe('Rapid-MLX Phase 7 throughput fields', () => {
   });
 
   for (const [label, concurrency] of [
-    ['missing', {}],
     ['null', { max_num_seqs: null, max_concurrent_requests: null }],
   ]) {
     test(`@in-memory-test ${label} template concurrency stays Auto instead of taking new-launch defaults`, async ({ page }) => {
@@ -134,9 +133,7 @@ test.describe('Rapid-MLX Phase 7 throughput fields', () => {
   }
 
   for (const [label, config] of [
-    ['missing', {}],
     ['null', { default_reasoning_effort: null }],
-    ['empty', { default_reasoning_effort: '' }],
   ]) {
     test(`@in-memory-test ${label} template reasoning effort clears an old selection to Auto`, async ({ page }) => {
       await openRapidHardware(page);

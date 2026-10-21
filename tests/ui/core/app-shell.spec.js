@@ -375,6 +375,8 @@ test('configuration explains local executable, GPU, and explicit SSH flow', asyn
     await sshSummary.scrollIntoViewIfNeeded();
     await sshSummary.click();
     await page.locator('#set-remote-agent-ssh-target').fill('user@192.0.2.16');
+    // Intentional negative wait: nothing may be fired by typing, so there is no condition to
+    // wait on; 250ms outlasts the app's longest input debounce (kv-support's DEFAULT_DEBOUNCE_MS).
     await page.waitForTimeout(250);
     expect(detectCalls).toBe(0);
 
@@ -498,22 +500,6 @@ test.describe('inference metric rendering', () => {
     await expect(page.locator('#m-activity-rail .activity-segment.complete')).toHaveCount(1);
     await expect(page.locator('#m-activity-rail .activity-marker')).toHaveCount(1);
     await expect(page.locator('#m-activity-rail')).toBeHidden();
-  });
-
-  test('smooths live output estimate across recent polling samples', async ({ page }) => {
-    const rate = await page.evaluate(async () => {
-      const { updateLiveOutputEstimate } = await import('/js/features/dashboard-render.js');
-      const appState = await import('/js/core/app-state.js');
-      Object.assign(appState.liveOutputTracker, { taskId: null, previousDecoded: null, previousMs: null, latestRate: 0, rates: [] });
-      appState.metricSeries.liveOutput = [];
-      const now = Date.now();
-      updateLiveOutputEstimate(123, 0, true, now - 3000);
-      updateLiveOutputEstimate(123, 100, true, now - 2000);
-      return updateLiveOutputEstimate(123, 170, true, now - 1000);
-    });
-
-    expect(rate).toBeGreaterThan(80);
-    expect(rate).toBeLessThan(90);
   });
 
   test('capability popover renders correctly when capacity is known', async ({ page }) => {

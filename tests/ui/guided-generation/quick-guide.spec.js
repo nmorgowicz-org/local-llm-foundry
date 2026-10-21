@@ -76,9 +76,6 @@ test.describe('Quick Guide', () => {
       return !document.getElementById('quick-guide-container')?.classList.contains('quick-guide-expanded');
     }, { timeout: 10000 });
 
-    // Wait a bit for the last used instruction to be stored
-    await page.waitForTimeout(500);
-
     // Toggle again to see last used
     await page.locator('#quick-guide-toggle').click();
     await page.waitForSelector('#quick-guide-input', { state: 'visible' });

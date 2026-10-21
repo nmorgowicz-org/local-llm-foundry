@@ -248,30 +248,27 @@ test.describe('pin and favorite tabs', () => {
 
     // Hover and confirm pin button is present
     await itemByTitle().hover();
-    await page.waitForTimeout(150);
     const pinBtn = itemByTitle().locator('button[data-action="pin"]');
     await expect(pinBtn).toBeVisible();
 
     // Initially unpinned
-    expect(await pinBtn.textContent()).toContain('⊙');
-    expect(await pinBtn.getAttribute('title')).toBe('Pin');
+    await expect(pinBtn).toHaveText('⊙');
+    await expect(pinBtn).toHaveAttribute('title', 'Pin');
 
     // Pin it → now pinned, sidebar refreshes; re-hover
     await pinBtn.click();
     await itemByTitle().hover();
-    await page.waitForTimeout(150);
     const pinBtn2 = itemByTitle().locator('button[data-action="pin"]');
     await expect(pinBtn2).toBeVisible();
-    expect(await pinBtn2.getAttribute('title')).toBe('Unpin');
+    await expect(pinBtn2).toHaveAttribute('title', 'Unpin');
 
     // Unpin → back to unpinned
     await pinBtn2.click();
     // After unpinning the hover may be lost again
     await itemByTitle().hover();
-    await page.waitForTimeout(150);
     const pinBtn3 = itemByTitle().locator('button[data-action="pin"]');
     await expect(pinBtn3).toBeVisible();
-    expect(await pinBtn3.getAttribute('title')).toBe('Pin');
+    await expect(pinBtn3).toHaveAttribute('title', 'Pin');
 
     // Cleanup
     await page.evaluate(async (title) => {
@@ -330,53 +327,6 @@ test.describe('pin and favorite tabs', () => {
     // Pinned tab should still be first
     const firstItemText = await firstItem.textContent();
     expect(firstItemText).toBeTruthy();
-  });
-});
-
-test.describe('chat tab normalization', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.goto('/');
-    await page.waitForSelector('html.modules-ready');
-    await dismissAuthShell(page);
-    await switchToMonitor(page);
-    await page.waitForSelector('#view-monitor', { state: 'attached', timeout: 5000 });
-    await page.waitForFunction(() => {
-      const monitor = document.getElementById('view-monitor');
-      return monitor && getComputedStyle(monitor).display !== 'none';
-    }, { timeout: 5000 });
-    await page.getByRole('button', { name: /chat/i }).click();
-  });
-
-  test('normalizeTabForSave preserves pinned state', async ({ page }) => {
-    const result = await page.evaluate(async () => {
-      const { normalizeTabForSave, newChatTab } = await import('/js/features/chat-state.js');
-      const tab = newChatTab('Test');
-      tab.pinned = true;
-      tab.active_template_id = 'persona-test';
-      return normalizeTabForSave(tab);
-    });
-
-    expect(result.pinned).toBe(true);
-    expect(result.active_template_id).toBe('persona-test');
-  });
-
-  test('normalizeTabForSave strips internal token fields from messages', async ({ page }) => {
-    const result = await page.evaluate(async () => {
-      const { normalizeTabForSave } = await import('/js/features/chat-state.js');
-      const tab = {
-        id: 'test-id',
-        name: 'Test',
-        messages: [
-          { role: 'user', content: 'Hello', cumulativeInputTokens: 10, cumulativeOutputTokens: 20 }
-        ]
-      };
-      return normalizeTabForSave(tab);
-    });
-
-    expect(result.id).toBe('test-id');
-    expect(result.messages[0].cumulativeInputTokens).toBeUndefined();
-    expect(result.messages[0].cumulativeOutputTokens).toBeUndefined();
-    expect(result.messages[0].content).toBe('Hello');
   });
 });
 

@@ -4,6 +4,9 @@
   "type": "module",
   "scripts": {
     "test": "playwright test",
+    "test:parallel": "node run-parallel.mjs",
+    "test:unit": "node --test \"unit/*.test.mjs\"",
+    "test:smoke": "playwright test -c playwright.smoke.config.js",
     "test:in-memory": "playwright test --grep @in-memory-test",
     "test:rapid-mlx-contract": "playwright test core/phase7-presets.spec.js --grep @in-memory-test",
     "test:fake-data": "playwright test --grep @fake-data-bypass",
