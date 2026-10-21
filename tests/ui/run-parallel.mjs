@@ -17,6 +17,9 @@
 //                shards (I-1)*P+1 .. I*P of N*P, so N=1 means "the whole suite".
 //   --output DIR base for per-process test results (default: test-results)
 //
+// Each process's server output is kept in <output>/server-logs/proc-N.log (inside the
+// directory CI uploads) and the tail is printed when that process fails.
+//
 // Env: LLAMA_MONITOR_TEST_PORT is the base port (default 17778, never 7778); process k of the
 // whole run uses base+k. LLAMA_MONITOR_UI_URL is removed so each process owns its server.
 // Exit status is non-zero if any process fails.
@@ -24,6 +27,7 @@
 import { spawn } from 'node:child_process';
 import { availableParallelism } from 'node:os';
 import { createInterface } from 'node:readline';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
@@ -60,6 +64,22 @@ if (basePort === 7778) {
 const total = outerTotal * procs;
 const children = [];
 const results = [];
+const logDir = join(outputBase, 'server-logs');
+mkdirSync(logDir, { recursive: true });
+const logPath = global => join(logDir, `proc-${global}.log`);
+const isWindows = process.platform === 'win32';
+
+/** Signal a launched run and everything it started (Playwright, its server, browsers). */
+function killTree(child, signal) {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  try {
+    if (isWindows) {
+      spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+    } else {
+      process.kill(-child.pid, signal); // the child leads its own process group
+    }
+  } catch { /* already gone */ }
+}
 
 function launch(slot) {
   const global = (outerIndex - 1) * procs + slot + 1; // 1-based global shard
@@ -74,13 +94,16 @@ function launch(slot) {
     'npx',
     ['playwright', 'test', '--workers=1', `--shard=${global}/${total}`,
       `--output=${join(outputBase, `proc-${global}`)}`, ...args],
-    { env, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' },
+    { env, stdio: ['ignore', 'pipe', 'pipe'], shell: isWindows, detached: !isWindows },
   );
   const tag = `[${global}/${total}]`;
   for (const stream of [child.stdout, child.stderr]) {
     createInterface({ input: stream }).on('line', line => {
-      // Server chatter is per-process noise; keep test results and failures.
-      if (line.startsWith('[WebServer]')) return;
+      // Server chatter is per-process noise: keep it in a file, not the console.
+      if (line.startsWith('[WebServer]')) {
+        appendFileSync(logPath(global), `${line}\n`);
+        return;
+      }
       console.log(`${tag} ${line}`);
     });
   }
@@ -93,18 +116,44 @@ function launch(slot) {
   });
 }
 
+let stopping = false;
 for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => {
-    for (const c of children) c.kill(signal);
+  process.on(signal, async () => {
+    if (stopping) return;
+    stopping = true;
+    console.error(`\nrun-parallel: ${signal}, stopping every process tree`);
+    const alive = () => children.some(c => c.exitCode === null && c.signalCode === null);
+    const waitUntil = async ms => {
+      const end = Date.now() + ms;
+      while (alive() && Date.now() < end) await new Promise(r => setTimeout(r, 100));
+    };
+    // Escalate: SIGINT lets Playwright shut its own server and browsers down
+    // cleanly; SIGTERM and SIGKILL follow for anything that ignores it.
+    for (const [sig, ms] of [['SIGINT', 8_000], ['SIGTERM', 4_000], ['SIGKILL', 3_000]]) {
+      for (const c of children) killTree(c, sig);
+      await waitUntil(ms);
+      if (!alive()) break;
+    }
+    process.exit(signal === 'SIGINT' ? 130 : 143);
   });
 }
+// Last resort if this launcher dies another way: do not orphan servers or browsers.
+process.on('exit', () => { for (const c of children) killTree(c, 'SIGKILL'); });
 
 const started = Date.now();
 console.log(`run-parallel: ${procs} process(es), shards ${(outerIndex - 1) * procs + 1}..${outerIndex * procs} of ${total}, ports ${basePort + (outerIndex - 1) * procs}+`);
 await Promise.all(Array.from({ length: procs }, (_, slot) => launch(slot)));
 
+// An interrupt is being handled: let that handler finish the shutdown and exit.
+if (stopping) await new Promise(() => {});
+
 results.sort((a, b) => a.global - b.global);
 const failed = results.filter(r => r.code !== 0);
+for (const r of failed) {
+  let tail = '';
+  try { tail = readFileSync(logPath(r.global), 'utf8').trim().split('\n').slice(-30).join('\n'); } catch { /* no server output */ }
+  console.log(`\nrun-parallel: process ${r.global} failed (exit ${r.code}); server log ${logPath(r.global)}${tail ? `, last lines:\n${tail}` : ' is empty'}`);
+}
 console.log(`\nrun-parallel: finished in ${Math.round((Date.now() - started) / 1000)}s — ` +
   results.map(r => `${r.global}:${r.code === 0 ? 'ok' : `exit ${r.code}`}`).join(' '));
 process.exit(failed.length ? 1 : 0);
