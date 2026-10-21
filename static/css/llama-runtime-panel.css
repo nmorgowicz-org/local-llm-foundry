@@ -1,0 +1,126 @@
+/* llama.cpp Runtime panel and the extra pill states (source builds). */
+
+.lrp-overlay { align-items: center; justify-content: center; z-index: 20000; }
+
+.lrp-shell {
+  width: min(900px, 94vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  border: 1px solid color-mix(in srgb, var(--color-text-primary) 14%, transparent);
+  border-radius: 16px;
+  box-shadow: 0 20px 56px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.lrp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-text-primary) 10%, transparent);
+}
+.lrp-header h2 { margin: 0; font-size: 15px; }
+.lrp-close { background: none; border: 0; color: inherit; font-size: 22px; cursor: pointer; line-height: 1; }
+
+.lrp-body { overflow-y: auto; padding: 12px 18px 18px; display: flex; flex-direction: column; gap: 12px; }
+
+.lrp-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+}
+.lrp-section:last-child { border-bottom: 0; }
+.lrp-h { margin: 0; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-text-secondary); }
+.lrp-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.lrp-k { color: var(--color-text-secondary); min-width: 96px; }
+.lrp-muted { color: var(--color-text-muted); font-size: 12px; }
+.lrp-warn-text { color: var(--color-warning); font-size: 12px; }
+
+.lrp-btn {
+  background: color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+  color: inherit;
+  border: 1px solid color-mix(in srgb, var(--color-text-primary) 18%, transparent);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: none;
+}
+.lrp-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.lrp-primary { background: color-mix(in srgb, var(--color-primary) 28%, transparent); border-color: color-mix(in srgb, var(--color-primary) 55%, transparent); }
+
+.lrp-banner {
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lrp-err { background: color-mix(in srgb, var(--color-error) 14%, transparent); border: 1px solid color-mix(in srgb, var(--color-error) 50%, transparent); }
+.lrp-warn { background: color-mix(in srgb, var(--color-warning) 14%, transparent); border: 1px solid color-mix(in srgb, var(--color-warning) 50%, transparent); }
+.lrp-banner-head { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.lrp-banner-actions { display: inline-flex; gap: 6px; }
+.lrp-first-error, .lrp-details pre, .lrp-tail pre, .lrp-log {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.lrp-log {
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-bg) 70%, transparent);
+}
+.lrp-hint { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.lrp-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.lrp-check { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.lrp-icon { width: 16px; text-align: center; }
+.lrp-pass .lrp-icon { color: var(--color-success); }
+.lrp-warn .lrp-icon { color: var(--color-warning); }
+.lrp-fail .lrp-icon { color: var(--color-error); }
+.lrp-check-text { flex: 1 1 260px; }
+
+.lrp-form { display: flex; flex-direction: column; gap: 8px; }
+.lrp-radio, .lrp-check-label { display: inline-flex; align-items: center; gap: 4px; }
+#lrp-jobs { width: 90px; }
+
+.lrp-steps { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--color-text-secondary); }
+.lrp-step-cur { color: var(--color-primary-light); font-weight: 600; }
+
+/* Pill states */
+.llama-pill-building {
+  background: color-mix(in srgb, var(--color-blue) 18%, transparent) !important;
+  border-color: color-mix(in srgb, var(--color-blue) 50%, transparent) !important;
+  color: var(--color-blue) !important;
+  opacity: 1;
+  animation: lrp-pulse 1.6s ease-in-out infinite;
+}
+.llama-pill-error {
+  background: color-mix(in srgb, var(--color-error) 18%, transparent) !important;
+  border-color: color-mix(in srgb, var(--color-error) 55%, transparent) !important;
+  color: var(--color-error) !important;
+  opacity: 1;
+}
+.llama-pill-warn {
+  background: color-mix(in srgb, var(--color-amber) 18%, transparent) !important;
+  border-color: color-mix(in srgb, var(--color-amber) 55%, transparent) !important;
+  color: var(--color-amber) !important;
+  opacity: 1;
+}
+@keyframes lrp-pulse { 50% { opacity: 0.7; } }
+@media (prefers-reduced-motion: reduce) { .llama-pill-building { animation: none; } }
+
+/* Version-modal source-build row */
+.llama-source-row { display: flex; flex-direction: column; gap: 6px; padding: 8px 18px; border-top: 1px solid color-mix(in srgb, var(--color-text-primary) 8%, transparent); }
+.llama-source-warning { font-size: 12px; color: var(--color-warning); }
+
+.lrp-section > .lrp-btn { align-self: flex-start; }

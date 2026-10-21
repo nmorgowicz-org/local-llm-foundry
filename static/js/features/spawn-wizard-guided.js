@@ -2,11 +2,13 @@
 import { engineDescriptor } from '../core/engine-descriptor.js';
 import { wizardState } from './spawn-wizard.js';
 import { _mtpUserConfigured } from './spawn-wizard-mtp-draft.js';
+import { initWizardKvSupport, refreshWizardKvSupport } from './spawn-wizard-kv.js';
 
 // Wire up decision cards on step entry
 export function initGuidedCards() {
   wireContextTiles();
   wireKvTiles();
+  initWizardKvSupport();
   wireVisionCard();
   wireSpeedBoost();
   refreshGuidedCapabilityCards();
@@ -127,9 +129,12 @@ function wireKvTiles() {
 
   tiles.forEach(tile => {
     tile.addEventListener('click', () => {
+      // The mixed tile sets K and V independently; the others set an equal pair.
       const kv = tile.dataset.kv;
-      if (kInput) kInput.value = kv;
-      if (vInput) vInput.value = kv;
+      const kValue = tile.dataset.kvK || kv;
+      const vValue = tile.dataset.kvV || kv;
+      if (kInput) kInput.value = kValue;
+      if (vInput) vInput.value = vValue;
       setTileActive(kv);
       kInput?.dispatchEvent(new Event('change', { bubbles: true }));
       vInput?.dispatchEvent(new Event('change', { bubbles: true }));
@@ -212,8 +217,14 @@ export function refreshGuidedCards(event) {
   const k = document.getElementById('spawn-cache-type-k')?.value || '';
   const v = document.getElementById('spawn-cache-type-v')?.value || '';
   document.querySelectorAll('#hw-kv-tiles .hw-decision-tile').forEach(tile => {
-    tile.classList.toggle('hw-decision-tile-active', !!k && k === v && tile.dataset.kv === k);
+    // A mixed tile matches its own K/V pair, so a stored mixed preset highlights
+    // it instead of leaving every tile unselected.
+    const active = tile.dataset.kvK
+      ? k === tile.dataset.kvK && v === tile.dataset.kvV
+      : !!k && k === v && tile.dataset.kv === k;
+    tile.classList.toggle('hw-decision-tile-active', active);
   });
+  refreshWizardKvSupport();
 
   // Same input-before-change ordering as the speed radios: the Guided select
   // emits `input` (bubbling to the overlay) before its `change` handler writes

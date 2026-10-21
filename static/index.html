@@ -36,6 +36,8 @@
     <link rel="stylesheet" href="/css/evidence-drawer.css">
     <link rel="stylesheet" href="/css/protocol-docs.css">
     <link rel="stylesheet" href="/css/preset-bundle-drawer.css">
+    <link rel="stylesheet" href="/css/kv-support.css">
+    <link rel="stylesheet" href="/css/llama-runtime-panel.css">
     <link rel="stylesheet" href="/css/modal-sizing.css">
 <!-- Self-hosted vendor scripts (no CDN) -->
 <script src="/vendor/js/marked.min.js"></script>
@@ -2771,10 +2773,10 @@
                                     </select>
                                 </div>
                                 <div class="pe-field">
-                                    <label class="pe-label" for="modal-ctv" title="KV cache value quantization. f16 is the default and recommended for values. q8_0 saves ~50% VRAM with negligible quality loss. On Apple Silicon with Qwen3 (head_dim=256), f16 can be faster than q8_0 due to a less-optimised Metal kernel — only drop to q8_0 if you need to fit a longer context.">KV Value Type (-ctv)</label>
+                                    <label class="pe-label" for="modal-ctv" title="KV cache value type. q8_0 is the default for new presets and matches the default key type. Mixed K/V pairs can start but may run slower on some runtimes; the line below this row shows what to expect for the installed llama.cpp and selected model.">KV Value Type (-ctv)</label>
                                     <select class="pe-select" id="modal-ctv">
-                                        <option value="f16">f16 (default)</option>
-                                        <option value="q8_0">q8_0</option>
+                                        <option value="f16">f16</option>
+                                        <option value="q8_0">q8_0 (default)</option>
                                         <option value="q4_0">q4_0</option>
                                         <option disabled>────────</option>
                                         <option value="bf16">bf16</option>
@@ -2786,7 +2788,7 @@
                                     </select>
                                 </div>
                                 <div class="pe-field">
-                                    <label class="pe-label" for="modal-flash-attn" title="Flash Attention mode. Quantized KV cache types (-ctk/-ctv below f16) require Flash Attention to use the fast fused kernel — without it the server silently falls back to a much slower path. Leave On unless you are debugging a specific crash.">Flash Attn (-fa)</label>
+                                    <label class="pe-label" for="modal-flash-attn" title="Flash attention mode. A quantized V cache needs flash attention on or auto: with it off, llama.cpp refuses to start. A floating V cache with flash attention off starts but skips the fused kernels. Leave On unless you are debugging a specific crash.">Flash Attn (-fa)</label>
                                     <select class="pe-select" id="modal-flash-attn">
                                         <option value="on" selected>on</option>
                                         <option value="auto">auto</option>
@@ -2794,6 +2796,7 @@
                                     </select>
                                 </div>
                             </div>
+                            <div class="kv-support" id="modal-kv-support" hidden></div>
                             <div class="pe-row">
                                 <div class="pe-field">
                                     <label class="pe-label" for="modal-kv-unified" title="Forces a single unified KV buffer across all parallel slots. Required when using quantized KV types — without it the server may fall back to a slower non-fused path. Leave Default unless you see a performance warning in the server log.">KV Unified</label>
@@ -4691,7 +4694,9 @@
                                  <button type="button" class="hw-decision-tile hw-decision-tile-active" data-kv="q8_0" title="Recommended — high precision, good quality">q8_0 <span class="hw-tile-star">★ recommended</span></button>
                                  <button type="button" class="hw-decision-tile" data-kv="q4_0" title="Saves memory, lower quality">q4_0 <span class="hw-tile-warn">⚠ tool calls</span></button>
                                  <button type="button" class="hw-decision-tile" data-kv="f16" title="Lossless — most memory">f16 <span class="hw-tile-tag">lossless</span></button>
+                                <button type="button" class="hw-decision-tile" data-kv="mixed" data-kv-mixed data-kv-k="q8_0" data-kv-v="q4_0" title="Keys at q8_0, values at q4_0: saves memory, quality is model-dependent">K q8_0 · V q4_0 <span class="hw-tile-tag">model-dependent</span></button>
                              </div>
+                            <div class="kv-support" id="hw-kv-support" hidden></div>
                          </div>
                      </div>
 
@@ -5576,11 +5581,11 @@
 
 <!-- Presets Manager Panel -->
 
-<div class="modal-overlay" id="presets-panel-overlay" style="display:none; z-index:1400;" onclick="if(event.target===this)closePresetsPanel()">
+<div class="modal-overlay" id="presets-panel-overlay" style="display:none; z-index:1400;">
     <div class="presets-panel-modal">
         <div class="presets-panel-header">
             <h2 class="presets-panel-title">Saved Presets</h2>
-            <button type="button" class="presets-panel-close" id="presets-panel-close" onclick="closePresetsPanel()">&times;</button>
+            <button type="button" class="presets-panel-close" id="presets-panel-close">&times;</button>
         </div>
         <div class="presets-panel-body" id="presets-panel-body">
             <div class="presets-panel-loading">Loading presets…</div>
@@ -7707,6 +7712,13 @@
             <span class="llama-version-current-label">Installed</span>
             <span class="llama-version-current-build" id="llama-version-current-build">—</span>
             <button id="llama-uninstall-btn" class="runtime-uninstall-btn" type="button" title="Remove the managed llama.cpp binary from this machine (downloaded models are kept)">Uninstall…</button>
+        </div>
+        <div class="llama-source-row" id="llama-source-row">
+            <div class="llama-source-warning" id="llama-source-warning" hidden>Replacing a source build with a prebuilt: prebuilt FA kernels may differ. The candidate is probed first; confirmed missing CUDA kernels can use the slower conversion fallback.</div>
+            <div>
+                <button id="llama-build-from-source" class="lrp-btn" type="button">Build latest from source</button>
+                <button id="llama-open-runtime-panel" class="lrp-btn" type="button">Open llama.cpp Runtime…</button>
+            </div>
         </div>
         <div class="llama-version-modal-body">
             <div class="llama-version-panes">

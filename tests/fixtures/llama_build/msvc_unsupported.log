@@ -1,0 +1,5 @@
+[12/140] Building CUDA object ggml/src/ggml-cuda/CMakeFiles/ggml-cuda.dir/Release/acc.cu.obj
+FAILED: ggml/src/ggml-cuda/CMakeFiles/ggml-cuda.dir/Release/acc.cu.obj
+C:\PROGRA~1\NVIDIA~2\CUDA\v12.4\bin\nvcc.exe -forward-unknown-to-host-compiler
+C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4/include/crt/host_config.h(153): fatal error C1189: #error:  -- unsupported Microsoft Visual Studio version! Only the versions between 2017 and 2022 (inclusive) are supported!
+ninja: build stopped: subcommand failed.

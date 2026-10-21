@@ -609,11 +609,20 @@ fn capability_reasons(
             "reason": "q4_0/q4_0 is not eligible for the selected workload quality floor"
         }));
     }
-    if !capabilities.mixed_main_kv.supported {
+    // Mixed K/V stays offered. Report it only as guidance when the loaded
+    // runtime is known to use an alternate path; unknown evidence is silent.
+    if let Some(notice) = crate::presets::validation::kv_pair_notice(
+        "q8_0",
+        "q4_0",
+        crate::inference::kv_support::FlashAttnMode::On,
+        capabilities,
+    ) && notice.code == crate::presets::validation::KV_PAIR_FALLBACK
+    {
         reasons.push(serde_json::json!({
             "field": "kv_policy",
             "value": "q8_0_q4_0",
-            "reason": "mixed K/V requires a binary advertising mixed_main_kv support"
+            "severity": "advisory",
+            "reason": notice.message
         }));
     }
     reasons

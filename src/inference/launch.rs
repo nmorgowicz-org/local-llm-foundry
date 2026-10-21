@@ -406,6 +406,22 @@ pub fn request_from_session(
     Ok(request)
 }
 
+/// A model must not start against a runtime that is mid-swap. Only the
+/// promotion's own restart (which carries the owner token) passes. Checked
+/// before the (slow) capability snapshot and again by `start_backend` once it
+/// holds the lifecycle lock, since a promotion can begin in between.
+pub(crate) fn ensure_runtime_available(state: &AppState) -> Result<()> {
+    if let Some(owner) = state.runtime_gate.current_owner()
+        && !crate::llama_runtime::gate::is_runtime_owner()
+    {
+        anyhow::bail!(
+            "The llama.cpp runtime is busy ({} in progress); try again when it finishes",
+            owner.label()
+        );
+    }
+    Ok(())
+}
+
 /// The only production adapter construction point for local inference.
 pub async fn construct_adapter(
     request: &LocalLaunchRequest,
@@ -414,6 +430,7 @@ pub async fn construct_adapter(
 ) -> Result<BackendAdapter> {
     match request {
         LocalLaunchRequest::LlamaCpp(config) => {
+            ensure_runtime_available(state)?;
             // Capability claims must be tied to the exact selected llama-server
             // binary rather than the build bundled during development. Snapshot
             // generation is bounded; validation below remains the launch gate.
@@ -440,6 +457,7 @@ pub async fn construct_adapter(
                 && let Some(issue) = crate::presets::validation::validate_main_kv_policy(
                     &config.ctk,
                     &config.ctv,
+                    crate::inference::kv_support::launch_flash_attn_mode(&config.flash_attn),
                     snap,
                 )
             {
@@ -447,13 +465,6 @@ pub async fn construct_adapter(
                     "llama.cpp launch blocked: {} ({})",
                     issue.code,
                     issue.message
-                );
-            }
-            if (config.ctk.eq_ignore_ascii_case("q8_0") && config.ctv.eq_ignore_ascii_case("q4_0"))
-                && snapshot.is_none()
-            {
-                anyhow::bail!(
-                    "llama.cpp launch blocked: capability probe unavailable for mixed main K/V"
                 );
             }
             let gpu_env = state.gpu_env.lock().unwrap().clone();
@@ -728,6 +739,25 @@ pub async fn launch_local_with_resolved_preset(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn launch_is_refused_while_the_runtime_gate_is_held_except_for_its_owner() {
+        use crate::llama_runtime::gate::{RUNTIME_OWNER, RuntimeOp};
+        let state = AppState::default();
+        assert!(ensure_runtime_available(&state).is_ok());
+
+        let guard = state.runtime_gate.try_begin(RuntimeOp::Update).unwrap();
+        let err = ensure_runtime_available(&state).unwrap_err().to_string();
+        assert!(err.contains("update"), "{err}");
+        // The promotion's own restart carries the owner token.
+        let owned = RUNTIME_OWNER
+            .scope(true, async { ensure_runtime_available(&state) })
+            .await;
+        assert!(owned.is_ok());
+
+        drop(guard);
+        assert!(ensure_runtime_available(&state).is_ok());
+    }
+
     use super::*;
     use clap::Parser;
 

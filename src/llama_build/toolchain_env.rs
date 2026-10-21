@@ -1,0 +1,876 @@
+//! Build environment vs staged-runtime environment (plan §5.2, §4.6.1).
+//!
+//! Two environments exist and must never be confused:
+//!
+//! - the **build environment**: on Windows the captured `vcvars64` environment
+//!   with the selected CUDA toolkit first on `PATH`, handed to cmake/ninja/nvcc;
+//! - the **staged-runtime environment**: sanitized, with no toolkit, build-tree
+//!   or user `PATH` entries, used when the shared verifier executes the staged
+//!   candidate. A closure that only resolves because of the build environment
+//!   must fail verification.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use super::TargetOs;
+
+/// Case-insensitive on Windows, so keys are normalised to upper case.
+pub fn normalize_key(key: &str) -> String {
+    key.to_ascii_uppercase()
+}
+
+/// Parse `set` output (`KEY=VALUE` per line). Lines without `=`, and `=C:`-style
+/// drive-cwd entries, are ignored.
+pub fn parse_env_dump(text: &str) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.starts_with('=') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=')
+            && !key.is_empty()
+            && !key.contains(char::is_whitespace)
+        {
+            env.insert(normalize_key(key), value.to_string());
+        }
+    }
+    env
+}
+
+/// A successful batch exit is not proof that the compiler and SDK components
+/// were installed. Validate the files a CUDA/C++ smoke configure will need.
+pub fn validate_captured_env(
+    env: &BTreeMap<String, String>,
+    exists: &dyn Fn(&Path) -> bool,
+) -> Result<(), String> {
+    let required = |key: &str| {
+        env.get(key)
+            .filter(|v| !v.trim().is_empty())
+            .ok_or_else(|| format!("vcvars did not set {key}"))
+    };
+    let vc = PathBuf::from(required("VCTOOLSINSTALLDIR")?);
+    let sdk = PathBuf::from(required("WINDOWSSDKDIR")?);
+    let version = required("WINDOWSSDKVERSION")?.trim_end_matches(['\\', '/']);
+    for file in [
+        vc.join("bin/Hostx64/x64/cl.exe"),
+        vc.join("include/vector"),
+        sdk.join("Include").join(version).join("um/Windows.h"),
+        sdk.join("Include").join(version).join("ucrt/stdio.h"),
+    ] {
+        if !exists(&file) {
+            return Err(format!(
+                "MSVC/Windows SDK component is missing: {}",
+                file.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The minimal PATH vcvars is applied to, so repeated captures do not grow it
+/// (ported from the tooling's capture).
+pub fn clean_base_path(system_root: &str) -> String {
+    let root = system_root.trim_end_matches(['\\', '/']);
+    format!(r"{root}\System32;{root};{root}\System32\Wbem")
+}
+
+/// `set` dumps every inherited variable. Start vcvars with OS discovery facts
+/// only, so API tokens, proxies with credentials, etc. never enter its durable
+/// environment cache. Build children separately inherit the current process.
+pub fn vcvars_base_env(process: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    const KEYS: &[&str] = &[
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "TEMP",
+        "TMP",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PROGRAMW6432",
+        "PROGRAMDATA",
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "PROCESSOR_ARCHITECTURE",
+        "NUMBER_OF_PROCESSORS",
+        "PATHEXT",
+    ];
+    process
+        .iter()
+        .filter(|(k, _)| KEYS.contains(&normalize_key(k).as_str()))
+        .map(|(k, v)| (normalize_key(k), v.clone()))
+        .collect()
+}
+
+/// The `cmd` command line that captures the environment vcvars produces.
+/// Run with `cmd /d /s /c <this>`; the string must be passed verbatim (raw
+/// argument), not re-quoted.
+pub fn vcvars_capture_command(vcvars: &Path, base_path: &str) -> String {
+    format!(
+        "\"set \"PATH={base_path}\" && call \"{}\" >nul && set\"",
+        vcvars.display()
+    )
+}
+
+/// What vcvars changed or added compared with the environment it started from.
+pub fn env_diff(
+    base: &BTreeMap<String, String>,
+    captured: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    captured
+        .iter()
+        .filter(|(k, v)| base.get(*k) != Some(*v))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolchainCache {
+    pub vs_instance_id: String,
+    pub vcvars: PathBuf,
+    pub vcvars_mtime_unix: u64,
+    pub captured_at_unix: u64,
+    pub env: BTreeMap<String, String>,
+}
+
+impl ToolchainCache {
+    /// Valid only for the same VS instance, vcvars file and modification time.
+    pub fn matches(&self, instance: &str, vcvars: &Path, mtime_unix: u64) -> bool {
+        self.vs_instance_id == instance
+            && self.vcvars == vcvars
+            && self.vcvars_mtime_unix == mtime_unix
+            && self.env.contains_key("PATH")
+    }
+}
+
+pub fn load_cache(file: &Path) -> Option<ToolchainCache> {
+    serde_json::from_slice(&std::fs::read(file).ok()?).ok()
+}
+
+pub fn store_cache(file: &Path, cache: &ToolchainCache) -> std::io::Result<()> {
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = file.with_extension("json.tmp");
+    std::fs::write(
+        &tmp,
+        serde_json::to_vec_pretty(cache).map_err(std::io::Error::other)?,
+    )?;
+    std::fs::rename(tmp, file)
+}
+
+pub fn file_mtime_unix(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Extra PATH entries, prepended.
+fn prepend_path(path_value: &str, dirs: &[String], sep: char) -> String {
+    let mut parts: Vec<String> = dirs.to_vec();
+    parts.extend(
+        path_value
+            .split(sep)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string),
+    );
+    parts.join(&sep.to_string())
+}
+
+/// Names (upper-cased) of the app's own settings: never reach a build child.
+const APP_PREFIXES: &[&str] = &["LOCAL_LLM_FOUNDRY_", "LLAMA_MONITOR_"];
+/// Substrings (upper-cased) that mark a value as a secret.
+const SECRET_MARKERS: &[&str] = &["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"];
+/// Names a build needs even when they happen to look secret.
+const BUILD_ALLOW_EXACT: &[&str] = &[
+    "PATH",
+    "CUDA_PATH",
+    "CUDA_HOME",
+    "CUDATOOLKIT_ROOT",
+    "CUDATOOLKIT_ROOT_DIR",
+    "CUDA_TOOLKIT_ROOT_DIR",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "SYSTEMROOT",
+    "WINDIR",
+];
+const BUILD_ALLOW_PREFIXES: &[&str] = &["CCACHE_", "CMAKE_"];
+
+/// A build runs upstream CMake and compilers nobody here has reviewed (a
+/// `master` build most of all), so it must not see the user's credentials or
+/// the app's own settings. Names are compared case-insensitively (Windows
+/// environment names are).
+fn build_env_allows(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    if APP_PREFIXES.iter().any(|p| upper.starts_with(p)) {
+        return false;
+    }
+    if BUILD_ALLOW_EXACT.contains(&upper.as_str())
+        || BUILD_ALLOW_PREFIXES.iter().any(|p| upper.starts_with(p))
+    {
+        return true;
+    }
+    !SECRET_MARKERS.iter().any(|m| upper.contains(m))
+}
+
+/// The environment build children inherit from the app, minus secrets.
+pub fn scrub_env(vars: impl IntoIterator<Item = (String, String)>) -> BTreeMap<String, String> {
+    vars.into_iter()
+        .filter(|(name, _)| build_env_allows(name))
+        .collect()
+}
+
+/// Inputs for the build environment.
+pub struct BuildEnvInputs<'a> {
+    pub os: TargetOs,
+    /// The environment the app itself runs in.
+    pub process_env: &'a BTreeMap<String, String>,
+    /// Windows: the captured vcvars environment. `None` elsewhere.
+    pub captured: Option<&'a BTreeMap<String, String>>,
+    /// Windows CUDA: the toolkit root from `CUDA_PATH`.
+    pub cuda_root: Option<&'a str>,
+    pub ccache_dir: Option<&'a Path>,
+    pub ccache_max_bytes: Option<u64>,
+}
+
+/// The environment for cmake/ninja/nvcc children.
+pub fn build_env(inputs: &BuildEnvInputs) -> BTreeMap<String, String> {
+    let sep = if inputs.os == TargetOs::Windows {
+        ';'
+    } else {
+        ':'
+    };
+    let mut env: BTreeMap<String, String> = if inputs.os == TargetOs::Windows {
+        inputs
+            .process_env
+            .iter()
+            .map(|(k, v)| (normalize_key(k), v.clone()))
+            .collect()
+    } else {
+        inputs.process_env.clone()
+    };
+    if let Some(captured) = inputs.captured {
+        for (k, v) in captured {
+            env.insert(k.clone(), v.clone());
+        }
+    }
+    let path_key = "PATH";
+    if let Some(root) = inputs.cuda_root {
+        let root = root.trim_end_matches(['\\', '/']);
+        let current = env.get(path_key).cloned().unwrap_or_default();
+        // `CUDA_PATH` only: the other installed toolkits stay off PATH here.
+        env.insert(
+            path_key.into(),
+            prepend_path(
+                &current,
+                &[format!(r"{root}\bin\x64"), format!(r"{root}\bin")],
+                sep,
+            ),
+        );
+        env.insert("CUDA_PATH".into(), root.to_string());
+        env.insert("CUDATOOLKIT_ROOT".into(), root.to_string());
+    }
+    if let Some(dir) = inputs.ccache_dir {
+        env.insert("CCACHE_DIR".into(), dir.to_string_lossy().into_owned());
+        if let Some(max) = inputs.ccache_max_bytes {
+            env.insert("CCACHE_MAXSIZE".into(), format!("{}M", max / (1024 * 1024)));
+        }
+    }
+    env
+}
+
+/// Keys whose values are secrets or noise: omitted from the log's env diff.
+fn redact(key: &str, value: &str) -> String {
+    let upper = key.to_ascii_uppercase();
+    if ["TOKEN", "SECRET", "PASSWORD", "KEY", "AUTH", "CREDENTIAL"]
+        .iter()
+        .any(|w| upper.contains(w))
+    {
+        return "<redacted>".into();
+    }
+    // A proxy or netrc-style URL can carry `scheme://user:pass@host`
+    // credentials under an innocently named variable. The child still needs
+    // the proxy to reach the network; only the log loses the userinfo.
+    if upper.ends_with("_PROXY") || upper.ends_with("_NETRC") {
+        return redact_url_userinfo(value);
+    }
+    value.to_string()
+}
+
+/// Replace `[scheme://]user:pass@host` credentials with
+/// `[scheme://][redacted]@host`.
+///
+/// Proxies accept both the URL form and the shorter `user:pass@host`. Tokens
+/// are only split on whitespace because `,` and `;` are legal characters
+/// inside userinfo; within a token the userinfo is the run before the last
+/// `@` that lies inside the authority. That covers a raw `@` in a password
+/// while leaving an `@` in a path or query alone.
+///
+/// Known limits, both credential-safe but log-imprecise: a comma list whose
+/// later entry carries scheme-less credentials can attribute the redaction to
+/// the last entry, and a raw `/`, `?`, `#` or space inside a password (invalid
+/// URL syntax; it must be percent-encoded) can leave part of it visible.
+fn redact_url_userinfo(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut token = String::new();
+    for ch in value.chars() {
+        if ch.is_whitespace() {
+            out.push_str(&redact_token(&token));
+            out.push(ch);
+            token.clear();
+        } else {
+            token.push(ch);
+        }
+    }
+    out.push_str(&redact_token(&token));
+    out
+}
+
+fn redact_token(token: &str) -> String {
+    let mut out = String::with_capacity(token.len());
+    let mut rest = token;
+    loop {
+        let Some(at) = rest.find('@') else {
+            out.push_str(rest);
+            return out;
+        };
+        let (scheme, after_scheme) = match rest[..at].rfind("://") {
+            Some(i) => (&rest[..i + 3], &rest[i + 3..]),
+            None => ("", rest),
+        };
+        let authority_end = after_scheme
+            .find(['/', '?', '#'])
+            .unwrap_or(after_scheme.len());
+        let authority = &after_scheme[..authority_end];
+        let Some(delim) = authority.rfind('@') else {
+            // This `@` is past the authority: keep it and keep scanning.
+            out.push_str(&rest[..at + 1]);
+            rest = &rest[at + 1..];
+            continue;
+        };
+        if !authority[..delim].contains(':') {
+            // A username only, or an `@` inside a path or query.
+            let keep = scheme.len() + delim + 1;
+            out.push_str(&rest[..keep]);
+            rest = &rest[keep..];
+            continue;
+        }
+        out.push_str(scheme);
+        out.push_str("[redacted]");
+        rest = &after_scheme[delim..];
+    }
+}
+
+/// A redacted diff of `child` against `parent` for the phase header line.
+pub fn redacted_env_diff(
+    parent: &BTreeMap<String, String>,
+    child: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    // Windows upper-cases every key in the child environment while `parent` is
+    // the app's raw environment, so a case-only difference would otherwise be
+    // logged as a change (and carry a proxy value into the job log).
+    let parent_ci: std::collections::BTreeMap<String, &String> = parent
+        .iter()
+        .map(|(k, v)| (k.to_ascii_uppercase(), v))
+        .collect();
+    for (k, v) in child {
+        if parent.get(k) == Some(v) {
+            continue;
+        }
+        if parent_ci
+            .get(&k.to_ascii_uppercase())
+            .is_some_and(|same| *same == v)
+        {
+            continue;
+        }
+        out.push(format!("{k}={}", redact(k, v)));
+    }
+    let child_ci: std::collections::BTreeMap<String, &String> = child
+        .iter()
+        .map(|(k, v)| (k.to_ascii_uppercase(), v))
+        .collect();
+    for (k, v) in parent {
+        if child.contains_key(k) {
+            continue;
+        }
+        // A case-only rename with an unchanged value is not a removal.
+        if child_ci
+            .get(&k.to_ascii_uppercase())
+            .is_some_and(|same| *same == v)
+        {
+            continue;
+        }
+        out.push(format!("-{k}"));
+    }
+    out
+}
+
+/// The sanitized environment a staged runtime is executed in. Mirrors
+/// `llama_runtime::probe::EnvPolicy::Sanitized`; the test below holds both to
+/// the same contract.
+pub fn staged_env(os: TargetOs, system_root: &str, temp: &Path) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    if os == TargetOs::Windows {
+        env.insert("SYSTEMROOT".into(), system_root.into());
+        env.insert("WINDIR".into(), system_root.into());
+        env.insert(
+            "PATH".into(),
+            format!(r"{system_root}\System32;{system_root}"),
+        );
+        env.insert("TEMP".into(), temp.to_string_lossy().into_owned());
+        env.insert("TMP".into(), temp.to_string_lossy().into_owned());
+    } else {
+        env.insert("PATH".into(), "/usr/bin:/bin:/usr/sbin:/sbin".into());
+        env.insert("LANG".into(), "C".into());
+        env.insert("TMPDIR".into(), temp.to_string_lossy().into_owned());
+    }
+    env
+}
+
+/// Directories the staged environment must never contain. Compared as
+/// separator-agnostic, case-insensitive prefixes so `C:\\CUDA\\v13.4\\bin` is
+/// caught whatever the host OS parsing the path.
+pub fn path_leaks(path_value: &str, forbidden: &[&Path], sep: char) -> Vec<String> {
+    let norm = |s: &str| {
+        s.replace('\\', "/")
+            .trim_end_matches('/')
+            .to_ascii_lowercase()
+    };
+    let forbidden: Vec<String> = forbidden
+        .iter()
+        .map(|f| norm(&f.to_string_lossy()))
+        .collect();
+    path_value
+        .split(sep)
+        .filter(|entry| {
+            if entry.is_empty() {
+                return false;
+            }
+            let e = norm(entry);
+            forbidden
+                .iter()
+                .any(|f| e == *f || e.starts_with(&format!("{f}/")))
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DUMP: &str = "ALLUSERSPROFILE=C:\\ProgramData\r\n\
+        =C:=C:\\Users\\nick\r\n\
+        INCLUDE=C:\\VS\\include\r\n\
+        Path=C:\\VS\\bin;C:\\Windows\\System32\r\n\
+        VCINSTALLDIR=C:\\VS\\VC\\\r\n\
+        WindowsSdkDir=C:\\Kits\\10\\\r\n\
+        junk line without equals\r\n\
+        EMPTY=\r\n";
+
+    #[test]
+    fn dump_parsing_normalizes_keys_and_skips_junk() {
+        let env = parse_env_dump(DUMP);
+        assert_eq!(env["PATH"], r"C:\VS\bin;C:\Windows\System32");
+        assert_eq!(env["WINDOWSSDKDIR"], r"C:\Kits\10\");
+        assert_eq!(env["EMPTY"], "");
+        assert!(!env.keys().any(|k| k.starts_with('=') || k.contains(' ')));
+        assert_eq!(env.len(), 6);
+    }
+
+    #[test]
+    fn base_path_is_small_and_fixed() {
+        let p = clean_base_path(r"C:\Windows\");
+        assert_eq!(
+            p,
+            r"C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem"
+        );
+        assert!(!p.contains("Strawberry"));
+    }
+
+    #[test]
+    fn capture_command_matches_the_ported_shape() {
+        let cmd = vcvars_capture_command(
+            Path::new(r"C:\VS\VC\Auxiliary\Build\vcvars64.bat"),
+            r"C:\Windows\System32",
+        );
+        assert_eq!(
+            cmd,
+            r#""set "PATH=C:\Windows\System32" && call "C:\VS\VC\Auxiliary\Build\vcvars64.bat" >nul && set""#
+        );
+    }
+
+    #[test]
+    fn diff_keeps_only_what_vcvars_changed() {
+        let base = parse_env_dump("PATH=C:\\Windows\nSYSTEMROOT=C:\\Windows\n");
+        let captured =
+            parse_env_dump("PATH=C:\\VS;C:\\Windows\nSYSTEMROOT=C:\\Windows\nINCLUDE=C:\\inc\n");
+        let diff = env_diff(&base, &captured);
+        assert_eq!(diff.len(), 2);
+        assert!(diff.contains_key("PATH") && diff.contains_key("INCLUDE"));
+    }
+
+    #[test]
+    fn cache_is_keyed_by_instance_vcvars_and_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("llama-build/toolchain-cache.json");
+        let cache = ToolchainCache {
+            vs_instance_id: "022d1522".into(),
+            vcvars: PathBuf::from(r"C:\VS\vcvars64.bat"),
+            vcvars_mtime_unix: 1000,
+            captured_at_unix: 2000,
+            env: parse_env_dump("PATH=C:\\VS\n"),
+        };
+        store_cache(&file, &cache).unwrap();
+        let loaded = load_cache(&file).unwrap();
+        assert_eq!(loaded, cache);
+        assert!(loaded.matches("022d1522", Path::new(r"C:\VS\vcvars64.bat"), 1000));
+        assert!(!loaded.matches("other", Path::new(r"C:\VS\vcvars64.bat"), 1000));
+        assert!(!loaded.matches("022d1522", Path::new(r"C:\VS\vcvars64.bat"), 1001));
+        assert!(!loaded.matches("022d1522", Path::new(r"C:\Other\vcvars64.bat"), 1000));
+        assert!(load_cache(&dir.path().join("missing.json")).is_none());
+        std::fs::write(&file, b"{ not json").unwrap();
+        assert!(load_cache(&file).is_none());
+    }
+
+    #[test]
+    fn a_cache_without_a_path_is_never_valid() {
+        let c = ToolchainCache {
+            vs_instance_id: "x".into(),
+            vcvars: PathBuf::from("v"),
+            vcvars_mtime_unix: 1,
+            captured_at_unix: 1,
+            env: BTreeMap::new(),
+        };
+        assert!(!c.matches("x", Path::new("v"), 1));
+    }
+
+    fn proc_env() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            (
+                "Path".to_string(),
+                r"C:\Strawberry\c\bin;C:\Windows".to_string(),
+            ),
+            ("HF_TOKEN".to_string(), "hf_secret".to_string()),
+        ])
+    }
+
+    #[test]
+    fn windows_build_env_layers_vcvars_then_cuda_first() {
+        let captured = parse_env_dump("PATH=C:\\VS\\bin;C:\\Windows\nINCLUDE=C:\\inc\n");
+        let env = build_env(&BuildEnvInputs {
+            os: TargetOs::Windows,
+            process_env: &proc_env(),
+            captured: Some(&captured),
+            cuda_root: Some(r"C:\CUDA\v13.4"),
+            ccache_dir: Some(Path::new(r"C:\app\llama-build\ccache")),
+            ccache_max_bytes: Some(2 * 1024 * 1024 * 1024),
+        });
+        let path = &env["PATH"];
+        assert!(
+            path.starts_with(r"C:\CUDA\v13.4\bin\x64;C:\CUDA\v13.4\bin;C:\VS\bin"),
+            "{path}"
+        );
+        // The captured PATH replaced the process PATH (no Strawberry gcc).
+        assert!(!path.contains("Strawberry"));
+        assert_eq!(env["INCLUDE"], r"C:\inc");
+        assert_eq!(env["CUDA_PATH"], r"C:\CUDA\v13.4");
+        assert_eq!(env["CCACHE_DIR"], r"C:\app\llama-build\ccache");
+        assert_eq!(env["CCACHE_MAXSIZE"], "2048M");
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn build_children_never_inherit_secrets_or_app_settings() {
+        let env = scrub_env(vars(&[
+            ("HF_TOKEN", "hf_x"),
+            ("GITHUB_TOKEN", "ghp_x"),
+            ("OPENAI_API_KEY", "sk-x"),
+            ("AWS_SECRET_ACCESS_KEY", "x"),
+            ("AWS_ACCESS_KEY_ID", "x"),
+            ("DB_PASSWORD", "x"),
+            ("GOOGLE_CREDENTIALS", "x"),
+            ("azure_credential_file", "x"),
+            ("LOCAL_LLM_FOUNDRY_API_TOKEN", "x"),
+            ("local_llm_foundry_anything", "x"),
+            ("LLAMA_MONITOR_HOME", "/x"),
+            ("Llama_Monitor_Port", "1"),
+            ("PATH", "/usr/bin"),
+            ("HOME", "/home/u"),
+        ]));
+        assert_eq!(
+            env.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["HOME", "PATH"]
+        );
+    }
+
+    #[test]
+    fn build_needed_names_survive_even_when_they_look_secret() {
+        let kept = [
+            ("PATH", "/usr/bin"),
+            ("Path", r"C:\Windows"),
+            ("CUDA_PATH", "/usr/local/cuda"),
+            ("CUDA_HOME", "/usr/local/cuda"),
+            ("CUDAToolkit_ROOT", "/usr/local/cuda"),
+            ("CCACHE_DIR", "/c"),
+            ("CCACHE_SECONDARY_STORAGE_KEY", "x"),
+            ("CMAKE_PREFIX_PATH", "/p"),
+            ("CMAKE_TOKEN_FILE", "/p"),
+            ("SSL_CERT_FILE", "/etc/ssl/cert.pem"),
+            ("SystemRoot", r"C:\Windows"),
+        ];
+        let env = scrub_env(vars(&kept));
+        for (k, v) in kept {
+            assert_eq!(env.get(k).map(String::as_str), Some(v), "{k} was dropped");
+        }
+    }
+
+    #[test]
+    fn the_app_prefix_denial_beats_the_allowlist() {
+        let env = scrub_env(vars(&[("LOCAL_LLM_FOUNDRY_CMAKE_PATH", "x")]));
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn unix_build_env_passes_the_process_env_through() {
+        let process =
+            BTreeMap::from([("PATH".to_string(), "/opt/homebrew/bin:/usr/bin".to_string())]);
+        let env = build_env(&BuildEnvInputs {
+            os: TargetOs::Macos,
+            process_env: &process,
+            captured: None,
+            cuda_root: None,
+            ccache_dir: Some(Path::new("/app/llama-build/ccache")),
+            ccache_max_bytes: Some(256 * 1024 * 1024),
+        });
+        assert_eq!(env["PATH"], "/opt/homebrew/bin:/usr/bin");
+        assert_eq!(env["CCACHE_MAXSIZE"], "256M");
+        assert!(!env.contains_key("CUDA_PATH"));
+    }
+
+    #[test]
+    fn env_diff_log_redacts_secrets_and_shows_removals() {
+        let parent = proc_env();
+        let mut child = parent.clone();
+        child.insert("CCACHE_DIR".into(), "/c".into());
+        child.insert("MY_AUTH_HEADER".into(), "Bearer abc".into());
+        child.remove("Path");
+        let lines = redacted_env_diff(&parent, &child);
+        assert!(lines.contains(&"CCACHE_DIR=/c".to_string()));
+        assert!(lines.contains(&"MY_AUTH_HEADER=<redacted>".to_string()));
+        assert!(lines.contains(&"-Path".to_string()));
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("Bearer abc") || l.contains("hf_secret"))
+        );
+    }
+
+    #[test]
+    fn proxy_credentials_are_redacted_in_the_env_diff() {
+        let parent = BTreeMap::new();
+        let mut child = BTreeMap::new();
+        child.insert(
+            "HTTPS_PROXY".into(),
+            "http://user:secret@proxy.local:8080".into(),
+        );
+        child.insert("https_proxy".into(), "http://u2:p2@proxy2.local".into());
+        child.insert("NO_PROXY".into(), "http://plain.local".into());
+        let lines = redacted_env_diff(&parent, &child);
+        assert!(lines.contains(&"HTTPS_PROXY=http://[redacted]@proxy.local:8080".to_string()));
+        assert!(lines.contains(&"https_proxy=http://[redacted]@proxy2.local".to_string()));
+        assert!(lines.contains(&"NO_PROXY=http://plain.local".to_string()));
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("user:secret") || l.contains("u2:p2"))
+        );
+    }
+
+    #[test]
+    fn schemeless_and_list_valued_proxy_credentials_are_redacted() {
+        assert_eq!(
+            redact_url_userinfo("user:pass@proxy.local:8080"),
+            "[redacted]@proxy.local:8080"
+        );
+        assert_eq!(
+            redact_url_userinfo("http://u:p@a.local,https://v:q@b.local"),
+            "http://[redacted]@a.local,https://[redacted]@b.local"
+        );
+        // A raw `@` inside the password must not expose the tail.
+        assert_eq!(
+            redact_url_userinfo("u:p@ss@proxy.local"),
+            "[redacted]@proxy.local"
+        );
+        // `,` and `;` are legal inside userinfo, so they must not split it.
+        assert_eq!(
+            redact_url_userinfo("http://u:pa,ss@host"),
+            "http://[redacted]@host"
+        );
+        assert_eq!(
+            redact_url_userinfo("http://u:pa;ss@host"),
+            "http://[redacted]@host"
+        );
+        // An `@` after the authority (path/query) must not hide the credential.
+        assert_eq!(
+            redact_url_userinfo("http://u:p@host/path@x"),
+            "http://[redacted]@host/path@x"
+        );
+        assert_eq!(
+            redact_url_userinfo("http://u:p@host?x=a@b"),
+            "http://[redacted]@host?x=a@b"
+        );
+        // Newline-separated lists redact every entry.
+        assert_eq!(
+            redact_url_userinfo("http://u:p@a\nhttp://v:q@b"),
+            "http://[redacted]@a\nhttp://[redacted]@b"
+        );
+        // No credentials: unchanged, including an `@` in a path.
+        assert_eq!(redact_url_userinfo("proxy.local:8080"), "proxy.local:8080");
+        assert_eq!(
+            redact_url_userinfo("http://host/path?x=a@b"),
+            "http://host/path?x=a@b"
+        );
+    }
+
+    #[test]
+    fn a_case_only_key_difference_is_not_logged_as_a_change() {
+        let parent = BTreeMap::from([("https_proxy".to_string(), "http://u:p@a".to_string())]);
+        let child = BTreeMap::from([("HTTPS_PROXY".to_string(), "http://u:p@a".to_string())]);
+        let lines = redacted_env_diff(&parent, &child);
+        // Neither a change line nor a removal line for the old spelling.
+        assert!(!lines.iter().any(|l| l.starts_with("HTTPS_PROXY=")));
+        assert!(!lines.iter().any(|l| l == "-https_proxy"));
+        assert!(!lines.iter().any(|l| l.contains("u:p@")));
+    }
+
+    #[test]
+    fn the_staged_environment_has_no_toolkit_or_user_path() {
+        let temp = Path::new(r"C:\Temp\x");
+        let win = staged_env(TargetOs::Windows, r"C:\Windows", temp);
+        assert_eq!(win["PATH"], r"C:\Windows\System32;C:\Windows");
+        assert!(!win.contains_key("CUDA_PATH"));
+        let unix = staged_env(TargetOs::Macos, "", Path::new("/tmp/x"));
+        assert_eq!(unix["PATH"], "/usr/bin:/bin:/usr/sbin:/sbin");
+        let forbidden = [
+            Path::new(r"C:\CUDA\v13.4"),
+            Path::new(r"C:\app\llama-build"),
+        ];
+        assert!(path_leaks(&win["PATH"], &forbidden, ';').is_empty());
+        let build_path =
+            r"C:\CUDA\v13.4\bin\x64;C:\Windows;C:\app\llama-build\build-cuda\bin\Release";
+        assert_eq!(path_leaks(build_path, &forbidden, ';').len(), 2);
+    }
+
+    /// The probe's own sanitized environment must match the contract above:
+    /// a poisoned parent PATH, toolkit variable and build-tree directory must
+    /// not reach the staged runtime.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_poisoned_parent_environment_does_not_reach_the_staged_runtime() {
+        use crate::llama_runtime::probe::{EnvPolicy, probe_runtime_with_timeout};
+        use std::os::unix::fs::PermissionsExt;
+        if std::env::var_os("LLF_POISON_PROBE_CHILD").is_none() {
+            // Poison only a new test process. Mutating the shared environment
+            // in this multi-threaded test runner would be undefined behavior.
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "llama_build::toolchain_env::tests::a_poisoned_parent_environment_does_not_reach_the_staged_runtime", "--nocapture"])
+                .env("LLF_POISON_PROBE_CHILD", "1")
+                .env("POISON", "from-parent")
+                .env("CUDA_PATH", "/poisoned/cuda")
+                .env("PATH", "/poisoned/evil-build-tree/bin")
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let evil = dir.path().join("evil-build-tree/bin");
+        std::fs::create_dir_all(&evil).unwrap();
+        let report = dir.path().join("seen-env.txt");
+        // A stand-in `llama-server` that records the environment it is given,
+        // then prints a probe-shaped missing-model diagnostic.
+        let exe = dir.path().join("llama-server");
+        std::fs::write(
+            &exe,
+            format!(
+                "#!/bin/sh\n{{ echo \"PATH=$PATH\"; echo \"CUDA_PATH=$CUDA_PATH\"; echo \"POISON=$POISON\"; }} > '{}'\n\
+                 echo 'system_info: n_threads = 1 | CPU : NEON = 1 |' 1>&2\n\
+                 echo \"error: failed to load model '$4'\" 1>&2\nexit 1\n",
+                report.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let _ = probe_runtime_with_timeout(
+            &exe,
+            EnvPolicy::Sanitized,
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+        let seen = std::fs::read_to_string(&report).unwrap();
+        let expected = staged_env(TargetOs::Macos, "", dir.path());
+        assert!(
+            seen.contains(&format!("PATH={}", expected["PATH"])),
+            "{seen}"
+        );
+        assert!(
+            seen.contains("CUDA_PATH=\n"),
+            "toolkit variable leaked: {seen}"
+        );
+        assert!(seen.contains("POISON=\n"), "parent variable leaked: {seen}");
+        assert!(!seen.contains("evil-build-tree"));
+    }
+}
+
+#[cfg(test)]
+mod captured_component_tests {
+    use super::*;
+
+    #[test]
+    fn successful_vcvars_requires_both_compiler_and_sdk_files() {
+        let env = parse_env_dump(
+            "VCToolsInstallDir=C:/VS/VC\nWindowsSdkDir=C:/SDK\nWindowsSDKVersion=10.0.26100.0\\\n",
+        );
+        assert!(validate_captured_env(&env, &|_| true).is_ok());
+        assert!(
+            validate_captured_env(&env, &|p| p.file_name().is_none_or(|n| n != "Windows.h"))
+                .is_err()
+        );
+        assert!(
+            validate_captured_env(&env, &|p| p.file_name().is_none_or(|n| n != "cl.exe")).is_err()
+        );
+        assert!(validate_captured_env(&BTreeMap::new(), &|_| true).is_err());
+    }
+}
+
+#[cfg(test)]
+mod capture_secret_tests {
+    #[test]
+    fn vcvars_capture_never_caches_parent_tokens_or_proxy_credentials() {
+        let parent = std::collections::BTreeMap::from([
+            ("SystemRoot".into(), "C:\\Windows".into()),
+            ("API_TOKEN".into(), "secret".into()),
+            ("HTTPS_PROXY".into(), "https://user:password@proxy".into()),
+            ("PATH".into(), "untrusted".into()),
+        ]);
+        let env = super::vcvars_base_env(&parent);
+        assert_eq!(env.len(), 1);
+        assert_eq!(env["SYSTEMROOT"], "C:\\Windows");
+    }
+}

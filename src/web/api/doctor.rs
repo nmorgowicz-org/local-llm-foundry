@@ -2,11 +2,12 @@ use warp::Filter;
 
 use super::common::{ApiCtx, check_api_token, unauthorized_api_token, with_app_config};
 use crate::config::AppConfig;
+use crate::inference::kv_support::{Impact, KvSupport, launch_flash_attn_mode};
 use crate::inference::llama_cpp::ServerConfig;
 use crate::inference::rapid_mlx::RapidMlxConfig;
 use crate::inference::rapid_mlx::capabilities::{CacheDiagnosticParams, ExtraState};
 use crate::memory_availability::MemoryAvailabilityState;
-use crate::presets::validation::validate_main_kv_policy;
+use crate::presets::validation::{classify_main_kv, validate_main_kv_policy};
 use crate::state::{DoctorFinding, DoctorFindingType, DoctorSeverity, FixAction};
 
 pub fn routes(
@@ -28,6 +29,7 @@ pub fn routes(
                         ));
                     }
                     let mut findings = collect_llama_findings(&state, &cfg).await;
+                    findings.extend(collect_runtime_findings(&state, &cfg).await);
                     findings.extend(collect_cache_findings(&state).await);
                     findings.extend(collect_reclaim_findings().await);
                     Ok(Box::new(warp::reply::json(&serde_json::json!({
@@ -38,6 +40,68 @@ pub fn routes(
             },
         )
         .boxed()
+}
+
+/// Runtime-level llama.cpp findings: file reads only, no subprocesses.
+async fn collect_runtime_findings(
+    state: &crate::state::AppState,
+    cfg: &AppConfig,
+) -> Vec<DoctorFinding> {
+    let cfg = cfg.clone();
+    // A build, update or recovery in flight legitimately has a journal and
+    // process records; they are not leftovers then.
+    let busy = state.runtime_gate.current_owner().is_some() || !state.llama_build.is_idle();
+    tokio::task::spawn_blocking(move || {
+        crate::llama_build::doctor::runtime_findings(&runtime_facts(&cfg, busy))
+    })
+    .await
+    .unwrap_or_default()
+}
+
+fn runtime_facts(cfg: &AppConfig, busy: bool) -> crate::llama_build::doctor::RuntimeFacts {
+    use crate::llama_build::doctor::{JournalFact, PrereqFact, RuntimeFacts};
+    use crate::llama_build::paths::BuildPaths;
+    use crate::llama_runtime::promote::{
+        JournalState, RuntimePaths, legacy_backup_count, read_journal,
+    };
+
+    let (bin_dir, custom) = super::llama_binary::managed_bin_dir(cfg);
+    let provenance = super::llama_binary::runtime_provenance(cfg);
+    let paths = RuntimePaths::for_live_dir(&bin_dir).ok();
+    let build_paths = BuildPaths::new(&cfg.app_paths);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let prereq = std::fs::read(&build_paths.prereqs_last)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<crate::llama_build::prereqs::PrereqReport>(&b).ok())
+        .map(|r| PrereqFact {
+            validated_at_unix: r.validated_at_unix,
+            failing: r.failures().map(|c| c.title.clone()).collect(),
+        });
+    RuntimeFacts {
+        provenance_source: provenance
+            .get("source")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        hashes_match: provenance.get("hashes_match").and_then(|v| v.as_bool()),
+        journal: match paths.as_ref().map(read_journal) {
+            Some(JournalState::Present(j)) => JournalFact::Pending { label: j.label },
+            Some(JournalState::Corrupt(reason)) => JournalFact::Corrupt { reason },
+            _ => JournalFact::Clean,
+        },
+        process_records_unresolved: !crate::llama_build::job::containment_clear(&build_paths),
+        // A custom server path has no managed siblings to report.
+        legacy_backups: if custom.is_some() {
+            0
+        } else {
+            paths.as_ref().map(legacy_backup_count).unwrap_or(0)
+        },
+        prereq,
+        busy,
+        now_unix: now,
+    }
 }
 
 async fn collect_llama_findings(
@@ -53,7 +117,12 @@ async fn collect_llama_findings(
         return Vec::new();
     };
     let snapshot = doctor_capability_snapshot(cfg).await;
-    llama_config_findings(&config, snapshot.as_ref())
+    let mut findings = llama_config_findings(&config, snapshot.as_ref());
+    // The probe above ran (and failed to yield a snapshot): say so, quietly.
+    if snapshot.is_none() && cfg.llama_server_path.is_file() {
+        findings.push(crate::llama_build::doctor::capability_unavailable_finding());
+    }
+    findings
 }
 
 /// Fetch a fresh-or-cached llama.cpp capability snapshot for the K/V policy
@@ -85,16 +154,34 @@ fn llama_config_findings(
     let k = config.ctk.trim();
     let v = config.ctv.trim();
 
-    if let Some(snapshot) = snapshot
-        && let Some(issue) = validate_main_kv_policy(k, v, snapshot)
-    {
-        findings.push(DoctorFinding {
-            finding_type: DoctorFindingType::LlamaCpp,
-            severity: DoctorSeverity::Issue,
-            message: issue.message,
-            section: "llama.cpp cache".into(),
-            fix: None,
-        });
+    if let Some(snapshot) = snapshot {
+        let fa = launch_flash_attn_mode(&config.flash_attn);
+        if let Some(issue) = validate_main_kv_policy(k, v, fa, snapshot) {
+            findings.push(DoctorFinding {
+                finding_type: DoctorFindingType::LlamaCpp,
+                severity: DoctorSeverity::Issue,
+                message: issue.message,
+                section: "llama.cpp cache".into(),
+                fix: None,
+            });
+        } else if let Some(classification) = classify_main_kv(k, v, fa, snapshot)
+            && let KvSupport::Fallback { reason, impact } = &classification.expected
+            && *impact != Impact::NoFlashAttention
+        {
+            // An explicit `-fa off` choice is not worth a warning; a slower
+            // alternate path the user did not ask for is.
+            let mut message = format!("K/V pair {k}/{v}: {reason}");
+            if classification.buildable_missing {
+                message.push_str(crate::llama_build::doctor::REBUILD_HINT);
+            }
+            findings.push(DoctorFinding {
+                finding_type: DoctorFindingType::LlamaCpp,
+                severity: DoctorSeverity::Warning,
+                message,
+                section: "llama.cpp cache".into(),
+                fix: None,
+            });
+        }
     }
 
     let tool_enabled = config
@@ -308,10 +395,23 @@ mod tests {
     }
 
     fn llama_capability_snapshot(
-        mixed_main_kv_supported: bool,
+        cuda_pair_spec: Option<&str>,
     ) -> crate::inference::llama_cpp_capabilities::CapabilitySnapshot {
+        use crate::inference::kv_support::{
+            Backend, Evidence, KV_BASIS_VERSION, KvSupportBasis, compiled_fa_pairs,
+        };
         use crate::inference::llama_cpp_capabilities::{
-            CapabilitySnapshot, CapabilitySnapshotSource, ExecutableIdentity, MixedMainKv,
+            CapabilitySnapshot, CapabilitySnapshotSource, ExecutableIdentity,
+        };
+        let kv_basis = match cuda_pair_spec {
+            Some(spec) => KvSupportBasis {
+                version: KV_BASIS_VERSION,
+                backend: Backend::Cuda,
+                fa_pairs: Evidence::confirmed(compiled_fa_pairs(spec).unwrap(), "test"),
+                runtime_identity: None,
+                ..Default::default()
+            },
+            None => KvSupportBasis::default(),
         };
         CapabilitySnapshot {
             executable_identity: ExecutableIdentity {
@@ -331,29 +431,23 @@ mod tests {
             tools: Default::default(),
             speculation: Default::default(),
             typed: Default::default(),
-            mixed_main_kv: if mixed_main_kv_supported {
-                MixedMainKv {
-                    supported: true,
-                    reason: "build manifest proves support".into(),
-                    source: "build_manifest".into(),
-                }
-            } else {
-                MixedMainKv::product_default_denied()
-            },
+            kv_basis,
+            runtime_identity: None,
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::AutoProbed,
         }
     }
 
     #[test]
-    fn llama_mixed_kv_check_fires_independent_of_tool_enabled() {
+    fn llama_quantized_v_without_flash_attention_is_an_issue_independent_of_tools() {
         let config = ServerConfig {
             tool_call_format: None,
             ctk: "q8_0".into(),
             ctv: "q4_0".into(),
+            flash_attn: "off".into(),
             ..Default::default()
         };
-        let snapshot = llama_capability_snapshot(false);
+        let snapshot = llama_capability_snapshot(None);
         let findings = llama_config_findings(&config, Some(&snapshot));
         assert!(findings.iter().any(
             |finding| finding.finding_type == DoctorFindingType::LlamaCpp
@@ -362,16 +456,81 @@ mod tests {
     }
 
     #[test]
-    fn llama_mixed_kv_check_silent_when_binary_supports_pair() {
+    fn llama_mixed_kv_pair_is_silent_when_evidence_is_unknown_or_native() {
         let config = ServerConfig {
             tool_call_format: None,
             ctk: "q8_0".into(),
             ctv: "q4_0".into(),
             ..Default::default()
         };
-        let snapshot = llama_capability_snapshot(true);
+        for spec in [None, Some("all")] {
+            let snapshot = llama_capability_snapshot(spec);
+            assert!(llama_config_findings(&config, Some(&snapshot)).is_empty());
+        }
+    }
+
+    #[test]
+    fn llama_missing_compiled_pair_is_a_warning_not_an_issue() {
+        let config = ServerConfig {
+            tool_call_format: None,
+            ctk: "q8_0".into(),
+            ctv: "q4_0".into(),
+            ..Default::default()
+        };
+        let snapshot = llama_capability_snapshot(Some("q8_0-q8_0"));
         let findings = llama_config_findings(&config, Some(&snapshot));
-        assert!(findings.is_empty());
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, DoctorSeverity::Warning);
+    }
+
+    #[test]
+    fn rebuild_link_only_for_a_confirmed_missing_cuda_kernel() {
+        let config = ServerConfig {
+            tool_call_format: None,
+            ctk: "q8_0".into(),
+            ctv: "q4_0".into(),
+            ..Default::default()
+        };
+        // Confirmed CUDA pair list without the pair: buildable, so the hint appears.
+        let confirmed = llama_capability_snapshot(Some("q8_0-q8_0"));
+        let findings = llama_config_findings(&config, Some(&confirmed));
+        assert!(findings[0].message.contains("source build"));
+        // No pair evidence at all: never a rebuild recommendation.
+        let unknown = llama_capability_snapshot(None);
+        assert!(
+            llama_config_findings(&config, Some(&unknown))
+                .iter()
+                .all(|f| !f.message.contains("source build"))
+        );
+    }
+
+    #[test]
+    fn runtime_facts_report_a_pending_journal_and_legacy_backups() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config =
+            AppConfig::from_args_pure(<crate::cli::AppArgs as clap::Parser>::parse_from([
+                "llama-monitor",
+                "--gpu-backend",
+                "none",
+            ]));
+        config.app_paths = crate::paths::AppPaths::from_root(root.path().to_path_buf());
+        config.llama_server_path = root.path().join("bin").join("missing-llama-server");
+        let bin = root.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(root.path().join("bin-previous-20250101")).unwrap();
+        std::fs::create_dir_all(root.path().join("bin-failed-20250102")).unwrap();
+        std::fs::write(bin.join("journal-placeholder"), b"").unwrap();
+        let paths = crate::llama_runtime::promote::RuntimePaths::for_live_dir(&bin).unwrap();
+        std::fs::write(&paths.journal, b"not json").unwrap();
+        let facts = runtime_facts(&config, false);
+        assert_eq!(facts.legacy_backups, 2);
+        assert!(matches!(
+            facts.journal,
+            crate::llama_build::doctor::JournalFact::Corrupt { .. }
+        ));
+        assert!(!facts.process_records_unresolved);
+        let findings = crate::llama_build::doctor::runtime_findings(&facts);
+        assert_eq!(findings.len(), 2);
     }
 
     #[test]

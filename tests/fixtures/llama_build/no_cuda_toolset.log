@@ -1,0 +1,7 @@
+-- Selecting Windows SDK version 10.0.26100.0 to target Windows 10.0.26200.
+CMake Error at C:/Program Files/CMake/share/cmake-4.1/Modules/CMakeDetermineCUDACompiler.cmake:179 (message):
+  Failed to find nvcc.
+
+  Compiler requires the CUDA toolkit.  Please set the CUDAToolkit_ROOT variable
+-- No CUDA toolset found.
+-- Configuring incomplete, errors occurred!

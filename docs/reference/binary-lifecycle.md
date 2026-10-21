@@ -11,29 +11,40 @@ names this system as the quality baseline that all future backends must match.
 ## Source files
 
 | File | Responsibility |
-|---|---|
+| --- | --- |
 | `src/llama/llama_cpp_downloader.rs` | Release fetching, asset selection, download/extract, artifact cleanup |
 | `src/web/api/llama_binary.rs` | HTTP endpoints: version, latest, releases, release, platform-info, update, restart |
+| `src/web/api/llama_runtime_routes.rs` | `POST /api/llama-binary/rollback`, `GET /api/llama-binary/runtime-status` |
+| `src/llama_runtime/gate.rs` | The single runtime-mutation gate and swap-window flag |
+| `src/llama_runtime/promote.rs` | Journaled promote / rollback / uninstall engine and crash recovery |
+| `src/llama_runtime/verify.rs` | The one verification path (prepare, probe, evaluate) shared by every install kind |
+| `src/llama_runtime/manifest.rs` | `llama-build-manifest.json`: provenance only, never an authority |
+| `src/llama_runtime/host.rs` | Production host: model stop/restart and verification wiring |
+| `src/llama_runtime/startup.rs` | Startup recovery of interrupted transactions |
 | `src/model_download.rs` | Model-file download manager: dedup guard, existing-file check, concurrency limit |
 
 ## Binary path
 
 The path to `llama-server` is resolved at startup from `AppConfig::llama_server_path`.
-The install workflow writes to `dest_path.parent()` (the directory containing that binary),
-so all per-backend shared libraries land next to the executable.
+The managed runtime is the whole `bin/` directory: the executable plus every co-located
+shared library. Installs always target the managed `bin/`. When `llama_server_path`
+points elsewhere (a custom path) the update still installs to the managed `bin/`, leaves
+the custom path untouched, and reports it as `custom_server_path` so the UI can say so.
 
 ## API endpoints
 
 All endpoints require the configured API token (`Authorization: Bearer <token>`).
 
 | Method | Route | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `GET` | `/api/llama-binary/version` | Currently installed build number |
 | `GET` | `/api/llama-binary/latest` | Latest GitHub release metadata (30-min cache) |
 | `GET` | `/api/llama-binary/releases` | Last 8 releases for the version picker |
 | `GET` | `/api/llama-binary/release?build=N` | Metadata for one specific build |
 | `GET` | `/api/llama-binary/platform-info` | Detected OS, arch, available backends |
-| `POST` | `/api/llama-binary/update` | Download and install a release |
+| `POST` | `/api/llama-binary/update` | Download and install a release (journaled promotion) |
+| `POST` | `/api/llama-binary/rollback` | Swap the live and previous runtime sets |
+| `GET` | `/api/llama-binary/runtime-status` | Previous availability, interrupted-transaction state, gate owner |
 | `POST` | `/api/llama/restart` | Restart the running llama-server with its current config |
 
 ### `GET /api/llama-binary/version`
@@ -67,6 +78,7 @@ Used by the version picker rollback flow.
 ### `GET /api/llama-binary/platform-info`
 
 Returns:
+
 - `os`: `"macos"` / `"linux"` / `"windows"`
 - `arch`: `"aarch64"` / `"x86_64"`
 - `arch_label`: human-readable architecture label
@@ -121,17 +133,63 @@ Response:
 ```json
 {
   "ok": true,
+  "outcome": "promoted",
   "version": "b9512",
   "backend": "metal",
   "arch": "arm64",
   "sha256": "abc123...",
-  "server_restarted": true
+  "server_restarted": true,
+  "restart_applicable": true,
+  "custom_server_path": null,
+  "warnings": [],
+  "evidence_unavailable": false,
+  "verification_notes": []
 }
 ```
 
-- `sha256`: SHA256 of the installed llama-server binary (for integrity verification).
-- `server_restarted`: true when llama-monitor already restarted the server with its previous
+- `outcome` is one of:
+  - `promoted`: installed, verified, and (when a model was running) restarted.
+  - `installed_restart_failed`: the new runtime is installed and verified, but the model
+    could not be restarted. `ok` is still `true`; `restart_error` carries the reason,
+    `server_restarted` is `false`, and nothing was rolled back. Rollback stays available.
+  - `rolled_back`: verification or the swap failed; the previous runtime is live again.
+    `ok` is `false` and `error` carries the reason.
+  - `failed`: nothing was changed (for example the journal could not be written).
+- `sha256`: SHA256 of the installed llama-server binary.
+- `evidence_unavailable`: `true` when the runtime's probe output could not be read and only
+  `--help` was verified — the uncertainty is reported, never hidden (plan §4.3).
+  `verification_notes` carries the verifier's notes (including an absent or unchecked
+  `llama-bench`); the UI surfaces both with the install result.
+- `server_restarted`: true when the backend already restarted the server with its previous
   config; the frontend must skip its own restart call when this is true.
+- `restart_applicable`: false when no llama.cpp model was running (including Rapid-MLX).
+- `409` with `{"owner": "update" | "rollback" | "uninstall" | "promote"}` when another runtime
+  mutation is in flight, or `409` when an earlier interrupted transaction could not be
+  reconciled (nothing is modified until it is resolved).
+
+### `POST /api/llama-binary/rollback`
+
+Swaps the live and previous runtime sets under the same gate and journal as an update,
+verifying the set that becomes live. Rolling back twice returns to the original runtime.
+Same response shape as update; errors with `outcome: "failed"` when no previous set exists.
+
+### `GET /api/llama-binary/runtime-status`
+
+```json
+{
+  "ok": true,
+  "busy_owner": null,
+  "live": { "label": "b9512 prebuilt" },
+  "previous": { "label": "b9479 prebuilt" },
+  "previous_available": true,
+  "transaction": { "state": "clean" },
+  "last": { "id": "...", "op": "install", "label": "b9512 prebuilt", "outcome": { "kind": "installed" } },
+  "custom_server_path": null
+}
+```
+
+`transaction.state` is `clean`, `pending` (a journal exists), or `blocked` (the journal is
+unreadable; nothing is modified until it is resolved, and `reason` explains why).
 
 ### `POST /api/llama/restart`
 
@@ -143,160 +201,118 @@ llama-server binary. Commonly used after an in-place update to pick up the new b
 
 ## Update pipeline
 
-The install handler follows a strict ordering: it downloads and prepares a candidate
-binary in a temporary directory, then stops the running server (if any), runs a health
-check on the new binary, and only then installs it. If health checks fail, the original
-binary is left in place.
+The update handler downloads and prepares a complete candidate set while the running model
+keeps serving, then hands it to the journaled promotion engine in `src/llama_runtime/promote.rs`.
+Nothing is stopped, renamed, or overwritten until the candidate exists in full.
 
 ```
-1. Capture current ServerConfig if a local server is running
-2. Fetch release list from GitHub
-3. Select matching assets via select_assets(release, backend, arch)
-4. Download + extract all assets into a temp dir (tempfile::tempdir())
-5. Locate llama-server / llama-server.exe inside the temp tree
-6. Set executable bit (unix: chmod 0o755)
-7. Strip macOS Gatekeeper quarantine xattr (macOS only)
-8. Stop running llama-server (if it was running)
-9. Health check: run `llama-server --help` from the temp binary with a 10-second timeout
-10. Install:
-    - macOS: copy into a sibling staging dir, health-check again, rename old bin/ to backup, promote staging dir
-    - other platforms: copy into the configured `bin/` path, normalize binary name, health-check the installed binary
-11. Restart server with preserved config (if it was running before)
+1. Fetch the release list; select assets for (backend, arch, os)         [no lock]
+2. Download + extract into a temp dir                                    [no lock]
+3. Locate llama-server inside the extracted tree                         [no lock]
+4. Flatten the files into a sibling staging dir `.bin.staging-<id>`      [no lock]
+5. Take the runtime gate (409 {owner} if another mutation is running)
+6. promote():
+   a. prepare the staged set (exec bits, strip macOS quarantine), write the manifest
+   b. write the journal (steps, fingerprints), phase Begun; the swap window opens
+   c. if a llama.cpp model is running: journal the restart intent, then stop it
+      (a loaded model would contend for the GPU with the probe)
+   d. verify the staged set (one probe, see "Verification")
+   e. phase Swapping, renames in order: previous -> old-previous, live -> old-live, staged -> live
+      (rollback: live -> old-live, previous -> live)
+   f. verify the live set, then phase Committed
+   g. retention: the old live set becomes `bin-previous`, the old previous set is deleted
+   h. restart the model with its previous config (inside the owner scope)
+   i. finalize: the journal is archived as runtime-transaction.last.json
 ```
 
-If any step from 1–7 fails, the live binary is untouched and the server (if running)
-continues to run. The server is stopped in step 8; if the subsequent health check (step 9)
-fails, the old binary is not overwritten and the caller receives an error indicating the
-new binary failed validation.
+Download, extraction and staging never hold the gate, so a slow download cannot block a
+rollback or a model launch. Cancellation is honored only before the journal is written.
 
-### Step 3 — Asset selection (`select_assets`)
+### Layout
 
-`select_assets` is a filename heuristic in `llama_cpp_downloader.rs`. It filters release
-assets by backend keyword and architecture substring:
-
-**Backend keywords** (matched against lowercased asset name):
-
-| Backend | Matches |
-|---|---|
-| `cpu` | `cpu`, `base`, `avx2` |
-| `avx2` | `avx2`, `cpu`, `base` |
-| `cuda` | `cuda` |
-| `cuda12` | `cuda12`, `cuda-12`, `cu12`, `cuda_12` |
-| `cuda13` | `cuda13`, `cuda-13`, `cu13`, `cuda_13` |
-| `sycl` | `sycl`, `oneapi` |
-| `vulkan` | `vulkan` |
-| `rocm` / `hip` | `rocm`, `hip` |
-| `metal` | `metal`, `mac` |
-
-**Architecture keywords** (matched against lowercased asset name):
-
-| arch | Matches |
-|---|---|
-| `x86_64` / `x64` | `x64`, `x86_64`, `amd64` |
-| `arm64` / `aarch64` | `arm64`, `aarch64` |
-
-Files ending in `.json`, `.md`, or `.txt` are always skipped.
-
-Multiple assets may be selected (e.g. the main archive plus a shared-library bundle).
-All selected assets are downloaded; GPU builds rely on this to co-locate CUDA/Vulkan
-`.dll` / `.so` files next to the binary.
-
-### Step 4 — Download and extract (`download_and_extract`)
-
-Each asset is streamed to `<tmpdir>/<asset.name>.part`, renamed to `<asset.name>` on
-completion, then extracted if it is a `.zip`, `.tar.gz`, or `.tgz`. Extraction failures
-are logged as warnings but do not abort the install.
-
-The HTTP client uses a 300-second timeout on the outer request.
-
-After extraction, `cleanup_old_binaries` runs against the temp dir:
-- Tarballs matching `llama-b<N>-bin-*.tar.gz`: only the highest build number is kept.
-- Versioned dylibs matching `<prefix>.<N>.dylib`: only the highest build in each family
-  is kept.
-This prevents the binary directory accumulating stale archives across repeated updates.
-
-### Step 5 — Binary location (`find_binary`)
-
-A small recursive search (`find_binary`) walks the temp dir looking for `llama-server`
-(or `llama-server.exe` on Windows). Releases may place the binary at the archive root or
-inside a subdirectory named after the build (e.g. `llama-b9479-bin-macos-arm64/`).
-
-### Step 7 — Gatekeeper quarantine strip (macOS)
-
-**Why this matters.** The entire extracted archive — the executable, co-located dylibs
-(`libllama.dylib`, etc.), and Metal shaders (`ggml-metal.metal`) — can carry the
-`com.apple.quarantine` extended attribute. Gatekeeper enforces this at `dlopen()` time,
-not just at initial exec, so stripping only the executable is insufficient: the process
-launches, tries to load a quarantined dylib, and Gatekeeper SIGKILLs it. The exit status
-reports no exit code (Unix signal termination shows up as `code = "unknown"`).
-
-The strip is applied **recursively to the entire temp dir** so that `copy_all_files`
-copies clean files into `dest_dir`:
-
-```rust
-#[cfg(target_os = "macos")]
-{
-    let _ = std::process::Command::new("xattr")
-        .args(["-rd", "com.apple.quarantine"])
-        .arg(tmp_dir.path())
-        .output();
-}
+```
+<root>/bin/                          live set
+<root>/bin-previous/                 exactly one previous set
+<root>/.bin.staging-<id>/            candidate; swept at startup if orphaned
+<root>/runtime-transaction.json      the in-flight journal (absent when idle)
+<root>/runtime-transaction.last.json last finished transaction (status surface)
 ```
 
-`start_server` applies the same strip to the **binary's parent directory** before its own
-`--help` check. This covers manually placed binaries and the restart-after-update path
-where the binary has already been written to `dest_dir`:
+All of these are siblings on one volume, so every swap is a rename. A candidate is never
+copied into a live directory.
 
-```rust
-#[cfg(target_os = "macos")]
-if let Some(bin_dir) = bin_path.parent() {
-    let _ = std::process::Command::new("xattr")
-        .args(["-rd", "com.apple.quarantine"])
-        .arg(bin_dir)
-        .output();
-}
-```
+### Crash recovery
 
-Both calls are best-effort (errors discarded). A missing `xattr` binary on an unusual
-macOS installation does not abort the flow; the health check that follows will still
-catch a genuinely broken binary.
+The journal records the full step list and a phase before the first mutation. A rename's
+completion is derived from "its source is gone", so recovery never needs a per-rename write
+and can be replayed any number of times:
 
-### Step 8 — Health check
+- **Begun / Swapping (uncommitted):** undo the steps in reverse, restoring the original live
+  and previous sets; the rejected candidate is discarded afterwards.
+- **Committed:** finish retention (the installed set is already durable).
+- **Corrupt or ambiguous journal:** `Blocked`. No directory is touched, every new mutation
+  is refused with 409, and startup logs a warning with the reason.
 
-```rust
-tokio::time::timeout(Duration::from_secs(10), async {
-    Command::new(&tmp_binary)
-        .arg("--help")
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-})
-```
+Recovery runs at startup, synchronously, before pollers and the web server start, for the
+app root and the canonical and legacy default roots. An interrupted model stop is reported
+(`the model ... was not restarted; start it again`) rather than automatically relaunched,
+because the journal deliberately stores no launch credentials or configuration.
 
-A successful exit code from `--help` is the gate. Stderr is captured for the failure
-log message (Gatekeeper errors, missing dylibs, wrong architecture, etc.). A timeout
-produces the message `"health check timed out"`.
+Windows can refuse a directory rename with `ERROR_ACCESS_DENIED` /
+`ERROR_SHARING_VIOLATION` while anything holds an open handle inside it — an antivirus
+scan, a shell whose CWD is inside `bin/`, an externally launched `llama-server.exe`. The
+swap's renames retry those two codes with backoff (~2.5 s total) before failing closed as
+`Interrupted`; the surfaced reason then names the open-file-handle cause. Separately, on
+Windows the journal's parent-directory fsync is a no-op: rename durability relies on NTFS
+metadata journaling, and a lost phase-update write replays conservatively (undo), so
+correctness is unaffected.
 
-If the check fails, the error response includes the human-readable message shown in the
-UI toast:
+Set identity in the journal is a metadata fingerprint (relative path, size, mtime), not a
+content hash, so it follows a directory rename without hashing gigabytes at each boundary.
 
-> "New llama-server binary failed basic health check. The downloaded file may be
-> corrupted or incompatible. Try updating again or install manually."
+### Verification
 
-### Step 9 — Copy to destination (`copy_all_files`)
+Every install kind (prebuilt, rollback, later source builds) uses the single path in
+`src/llama_runtime/verify.rs`: prepare the directory, run one bounded probe with a sanitized
+environment (30 s, because a cold macOS Metal start can exceed 10 s), then evaluate the probe
+against the intent (expected backend, pinned commit, flash-attention evidence). The manifest
+is provenance only; a hash mismatch marks provenance `custom` and never changes what the
+probe reports.
 
-On macOS, the updater does not mutate the live binary directory in place. It creates
-a hidden sibling staging directory, copies all extracted release files there,
-normalizes the configured binary name, runs `llama-server --help` from the staged
-location, renames the current `bin/` directory to a timestamped backup, and
-promotes the staging directory to `bin/`. This avoids stale Gatekeeper/XProtect
-provenance state from a previous failed install or in-place overwrite poisoning the
-live path.
+Source and pinned installs also cross-check the second built executable: `llama-bench
+--version` must report the pinned commit. That check runs once, before the swap, in the same
+sanitized environment and with the same output budget as the probe. A *parsed* mismatch fails
+the staged verification (the previous runtime stays live). An absent `llama-bench`, output
+whose commit cannot be parsed, or a pin that is not a hash is a verification note, never a
+failure — notes and `evidence_unavailable` are reported in the reply and surfaced by the UI.
 
-On Linux and Windows, the updater copies into the configured binary directory,
-normalizes the configured binary name, cleans old artifacts, and health-checks
-the installed binary before reporting success.
+### Gatekeeper quarantine strip (macOS)
+
+The entire extracted archive (the executable, co-located dylibs, and Metal shaders) can carry
+the `com.apple.quarantine` attribute. Gatekeeper enforces it at `dlopen()` time, so stripping
+only the executable is insufficient: the process launches, loads a quarantined dylib, and is
+killed by a signal (no exit code). Staged preparation strips the attribute recursively from
+the whole staged set (`strip_quarantine`, invoked inside the blocking preparation) before
+anything executes it. `start_server` applies the same best-effort strip to the binary's
+parent directory before its own `--help` check, which covers manually placed binaries.
+
+### Ownership and lock order
+
+One `RuntimeGate` serializes every runtime mutation (update, rollback, uninstall, later
+builds). Acquisition order is: toolchain, checkout/build/cache, **runtime gate**,
+`server_lifecycle`, session locks. Promotion takes the gate first and then calls
+`stop_server`/`start_server`, which take `server_lifecycle`. Launch paths never await the
+gate: while a swap is in flight a llama.cpp launch is refused immediately (the promotion's own
+restart passes via the owner token), and capability snapshot generation returns an error
+instead of executing or hashing a half-swapped directory. The cached snapshot stays valid.
+
+**Known limitation — one mutating process per root.** The gate is in-process. Build/cache
+leases exclude standalone builders (the CLI takes an exclusive lease) but deliberately
+grant *shared* leases to running app and agent processes, so two app instances sharing one
+runtime root could each pass their own in-memory gate and interleave a swap; startup
+recovery also replays journals found in non-active roots on the assumption their owner is
+gone. The supported configuration is one app instance (or the CLI) mutating a given runtime
+root at a time; an OS-level swap lock for multi-instance setups is tracked as a follow-up.
 
 ## Model-file download stability
 
@@ -332,17 +348,22 @@ instead of silently queuing extra tasks.
 
 ## Server stop/restart around updates
 
-When the local server is running at update time:
+When a llama.cpp model is running at update time:
 
-1. The current `ServerConfig` is captured before download and validation begins.
-2. Download, extraction, and temp/staged binary health checks run while the existing server keeps running.
-3. `stop_server` is called only after the replacement candidate has passed pre-install validation.
-4. After a successful install and final installed-path health check, the server is restarted with the preserved config.
-5. If promotion fails after the old directory is moved aside, the updater attempts to restore the previous directory before returning an error.
+1. The running `ServerConfig` is captured when the host is created, before download.
+2. Download, extraction and staging run while the model keeps serving.
+3. Once the journal exists, the restart intent is journaled and then `stop_server` is called, before the staged probe (a loaded model would block or time out a second `llama-server` on Metal/CUDA).
+4. After the swap commits and the live set verifies, the model is restarted with the preserved config.
+5. If verification or the swap fails, recovery restores the previous directories and the model is restarted on them (`rolled_back`).
+6. If only the restart fails, the new runtime stays installed (`installed_restart_failed`); the user can retry or roll back.
+
+Rapid-MLX models and attached sessions are never stopped by a llama.cpp update.
+Uninstall (`DELETE /api/llama-binary/uninstall`) uses the same gate and journal and still
+returns 409 while a server is running.
 
 ## Windows self-update
 
-On Windows, a running executable cannot overwrite itself. When `llama-monitor.exe` installs an update to itself (the `install` module in `src/agent.rs`), it writes a small `.bat` helper and launches it with the `DETACHED_PROCESS` creation flag. The batch file waits for the parent process PID to exit, then copies the new binary over the old path and starts the updated executable. This is distinct from the llama-server binary update described above, which uses the rename-based `copy_all_files` pipeline and runs entirely within the Rust process.
+On Windows, a running executable cannot overwrite itself. When `llama-monitor.exe` installs an update to itself (the `install` module in `src/agent.rs`), it writes a small `.bat` helper and launches it with the `DETACHED_PROCESS` creation flag. The batch file waits for the parent process PID to exit, then copies the new binary over the old path and starts the updated executable. This is distinct from the llama-server binary update described above, which uses the journaled rename-based promotion above and runs entirely within the Rust process.
 
 ---
 

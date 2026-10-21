@@ -16,6 +16,7 @@ import scenarioChat from './scenarios/core/chat.mjs';
 import scenarioSidebar from './scenarios/core/sidebar.mjs';
 import scenarioGuidedGen from './scenarios/core/guided-gen.mjs';
 import scenarioNavbar from './scenarios/core/navbar.mjs';
+import scenarioKvSupport from './scenarios/llama-build/kv-support.mjs';
 import scenarioSmoke from './scenarios/core/smoke.mjs';
 import scenarioPanels from './scenarios/core/panels.mjs';
 import scenarioDashboard from './scenarios/core/dashboard.mjs';
@@ -339,6 +340,18 @@ export const SCENARIOS = {
                 'dashboard-rapid-mlx-telemetry--rapidmlx-local--partial-card.png',
                 'dashboard-rapid-mlx-telemetry--rapidmlx-local--light-overview.png',
                 'dashboard-rapid-mlx-telemetry--rapidmlx-local--narrow-table-reduced-motion.png',
+            ],
+        },
+    },
+    'kv-support': {
+        run: scenarioKvSupport, category: 'llama-build', runtime: 'llamacpp-local',
+        contract: {
+            intent: 'Show the shared K/V support line (CUDA native, CUDA missing-kernel fallback with advisory, Metal CPU attention, known refusal) in the wizard Guided and Pro views with a mocked runtime evidence endpoint. Presentation only; no measured behaviour.',
+            expectedOutputs: [
+                'kv-support--llamacpp-local--guided-native.png',
+                'kv-support--llamacpp-local--guided-cuda-fallback.png',
+                'kv-support--llamacpp-local--pro-metal-cpu-attention.png',
+                'kv-support--llamacpp-local--pro-wont-start.png',
             ],
         },
     },

@@ -5,13 +5,20 @@ use warp::Filter;
 
 use crate::config::AppConfig;
 use crate::inference::launch::launch_local;
-use crate::inference::llama_cpp::ServerConfig;
 use crate::llama::llama_cpp_downloader::{
     LlamaCppRelease, ReleaseQuery, cleanup_old_binaries, download_and_extract,
     get_latest_stable_release, get_release_by_tag, list_releases, release_has_binary_assets,
     select_assets_for_os, sort_releases_by_published_at,
 };
-use crate::llama::server::{start_server, stop_server};
+use crate::llama::server::stop_server;
+use crate::llama_runtime::gate::{Busy, RuntimeOp};
+use crate::llama_runtime::host::LiveHost;
+use crate::llama_runtime::manifest::{LlamaCppRef, ManifestSource, RuntimeManifest};
+use crate::llama_runtime::promote::{
+    PromoteError, PromoteOutcome, PromoteRequest, PromoteResult, RuntimePaths, new_transaction_id,
+    promote,
+};
+use crate::llama_runtime::verify::VerificationIntent;
 use crate::paths::AppPaths;
 use crate::state::AppState;
 use crate::web::safe_json_body;
@@ -26,7 +33,6 @@ fn default_backend_for_os(os: &str) -> &'static str {
     }
 }
 
-const LLAMA_SERVER_HEALTH_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 // GitHub publishes release metadata before all platform archives finish
 // uploading. Keep this short so a temporarily incomplete nightly cannot make
 // a valid platform build look unavailable for the next half hour.
@@ -63,6 +69,217 @@ fn managed_llama_server_path(config: &AppConfig) -> std::path::PathBuf {
         .into_iter()
         .find(|path| path.is_file())
         .unwrap_or_else(|| config.llama_server_path.clone())
+}
+
+pub(super) type ReplyBox = Box<dyn warp::reply::Reply>;
+
+pub(super) fn json_failure(message: impl Into<String>) -> ReplyBox {
+    Box::new(warp::reply::json(&serde_json::json!({
+        "ok": false,
+        "error": message.into(),
+    })))
+}
+
+pub(super) fn json_busy(busy: Busy) -> ReplyBox {
+    Box::new(warp::reply::with_status(
+        warp::reply::json(&serde_json::json!({
+            "ok": false,
+            "error": format!(
+                "The llama.cpp runtime is busy ({} in progress)",
+                busy.owner.label()
+            ),
+            "owner": busy.owner,
+        })),
+        warp::http::StatusCode::CONFLICT,
+    ))
+}
+
+/// The directory the runtime is promoted into, and the user's custom server
+/// path when `llama_server_path` points outside the managed `bin/`.
+///
+/// Custom paths are not authoritative for promotions: builds always install to
+/// the managed directory (plan: custom server path), and the response says so.
+pub(super) fn managed_bin_dir(
+    config: &AppConfig,
+) -> (std::path::PathBuf, Option<std::path::PathBuf>) {
+    let configured = managed_llama_server_path(config);
+    let managed_roots = [
+        config.app_paths.root.clone(),
+        AppPaths::canonical_default_root(),
+        AppPaths::legacy_default_root(),
+    ];
+    let managed_parent = configured.parent().filter(|parent| {
+        parent.file_name().is_some_and(|n| n == "bin")
+            && parent
+                .parent()
+                .is_some_and(|root| managed_roots.iter().any(|r| r == root))
+    });
+    match managed_parent {
+        Some(parent) => (parent.to_path_buf(), None),
+        None => (config.app_paths.bin_dir(), Some(configured)),
+    }
+}
+
+/// Locate the server executable in an extracted release. Archives place it at
+/// the root or inside a subdirectory (e.g. `llama-bXXXX-bin-...`).
+fn find_binary(root: &Path, name: &str) -> Option<std::path::PathBuf> {
+    let direct = root.join(name);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    for entry in std::fs::read_dir(root).ok()? {
+        let path = entry.ok()?.path();
+        if path.is_dir()
+            && let Some(found) = find_binary(&path, name)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Flatten an extracted release into a fresh staging directory.
+fn stage_release_files(src: &Path, staging: &Path) -> std::io::Result<()> {
+    fn copy_all(src: &Path, dest: &Path) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(src)?.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_dir() {
+                copy_all(&path, dest)?;
+            } else if let Some(name) = path.file_name() {
+                crate::llama_runtime::durable::copy_file(&path, &dest.join(name))?;
+            }
+        }
+        Ok(())
+    }
+    if staging.exists() {
+        std::fs::remove_dir_all(staging)?;
+    }
+    std::fs::create_dir_all(staging)?;
+    copy_all(src, staging)
+}
+
+/// Remove a finished transaction's staging directory, but never while a
+/// journal exists: an unfinished one may still name it as the candidate, and
+/// recovery reads a missing candidate as "the rename already happened".
+fn discard_staging_unless_journaled(staging: &Path, journal: &Path) {
+    let journal_absent = matches!(
+        std::fs::symlink_metadata(journal),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    );
+    if journal_absent {
+        let _ = std::fs::remove_dir_all(staging);
+    }
+}
+
+pub(super) struct PromoteReplyContext<'a> {
+    pub tag: &'a str,
+    pub backend: &'a str,
+    pub arch: &'a str,
+    pub sha256: Option<String>,
+    pub restart_applicable: bool,
+    pub custom_server_path: Option<String>,
+}
+
+pub(super) fn promote_reply(
+    state: &AppState,
+    result: Result<PromoteResult, PromoteError>,
+    ctx: PromoteReplyContext<'_>,
+) -> ReplyBox {
+    let mut body = serde_json::json!({
+        "version": ctx.tag,
+        "backend": ctx.backend,
+        "arch": ctx.arch,
+        "restart_applicable": ctx.restart_applicable,
+        "custom_server_path": ctx.custom_server_path,
+    });
+    let fields = body.as_object_mut().expect("object literal");
+    let mut status = warp::http::StatusCode::OK;
+    match result {
+        Ok(PromoteResult {
+            outcome,
+            warnings,
+            verification_evidence_unavailable,
+            verification_notes,
+        }) => {
+            fields.insert("warnings".into(), serde_json::json!(warnings));
+            fields.insert(
+                "evidence_unavailable".into(),
+                verification_evidence_unavailable.into(),
+            );
+            fields.insert(
+                "verification_notes".into(),
+                serde_json::json!(verification_notes),
+            );
+            let installed = matches!(
+                outcome,
+                PromoteOutcome::Promoted { .. } | PromoteOutcome::InstalledRestartFailed { .. }
+            );
+            if verification_evidence_unavailable && installed {
+                state.push_log(format!(
+                    "[monitor] llama-binary/update: installed {} with limited evidence: only --help was verified; the loaded backend could not be confirmed",
+                    ctx.tag
+                ));
+            }
+            match outcome {
+                PromoteOutcome::Promoted { restarted } => {
+                    state.push_log(format!(
+                        "[monitor] llama-binary/update: installed {} (restarted: {restarted})",
+                        ctx.tag
+                    ));
+                    fields.insert("ok".into(), true.into());
+                    fields.insert("outcome".into(), "promoted".into());
+                    fields.insert("sha256".into(), serde_json::json!(ctx.sha256));
+                    // True when the backend already restarted the server; the
+                    // frontend must skip its own restart call.
+                    fields.insert("server_restarted".into(), restarted.into());
+                }
+                PromoteOutcome::InstalledRestartFailed { restart_error } => {
+                    state.push_log(format!(
+                        "[monitor] llama-binary/update: installed {} but the model restart failed: {restart_error}",
+                        ctx.tag
+                    ));
+                    fields.insert("ok".into(), true.into());
+                    fields.insert("outcome".into(), "installed_restart_failed".into());
+                    fields.insert("sha256".into(), serde_json::json!(ctx.sha256));
+                    fields.insert("server_restarted".into(), false.into());
+                    fields.insert("restart_error".into(), restart_error.into());
+                }
+                PromoteOutcome::RolledBack {
+                    reason,
+                    restart_failed,
+                } => {
+                    state.push_log(format!(
+                        "[monitor] llama-binary/update: {reason}; previous runtime restored"
+                    ));
+                    fields.insert("ok".into(), false.into());
+                    fields.insert("outcome".into(), "rolled_back".into());
+                    fields.insert("error".into(), reason.into());
+                    if let Some(restart_error) = restart_failed {
+                        state.push_log(format!(
+                            "[monitor] llama-binary/update: the previous runtime was restored but the model did not restart: {restart_error}"
+                        ));
+                        fields.insert("server_restarted".into(), false.into());
+                        fields.insert("restart_error".into(), restart_error.into());
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            state.push_log(format!("[monitor] llama-binary/update: {error}"));
+            if matches!(error, PromoteError::JournalBlocked(_)) {
+                status = warp::http::StatusCode::CONFLICT;
+            }
+            fields.insert("ok".into(), false.into());
+            fields.insert("outcome".into(), "failed".into());
+            fields.insert("evidence_unavailable".into(), false.into());
+            fields.insert(
+                "verification_notes".into(),
+                serde_json::json!([] as [&str; 0]),
+            );
+            fields.insert("error".into(), error.to_string().into());
+        }
+    }
+    Box::new(warp::reply::with_status(warp::reply::json(&body), status))
 }
 
 fn parse_llama_build(output: &str) -> Option<u64> {
@@ -187,6 +404,73 @@ fn api_llama_binary_capabilities(
         })
 }
 
+/// Where the live runtime came from, read from the manifest beside it.
+///
+/// Provenance only: it never says what the runtime can do. `null` when there
+/// is no managed runtime to describe. A directory that no longer matches its
+/// manifest is `custom` (the manifest facts are withheld because they no
+/// longer describe it); one with no readable manifest is `unknown`.
+pub(super) fn runtime_provenance(config: &AppConfig) -> serde_json::Value {
+    let (bin_dir, custom) = managed_bin_dir(config);
+    // Hashing a half-swapped directory would report a false mismatch.
+    provenance_for(
+        &bin_dir,
+        custom.is_some(),
+        crate::llama_runtime::gate::swap_window_active(),
+    )
+}
+
+/// The pure part: `bin_dir` is already resolved, so tests never depend on the
+/// developer's real runtime roots.
+fn provenance_for(bin_dir: &Path, custom: bool, swap_active: bool) -> serde_json::Value {
+    use crate::llama_runtime::manifest::{ManifestCheck, check_manifest};
+
+    let empty = |source: &str, hashes_match: Option<bool>| {
+        serde_json::json!({
+            "source": source,
+            "label": serde_json::Value::Null,
+            "reference": serde_json::Value::Null,
+            "commit": serde_json::Value::Null,
+            "accelerator": serde_json::Value::Null,
+            "fa_quants_spec": serde_json::Value::Null,
+            "cuda_architectures": serde_json::Value::Null,
+            "hashes_match": hashes_match,
+        })
+    };
+    if custom {
+        return empty("custom", None);
+    }
+    let exe = if cfg!(windows) {
+        "llama-server.exe"
+    } else {
+        "llama-server"
+    };
+    if !bin_dir.join(exe).is_file() {
+        return serde_json::Value::Null;
+    }
+    if swap_active {
+        return empty("unknown", None);
+    }
+    let manifest = match RuntimeManifest::read(bin_dir) {
+        Ok(Some(manifest)) => manifest,
+        Ok(None) | Err(_) => return empty("unknown", None),
+    };
+    match check_manifest(bin_dir) {
+        ManifestCheck::Matches => serde_json::json!({
+            "source": manifest.source,
+            "label": manifest.label,
+            "reference": manifest.llama_cpp.reference,
+            "commit": manifest.llama_cpp.commit,
+            "accelerator": manifest.accelerator,
+            "fa_quants_spec": manifest.fa_quants_spec,
+            "cuda_architectures": manifest.cuda_architectures,
+            "hashes_match": true,
+        }),
+        ManifestCheck::Mismatch(_) => empty("custom", Some(false)),
+        ManifestCheck::Missing | ManifestCheck::Unreadable(_) => empty("unknown", None),
+    }
+}
+
 /// GET /api/llama-binary/version
 fn api_llama_binary_version(
     app_config: Arc<AppConfig>,
@@ -203,6 +487,12 @@ fn api_llama_binary_version(
 
                 let binary_path = managed_llama_server_path(&cfg);
                 let path_str = binary_path.display().to_string();
+                let provenance = {
+                    let cfg = cfg.clone();
+                    tokio::task::spawn_blocking(move || runtime_provenance(&cfg))
+                        .await
+                        .unwrap_or(serde_json::Value::Null)
+                };
 
                 let result = tokio::task::spawn_blocking(move || {
                     std::process::Command::new(&binary_path)
@@ -218,7 +508,8 @@ fn api_llama_binary_version(
                             warp::reply::json(&serde_json::json!({
                                 "build": serde_json::Value::Null,
                                 "version": serde_json::Value::Null,
-                                "path": path_str
+                                "path": path_str,
+                                "provenance": provenance
                             })),
                         ));
                     }
@@ -235,14 +526,16 @@ fn api_llama_binary_version(
                         warp::reply::json(&serde_json::json!({
                             "build": n,
                             "version": format!("b{}", n),
-                            "path": path_str
+                            "path": path_str,
+                            "provenance": provenance
                         })),
                     )),
                     None => Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
                         warp::reply::json(&serde_json::json!({
                             "build": serde_json::Value::Null,
                             "version": serde_json::Value::Null,
-                            "path": path_str
+                            "path": path_str,
+                            "provenance": provenance
                         })),
                     )),
                 }
@@ -706,113 +999,6 @@ fn api_llama_binary_platform_info(
         })
 }
 
-fn describe_process_status(status: std::process::ExitStatus) -> String {
-    if let Some(code) = status.code() {
-        return format!("exit code {code}");
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        if let Some(signal) = status.signal() {
-            return format!("signal {signal}");
-        }
-    }
-
-    "exit status unknown".to_string()
-}
-
-async fn check_llama_server_binary(binary: &Path) -> Result<(), String> {
-    // macOS Metal dylib initialization can make --help take longer than ten
-    // seconds on a cold process, even when the downloaded binary is healthy.
-    let output = tokio::time::timeout(LLAMA_SERVER_HEALTH_CHECK_TIMEOUT, async {
-        tokio::process::Command::new(binary)
-            .arg("--help")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .await
-    })
-    .await
-    .map_err(|_| "health check timed out".to_string())?
-    .map_err(|e| format!("spawn error: {e}"))?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let status = describe_process_status(output.status);
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if stderr.is_empty() {
-        Err(status)
-    } else {
-        Err(format!("{status}: {stderr}"))
-    }
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn restore_promoted_directory(
-    destination: &Path,
-    backup: &Path,
-    failed: &Path,
-) -> Result<(), String> {
-    if !backup.is_dir() {
-        return Err("previous binary directory is unavailable".to_string());
-    }
-    if failed.exists() {
-        std::fs::remove_dir_all(failed)
-            .map_err(|error| format!("could not clear failed update directory: {error}"))?;
-    }
-    std::fs::rename(destination, failed)
-        .map_err(|error| format!("could not move failed update aside: {error}"))?;
-    if let Err(error) = std::fs::rename(backup, destination) {
-        let _ = std::fs::rename(failed, destination);
-        return Err(format!(
-            "could not restore previous binary directory: {error}"
-        ));
-    }
-    std::fs::remove_dir_all(failed).map_err(|error| {
-        format!("previous binary restored, but failed update cleanup failed: {error}")
-    })?;
-    Ok(())
-}
-
-/// Retention sweep for timestamped rollback backups. Every llama.cpp update
-/// leaves `bin-previous-{tag}-{pid}-{stamp}` beside the bin dir; without a
-/// sweep they accumulate indefinitely (~65 MB each). Keeps the newest
-/// `keep` backups, removes the rest and any stale `bin-failed-*` directories.
-/// Best-effort: failures are logged, never fatal.
-fn sweep_old_bin_backups(dest_parent: &std::path::Path, dest_name: &str, keep: usize) {
-    let entries = match std::fs::read_dir(dest_parent) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-    let prefix_previous = format!("{dest_name}-previous-");
-    let prefix_failed = format!("{dest_name}-failed-");
-    let mut backups: Vec<(std::path::PathBuf, std::time::SystemTime)> = entries
-        .flatten()
-        .filter(|entry| {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            name.starts_with(&prefix_previous) || name.starts_with(&prefix_failed)
-        })
-        .filter_map(|entry| {
-            let modified = entry.metadata().and_then(|m| m.modified()).ok()?;
-            Some((entry.path(), modified))
-        })
-        .collect();
-    backups.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
-    for (path, _) in backups.into_iter().skip(keep) {
-        if let Err(error) = std::fs::remove_dir_all(&path) {
-            eprintln!(
-                "[warn] llama-binary/update: failed to remove old backup {}: {}",
-                path.display(),
-                error
-            );
-        }
-    }
-}
-
 /// POST /api/llama-binary/update — downloads latest release and overwrites llama-server binary
 fn api_llama_binary_update(
     state: AppState,
@@ -829,14 +1015,6 @@ fn api_llama_binary_update(
                 if !check_api_token(&auth, &cfg) {
                     return Ok(unauthorized_api_token());
                 }
-
-                // Allow updating while running: keep the current server alive while
-                // network/download/preflight work happens, then stop only for the
-                // final install window.
-                let mut previous_config = llama_update_restart_config(&state);
-                let restart_applicable = previous_config.is_some();
-
-                let dest_path = managed_llama_server_path(&cfg);
 
                 let os = std::env::consts::OS;
                 let arch = std::env::consts::ARCH;
@@ -957,425 +1135,129 @@ fn api_llama_binary_update(
                     ));
                 }
 
-                // Download + extract to a temp dir
+                // Download + extract to a temp dir. No runtime lock is held while
+                // downloading: the running model keeps serving until the swap.
                 let tmp_dir = match tempfile::tempdir() {
                     Ok(d) => d,
                     Err(e) => {
-                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                            warp::reply::json(&serde_json::json!({
-                                "ok": false,
-                                "error": format!("Failed to create temp dir: {}", e)
-                            })),
+                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(json_failure(
+                            format!("Failed to create temp dir: {e}"),
                         ));
                     }
                 };
-
-                if let Err(e) = download_and_extract(
-                    &client,
-                    &release,
-                    &assets,
-                    tmp_dir.path(),
-                )
-                .await
+                if let Err(e) = download_and_extract(&client, &release, &assets, tmp_dir.path()).await
                 {
-                    return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                        warp::reply::json(&serde_json::json!({
-                            "ok": false,
-                            "error": format!("Download/extract failed: {}", e)
-                        })),
-                    ));
+                    return Ok(json_failure(format!("Download/extract failed: {e}")));
                 }
 
                 let binary_name = if os == "windows" { "llama-server.exe" } else { "llama-server" };
-                let dest_dir = dest_path.parent().unwrap_or(&dest_path);
+                let Some(tmp_binary) = find_binary(tmp_dir.path(), binary_name) else {
+                    return Ok(json_failure(format!(
+                        "Could not find '{binary_name}' in extracted archive"
+                    )));
+                };
+                let _ = tmp_binary;
 
-                // Locate extracted binary in temp dir. Releases may place it at the root
-                // or inside a subdirectory (e.g. llama-bXXXX-bin-...).
-                fn find_binary(root: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
-                    let direct = root.join(name);
-                    if direct.is_file() {
-                        return Some(direct);
+                // Stage the complete candidate beside the live directory (same
+                // volume) so promotion is a pair of renames, never a copy into
+                // a live directory.
+                let (bin_dir, custom_path) = managed_bin_dir(&cfg);
+                let paths = match RuntimePaths::for_live_dir(&bin_dir) {
+                    Ok(p) => p,
+                    Err(e) => return Ok(json_failure(format!("Invalid runtime location: {e}"))),
+                };
+                let staging = paths.staging_dir(&new_transaction_id());
+                let stage_result = {
+                    let src = tmp_dir.path().to_path_buf();
+                    let staging = staging.clone();
+                    tokio::task::spawn_blocking(move || stage_release_files(&src, &staging)).await
+                };
+                match stage_result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        let _ = std::fs::remove_dir_all(&staging);
+                        return Ok(json_failure(format!("Failed to stage release files: {e}")));
                     }
-                    for entry in std::fs::read_dir(root).ok()? {
-                        let entry = entry.ok()?;
-                        let path = entry.path();
-                        if path.is_dir()
-                            && let Some(p) = find_binary(&path, name)
-                        {
-                            return Some(p);
-                        }
-                    }
-                    None
+                    Err(e) => return Ok(json_failure(format!("Staging task failed: {e}"))),
+                }
+                if let Err(e) = cleanup_old_binaries(&staging).await {
+                    eprintln!("[warn] llama.cpp binary cleanup failed: {e}");
                 }
 
-                let tmp_binary = match find_binary(tmp_dir.path(), binary_name) {
-                    Some(p) => p,
-                    None => {
-                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                            warp::reply::json(&serde_json::json!({
-                                "ok": false,
-                                "error": format!(
-                                    "Could not find '{}' in extracted archive",
-                                    binary_name
-                                )
-                            })),
-                        ));
+                let manifest = RuntimeManifest::for_directory(
+                    &staging,
+                    ManifestSource::UpstreamPrebuilt,
+                    format!("{tag} prebuilt"),
+                    LlamaCppRef {
+                        reference: Some(tag.clone()),
+                        commit: None,
+                        build_number: parse_llama_build(&tag).map(|n| n as u32),
+                    },
+                    Some(backend.to_string()),
+                )
+                .ok();
+
+                // One runtime-mutation gate; the swap window starts only once the
+                // journal exists.
+                let mut guard = match state.runtime_gate.try_begin(RuntimeOp::Update) {
+                    Ok(guard) => guard,
+                    Err(busy) => {
+                        let _ = std::fs::remove_dir_all(&staging);
+                        return Ok(json_busy(busy));
                     }
                 };
-
-                // Set executable bit before health check (unix).
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
-                        &tmp_binary,
-                        std::fs::Permissions::from_mode(0o755),
-                    );
-                }
-
-                // On macOS, Gatekeeper quarantines the entire extracted archive — the
-                // executable, dylibs, and Metal shaders alike. Strip recursively from the
-                // whole temp dir so that both the health check and the subsequent
-                // copy_all_files into dest_dir carry clean files.
-                #[cfg(target_os = "macos")]
-                {
-                    let _ = std::process::Command::new("xattr")
-                        .args(["-rd", "com.apple.quarantine"])
-                        .arg(tmp_dir.path())
-                        .output();
-                }
-
-                // If a server is currently running, stop it BEFORE health-checking the
-                // new binary. When a model is loaded, Metal/GPU resources are in use and
-                // a second llama-server process (even for --help) can block or time out.
-                if previous_config.is_some() {
-                    state.push_log(
-                        "[monitor] llama-binary/update: server is running; stopping to allow update"
-                            .into(),
-                    );
-                    if let Err(e) = stop_server(&state).await {
-                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                            warp::reply::json(&serde_json::json!({
-                                "ok": false,
-                                "error": format!("Failed to stop running llama-server before update: {}", e)
-                            })),
-                        ));
-                    }
-                }
-
-                // Any failure from here on happens with the server already
-                // stopped, so every error path below must restart it with the
-                // previous config before returning.
-                macro_rules! fail_update {
-                    ($json:expr) => {{
-                        if let Some(rc) = previous_config.take() {
-                            state.push_log(
-                                "[monitor] llama-binary/update: update failed; restarting llama-server with previous config"
-                                    .into(),
-                            );
-                            if let Err(e) = start_server(Arc::new(state.clone()), rc, &cfg).await {
-                                state.push_log(format!(
-                                    "[monitor] llama-binary/update: restart after failed update also failed: {}",
-                                    e
-                                ));
-                            }
-                        }
-                        return Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(
-                            warp::reply::json(&$json),
-                        ));
-                    }};
-                }
-
-                // Health check on the temp binary BEFORE writing anything to dest_dir.
-                // This ensures the live binary is never overwritten with a bad one.
-                // Capture stderr to diagnose failures (Gatekeeper, missing dylib, etc.).
-                if let Err(detail) = check_llama_server_binary(&tmp_binary).await {
-                    state.push_log(format!(
-                        "[monitor] llama-binary/update: new binary failed health check (llama-server --help): {}. Not installing.",
-                        detail
-                    ));
-                    fail_update!(serde_json::json!({
-                        "ok": false,
-                        "error": "New llama-server binary failed basic health check. \
-                            downloaded file may be corrupted or incompatible. \
-                            Try updating again or install manually."
-                    }));
-                }
-
-                // Log update intent.
-                state.push_log(format!(
-                    "[monitor] llama-binary/update: installing {} to {}",
-                    tag,
-                    dest_path.display()
-                ));
-
-                fn copy_all_files(
-                    src: &std::path::Path,
-                    dest: &std::path::Path,
-                ) -> std::io::Result<()> {
-                    for entry in std::fs::read_dir(src)?.filter_map(|e| e.ok()) {
-                        let path = entry.path();
-                        if path.is_dir() {
-                            copy_all_files(&path, dest)?;
-                        } else if let Some(fname) = path.file_name() {
-                            std::fs::copy(&path, dest.join(fname))?;
-                        }
-                    }
-                    Ok(())
-                }
-
-                fn configured_binary_path(
-                    install_dir: &std::path::Path,
-                    binary_name: &str,
-                    dest_path: &std::path::Path,
-                ) -> std::io::Result<std::path::PathBuf> {
-                    let configured_name = dest_path
-                        .file_name()
-                        .unwrap_or_else(|| std::ffi::OsStr::new(binary_name));
-                    let archive_path = install_dir.join(binary_name);
-                    let configured_path = install_dir.join(configured_name);
-                    if configured_path != archive_path && archive_path.exists() {
-                        match std::fs::rename(&archive_path, &configured_path) {
-                            Ok(()) => {}
-                            Err(_) => {
-                                std::fs::copy(&archive_path, &configured_path)?;
-                                let _ = std::fs::remove_file(&archive_path);
-                            }
-                        }
-                    }
-                    Ok(configured_path)
-                }
-
-                #[cfg(target_os = "macos")]
-                {
-                    let dest_parent = dest_dir.parent().unwrap_or_else(|| std::path::Path::new("."));
-                    let dest_name = dest_dir
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("bin");
-                    let stamp = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    let staging_dir = dest_parent.join(format!(
-                        ".{dest_name}.llama-update-{tag}-{}-{stamp}",
-                        std::process::id()
-                    ));
-                    let backup_dir = dest_parent.join(format!(
-                        "{dest_name}-previous-{tag}-{}-{stamp}",
-                        std::process::id()
-                    ));
-
-                    if staging_dir.exists() {
-                        let _ = std::fs::remove_dir_all(&staging_dir);
-                    }
-                    if let Err(e) = std::fs::create_dir_all(&staging_dir) {
-                        fail_update!(serde_json::json!({
-                            "ok": false,
-                            "error": format!("Failed create staging bin dir {}: {}", staging_dir.display(), e)
-                        }));
-                    }
-
-                    if let Err(e) = copy_all_files(tmp_dir.path(), &staging_dir) {
-                        fail_update!(serde_json::json!({
-                            "ok": false,
-                            "error": format!("Failed copy release files to staging dir {}: {}", staging_dir.display(), e)
-                        }));
-                    }
-
-                    let staged_binary = match configured_binary_path(&staging_dir, binary_name, &dest_path) {
-                        Ok(path) => path,
-                        Err(e) => {
-                            fail_update!(serde_json::json!({
-                                "ok": false,
-                                "error": format!("Failed prepare staged binary name: {}", e)
-                            }));
-                        }
-                    };
-
-                    if let Err(e) = cleanup_old_binaries(&staging_dir).await {
-                        eprintln!("[warn] llama.cpp binary cleanup failed: {}", e);
-                    }
-
-                    if let Err(detail) = check_llama_server_binary(&staged_binary).await {
-                        let _ = std::fs::remove_dir_all(&staging_dir);
-                        state.push_log(format!(
-                            "[monitor] llama-binary/update: staged binary failed health check (llama-server --help): {}. Not installing.",
-                            detail
-                        ));
-                        fail_update!(serde_json::json!({
-                            "ok": false,
-                            "error": format!("Staged llama-server binary failed basic health check: {}", detail)
-                        }));
-                    }
-
-                    if dest_dir.exists() {
-                        if backup_dir.exists() {
-                            let _ = std::fs::remove_dir_all(&backup_dir);
-                        }
-                        if let Err(e) = std::fs::rename(dest_dir, &backup_dir) {
-                            let _ = std::fs::remove_dir_all(&staging_dir);
-                            fail_update!(serde_json::json!({
-                                "ok": false,
-                                "error": format!("Failed move current bin dir to backup {}: {}", backup_dir.display(), e)
-                            }));
-                        }
-                    }
-
-                    if let Err(e) = std::fs::rename(&staging_dir, dest_dir) {
-                        if backup_dir.exists() && !dest_dir.exists() {
-                            let _ = std::fs::rename(&backup_dir, dest_dir);
-                        }
-                        fail_update!(serde_json::json!({
-                            "ok": false,
-                            "error": format!("Failed promote staged llama.cpp bin dir {} to {}: {}", staging_dir.display(), dest_dir.display(), e)
-                        }));
-                    }
-
-                    if let Err(detail) = check_llama_server_binary(&dest_path).await {
-                        let failed_dir = dest_parent.join(format!(
-                            "{dest_name}-failed-{tag}-{}-{stamp}",
-                            std::process::id()
-                        ));
-                        let rollback =
-                            restore_promoted_directory(dest_dir, &backup_dir, &failed_dir);
-                        let error = match &rollback {
-                            Ok(()) => format!(
-                                "Installed llama-server binary failed health check after promote: {detail}. Previous binary restored."
-                            ),
-                            Err(error) => format!(
-                                "Installed llama-server binary failed health check after promote: {detail}. Rollback failed: {error}"
-                            ),
-                        };
-                        state.push_log(format!(
-                            "[monitor] llama-binary/update: {}",
-                            error
-                        ));
-                        fail_update!(serde_json::json!({
-                            "ok": false,
-                            "error": error
-                        }));
-                    }
-                }
-
-                #[cfg(not(target_os = "macos"))]
-                {
-                    if let Err(e) = std::fs::create_dir_all(dest_dir) {
-                        fail_update!(serde_json::json!({
-                            "ok": false,
-                            "error": format!("Failed create bin dir {}: {}", dest_dir.display(), e)
-                        }));
-                    }
-
-                    if let Err(e) = copy_all_files(tmp_dir.path(), dest_dir) {
-                        fail_update!(serde_json::json!({
-                            "ok": false,
-                            "error": format!("Failed copy release files to {}: {}", dest_dir.display(), e)
-                        }));
-                    }
-
-                    if let Err(e) = configured_binary_path(dest_dir, binary_name, &dest_path) {
-                        fail_update!(serde_json::json!({
-                            "ok": false,
-                            "error": format!("Failed prepare installed binary name: {}", e)
-                        }));
-                    }
-
-                    if let Err(e) = cleanup_old_binaries(dest_dir).await {
-                        eprintln!("[warn] llama.cpp binary cleanup failed: {}", e);
-                    }
-
-                    if let Err(detail) = check_llama_server_binary(&dest_path).await {
-                        state.push_log(format!(
-                            "[monitor] llama-binary/update: installed binary failed health check (llama-server --help): {}.",
-                            detail
-                        ));
-                        fail_update!(serde_json::json!({
-                            "ok": false,
-                            "error": format!("Installed llama-server binary failed health check: {}", detail)
-                        }));
-                    }
-                }
-
-                if let (Some(parent), Some(name)) = (dest_dir.parent(), dest_dir.file_name()) {
-                    sweep_old_bin_backups(parent, &name.to_string_lossy(), 2);
-                }
-
-                state.push_log(format!(
-                    "[monitor] llama-binary/update: successfully installed {} (binary: {})",
-                    tag,
-                    dest_path.display()
-                ));
-
-                // Restart llama-server with previous config if it was running.
-                // Track whether we restarted so the frontend skips its own restart call.
-                let server_restarted = if let Some(rc) = previous_config {
-                    state.push_log(
-                        "[monitor] llama-binary/update: restarting llama-server with previous config".into(),
-                    );
-
-                    match start_server(Arc::new(state.clone()), rc, &cfg).await {
-                        Ok(()) => {
-                            state.push_log(
-                                "[monitor] llama-binary/update: llama-server restarted successfully".into(),
-                            );
-                            true
-                        }
-                        Err(e) => {
-                            state.push_log(format!(
-                                "[monitor] llama-binary/update: restart failed (binary updated; start manually if needed): {}",
-                                e
-                            ));
-                            false
-                        }
-                    }
+                let host = if custom_path.is_some() {
+                    // A custom server path is not ours to stop or restart.
+                    LiveHost::without_model(state.clone(), cfg.clone())
                 } else {
-                    false
+                    LiveHost::new(state.clone(), cfg.clone())
                 };
-
-                // Compute SHA256 of the llama-server binary so users can
-                // verify integrity out-of-band (e.g. `sha256sum llama-server`).
-                let installed_path = &dest_path;
-                let sha256_hex = std::fs::read(installed_path).ok().map(|bytes| {
-                    use sha2::Digest;
-                    let mut hasher = sha2::Sha256::new();
-                    hasher.update(&bytes);
-                    hasher
-                        .finalize()
-                        .iter()
-                        .map(|b| format!("{b:02x}"))
-                        .collect::<String>()
-                });
-
-                Ok::<Box<dyn warp::reply::Reply>, warp::Rejection>(Box::new(warp::reply::json(
-                    &serde_json::json!({
-                        "ok": true,
-                        "version": tag,
-                        "backend": backend,
-                        "arch": arch_str,
-                        "sha256": sha256_hex,
-                        // True when the backend already restarted the server; frontend
-                        // must skip its own /api/llama/restart call to avoid a double-restart.
-                        "server_restarted": server_restarted,
-                        // False when no llama.cpp backend was active (including Rapid-MLX).
-                        "restart_applicable": restart_applicable,
-                    }),
-                )))
+                state.push_log(format!(
+                    "[monitor] llama-binary/update: installing {tag} to {}",
+                    bin_dir.display()
+                ));
+                let request = PromoteRequest {
+                    staged_dir: staging.clone(),
+                    label: format!("{tag} prebuilt"),
+                    exe_name: binary_name.to_string(),
+                    manifest,
+                    verification: VerificationIntent::prebuilt(backend),
+                };
+                let result = promote(&host, &mut guard, &paths, request).await;
+                let restart_applicable = host.restart_applicable();
+                drop(guard);
+                // Cleanup and the install hash are blocking filesystem work:
+                // keep them off the request worker. The gate is already
+                // dropped, and that ordering is preserved.
+                let staging_cleanup = staging.clone();
+                let journal_path = paths.journal.clone();
+                let installed_binary = bin_dir.join(binary_name);
+                let sha256_hex = tokio::task::spawn_blocking(move || {
+                    discard_staging_unless_journaled(&staging_cleanup, &journal_path);
+                    std::fs::read(&installed_binary).ok().map(|bytes| {
+                        use sha2::Digest;
+                        let mut hasher = sha2::Sha256::new();
+                        hasher.update(&bytes);
+                        hasher.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+                    })
+                })
+                .await
+                .unwrap_or(None);
+                let custom = custom_path.as_ref().map(|p| p.display().to_string());
+                Ok(promote_reply(
+                    &state,
+                    result,
+                    PromoteReplyContext {
+                        tag: &tag,
+                        backend,
+                        arch: arch_str,
+                        sha256: sha256_hex,
+                        restart_applicable,
+                        custom_server_path: custom,
+                    },
+                ))
             }
         })
-}
-
-fn llama_update_restart_config(state: &AppState) -> Option<ServerConfig> {
-    let local_running = *state.local_server_running.lock().unwrap();
-    let llama_cpp_active = matches!(
-        state.local_launch_request.lock().unwrap().as_ref(),
-        Some(crate::inference::launch::LocalLaunchRequest::LlamaCpp(_))
-    );
-    if local_running && llama_cpp_active {
-        state.server_config.lock().unwrap().clone()
-    } else {
-        None
-    }
 }
 
 /// POST /api/llama/restart — restart the running llama-server with the current
@@ -1466,6 +1348,8 @@ fn api_llama_restart(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::llama_cpp::ServerConfig;
+    use crate::llama_runtime::host::restart_config;
 
     #[test]
     fn is_versioned_tag_distinguishes_stable_and_nightly_tags() {
@@ -1531,34 +1415,88 @@ mod tests {
                 }),
             ));
 
-        assert!(llama_update_restart_config(&state).is_none());
+        assert!(restart_config(&state).is_none());
     }
 
-    #[test]
-    fn promoted_binary_failure_restores_previous_directory() {
-        let root = tempfile::tempdir().unwrap();
-        let destination = root.path().join("bin");
-        let backup = root.path().join("bin-previous");
-        let failed = root.path().join("bin-failed");
-        std::fs::create_dir_all(&destination).unwrap();
-        std::fs::create_dir_all(&backup).unwrap();
-        std::fs::write(destination.join("llama-server"), b"new").unwrap();
-        std::fs::write(backup.join("llama-server"), b"known-good").unwrap();
+    async fn reply_json(reply: ReplyBox) -> serde_json::Value {
+        let cell = std::sync::Arc::new(std::sync::Mutex::new(Some(reply)));
+        let route = warp::any().map(move || cell.lock().unwrap().take().expect("one request"));
+        let response = warp::test::request().reply(&route).await;
+        serde_json::from_slice(response.body()).unwrap()
+    }
 
-        restore_promoted_directory(&destination, &backup, &failed).unwrap();
+    fn reply_ctx() -> PromoteReplyContext<'static> {
+        PromoteReplyContext {
+            tag: "b1",
+            backend: "cpu",
+            arch: "x64",
+            sha256: None,
+            restart_applicable: true,
+            custom_server_path: None,
+        }
+    }
 
+    #[tokio::test]
+    async fn rolled_back_reply_carries_the_restart_failure() {
+        let state = AppState::default();
+        let result = Ok(PromoteResult {
+            outcome: PromoteOutcome::RolledBack {
+                reason: "verification failed".into(),
+                restart_failed: Some("model failed to start".into()),
+            },
+            warnings: Vec::new(),
+            verification_evidence_unavailable: false,
+            verification_notes: Vec::new(),
+        });
+        let body = reply_json(promote_reply(&state, result, reply_ctx())).await;
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["outcome"], "rolled_back");
+        assert_eq!(body["error"], "verification failed");
+        assert_eq!(body["restart_error"], "model failed to start");
+    }
+
+    #[tokio::test]
+    async fn rolled_back_reply_without_a_restart_failure_has_no_restart_error() {
+        let state = AppState::default();
+        let result = Ok(PromoteResult {
+            outcome: PromoteOutcome::RolledBack {
+                reason: "verification failed".into(),
+                restart_failed: None,
+            },
+            warnings: Vec::new(),
+            verification_evidence_unavailable: false,
+            verification_notes: Vec::new(),
+        });
+        let body = reply_json(promote_reply(&state, result, reply_ctx())).await;
+        assert_eq!(body["outcome"], "rolled_back");
+        assert!(body.get("restart_error").is_none(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn prebuilt_help_only_evidence_is_surfaced_in_the_reply() {
+        let state = AppState::default();
+        let result = Ok(PromoteResult {
+            outcome: PromoteOutcome::Promoted { restarted: false },
+            warnings: Vec::new(),
+            verification_evidence_unavailable: true,
+            verification_notes: vec![
+                "Runtime evidence could not be read (timeout); only --help was verified.".into(),
+            ],
+        });
+        let body = reply_json(promote_reply(&state, result, reply_ctx())).await;
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["outcome"], "promoted");
+        assert_eq!(body["evidence_unavailable"], true);
         assert_eq!(
-            std::fs::read(destination.join("llama-server")).unwrap(),
-            b"known-good"
+            body["verification_notes"][0],
+            "Runtime evidence could not be read (timeout); only --help was verified."
         );
-        assert!(!backup.exists());
-        assert!(!failed.exists());
     }
 
     #[test]
     fn health_check_timeout_allows_slow_cold_macos_startup() {
         assert_eq!(
-            LLAMA_SERVER_HEALTH_CHECK_TIMEOUT,
+            crate::llama_runtime::verify::VERIFY_PROBE_TIMEOUT,
             std::time::Duration::from_secs(30)
         );
     }
@@ -1576,5 +1514,169 @@ mod tests {
         assert_eq!(parse_llama_build("build: 10576"), Some(10576));
         assert_eq!(parse_llama_build("version: 10576"), Some(10576));
         assert_eq!(parse_llama_build("version: 0.0.0"), None);
+    }
+
+    fn provenance_config(root: &std::path::Path) -> AppConfig {
+        use clap::Parser;
+        let mut config = AppConfig::from_args_pure(crate::cli::AppArgs::parse_from([
+            "llama-monitor",
+            "--llama-server-path",
+            "llama-server",
+            "--gpu-backend",
+            "none",
+        ]));
+        config.app_paths = crate::paths::AppPaths::from_root(root.to_path_buf());
+        let exe = if cfg!(windows) {
+            "llama-server.exe"
+        } else {
+            "llama-server"
+        };
+        config.llama_server_path = config.app_paths.bin_dir().join(exe);
+        config
+    }
+
+    fn write_runtime(config: &AppConfig, source: ManifestSource) -> std::path::PathBuf {
+        let bin = config.app_paths.bin_dir();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(&config.llama_server_path, b"exe").unwrap();
+        std::fs::write(bin.join("libggml.so"), b"lib").unwrap();
+        let mut manifest = RuntimeManifest::for_directory(
+            &bin,
+            source,
+            "b11727 source build",
+            LlamaCppRef {
+                reference: Some("b11727".into()),
+                commit: Some("098ce526b0000000000000000000000000000000".into()),
+                build_number: Some(11727),
+            },
+            Some("cuda".into()),
+        )
+        .unwrap();
+        manifest.fa_quants_spec = Some("all".into());
+        manifest.cuda_architectures = Some("120a-real".into());
+        manifest.write(&bin).unwrap();
+        bin
+    }
+
+    #[test]
+    fn provenance_is_unknown_during_a_runtime_swap() {
+        let root = tempfile::tempdir().unwrap();
+        let config = provenance_config(root.path());
+        write_runtime(&config, ManifestSource::FoundrySourceBuild);
+        assert_eq!(
+            provenance_for(&config.app_paths.bin_dir(), false, true)["source"],
+            "unknown"
+        );
+        assert_eq!(
+            provenance_for(&config.app_paths.bin_dir(), false, false)["source"],
+            "foundry_source_build"
+        );
+    }
+
+    #[test]
+    fn provenance_is_null_without_a_managed_runtime() {
+        let root = tempfile::tempdir().unwrap();
+        let config = provenance_config(root.path());
+        assert!(provenance_for(&config.app_paths.bin_dir(), false, false).is_null());
+    }
+
+    #[test]
+    fn provenance_reports_a_matching_source_build_manifest() {
+        let root = tempfile::tempdir().unwrap();
+        let config = provenance_config(root.path());
+        write_runtime(&config, ManifestSource::FoundrySourceBuild);
+        let p = provenance_for(&config.app_paths.bin_dir(), false, false);
+        assert_eq!(p["source"], "foundry_source_build");
+        assert_eq!(p["label"], "b11727 source build");
+        assert_eq!(p["reference"], "b11727");
+        assert_eq!(p["commit"], "098ce526b0000000000000000000000000000000");
+        assert_eq!(p["accelerator"], "cuda");
+        assert_eq!(p["fa_quants_spec"], "all");
+        assert_eq!(p["cuda_architectures"], "120a-real");
+        assert_eq!(p["hashes_match"], true);
+    }
+
+    #[test]
+    fn provenance_reports_an_upstream_prebuilt_manifest() {
+        let root = tempfile::tempdir().unwrap();
+        let config = provenance_config(root.path());
+        write_runtime(&config, ManifestSource::UpstreamPrebuilt);
+        assert_eq!(
+            provenance_for(&config.app_paths.bin_dir(), false, false)["source"],
+            "upstream_prebuilt"
+        );
+    }
+
+    #[test]
+    fn provenance_marks_a_modified_directory_custom_and_withholds_manifest_facts() {
+        let root = tempfile::tempdir().unwrap();
+        let config = provenance_config(root.path());
+        let bin = write_runtime(&config, ManifestSource::FoundrySourceBuild);
+        std::fs::write(bin.join("libggml.so"), b"swapped").unwrap();
+        let p = provenance_for(&config.app_paths.bin_dir(), false, false);
+        assert_eq!(p["source"], "custom");
+        assert_eq!(p["hashes_match"], false);
+        assert!(p["commit"].is_null() && p["label"].is_null());
+    }
+
+    #[test]
+    fn provenance_is_unknown_without_a_manifest_and_custom_for_an_external_path() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = provenance_config(root.path());
+        std::fs::create_dir_all(config.app_paths.bin_dir()).unwrap();
+        std::fs::write(&config.llama_server_path, b"exe").unwrap();
+        let p = provenance_for(&config.app_paths.bin_dir(), false, false);
+        assert_eq!(p["source"], "unknown");
+        assert!(p["hashes_match"].is_null());
+
+        config.llama_server_path = root.path().join("elsewhere").join("my-server");
+        let (bin, custom) = managed_bin_dir(&config);
+        assert_eq!(
+            provenance_for(&bin, custom.is_some(), false)["source"],
+            "custom"
+        );
+    }
+}
+
+#[cfg(test)]
+mod staging_cleanup_tests {
+    use super::{discard_staging_unless_journaled, stage_release_files};
+
+    #[test]
+    fn staging_is_kept_while_a_journal_exists_and_removed_once_it_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().join(".bin.staging-t1");
+        let journal = dir.path().join(".runtime-transaction.json");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("llama-server"), b"x").unwrap();
+        std::fs::write(&journal, b"{}").unwrap();
+
+        discard_staging_unless_journaled(&staging, &journal);
+        assert!(
+            staging.join("llama-server").is_file(),
+            "recovery still needs it"
+        );
+
+        std::fs::remove_file(&journal).unwrap();
+        discard_staging_unless_journaled(&staging, &journal);
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn staged_prebuilt_files_are_flushed_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("extracted/sub");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("llama-server"), b"binary").unwrap();
+        std::fs::write(src.join("libggml.so"), b"lib").unwrap();
+        let staging = dir.path().join("staging");
+
+        let before = crate::llama_runtime::durable::syncs();
+        stage_release_files(&dir.path().join("extracted"), &staging).unwrap();
+        assert_eq!(crate::llama_runtime::durable::syncs() - before, 2);
+        assert_eq!(
+            std::fs::read(staging.join("llama-server")).unwrap(),
+            b"binary"
+        );
     }
 }
