@@ -24,7 +24,7 @@
 // whole run uses base+k. LLAMA_MONITOR_UI_URL is removed so each process owns its server.
 // Exit status is non-zero if any process fails.
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { availableParallelism } from 'node:os';
 import { createInterface } from 'node:readline';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
@@ -69,16 +69,32 @@ mkdirSync(logDir, { recursive: true });
 const logPath = global => join(logDir, `proc-${global}.log`);
 const isWindows = process.platform === 'win32';
 
-/** Signal a launched run and everything it started (Playwright, its server, browsers). */
+/**
+ * Signal a launched run and everything it started (Playwright, its server, browsers).
+ * This acts on the process GROUP, not on whether the direct child is still alive: the
+ * wrapper can exit while its server or a browser lives on, and those must still be stopped.
+ */
 function killTree(child, signal) {
-  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  if (!child.pid) return;
   try {
     if (isWindows) {
-      spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+      spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
     } else {
       process.kill(-child.pid, signal); // the child leads its own process group
     }
-  } catch { /* already gone */ }
+  } catch { /* nothing left in the group */ }
+}
+
+/** True while any process of the child's group is still running. */
+function treeAlive(child) {
+  if (!child.pid) return false;
+  if (isWindows) return child.exitCode === null && child.signalCode === null;
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
 }
 
 function launch(slot) {
@@ -110,6 +126,8 @@ function launch(slot) {
   children.push(child);
   return new Promise(resolve => {
     child.on('exit', code => {
+      // Playwright is done; anything still in its group (server, browsers) is leftover.
+      killTree(child, 'SIGKILL');
       results.push({ global, port, code });
       resolve();
     });
@@ -122,7 +140,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     if (stopping) return;
     stopping = true;
     console.error(`\nrun-parallel: ${signal}, stopping every process tree`);
-    const alive = () => children.some(c => c.exitCode === null && c.signalCode === null);
+    const alive = () => children.some(treeAlive);
     const waitUntil = async ms => {
       const end = Date.now() + ms;
       while (alive() && Date.now() < end) await new Promise(r => setTimeout(r, 100));
