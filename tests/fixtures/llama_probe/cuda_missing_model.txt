@@ -1,0 +1,34 @@
+** WARNING: connection is not using a post-quantum key exchange algorithm.
+** This session may be vulnerable to "store now, decrypt later" attacks.
+** The server may need to be upgraded. See https://openssh.com/pq.html
+I srv  llama_server: initializing ...
+I ggml_cuda_init: found 1 CUDA devices (Total VRAM: 32579 MiB):
+I   Device 0: NVIDIA GeForce RTX 5090, compute capability 12.0, VMM: yes, VRAM: 32579 MiB
+I load_backend: loaded CUDA backend from D:\AI\loaders\llamacpp\ggml-cuda.dll
+I load_backend: loaded CPU backend from D:\AI\loaders\llamacpp\ggml-cpu-haswell.dll
+I cmn  common_param: common_params_print_info: build 11696 (ceefd16da) with MSVC 19.44.35221.0 for Windows AMD64
+I cmn  common_param: common_params_print_info: verbosity = 4 (adjust with the `-lv N` CLI arg)
+I cmn  common_param: device_info:
+I cmn  common_param:   - CUDA0   : NVIDIA GeForce RTX 5090 (32579 MiB, 30991 MiB free)
+I cmn  common_param:   - CPU     : AMD Ryzen 7 5800XT 8-Core Processor             (65461 MiB, 23785 MiB free)
+I cmn  common_param: system_info: n_threads = 8 (n_threads_batch = 8) / 16 | CUDA : ARCHS = 1200 | USE_GRAPHS = 1 | FA_QUANTS = all | BLACKWELL_NATIVE_FP4 = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+I srv  llama_server: n_parallel is set to auto, using n_parallel = 4 and kv_unified = true
+I srv          init: using 15 threads for HTTP server
+W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+I srv    load_model: loading model '/nonexistent/foundry-probe-xyz.gguf'
+I srv    load_model: local path '/nonexistent/foundry-probe-xyz.gguf'
+I cmn  common_init_: fitting params to device memory ...
+I cmn  common_init_: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
+I common_params_fit_impl: getting device memory data for initial parameters:
+E gguf_init_from_file: failed to open GGUF file '/nonexistent/foundry-probe-xyz.gguf' (No such file or directory)
+E llama_model_load: error loading model: llama_model_loader: failed to load model from /nonexistent/foundry-probe-xyz.gguf
+E llama_model_load_from_file_impl: failed to load model
+E common_fit_params: encountered an error while trying to fit params to free device memory: failed to load model
+I common_fit_params: fitting params to free memory took 0.00 seconds
+E gguf_init_from_file: failed to open GGUF file '/nonexistent/foundry-probe-xyz.gguf' (No such file or directory)
+E llama_model_load: error loading model: llama_model_loader: failed to load model from /nonexistent/foundry-probe-xyz.gguf
+E llama_model_load_from_file_impl: failed to load model
+E cmn  common_init_: failed to load model '/nonexistent/foundry-probe-xyz.gguf'
+E srv    load_model: failed to load model, '/nonexistent/foundry-probe-xyz.gguf'
+I srv   operator (): operator (): cleaning up before exit...
+E srv  llama_server: exiting due to model loading error

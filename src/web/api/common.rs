@@ -155,6 +155,19 @@ pub fn check_api_token(auth: &Option<String>, cfg: &AppConfig) -> bool {
     bearer_matches_api_token(bearer, cfg)
 }
 
+/// Gate for elevated, high-impact endpoints. The db-admin-token is required
+/// whenever one is configured; the api-token alone never suffices then. With
+/// no admin token (local-first mode) it falls back to the api-token, so an
+/// unset admin token cannot open a route the api-token would have closed.
+pub fn check_elevated_token(auth: &Option<String>, cfg: &AppConfig) -> bool {
+    let admin_configured = cfg.live_db_admin_token().is_some_and(|t| !t.is_empty());
+    if admin_configured {
+        check_db_admin_token(auth, cfg)
+    } else {
+        check_api_token(auth, cfg)
+    }
+}
+
 /// Check if the Authorization header matches the configured db-admin-token.
 pub(crate) fn check_db_admin_token(auth: &Option<String>, cfg: &AppConfig) -> bool {
     let bearer = auth.as_ref().and_then(|v| v.strip_prefix("Bearer "));

@@ -1,0 +1,6 @@
+[3/140] Building CXX object src/CMakeFiles/llama.dir/llama-model.cpp.o
+FAILED: src/CMakeFiles/llama.dir/llama-model.cpp.o
+/usr/bin/c++ -c llama-model.cpp
+llama-model.cpp:812:5: error: use of undeclared identifier 'frobnicate'
+  812 |     frobnicate(x);
+ninja: build stopped: subcommand failed.

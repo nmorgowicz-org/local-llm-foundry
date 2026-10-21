@@ -1,0 +1,3 @@
+-- Populating cccl
+CMake Error at cccl-subbuild/cccl-populate-prefix/tmp/cccl-populate-gitclone.cmake:50 (message):
+  Failed to clone repository: 'https://github.com/nvidia/cccl'

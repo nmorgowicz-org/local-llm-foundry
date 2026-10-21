@@ -16,6 +16,8 @@ pub mod inference;
 pub mod lhm;
 pub mod lhm_persistence;
 pub mod llama;
+pub mod llama_build;
+pub mod llama_runtime;
 pub mod memory_availability;
 pub mod model_download;
 pub mod model_vision;

@@ -22,6 +22,8 @@ Internally, the API is implemented as a modular warp router in `src/web/api/mod.
 - `hf` — HuggingFace integration (search, files, token, etc.)
 - `lhm` — LibreHardwareMonitor (Windows-only)
 - `llama_binary` — llama-server binary version and updates
+- `llama_build_routes` — build llama.cpp from source: prerequisites, jobs, caches
+- `llama_runtime_routes` — managed runtime rollback and runtime state
 - `metrics` — system/metrics endpoints
 - `models` — model scan, downloads, GGUF metadata
 - `presets` — preset CRUD
@@ -539,7 +541,7 @@ Updates a bundled preset’s saved default selection and, when supplied, its bun
 
 #### Resolver issue codes
 
-`resolve`, `selection` (PATCH), and a session launch that resolves a bundled preset all share `crate::presets::resolver::resolve_preset`. When resolution fails, all three return `400` with `{"ok": false, "code": "selection_invalid", "error": <issues>}`, where `error` is the serialized `Vec<ValidationIssue>` (`{field, code, message, repair}`); the `/resolve` and PATCH routes JSON-stringify it into `error`, the session-launch route embeds the array directly. A successful `/resolve` response never carries these codes — its `capability_reasons` field only reports kv_policy quality-floor and mixed-K/V warnings, which are advisory, not blocking.
+`resolve`, `selection` (PATCH), and a session launch that resolves a bundled preset all share `crate::presets::resolver::resolve_preset`. When resolution fails, all three return `400` with `{"ok": false, "code": "selection_invalid", "error": <issues>}`, where `error` is the serialized `Vec<ValidationIssue>` (`{field, code, message, repair}`); the `/resolve` and PATCH routes JSON-stringify it into `error`, the session-launch route embeds the array directly. A successful `/resolve` response never carries these codes — its `capability_reasons` field only reports kv_policy quality-floor and K/V fallback guidance, which are advisory, not blocking.
 
 | Code | Field | Trigger |
 | --- | --- | --- |
@@ -549,7 +551,6 @@ Updates a bundled preset’s saved default selection and, when supplied, its bun
 | `artifact_not_found` | `selection` | the selected `artifact_id` is not present in the bundle |
 | `artifact_not_weights` | `selection` | the selected artifact is not a `Weights`-role artifact |
 | `artifact_not_local` | `selection` | the selected artifact has no adopted local path |
-| `MIXED_MAIN_KV_UNSUPPORTED` | `selection` | `kv_policy` is `q4_0`/`q8_0` mixed and the binary capability snapshot does not advertise `mixed_main_kv` |
 | `N_CPU_MOE_NEGATIVE` | `selection` | `n_cpu_moe` is negative |
 | `N_CPU_MOE_UNIFIED_MEMORY_UNQUALIFIED` | `selection` | `n_cpu_moe > 0` on a unified-memory host (CPU expert placement is not qualified there) |
 | `N_CPU_MOE_DENSE_MODEL` | `selection` | `n_cpu_moe > 0` but the artifact's `model_kind` is `Dense` |
@@ -1649,7 +1650,6 @@ is not retried because the runtime may already have accepted the inference. Time
 before a response starts return `504`; after SSE begins they emit an error event and
 end forwarding. Helper timeout failures also release their inference permits.
 
-
 ### `POST /api/chat/abort`
 
 Auth: api-token.
@@ -2573,24 +2573,107 @@ window.
 
 - Auth: `api-token`.
 
+### `GET /api/llama-binary/kv-support`
+
+Authenticated, model-aware classification of a main K/V cache pair against the
+installed llama-server's *loaded runtime* (not a manifest or a platform guess).
+
+Query: `k` and `v` (required cache types), `fa` (the preset's `flash_attn`
+value, mapped exactly as a launch maps it: only `off` launches `-fa off`,
+everything else launches `-fa on`), `model_id` (optional; a path **relative to
+the models directory**, resolved and contained server-side, never an arbitrary
+path), `device_id` (optional; must be a device the loaded runtime enumerated).
+
+Response fields: `support` (`{kind: native | fallback | unverified | wont_start, ...}`),
+`blocking` (true only for `wont_start`), `compiled_pair` (typed evidence of a
+compiled fused kernel, independent of expected execution), `reason`, `fix`,
+`buildable_missing` (a confirmed CUDA pair that a source build would add),
+`backend`, `effective_flash_attn`, `runtime_identity`, `device_identity`,
+`model_metadata_identity`, `basis_version`, `device_source`, `advisories`, and
+`session_observations` (partial log-derived confirmation for the current
+server session; absence proves nothing).
+
+`device_id` defaults to the only accelerator the runtime enumerated (or several
+identical ones); `device_source` reports `requested`, `default_single_accelerator`
+or `unknown`, and an ambiguous device keeps the answer `unverified` rather than
+guessing. `advisories` is model-family guidance (id, severity, text, source). It
+is empty without a resolved model, never changes `support`, and is qualitative:
+the Gemma 4 entry is user/maintainer guidance for quantizing either K or V, and
+the Qwen3.8-27B entry is a maintainer observation for `q8_0`/`q4_0` on that model
+only.
+
+Only a quantized V cache with flash attention off is `wont_start` (llama.cpp
+refuses to start). Missing or malformed runtime evidence is `unverified` and
+never blocks. `400` for unknown cache types, unenumerated device ids, or a
+`model_id` outside the models directory.
+
 ### `GET /api/llama-binary/version`
 
 Return the currently installed llama-server binary version.
 
 - Auth: `api-token`.
+- Response: `build`, `version` (`b<build>`), `path` (both `null` when the binary cannot
+  report a build) and `provenance`.
+- `provenance` records where the live runtime came from, read from
+  `bin/llama-build-manifest.json`; it is `null` when there is no managed runtime. It is
+  provenance only and never says what the runtime can do (capabilities come from the
+  runtime probe):
+
+  | Field | Meaning |
+  | --- | --- |
+  | `source` | `foundry_source_build`, `upstream_prebuilt`, `custom` or `unknown` |
+  | `label`, `reference`, `commit` | Manifest label, upstream ref (`b11727`, `master`) and the exact commit; `null` unless the manifest matches |
+  | `accelerator`, `fa_quants_spec`, `cuda_architectures` | What the build was configured for; `null` unless the manifest matches |
+  | `hashes_match` | `true` when every shipped file matches the manifest, `false` when the directory was modified, `null` when it could not be checked |
+
+  A directory whose files no longer match its manifest is reported as `custom` with
+  `hashes_match: false` and the manifest facts withheld, because they no longer describe it.
+  A runtime with no readable manifest is `unknown`; a custom `llama_server_path` outside the
+  managed `bin/` is `custom`. While a runtime swap is in flight the response is `unknown`
+  rather than a hash of a half-swapped directory.
 
 ### `POST /api/llama-binary/update`
 
-Download and install a specific llama.cpp release.
+Download and install a specific llama.cpp release as a journaled promotion.
 
 - Auth: `api-token`.
 - Request: `{ "tag": "b5700", "backend": "metal" }` — `tag` selects a specific
   release; omit it to auto-select the newest release that ships an asset for
   the requested `backend` (the platform default when `backend` is omitted).
 - Behavior:
-  - Downloads release archive to `bin/`.
-  - Applies `chmod 755` on Unix.
-  - Copies all files (CUDA/Vulkan/SYCL builds require co-located libs).
+  - Downloads and extracts the release, then stages the full file set beside `bin/`
+    (CUDA/Vulkan/SYCL builds require co-located libs).
+  - Verifies the staged set, stops a running llama.cpp model, swaps `bin/` and the single
+    retained `bin-previous/` by rename, verifies the live set, and restarts the model.
+  - A custom `llama_server_path` still installs to the managed `bin/`; the path is reported
+    as `custom_server_path`.
+- Response: `ok`, `outcome` (`promoted`, `installed_restart_failed`, `rolled_back`,
+  `failed`), `version`, `backend`, `arch`, `sha256`, `server_restarted`,
+  `restart_applicable`, `restart_error` (when the restart failed), `custom_server_path`,
+  `warnings`, `evidence_unavailable`, `verification_notes`. `installed_restart_failed`
+  keeps `ok: true`: the runtime is installed. `evidence_unavailable` is `true` when the
+  probe output was unrecognized and only `--help` was verified; `verification_notes`
+  carries the verifier's notes.
+- Errors: `409 {owner}` when another runtime mutation is in flight, or when an earlier
+  interrupted transaction is unresolved.
+- See `docs/reference/binary-lifecycle.md` for the transaction and recovery model.
+
+### `POST /api/llama-binary/rollback`
+
+Swap the live and previous runtime sets under the same gate and journal.
+
+- Auth: `api-token`.
+- Response: same shape as update. `outcome: "failed"` when there is no previous set.
+- Errors: `409 {owner}` when another runtime mutation is in flight.
+
+### `GET /api/llama-binary/runtime-status`
+
+Runtime state for the llama.cpp panel.
+
+- Auth: `api-token`.
+- Response: `ok`, `busy_owner`, `live` and `previous` (`{label}` or `null`),
+  `previous_available`, `transaction` (`state`: `clean` | `pending` | `blocked`, plus
+  `journal` or `reason`), `last` (the last finished transaction), `custom_server_path`.
 
 ### `POST /api/llama/restart`
 
@@ -2609,6 +2692,171 @@ Restart a locally running llama-server with the current binary (useful after ins
     - No local server is running.
     - No saved server config found.
   - Stop or restart fails.
+
+## Llama.cpp Source Build
+
+Route handlers: `src/web/api/llama_build_routes.rs`; state and ownership in
+`src/llama_build/service.rs`. The same engine backs `local-llm-foundry llama-build`.
+
+Every route requires the `api-token` and every response has `ok`; errors have `error`.
+Accelerators are `metal`, `cuda` or `cpu` and must be buildable on the host
+(macOS: `metal`, `cpu`; Windows and Linux: `cuda`, `cpu`), otherwise `400`. Malformed JSON is
+always `400`, never `404`. Request bodies are limited to 16 KiB and no field carries a
+filesystem path; job ids must be exactly 32 lowercase hex characters (`400` otherwise).
+
+**Conflicts.** A build, cache clean, prerequisite validation and tool install never overlap
+when they own the same directories. A conflict is `409 {ok: false, error, owner, owner_id}`
+where `owner` is `build`, `clean`, `validation` or `install`. A build that cannot start
+because an earlier crash left process records or an interrupted runtime transaction is
+`409 {ok: false, error, recovery_required: true}`. Compiling never holds the runtime gate;
+it is taken only to verify, swap and restart (see `docs/reference/binary-lifecycle.md`).
+
+### `GET /api/llama-build/status`
+
+- Response: `os` (`macos`, `windows`, `linux`), `accelerators`, `default_accelerator`,
+  `active_job_id` (`null` when idle), `last_job` (a job summary or `null`),
+  `recovery_required` (a message, or `null`; only reported while nothing is running) and
+  `owner` (`build`, `clean`, `validation`, `install`, or the runtime-gate operation such as
+  `promote`/`update`, else `null`).
+- A job summary is `{id, status, phase, outcome, accelerator, finished_at, failure_phase}`.
+
+### `GET /api/llama-build/prereqs?accelerator=`
+
+The cached prerequisite report (`llama-build/prereqs-last.json`).
+
+- `accelerator` defaults to the platform default.
+- Response: `accelerator`, `report` (`null` when none has been saved for this accelerator),
+  `stale`, `validating`, `validate_job_id`.
+- `report` is `{os, accelerator, checks, fingerprint, validated_at_unix, ready}`. Each check
+  is `{id, title, status, detail, fix, evidence}` with `status` `pass`/`warn`/`fail`/`skipped`
+  and `fix` `null` or one of `{kind: "copy", command}`, `{kind: "link", url, label}`,
+  `{kind: "action", id, label}`. `ready` is false only when a check failed.
+- `stale` is true when the report is missing, or when a fast re-check (no compile) of the
+  toolchain now yields a different `fingerprint`. The re-check result is cached for 15 s and is
+  skipped, leaving `stale: false`, while something owns the toolchain. On Windows the re-check
+  cannot reproduce the MSVC/SDK facts only a full pass captures, so only a missing report is
+  stale there.
+
+### `POST /api/llama-build/prereqs/validate`
+
+Run the full report, including the compile smoke test, in the background.
+
+- Request: `{"accelerator": "metal"}`.
+- Response: `202 {ok, job_id}`. Poll `GET /api/llama-build/prereqs` (`validating`) for the
+  result; the report replaces the cached one when the run ends.
+- Single-flight. `409 {owner}` while a build, clean, install or another validation owns the
+  tree.
+
+### `POST /api/llama-build/prereqs/fix`
+
+macOS only. Install allowlisted Homebrew formulae after an explicit click.
+
+- Elevated: send the `db-admin-token` as the bearer (the `api-token` is refused once an admin
+  token exists; with none configured the `api-token` is the gate). The body must also carry
+  `"confirm": "brew_install"`.
+  With Basic Auth or Form Login enabled, the outer login guard also accepts the admin bearer on
+  this path only, so the panel can send it in place of the Basic header.
+- Request: `{"action": "brew_install", "confirm": "brew_install", "packages": ["cmake", "ninja"]}`.
+- Allowlist: `git`, `cmake`, `ninja`, `ccache`. The server runs `brew install` with a direct
+  argument vector (no shell), de-duplicated and in a fixed order; free text is never passed on.
+- Response: `{ok, installed, output}` (`output` is the tail of brew's output).
+- Errors: `401` without the elevated token; `400` for a missing or wrong `confirm`, any other action, an empty or non-allowlisted package list, or a non-macOS
+  host; `409 {owner}` while anything else owns the toolchain; `500 {error, output}` when brew
+  fails. Windows installs are never automated: the report gives a copyable command or link.
+
+### `GET /api/llama-build/options?accelerator=`
+
+- Response: `accelerator`, `refs`, `refs_error`, `cuda_arch_auto`, `cuda_arch_choices`,
+  `jobs_auto`, `ccache_cap_bytes`, `ccache_cap_min_bytes`, `ccache_cap_max_bytes`, `show_cuda`.
+- `refs` is always `[{id: "latest_release", label, reference, commit}, {id: "master", ...}]`.
+  `reference`/`commit` are `null` for a ref that could not be resolved and `refs_error` says
+  why; the panel still loads offline. Results are cached for 60 s.
+- `cuda_arch_auto` is the architecture of the detected NVIDIA GPU (CUDA only, else `null`);
+  `jobs_auto` is the default compile concurrency.
+- There is deliberately no build-time estimate field; the panel shows live progress only.
+
+### `POST /api/llama-build/start`
+
+- Request: `{"accelerator": "metal", "ref": "latest_release", "cuda_arch": "120a-real",
+  "jobs": 8, "headroom": false, "wipe": false}`. `accelerator` and `ref`
+  (`latest_release` or `master`) are required.
+- Validation (`400`): `jobs` is 1 to twice the logical CPU count and cannot be combined with
+  `headroom` (half the CPUs at lowered priority); `cuda_arch` applies to CUDA builds only, uses
+  only `0-9 a-z ; . , -`, is at most 32 characters and must be a CMake architecture list
+  (`89`, `90a`, `120a-real`); `wipe` resets only the selected build tree.
+- Response: `202 {ok, job_id, resolved_commit}`. `resolved_commit` is the exact upstream commit
+  the job pinned; the request waits up to about 20 s for it and returns `null` when the job
+  ended first (for example a failed prerequisite) or the wait elapsed. The build uses that
+  commit even if upstream moves on.
+- Errors: `409 {owner}` (single-flight), `409 {recovery_required}`.
+- A running model is stopped and restarted only for the swap. The model state is read when
+  promotion begins, not when the build started.
+
+### `GET /api/llama-build/jobs/{id}`
+
+- Response: `id`, `phase` (`preflight`, `fetch`, `configure`, `compile`, `stage`, `promote`,
+  `done`), `status`, `progress` (`{done, total}` or `null`), `cancellable`, `outcome`,
+  `failure`, `started_at`, `finished_at` (unix seconds), `log_cursor` (lines written so far),
+  `resolved` (`{reference, commit}` or `null`), `restart_failed`, `accelerator`, `options`
+  (`{accelerator, ref, cuda_arch, jobs, headroom, wipe}`).
+- `status` is `running`, `succeeded`, `succeeded_restart_failed`, `failed`, `cancelled` or
+  `interrupted`. `succeeded_restart_failed` (`restart_failed: true`) means the new runtime is
+  installed and verified but the model did not restart; rollback stays available and nothing
+  was rolled back automatically. `interrupted` is a job whose process died.
+- `failure` is `null` or `{phase, summary, command, exit_code, log_tail, first_error, hint,
+  log_path}`; unavailable values are explicit `null`s, never omitted.
+- `cancellable` is false once the job is terminal and from the `promote` phase on.
+- Jobs survive a restart: the record and log of the last three finished jobs are read from
+  disk. `404` for an unknown job.
+
+### `GET /api/llama-build/jobs/{id}/log?after=N`
+
+- `N` is the number of lines already seen (default `0`). Response: `lines`, `next` (pass it as
+  the next `after`), `truncated` (the per-job 64 MiB file cap was reached; the live job keeps
+  running).
+- A page holds at most 2000 lines or 1 MiB. Line numbers are stable for the life of the job.
+
+### `POST /api/llama-build/jobs/{id}/cancel`
+
+- `200 {ok: true}` while the job is cancellable; the build stops its compiler tree before it
+  releases ownership and installs nothing.
+- `409 {ok: false, cancellable: false, error}` once installing or recovering
+  (`Installing/recovering — cannot cancel safely`) or when the job has already finished.
+  Promotion is journaled and is never cancelled halfway.
+
+### `GET /api/llama-build/cache`
+
+- Response: `source_bytes`, `ccache_bytes`, `ccache_cap_bytes`, `build_trees`
+  (`[{accelerator, bytes}]`, non-empty trees only), `previous_bytes` (the retained previous
+  runtime), `owner`.
+
+### `DELETE /api/llama-build/cache?include_source=false`
+
+Remove inactive build trees and the managed ccache (and the git checkout with
+`include_source=true`). Never touches the live or previous runtime, job logs or validation
+files.
+
+- Response: `{ok, removed, freed_bytes}`.
+- Errors: `409 {owner}` while a build, validation or install is active;
+  `409 {recovery_required}` when process records are unresolved; `400` for a bad
+  `include_source`.
+
+### `PUT /api/llama-build/cache-cap`
+
+- Request: `{"ccache_max_bytes": 2147483648}`. A whole number of bytes between 256 MiB and
+  16 GiB; floats, negatives, strings and out-of-range values are `400`.
+- Response: `{ok, ccache_cap_bytes}`. The value is saved to `llama-build.json` and applies to
+  the next build; no restart is needed. The default is 2 GiB.
+
+### `POST /api/llama-build/repair-processes`
+
+Clears an unresolved `llama-build/processes.json` left by a hard crash. Nothing is killed.
+
+- Request: `{"confirm": true}`. Without `confirm: true` the answer is `400`.
+- `200 {ok: true, cleared: N}` when the record was cleared (or there was nothing to clear).
+- `409 {ok: false, error, processes: [{pid, command}]}` while a recorded process is still alive,
+  another process references the build directory, or a build, validation, clean or install owns
+  the tree.
 
 ## Rapid-MLX Runtime Management
 
@@ -3177,6 +3425,8 @@ Route handlers: `src/web/api/llama_binary.rs`.
 - `GET /api/llama-binary/version` — currently installed binary version.
 - `GET /api/llama-binary/latest` — latest available llama.cpp release.
 - `GET /api/llama-binary/releases` — list of recent releases.
+- `POST /api/llama-binary/rollback` — swap live and previous runtime sets.
+- `GET /api/llama-binary/runtime-status` — previous availability and transaction state.
 - `GET /api/llama-binary/release?build=N` — specific release info by build ID.
 - `GET /api/llama-binary/platform-info` — current platform/backend info.
 - `POST /api/llama-binary/update` — download and install a release.

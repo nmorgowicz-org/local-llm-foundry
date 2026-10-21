@@ -449,6 +449,11 @@ pub fn run() -> Result<()> {
     harden_file_permissions(&app_config.config_dir.join("encryption-key"));
     harden_file_permissions(&app_config.auth_config_file);
 
+    // A standalone source builder cannot stop/restart this app's model.
+    // Hold the shared OS lease for the lifetime of app/agent execution.
+    let _runtime_process_lease =
+        crate::llama_build::cache::runtime_process_lease(&app_config.app_paths.root, false)?;
+
     if args.agent {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -729,6 +734,15 @@ pub fn run() -> Result<()> {
         .enable_all()
         .thread_stack_size(8 * 1024 * 1024)
         .build()?;
+
+    // Finish or undo any runtime swap a crash interrupted, before anything can
+    // launch a model against a half-swapped runtime directory.
+    for finding in crate::llama_runtime::startup::recover_for_startup(&app_config) {
+        if finding.warning {
+            eprintln!("[warn] {}", finding.message);
+        }
+        state.push_log(format!("[monitor] {}", finding.message));
+    }
 
     // Llama metrics poller. It remains idle until the user starts a preset or
     // explicitly attaches to an endpoint.

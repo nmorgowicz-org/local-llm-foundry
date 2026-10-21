@@ -1,0 +1,3 @@
+xcrun: error: invalid active developer path (/Library/Developer/CommandLineTools), missing xcrun at: /Library/Developer/CommandLineTools/usr/bin/xcrun
+CMake Error at CMakeLists.txt:2 (project):
+  No CMAKE_C_COMPILER could be found.

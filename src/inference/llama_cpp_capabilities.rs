@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use crate::inference::kv_support::KvSupportBasis;
+use crate::llama_runtime::probe::{EnvPolicy, RuntimeIdentity, probe_runtime};
 use anyhow::{Context, Result, anyhow, bail};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -87,9 +89,14 @@ pub struct CapabilitySnapshot {
     /// substring check, this records both forms and the accepted value set.
     #[serde(default)]
     pub typed: TypedLlamaCapabilities,
-    /// Mixed main-K/V support gate (`q8_0` K + `q4_0` V fused-attention pair).
-    /// Product default is `supported: false` until a trusted build manifest is integrated.
-    pub mixed_main_kv: MixedMainKv,
+    /// Typed K/V evidence read from the loaded backend (compiled FA pairs,
+    /// backend identity). Missing evidence is `Unavailable`, never a guess.
+    #[serde(default)]
+    pub kv_basis: KvSupportBasis,
+    /// Closure identity (executable + loaded backends + runtime libraries) the
+    /// evidence was read from. A change invalidates this snapshot.
+    #[serde(default)]
+    pub runtime_identity: Option<RuntimeIdentity>,
     pub evidence_timestamp: u64,
     pub source: CapabilitySnapshotSource,
 }
@@ -178,31 +185,6 @@ pub struct SpeculationCapabilities {
     pub ngram_spec: FeatureState,
 }
 
-/// Backend-owned mixed main-K/V support gate.
-///
-/// Only a trusted build manifest with exact SHA-256 binding may set `supported: true`.
-/// The only shipped provider (Phase 1b) sets `supported: false` unconditionally.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct MixedMainKv {
-    pub supported: bool,
-    /// Human-readable reason; load-bearing per invariant 17 — rendered in UI alongside the option.
-    pub reason: String,
-    /// How the value was determined: "product_default_denied", "build_manifest", etc.
-    pub source: String,
-}
-
-impl MixedMainKv {
-    /// Canonical product-default construction: rejected because we have no build
-    /// manifest binding to prove the fused-attention kernel property.
-    pub fn product_default_denied() -> Self {
-        Self {
-            supported: false,
-            reason: "Requires a llama.cpp build compiled with GGML_CUDA_FA_ALL_QUANTS advertising mixed main-K/V support through a product build manifest. Separate -ctk and -ctv value lists do not prove this kernel property.".into(),
-            source: "product_default_denied".into(),
-        }
-    }
-}
-
 impl CapabilitySnapshot {
     /// Conservative snapshot used when no executable is configured (for
     /// schema/API tests and degraded preview). It never authorizes optional
@@ -226,7 +208,8 @@ impl CapabilitySnapshot {
             tools: ToolCapabilities::default(),
             speculation: SpeculationCapabilities::default(),
             typed: TypedLlamaCapabilities::default(),
-            mixed_main_kv: MixedMainKv::product_default_denied(),
+            kv_basis: Default::default(),
+            runtime_identity: None,
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::ManualOverride,
         }
@@ -276,6 +259,12 @@ impl CapabilitySnapshot {
     pub fn is_valid_for(&self, current: &ExecutableIdentity) -> bool {
         self.executable_identity.path == current.path
             && self.executable_identity.file_hash == current.file_hash
+            // A plugin-only replacement leaves the executable unchanged; the
+            // closure check keeps both backend and UI evidence honest.
+            && self
+                .runtime_identity
+                .as_ref()
+                .is_none_or(RuntimeIdentity::still_matches_on_disk)
     }
 
     pub fn fingerprint(&self) -> String {
@@ -283,6 +272,9 @@ impl CapabilitySnapshot {
         hasher.update(self.executable_identity.path.as_bytes());
         hasher.update(self.executable_identity.file_hash.as_bytes());
         hasher.update(self.help_hash.as_bytes());
+        if let Some(identity) = &self.runtime_identity {
+            hasher.update(identity.fingerprint().as_bytes());
+        }
         hasher
             .finalize()
             .iter()
@@ -316,6 +308,15 @@ pub fn cache_snapshot(snapshot: CapabilitySnapshot) {
 }
 
 pub async fn generate_snapshot(binary: &Path) -> Result<CapabilitySnapshot> {
+    // Never execute or hash a runtime directory that is mid-swap. Callers treat
+    // an error as "capability unavailable"; the cached snapshot stays valid.
+    // The lease spans every probe below, so a swap waits for them and none
+    // collects evidence from two runtime versions.
+    let _lease = crate::llama_runtime::gate::acquire_read_lease()
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("the llama.cpp runtime is being updated; capability probing is paused")
+        })?;
     let identity = ExecutableIdentity::from_path(binary)?;
 
     let version = probe_version(binary).await?;
@@ -337,6 +338,16 @@ pub async fn generate_snapshot(binary: &Path) -> Result<CapabilitySnapshot> {
         .unwrap_or_default()
         .as_secs();
 
+    // Bounded runtime probe: loaded backend + compiled FA pairs. A failed probe
+    // yields explicit unavailable evidence (never blocks, never guessed).
+    let (kv_basis, runtime_identity) = match probe_runtime(binary, EnvPolicy::Inherited).await {
+        Ok(probe) => (probe.basis, probe.identity),
+        Err(error) => (
+            KvSupportBasis::unavailable(&format!("runtime probe failed: {error}")),
+            None,
+        ),
+    };
+
     let snapshot = CapabilitySnapshot {
         executable_identity: identity,
         version_text: version,
@@ -351,8 +362,8 @@ pub async fn generate_snapshot(binary: &Path) -> Result<CapabilitySnapshot> {
         tools,
         speculation,
         typed,
-        // Phase 1b: only shipped provider — product default denied.
-        mixed_main_kv: MixedMainKv::product_default_denied(),
+        kv_basis,
+        runtime_identity,
         evidence_timestamp: now,
         source: CapabilitySnapshotSource::AutoProbed,
     };
@@ -733,6 +744,31 @@ fn hash_file(path: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn snapshot_generation_is_refused_during_a_swap_window_but_not_for_the_owner() {
+        use crate::llama_runtime::gate::{RUNTIME_OWNER, RuntimeGate, RuntimeOp};
+        let gate = std::sync::Arc::new(RuntimeGate::default());
+        let mut guard = gate.try_begin(RuntimeOp::Update).unwrap();
+        guard.enter_swap_window();
+
+        let missing = std::path::Path::new("/nonexistent/llama-server");
+        let err = generate_snapshot(missing).await.unwrap_err().to_string();
+        assert!(err.contains("being updated"), "{err}");
+
+        // The owner is allowed through (and then fails on the missing binary,
+        // not on the swap window).
+        let owner_err = RUNTIME_OWNER
+            .scope(true, generate_snapshot(missing))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(!owner_err.contains("being updated"), "{owner_err}");
+
+        drop(guard);
+        let after = generate_snapshot(missing).await.unwrap_err().to_string();
+        assert!(!after.contains("being updated"), "{after}");
+    }
+
     use super::*;
 
     #[test]
@@ -871,7 +907,8 @@ Options:
             tools: Default::default(),
             speculation: Default::default(),
             typed: Default::default(),
-            mixed_main_kv: MixedMainKv::product_default_denied(),
+            kv_basis: Default::default(),
+            runtime_identity: None,
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::AutoProbed,
         };
@@ -907,7 +944,8 @@ Options:
             tools: Default::default(),
             speculation: Default::default(),
             typed: Default::default(),
-            mixed_main_kv: MixedMainKv::product_default_denied(),
+            kv_basis: Default::default(),
+            runtime_identity: None,
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::AutoProbed,
         };
@@ -967,7 +1005,8 @@ Options:
             tools: Default::default(),
             speculation: Default::default(),
             typed: Default::default(),
-            mixed_main_kv: MixedMainKv::product_default_denied(),
+            kv_basis: Default::default(),
+            runtime_identity: None,
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::AutoProbed,
         };
@@ -975,5 +1014,114 @@ Options:
         snap1.executable_identity.file_hash = "h2".into();
         let fp2 = snap1.fingerprint();
         assert_ne!(fp1, fp2);
+    }
+
+    #[test]
+    fn legacy_snapshot_json_never_manufactures_confirmed_kv_support() {
+        use crate::inference::kv_support::{Backend, Evidence};
+        let mut value = serde_json::to_value(CapabilitySnapshot::product_default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("kv_basis");
+        object.remove("runtime_identity");
+        // The removed gate, as an older build persisted it.
+        object.insert(
+            "mixed_main_kv".into(),
+            serde_json::json!({"supported": true, "reason": "build manifest", "source": "build_manifest"}),
+        );
+        let snapshot: CapabilitySnapshot = serde_json::from_value(value).unwrap();
+        assert_eq!(snapshot.kv_basis.backend, Backend::Unknown);
+        assert!(matches!(
+            snapshot.kv_basis.fa_pairs,
+            Evidence::Unavailable { .. }
+        ));
+        assert!(snapshot.runtime_identity.is_none());
+    }
+
+    #[test]
+    fn malformed_new_kv_basis_is_rejected_not_defaulted_to_support() {
+        let mut value = serde_json::to_value(CapabilitySnapshot::product_default()).unwrap();
+        value["kv_basis"] = serde_json::json!({"version": "nope", "backend": "cuda"});
+        assert!(serde_json::from_value::<CapabilitySnapshot>(value).is_err());
+    }
+
+    #[test]
+    fn new_kv_basis_round_trips() {
+        use crate::inference::kv_support::{
+            Backend, Evidence, KV_BASIS_VERSION, KvSupportBasis, compiled_fa_pairs,
+        };
+        let mut snapshot = CapabilitySnapshot::product_default();
+        snapshot.kv_basis = KvSupportBasis {
+            version: KV_BASIS_VERSION,
+            backend: Backend::Cuda,
+            fa_pairs: Evidence::confirmed(compiled_fa_pairs("all").unwrap(), "probe"),
+            runtime_identity: Some("abc".into()),
+            devices: vec!["CUDA0 : GPU".into()],
+            ..Default::default()
+        };
+        let round: CapabilitySnapshot =
+            serde_json::from_value(serde_json::to_value(&snapshot).unwrap()).unwrap();
+        assert_eq!(round.kv_basis, snapshot.kv_basis);
+    }
+
+    #[test]
+    fn plugin_only_replacement_invalidates_snapshot_validity_and_fingerprint() {
+        use crate::llama_runtime::probe::{LoadedBackend, RuntimeIdentity};
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("llama-server");
+        let plugin = dir.path().join("libggml-metal.so");
+        std::fs::write(&exe, b"exe").unwrap();
+        std::fs::write(&plugin, b"plugin-v1").unwrap();
+        let backends = [LoadedBackend {
+            name: "MTL".into(),
+            path: plugin.clone(),
+        }];
+        let identity = RuntimeIdentity::compute(&exe, &backends).unwrap();
+
+        let mut snapshot = CapabilitySnapshot::product_default();
+        let exe_identity = ExecutableIdentity::from_path(&exe).unwrap();
+        snapshot.executable_identity = exe_identity.clone();
+        snapshot.runtime_identity = Some(identity);
+        let fingerprint = snapshot.fingerprint();
+        assert!(snapshot.is_valid_for(&exe_identity));
+
+        // Replace only the plugin; the executable (and its hash) is unchanged.
+        std::fs::write(&plugin, b"plugin-v2-longer").unwrap();
+        let same_exe = ExecutableIdentity::from_path(&exe).unwrap();
+        assert_eq!(same_exe.file_hash, exe_identity.file_hash);
+        assert!(!snapshot.is_valid_for(&same_exe));
+
+        // A fresh closure identity gives a different fingerprint.
+        let mut fresh = snapshot.clone();
+        fresh.runtime_identity = Some(RuntimeIdentity::compute(&exe, &backends).unwrap());
+        assert_ne!(fresh.fingerprint(), fingerprint);
+    }
+
+    /// Opt-in: `LLAMA_SERVER_UNDER_TEST=/path/to/llama-server cargo test --lib real_binary -- --ignored`
+    #[tokio::test]
+    #[ignore = "needs a real llama-server binary"]
+    async fn real_binary_snapshot_has_runtime_evidence() {
+        let Ok(path) = std::env::var("LLAMA_SERVER_UNDER_TEST") else {
+            return;
+        };
+        let snapshot = generate_snapshot(Path::new(&path)).await.unwrap();
+        eprintln!(
+            "backend={:?} devices={:?}",
+            snapshot.kv_basis.backend, snapshot.kv_basis.devices
+        );
+        eprintln!("fa_pairs={:?}", snapshot.kv_basis.fa_pairs);
+        eprintln!(
+            "build={:?} metal_bf16={:?} metal_rule_applies={}",
+            snapshot.kv_basis.build_number,
+            snapshot.kv_basis.metal_bf16,
+            snapshot.kv_basis.metal_rule_applies()
+        );
+        assert!(
+            snapshot.runtime_identity.is_some(),
+            "closure identity expected"
+        );
+        assert_ne!(
+            snapshot.kv_basis.backend,
+            crate::inference::kv_support::Backend::Unknown
+        );
     }
 }

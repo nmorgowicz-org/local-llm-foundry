@@ -605,7 +605,12 @@ fn api_vram_estimate_breakdown(
                     let issue = match llama_kv_capability_snapshot(&cfg).await {
                         Some(snapshot) => {
                             crate::presets::validation::validate_main_kv_policy(
-                                &ctk, &ctv, &snapshot,
+                                &ctk,
+                                &ctv,
+                                crate::inference::kv_support::launch_flash_attn_mode(
+                                    body["flash_attn"].as_str().unwrap_or(""),
+                                ),
+                                &snapshot,
                             )
                         }
                         None => None,

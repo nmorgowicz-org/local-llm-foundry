@@ -1,0 +1,9 @@
+-- The C compiler identification is AppleClang 21.0.0.21000030
+-- Found OpenSSL: /opt/homebrew/Cellar/openssl@3/3.5.0/lib/libcrypto.dylib (found version "3.5.0")
+CMake Error at vendor/cpp-httplib/CMakeLists.txt:151 (target_link_libraries):
+  Target "cpp-httplib" links to:
+
+    OpenSSL::SSL
+
+  but the target was not found.  Possible reasons include:
+-- Configuring incomplete, errors occurred!

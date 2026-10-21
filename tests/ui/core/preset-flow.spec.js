@@ -906,6 +906,45 @@ test.describe('preset flow', () => {
     await expect(page.locator(`#${describedBy}`)).toHaveText('Agentic / tool use requires the quality KV floor.');
   });
 
+  test('a mixed KV policy stays selectable; an advisory reason never disables it and the shared line explains it', async ({ page }) => {
+    await page.route('**/api/llama-binary/kv-support*', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true, k: 'q8_0', v: 'q4_0', effective_flash_attn: 'on',
+        support: { kind: 'fallback', impact: 'slower_decode', reason: 'x' },
+        compiled_pair: { state: 'confirmed', value: false, source: 'probe' },
+        reason: 'No FlashAttention vector kernel is compiled for q8_0/q4_0. llama.cpp converts K and V to f16 instead, which is slower.',
+        fix: null, blocking: false, buildable_missing: true, backend: 'cuda', advisories: [],
+        runtime_identity: 'rt', basis_version: 1, session_observations: [],
+      }),
+    }));
+    await installPresetMocks(page, {
+      presets: [bundlePreset('bundled', 'Bundled preset', {
+        bundle: { kv_policy_options: ['f16_f16', 'q8_0_q8_0', 'q8_0_q4_0'] },
+      })],
+      resolveResponse: async () => ({
+        capability_reasons: [{
+          field: 'kv_policy',
+          value: 'q8_0_q4_0',
+          severity: 'advisory',
+          reason: 'No FlashAttention vector kernel is compiled for q8_0/q4_0.',
+        }],
+      }),
+    });
+    await boot(page);
+
+    await page.locator('.launch-card[data-preset-id="bundled"] .launch-card-btn-configure').click();
+    const mixed = page.locator('.bundle-kv[value="q8_0_q4_0"]');
+    await expect(mixed).toBeVisible();
+    await expect(mixed).toBeEnabled();
+    await mixed.check();
+    const line = page.locator('#bundle-kv-support');
+    await expect(line).toHaveAttribute('data-kv-state', 'fallback');
+    await expect(line).toContainText('converts K and V to f16');
+    await expect(page.locator('#bundle-drawer')).not.toContainText(/prohibit/i);
+  });
+
   test('only the newest resolve response can update the draft', async ({ page }) => {
     await installPresetMocks(page, {
       presets: [bundlePreset()],

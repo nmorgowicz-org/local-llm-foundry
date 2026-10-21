@@ -1,0 +1,3 @@
+-- Downloading llama-ui from https://huggingface.co/buckets/ggml-org/llama-ui
+CMake Error at scripts/ui-assets.cmake:96 (message):
+  UI: HF download failed: Could not resolve host: huggingface.co

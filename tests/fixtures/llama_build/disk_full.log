@@ -1,0 +1,5 @@
+[88/140] Linking CXX shared library bin/libggml-base.0.27.0.dylib
+FAILED: bin/libggml-base.0.27.0.dylib
+ld: write() failed, errno=28
+fatal error: error writing to ggml-cuda.o: No space left on device
+ninja: build stopped: subcommand failed.

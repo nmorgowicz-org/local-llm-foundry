@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod backend;
 pub mod capabilities;
+pub mod kv_advisories;
+pub mod kv_support;
 pub mod launch;
 pub mod llama_cpp;
 pub mod llama_cpp_capabilities;

@@ -5,6 +5,10 @@
 //! so the K/V policy cannot fork.
 
 use super::ModelPreset;
+use crate::inference::kv_support::{
+    FlashAttnMode, KvClassification, KvContext, KvSupport, KvType, classify_kv_pair,
+    launch_flash_attn_mode,
+};
 use crate::inference::llama_cpp_capabilities::CapabilitySnapshot;
 
 /// A single actionable validation issue with a stable code for UI repair links.
@@ -65,38 +69,81 @@ pub fn extra_args_duplicate_safety_flags(extra_args: &str) -> Vec<&'static str> 
         .collect()
 }
 
-/// Whether a K/V value pair is the mixed pair that requires a special build.
-fn is_mixed_main_kv_pair(k: &str, v: &str) -> bool {
-    (k.eq_ignore_ascii_case("q8_0") && v.eq_ignore_ascii_case("q4_0"))
-        || (k.eq_ignore_ascii_case("q4_0") && v.eq_ignore_ascii_case("q8_0"))
+/// Stable issue code for the only blocking K/V class: a known upstream refusal.
+pub const KV_PAIR_WONT_START: &str = "KV_PAIR_WONT_START";
+/// Non-blocking: an alternate (usually slower) path is expected.
+pub const KV_PAIR_FALLBACK: &str = "KV_PAIR_FALLBACK";
+/// Non-blocking: not enough evidence to say how this pair executes.
+pub const KV_PAIR_UNVERIFIED: &str = "KV_PAIR_UNVERIFIED";
+
+/// Classify a main K/V pair against what the snapshot's loaded backend
+/// reported. Device and model evidence are not available at this layer, so a
+/// pair that depends on them is reported as unverified (never blocked).
+pub fn classify_main_kv(
+    k: &str,
+    v: &str,
+    flash_attn: FlashAttnMode,
+    snapshot: &CapabilitySnapshot,
+) -> Option<KvClassification> {
+    let context = KvContext {
+        basis: &snapshot.kv_basis,
+        device: None,
+        model: None,
+        observations: None,
+    };
+    let (k, v) = (KvType::parse(k)?, KvType::parse(v)?);
+    Some(classify_kv_pair(k, v, flash_attn, &context))
 }
 
 /// Validate the main-K/V policy against a capability snapshot.
 ///
-/// This is the only production path allowed to read
-/// `snapshot.mixed_main_kv`. Fixture tests that set `mixed_main_kv.supported`
-/// to true exercise the accept branch directly (hard-gate invariant).
+/// Only a known upstream refusal blocks (quantized V cache with flash
+/// attention off). Everything else is advisory; see [`kv_pair_notice`].
 pub fn validate_main_kv_policy(
     k: &str,
     v: &str,
+    flash_attn: FlashAttnMode,
     snapshot: &CapabilitySnapshot,
 ) -> Option<ValidationIssue> {
     // Empty strings mean "use llama-server default"; no policy applies.
     if k.trim().is_empty() || v.trim().is_empty() {
         return None;
     }
-    if is_mixed_main_kv_pair(k, v) && !snapshot.mixed_main_kv.supported {
-        return Some(ValidationIssue {
-            field: "ctk/ctv".into(),
-            code: "MIXED_MAIN_KV_UNSUPPORTED".into(),
-            message: format!(
-                "Mixed K/V pair {k}/{v} is not supported by this binary. {}",
-                snapshot.mixed_main_kv.reason
-            ),
-            repair: Some("edit_ctk_ctv".into()),
-        });
+    let classification = classify_main_kv(k, v, flash_attn, snapshot)?;
+    let KvSupport::WontStart { reason, fix } = &classification.expected else {
+        return None;
+    };
+    Some(ValidationIssue {
+        field: "ctk/ctv".into(),
+        code: KV_PAIR_WONT_START.into(),
+        message: format!("K/V pair {k}/{v} will not start: {reason} {fix}"),
+        repair: Some("edit_ctk_ctv".into()),
+    })
+}
+
+/// Non-blocking notice for a pair that falls back or is unverified. Never
+/// included in the launch-blocking issue list.
+pub fn kv_pair_notice(
+    k: &str,
+    v: &str,
+    flash_attn: FlashAttnMode,
+    snapshot: &CapabilitySnapshot,
+) -> Option<ValidationIssue> {
+    if k.trim().is_empty() || v.trim().is_empty() {
+        return None;
     }
-    None
+    let classification = classify_main_kv(k, v, flash_attn, snapshot)?;
+    let (code, reason) = match &classification.expected {
+        KvSupport::Fallback { reason, .. } => (KV_PAIR_FALLBACK, reason),
+        KvSupport::Unverified { reason } => (KV_PAIR_UNVERIFIED, reason),
+        KvSupport::Native | KvSupport::WontStart { .. } => return None,
+    };
+    Some(ValidationIssue {
+        field: "ctk/ctv".into(),
+        code: code.into(),
+        message: format!("K/V pair {k}/{v}: {reason}"),
+        repair: None,
+    })
 }
 
 /// Return an issue if a K/V value is not in the known allowed set.
@@ -195,9 +242,14 @@ pub fn validate_llama_launch_policy(
         issues.push(issue);
     }
 
-    // 5) Mixed main-K/V policy — only if we have a snapshot to consult.
+    // 5) Main-K/V policy: only a known refusal blocks. Unknown evidence never does.
     if let Some(snap) = snapshot
-        && let Some(issue) = validate_main_kv_policy(canon_k, canon_v, snap)
+        && let Some(issue) = validate_main_kv_policy(
+            canon_k,
+            canon_v,
+            launch_flash_attn_mode(&preset.flash_attn),
+            snap,
+        )
     {
         issues.push(issue);
     }
@@ -293,8 +345,8 @@ mod tests {
     use super::*;
     use crate::inference::llama_cpp_capabilities::{
         CacheCapabilities, CapabilitySnapshot, CapabilitySnapshotSource, ConcurrencyCapabilities,
-        ContextCapabilities, EndpointCapabilities, ExecutableIdentity, MixedMainKv,
-        SpeculationCapabilities, StreamingCapabilities, TemplateCapabilities, ToolCapabilities,
+        ContextCapabilities, EndpointCapabilities, ExecutableIdentity, SpeculationCapabilities,
+        StreamingCapabilities, TemplateCapabilities, ToolCapabilities,
     };
 
     fn base_snapshot() -> CapabilitySnapshot {
@@ -316,7 +368,8 @@ mod tests {
             tools: ToolCapabilities::default(),
             speculation: SpeculationCapabilities::default(),
             typed: Default::default(),
-            mixed_main_kv: MixedMainKv::product_default_denied(),
+            kv_basis: Default::default(),
+            runtime_identity: None,
             evidence_timestamp: 0,
             source: CapabilitySnapshotSource::ManualOverride,
         }
@@ -372,32 +425,73 @@ mod tests {
         assert!(issues.iter().any(|i| i.code == "KV_FIELD_CONFLICT"));
     }
 
-    #[test]
-    fn mixed_kv_rejected_by_default_snapshot() {
-        let mut p = base_preset();
-        p.ctk = "q8_0".into();
-        p.ctv = "q4_0".into();
-        let snap = base_snapshot();
-
-        let issues = validate_llama_launch_policy(&p, Some(&snap));
-        assert!(issues.iter().any(|i| i.code == "MIXED_MAIN_KV_UNSUPPORTED"));
+    fn cuda_snapshot(spec: &str) -> CapabilitySnapshot {
+        use crate::inference::kv_support::{
+            Backend, Evidence, KV_BASIS_VERSION, KvSupportBasis, compiled_fa_pairs,
+        };
+        let mut snap = base_snapshot();
+        snap.kv_basis = KvSupportBasis {
+            version: KV_BASIS_VERSION,
+            backend: Backend::Cuda,
+            fa_pairs: Evidence::confirmed(compiled_fa_pairs(spec).unwrap(), "test"),
+            runtime_identity: None,
+            ..Default::default()
+        };
+        snap
     }
 
     #[test]
-    fn mixed_kv_accepted_when_supported_flag_set() {
+    fn mixed_pair_with_flash_attention_on_is_not_blocked_even_without_evidence() {
         let mut p = base_preset();
         p.ctk = "q8_0".into();
         p.ctv = "q4_0".into();
-        let mut snap = base_snapshot();
-        // Fixture test directly sets the field — the only allowed accept path.
-        snap.mixed_main_kv = MixedMainKv {
-            supported: true,
-            reason: "build manifest".into(),
-            source: "build_manifest".into(),
-        };
+        for fa in ["", "on", "auto"] {
+            p.flash_attn = fa.into();
+            let issues = validate_llama_launch_policy(&p, Some(&base_snapshot()));
+            assert!(issues.is_empty(), "fa={fa:?}: {issues:?}");
+            let issues = validate_llama_launch_policy(&p, Some(&cuda_snapshot("q8_0-q8_0")));
+            assert!(issues.is_empty(), "fa={fa:?}: {issues:?}");
+        }
+    }
 
-        let issues = validate_llama_launch_policy(&p, Some(&snap));
-        assert!(!issues.iter().any(|i| i.code == "MIXED_MAIN_KV_UNSUPPORTED"));
+    #[test]
+    fn quantized_v_with_flash_attention_off_is_the_only_block() {
+        let mut p = base_preset();
+        p.ctk = "q8_0".into();
+        p.ctv = "q4_0".into();
+        p.flash_attn = "off".into();
+        for snap in [base_snapshot(), cuda_snapshot("all")] {
+            let issues = validate_llama_launch_policy(&p, Some(&snap));
+            assert!(
+                issues.iter().any(|i| i.code == KV_PAIR_WONT_START),
+                "{issues:?}"
+            );
+        }
+        // The same pair is fine when V is floating.
+        p.ctv = "f16".into();
+        let issues = validate_llama_launch_policy(&p, Some(&base_snapshot()));
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn missing_pair_is_a_nonblocking_fallback_notice_and_unknown_is_unverified() {
+        let snap = cuda_snapshot("q8_0-q8_0");
+        let notice = kv_pair_notice("q8_0", "q4_0", FlashAttnMode::On, &snap).unwrap();
+        assert_eq!(notice.code, KV_PAIR_FALLBACK);
+        let notice = kv_pair_notice("q8_0", "q4_0", FlashAttnMode::On, &base_snapshot()).unwrap();
+        assert_eq!(notice.code, KV_PAIR_UNVERIFIED);
+        // Notices never appear in the blocking list.
+        let mut p = base_preset();
+        p.ctk = "q8_0".into();
+        p.ctv = "q4_0".into();
+        assert!(validate_llama_launch_policy(&p, Some(&snap)).is_empty());
+    }
+
+    #[test]
+    fn empty_or_unknown_kv_values_leave_policy_silent() {
+        let snap = base_snapshot();
+        assert!(validate_main_kv_policy("", "q4_0", FlashAttnMode::Off, &snap).is_none());
+        assert!(validate_main_kv_policy("q8_0", "wat", FlashAttnMode::Off, &snap).is_none());
     }
 
     #[test]

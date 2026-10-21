@@ -1,0 +1,48 @@
+I srv  llama_server: initializing ...
+I load_backend: loaded BLAS backend from /opt/llama/libggml-blas.so
+I ggml_metal_device_init: testing tensor API for f16 support
+I ggml_metal_device_init: testing tensor API for bfloat support
+I ggml_metal_library_init: using embedded metal library
+I ggml_metal_library_compile_all: loaded 36 libraries from embedded data in 0.012 sec (max single = 0.012 sec)
+I ggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)
+I ggml_metal_device_init: GPU name:   MTL0 (Apple M5 Max)
+I ggml_metal_device_init: GPU family: MTLGPUFamilyApple10  (1010)
+I ggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)
+I ggml_metal_device_init: simdgroup reduction   = true
+I ggml_metal_device_init: simdgroup matrix mul. = true
+I ggml_metal_device_init: has unified memory    = true
+I ggml_metal_device_init: has bfloat            = true
+I ggml_metal_device_init: has tensor            = true
+I ggml_metal_device_init: use residency sets    = true
+I ggml_metal_device_init: use shared buffers    = true
+I ggml_metal_device_init: recommendedMaxWorkingSetSize  = 60129.54 MB
+I load_backend: loaded MTL backend from /opt/llama/libggml-metal.so
+I load_backend: loaded CPU backend from /opt/llama/libggml-cpu.so
+I cmn  common_param: common_params_print_info: build 11719 (5aeac37a3) with AppleClang 21.0.0.21000101 for Darwin arm64
+I cmn  common_param: common_params_print_info: verbosity = 4 (adjust with the `-lv N` CLI arg)
+I cmn  common_param: device_info:
+I cmn  common_param:   - BLAS    : Accelerate (0 MiB, 0 MiB free)
+I cmn  common_param:   - MTL0    : Apple M5 Max (57344 MiB, 57343 MiB free)
+I cmn  common_param:   - CPU     : Apple M5 Max (65536 MiB, 65536 MiB free)
+I cmn  common_param: system_info: n_threads = 6 (n_threads_batch = 6) / 18 | MTL : EMBED_LIBRARY = 1 | CPU : NEON = 1 | ARM_FMA = 1 | FP16_VA = 1 | MATMUL_INT8 = 1 | DOTPROD = 1 | SME = 1 | SME2 = 1 | ACCELERATE = 1 | REPACK = 1 | 
+I srv  llama_server: n_parallel is set to auto, using n_parallel = 4 and kv_unified = true
+I srv  init_listene: running without SSL
+I srv          init: using 17 threads for HTTP server
+W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+I srv    load_model: loading model '/nonexistent/foundry-probe-xyz.gguf'
+I srv    load_model: local path '/nonexistent/foundry-probe-xyz.gguf'
+I cmn  common_init_: fitting params to device memory ...
+I cmn  common_init_: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
+I common_params_fit_impl: getting device memory data for initial parameters:
+E gguf_init_from_file: failed to open GGUF file '/nonexistent/foundry-probe-xyz.gguf' (No such file or directory)
+E llama_model_load: error loading model: llama_model_loader: failed to load model from /nonexistent/foundry-probe-xyz.gguf
+E llama_model_load_from_file_impl: failed to load model
+E common_fit_params: encountered an error while trying to fit params to free device memory: failed to load model
+I common_fit_params: fitting params to free memory took 0.00 seconds
+E gguf_init_from_file: failed to open GGUF file '/nonexistent/foundry-probe-xyz.gguf' (No such file or directory)
+E llama_model_load: error loading model: llama_model_loader: failed to load model from /nonexistent/foundry-probe-xyz.gguf
+E llama_model_load_from_file_impl: failed to load model
+E cmn  common_init_: failed to load model '/nonexistent/foundry-probe-xyz.gguf'
+E srv    load_model: failed to load model, '/nonexistent/foundry-probe-xyz.gguf'
+I srv    operator(): operator(): cleaning up before exit...
+E srv  llama_server: exiting due to model loading error

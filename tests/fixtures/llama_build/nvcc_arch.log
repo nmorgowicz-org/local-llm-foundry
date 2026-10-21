@@ -1,0 +1,3 @@
+FAILED: ggml/src/ggml-cuda/CMakeFiles/ggml-cuda.dir/Release/fattn.cu.obj
+nvcc fatal   : Unsupported gpu architecture 'compute_130'
+ninja: build stopped: subcommand failed.
