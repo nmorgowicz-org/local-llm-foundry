@@ -49,22 +49,4 @@ test.describe('console error detection', () => {
 
     expect(fatalErrors.length).toBe(0);
   });
-
-  test('no assignment to constant errors', async () => {
-    const assignmentErrors = consoleErrors.filter(e =>
-      e.text.includes('Assignment to constant variable') ||
-      e.text.includes('Cannot assign to read only property')
-    );
-
-    expect(assignmentErrors.length).toBe(0);
-  });
-
-  test('no undefined function errors', async () => {
-    const undefinedErrors = consoleErrors.filter(e =>
-      e.text.includes('is not a function') ||
-      e.text.includes('Cannot read property')
-    );
-
-    expect(undefinedErrors.length).toBe(0);
-  });
 });

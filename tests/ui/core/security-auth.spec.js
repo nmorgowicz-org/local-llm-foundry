@@ -41,7 +41,7 @@ test('dashboard access can be enabled, used, and disabled from settings', async 
 
   // Reset auth state via API to avoid interference from parallel tests
   await disableAuth(request);
-  await page.waitForTimeout(500);
+  await expect.poll(async () => (await (await request.get('/api/auth/status')).json()).enabled).toBe(false);
 
   await page.reload();
   await page.waitForSelector('html.modules-ready');

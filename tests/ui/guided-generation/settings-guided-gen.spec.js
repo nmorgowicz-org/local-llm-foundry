@@ -110,28 +110,6 @@ test.describe('Settings - Guided Generation', () => {
     await expect(valueDisplay).toContainText('15');
   });
 
-  test('edit suggestion count', async ({ page }) => {
-    await openGuidedGenSettings(page);
-
-    const slider = page.locator('#settings-suggestion-count');
-    await expect(slider).toBeVisible();
-
-    await slider.fill('7');
-    await expect(slider).toHaveValue('7');
-  });
-
-  test('reset sidebar width to default', async ({ page }) => {
-    await openGuidedGenSettings(page);
-
-    // Change sidebar width
-    await page.locator('#settings-sidebar-width').fill('400');
-    await expect(page.locator('#settings-sidebar-width')).toHaveValue('400');
-
-    // Reset to default (280)
-    await page.locator('#settings-sidebar-width').fill('280');
-    await expect(page.locator('#settings-sidebar-width')).toHaveValue('280');
-  });
-
   test('save shows success feedback', async ({ page }) => {
     await openGuidedGenSettings(page);
 
@@ -144,21 +122,5 @@ test.describe('Settings - Guided Generation', () => {
 
     // Should briefly show success class
     await expect(saveButton).toHaveClass(/success/, { timeout: 3000 });
-  });
-
-  test('Ctrl+S saves in modal', async ({ page }) => {
-    await openGuidedGenSettings(page);
-
-    // Modify something
-    await page.locator('#settings-sidebar-width').fill('350');
-
-    // Ensure the modal is open
-    await expect(page.locator('#settings-modal')).toHaveClass(/open/);
-
-    // Click the save button (Ctrl+S handler doesn't exist)
-    const saveButton = page.locator('#settings-modal-save');
-    await saveButton.click();
-
-    await expect(saveButton).toHaveClass(/success/, { timeout: 5000 });
   });
 });

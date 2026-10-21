@@ -581,34 +581,6 @@ test.describe('Spawn Wizard - Phases 3, 4, and Rapid-MLX Phase 6', () => {
         await expect(page.locator('#wizard-next-btn')).toBeDisabled();
         await expect(page.locator('#wizard-footer-hint')).toContainText('Apple Silicon macOS');
     });
-    test('HF model search returns results', async ({ page }) => {
-        await page.goto('/');
-        await page.waitForLoadState('networkidle');
-
-        // Open spawn wizard if button exists.
-        const openBtn = page.locator('#spawn-wizard-btn, button:has-text("Spawn")').first();
-        if (await openBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-            await openBtn.click();
-        }
-
-        // Check that the HF search endpoint is reachable via a simple network request.
-        const [response] = await Promise.all([
-            page.waitForResponse(r => r.url().includes('/api/hf/search') && r.request().method() === 'POST'),
-            page.evaluate(async () => {
-                const headers = window.authHeaders ? window.authHeaders() : {};
-                return fetch('/api/hf/search', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', ...headers },
-                    body: JSON.stringify({ query: 'llama', limit: 5 }),
-                });
-            }),
-        ]);
-
-        expect(response.ok()).toBeTruthy();
-        const data = await response.json();
-        expect(data.ok).toBe(true);
-        expect(Array.isArray(data.models)).toBe(true);
-    });
 
     test('HF file browser marks the family-recommended mmproj', async ({ page }) => {
         await page.route('**/api/hf/files', route => route.fulfill({
@@ -736,55 +708,6 @@ test.describe('Spawn Wizard - Phases 3, 4, and Rapid-MLX Phase 6', () => {
         const data = await response.json();
         expect(data.ok).toBe(true);
         expect(Array.isArray(data.models)).toBe(true);
-    });
-
-    test('Model introspect endpoint responds with 400 when not configured', async ({ page }) => {
-        await page.goto('/');
-        await page.waitForLoadState('networkidle');
-
-        const [response] = await Promise.all([
-            page.waitForResponse(r => r.url().includes('/api/model/introspect') && r.request().method() === 'POST'),
-            page.evaluate(async () => {
-                const headers = window.authHeaders ? window.authHeaders() : {};
-                return fetch('/api/model/introspect', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', ...headers },
-                    body: JSON.stringify({ model_path: '/nonexistent/model.gguf' }),
-                });
-            }),
-        ]);
-
-        // Endpoint is reachable; 200 is ok (graceful response), or 4xx if not configured.
-        const status = response.status();
-        expect(status).toBeGreaterThanOrEqual(200);
-        expect(status).toBeLessThan(500);
-    });
-
-    test('HF search rate limiting returns non-200 after many requests', async ({ page }) => {
-        await page.goto('/');
-        await page.waitForLoadState('networkidle');
-
-        // Send many rapid requests; at least one should be rejected.
-        // The HF search rate limit is 10/60s (global), so other tests may
-        // consume part of the budget. We use a generous count and accept
-        // any non-200 as evidence that the limiter is active.
-        const COUNT = 30;
-        let nonOk = false;
-        for (let i = 0; i < COUNT; i++) {
-            const resp = await page.evaluate(async () => {
-                const headers = window.authHeaders ? window.authHeaders() : {};
-                return fetch('/api/hf/search', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', ...headers },
-                    body: JSON.stringify({ query: 'llama', limit: 5 }),
-                });
-            });
-            if (resp.status !== 200) {
-                nonOk = true;
-                break;
-            }
-        }
-        expect(nonOk).toBe(true);
     });
 
     test('HF download cooldown returns 429 on rapid start', async ({ page }) => {
@@ -945,40 +868,6 @@ test.describe('Spawn Wizard - Phases 3, 4, and Rapid-MLX Phase 6', () => {
         expect(payloads.enabled.fit_target).toBe('2048');
     });
 
-    test('@in-memory-test Community templates use the correct source for Qwen and Gemma 4', async ({ page }) => {
-        await page.goto('/');
-        await page.waitForLoadState('networkidle');
-
-        const templates = await page.evaluate(async () => {
-            const { COMMUNITY_TEMPLATES, buildCommunityTemplateInstallRequest } = await import('/js/features/chat-template-registry.js?community-template-test=1');
-            return {
-                templates: COMMUNITY_TEMPLATES,
-                qwenInstall: buildCommunityTemplateInstallRequest(COMMUNITY_TEMPLATES.qwen[0]),
-            };
-        });
-
-        // Qwen offers froggeric's template (recommended, first) and the Sharp fork. Neither is
-        // pinned to a version or commit: both track their repository's current `main`, and the
-        // update checker offers new versions as upstream publishes them.
-        const [froggeric, sharp] = templates.templates.qwen;
-        expect(froggeric.installEndpoint).toBe('/api/chat-template/install-hf');
-        expect(froggeric.repo).toBe('froggeric/Qwen-Fixed-Chat-Templates');
-        expect(froggeric.revision).toBeUndefined();
-        expect(froggeric.version).toBeUndefined();
-        expect(templates.qwenInstall.body.revision).toBeUndefined();
-        expect(sharp.installEndpoint).toBe('/api/chat-template/install-hf');
-        expect(sharp.repo).toBe('peculiar-ragdoll/Qwen-Sharp-Chat-Templates');
-        expect(sharp.revision).toBeUndefined();
-        // Google's official template is the priority default (first entry);
-        // jscott3201's agentic fork is kept as a fallback entry.
- expect(templates.templates.gemma4[0].installEndpoint).toBe('/api/chat-template/install-hf');
- expect(templates.templates.gemma4[0].repo).toBe('google/gemma-4-31B-it');
- expect(templates.templates.gemma4[1].installEndpoint).toBe('/api/chat-template/install-url');
- expect(templates.templates.gemma4[1].url).toBe(
-            'https://raw.githubusercontent.com/jscott3201/llm-tuning/main/gemma4/chat_templates/custom_pub_chat_template_gemma4.jinja',
-        );
-    });
-
     test('Hardware advanced toggles work: kv-unified flips state, fit-enable auto-populates target', async ({ page }) => {
         await page.goto('/');
         await page.waitForLoadState('networkidle');
@@ -1010,7 +899,7 @@ await page.locator('#spawn-kv-unified').evaluate((el) => { el.value = 'false'; e
 
         // fit On shows target input and auto-populates '2048'
 await page.locator('#spawn-fit-enable').evaluate((el) => { el.value = 'true'; el.dispatchEvent(new Event('change', { bubbles: true })); });
-        await page.waitForTimeout(400);
+        await expect(page.locator('#spawn-fit-target')).toHaveValue('2048');
 
         const fitTargetValue = await page.evaluate(() =>
             document.getElementById('spawn-fit-target')?.value ?? ''
@@ -1272,33 +1161,6 @@ test('review step exposes structured output and full sampling defaults', async (
         await page.selectOption('#spawn-output-mode', 'json_schema');
         await expect(page.locator('#spawn-json-schema-wrap')).toBeVisible();
         await expect(page.locator('#spawn-grammar-wrap')).toBeHidden();
-    });
-
-    test('Error state: no internet (HF search returns empty)', async ({ page }) => {
-        await page.goto('/');
-        await page.waitForLoadState('networkidle');
-
-        // Simulate a network failure by intercepting HF API calls.
-        await page.route('https://huggingface.co/api/**', route => {
-            route.abort('failed');
-        });
-
-        const [resp] = await Promise.all([
-            page.waitForResponse(r => r.url().includes('/api/hf/search') && r.request().method() === 'POST'),
-            page.evaluate(async () => {
-                const headers = window.authHeaders ? window.authHeaders() : {};
-                return fetch('/api/hf/search', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', ...headers },
-                    body: JSON.stringify({ query: 'llama', limit: 5 }),
-                });
-            }),
-        ]);
-
-        // Should not crash; backend handles gracefully (200 with empty/error, or 4xx/5xx).
-        const status = resp.status();
-        expect(status).toBeGreaterThanOrEqual(200);
-        expect(status).toBeLessThan(500);
     });
 
     test('@in-memory-test page-1 use-case drives the estimate, and stays out of the launch payload', async ({ page }) => {

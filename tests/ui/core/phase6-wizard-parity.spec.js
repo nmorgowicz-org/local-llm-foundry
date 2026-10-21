@@ -22,6 +22,8 @@ async function openLlamaWizard(page, capabilities = {}) {
     contentType: 'application/json',
     body: JSON.stringify({ ok: true, snapshot: capabilities }),
   }));
+  const capabilitiesLoaded = page.waitForResponse(r =>
+    new URL(r.url()).pathname === '/api/llama-binary/capabilities');
   await page.goto('/');
   await page.waitForSelector('html.modules-ready');
   await page.evaluate(async () => {
@@ -32,7 +34,11 @@ async function openLlamaWizard(page, capabilities = {}) {
     wizardState.model.path = '/models/phase6.gguf';
     showStep(1);
   });
-  await page.waitForTimeout(100);
+  // Settle on the real conditions: step 1 is the active step, and the capability snapshot the
+  // wizard reads its option locks from has been delivered and consumed.
+  await expect(page.locator('#wizard-step-1')).toHaveClass(/active/);
+  await (await capabilitiesLoaded).finished();
+  await page.evaluate(() => {});
 }
 
 test.describe('Phase 6 Spawn Wizard Guided/Pro parity', () => {

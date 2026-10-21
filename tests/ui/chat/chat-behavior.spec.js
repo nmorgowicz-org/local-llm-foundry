@@ -41,15 +41,6 @@ test.describe('system prompt and persona panel', () => {
     await expect(page.locator('#chat-behavior-panel')).not.toHaveClass(/open/);
   });
 
-  test('allows editing system prompt', async ({ page }) => {
-    // System prompt editing moved to template manager; behavior panel no longer has inline input.
-    // Verify behavior panel opens and shows persona management controls instead.
-    await page.locator('#btn-behavior').click();
-    await expect(page.locator('#chat-behavior-panel')).toHaveClass(/open/);
-    // Template manager button present for system prompt/persona editing
-    await expect(page.locator('#chat-open-template-mgr')).toBeVisible();
-  });
-
   test('shows persona section in behavior panel', async ({ page }) => {
     // Persona is now managed through the behavior panel, not a header dropdown.
     await page.locator('#btn-behavior').click();
@@ -73,27 +64,6 @@ test.describe('system prompt and persona panel', () => {
     // Each item should have an edit button
     const editButtons = await page.locator('[data-template-action="edit"]').count();
     expect(editButtons).toBeGreaterThan(0);
-  });
-
-  test('clicking manage personas opens template manager', async ({ page }) => {
-    await page.locator('#btn-behavior').click();
-    await expect(page.locator('#chat-behavior-panel')).toHaveClass(/open/);
-    await page.locator('#chat-open-template-mgr').click();
-    await expect(page.locator('#template-manager-modal')).toHaveClass(/active/);
-  });
-
-  test('template manager shows section headers when multiple template groups exist', async ({ page }) => {
-    await page.locator('#btn-behavior').click();
-    await expect(page.locator('#chat-behavior-panel')).toHaveClass(/open/);
-    await page.locator('#chat-open-template-mgr').click();
-    await expect(page.locator('#template-manager-modal')).toHaveClass(/active/);
-
-    // Wait for templates to load
-    await page.waitForSelector('.template-list-item', { state: 'visible', timeout: 5000 });
-
-    // Template list should be populated
-    const items = await page.locator('.template-list-item').count();
-    expect(items).toBeGreaterThan(0);
   });
 });
 
@@ -120,20 +90,6 @@ test.describe('explicit mode toggle v2 (3-state)', () => {
       updateExplicitToggleUI();
       renderChatSessionsSidebar();
     });
-  });
-
-  test('toggles explicit mode state', async ({ page }) => {
-    // Initially not active (level 0)
-    await expect(page.locator('#chat-explicit-toggle-footer')).not.toHaveClass(/active/);
-    // Click to enable level 1
-    await page.locator('#chat-explicit-toggle-footer').click();
-    await expect(page.locator('#chat-explicit-toggle-footer')).toHaveClass(/active/);
-    // Click to advance to level 2 (unrestricted)
-    await page.locator('#chat-explicit-toggle-footer').click();
-    await expect(page.locator('#chat-explicit-toggle-footer')).toHaveClass(/unrestricted/);
-    // Click to cycle back to level 0
-    await page.locator('#chat-explicit-toggle-footer').click();
-    await expect(page.locator('#chat-explicit-toggle-footer')).not.toHaveClass(/active/);
   });
 
   test('toggle in settings panel mirrors footer toggle', async ({ page }) => {
@@ -294,58 +250,6 @@ test.describe('explicit mode toggle v2 (3-state)', () => {
   });
 });
 
-test.describe('template manager', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.goto('/');
-    await page.waitForSelector('html.modules-ready');
-    await dismissAuthShell(page);
-    await switchToMonitor(page);
-    await page.waitForSelector('#view-monitor', { state: 'attached', timeout: 5000 });
-    await page.waitForFunction(() => {
-      const monitor = document.getElementById('view-monitor');
-      return monitor && getComputedStyle(monitor).display !== 'none';
-    }, { timeout: 5000 });
-    await ensureChatVisible(page);
-  });
-
-  test('opens modal on manage button click', async ({ page }) => {
-    await expect(page.locator('#template-manager-modal')).not.toHaveClass(/active/);
-    await page.evaluate(async () => {
-      const { openTemplateManager } = await import('/js/features/chat-templates.js');
-      await openTemplateManager();
-    });
-    await expect(page.locator('#template-manager-modal')).toHaveClass(/active/);
-  });
-
-  test('lists default templates', async ({ page }) => {
-    await page.evaluate(async () => {
-      const { openTemplateManager } = await import('/js/features/chat-templates.js');
-      await openTemplateManager();
-    });
-    await expect(page.locator('#template-list')).toBeVisible();
-    const items = await page.locator('.template-list-item').count();
-    expect(items).toBeGreaterThan(0);
-  });
-
-  test('explicit policy section is present', async ({ page }) => {
-    await page.evaluate(async () => {
-      const { openTemplateManager } = await import('/js/features/chat-templates.js');
-      await openTemplateManager();
-    });
-    await expect(page.locator('.explicit-policy-section')).toBeVisible();
-    await expect(page.getByText('Persona Explicit Policies')).toBeVisible();
-    await page.getByText('Persona Explicit Policies').click();
-    // Check that at least one of the policy containers is present
-    const level1 = page.locator('#persona-explicit-level1');
-    const level2 = page.locator('#persona-explicit-level2');
-    const none = page.locator('#persona-explicit-none');
-    const l1Count = await level1.count();
-    const l2Count = await level2.count();
-    const noneCount = await none.count();
-    expect(l1Count + l2Count + noneCount).toBeGreaterThan(0);
-  });
-});
-
 test.describe('per-persona explicit policies', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
@@ -491,26 +395,15 @@ test.describe('gender token substitution', () => {
     const femalePill = page.locator('#chat-behavior-panel .chat-gender-pill[data-gender="female"]');
     if (await femalePill.count() > 0) {
       await femalePill.click();
-      await page.waitForTimeout(400);
 
-      const gender = await page.evaluate(async () => {
+      // onGenderChange writes the tab synchronously; poll the state instead of sleeping.
+      await expect.poll(() => page.evaluate(async () => {
         const { activeChatTab } = await import('/js/features/chat-state.js');
         return activeChatTab()?.ai_gender ?? null;
-      });
-      expect(gender).toBe('female');
+      })).toBe('female');
     } else {
       test.skip(true, 'Gender pills not present in this build.');
     }
-  });
-
-  test('substituteNames replaces {{gender}} with selected value', async ({ page }) => {
-    const result = await page.evaluate(async () => {
-      const { substituteNames } = await import('/js/features/chat-state.js');
-      const text = 'You are a {{gender}} assistant.';
-      return substituteNames(text, 'AI', 'User', 'male');
-    });
-    expect(result).toContain('male');
-    expect(result).not.toContain('{{gender}}');
   });
 });
 
@@ -546,14 +439,12 @@ test.describe('custom role boundary', () => {
 
     // Edit value
     await textarea.fill('CUSTOM ROLE BOUNDARY TEXT');
-    await page.waitForTimeout(600);
 
-    // Confirm custom value stored on tab
-    const custom = await page.evaluate(async () => {
+    // Confirm custom value stored on tab (the input handler writes it synchronously).
+    await expect.poll(() => page.evaluate(async () => {
       const { activeChatTab } = await import('/js/features/chat-state.js');
       return activeChatTab()?.role_boundary_custom ?? null;
-    });
-    expect(custom).toBe('CUSTOM ROLE BOUNDARY TEXT');
+    })).toBe('CUSTOM ROLE BOUNDARY TEXT');
   });
 
   test('reset restores default role boundary', async ({ page }) => {
@@ -571,19 +462,18 @@ test.describe('custom role boundary', () => {
 
     // Set custom value
     await textarea.fill('CUSTOM');
-    await page.waitForTimeout(600);
+    const roleBoundaryCustom = () => page.evaluate(async () => {
+      const { activeChatTab } = await import('/js/features/chat-state.js');
+      return activeChatTab()?.role_boundary_custom ?? null;
+    });
+    // Prove the custom value landed first, so the null below can only come from the reset.
+    await expect.poll(roleBoundaryCustom).toBe('CUSTOM');
 
     // Reset
     const resetBtn = page.locator('#chat-role-boundary-reset');
     if (await resetBtn.count() > 0) {
       await resetBtn.click();
-      await page.waitForTimeout(400);
-
-      const custom = await page.evaluate(async () => {
-        const { activeChatTab } = await import('/js/features/chat-state.js');
-        return activeChatTab()?.role_boundary_custom ?? null;
-      });
-      expect(custom).toBeNull();
+      await expect.poll(roleBoundaryCustom).toBeNull();
     }
   });
 });

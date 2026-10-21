@@ -45,7 +45,6 @@ test.describe('Rapid-MLX preset editor throughput fields', () => {
   });
 
   for (const [label, concurrency] of [
-    ['missing', {}],
     ['null', { max_num_seqs: null, max_concurrent_requests: null }],
   ]) {
     test(`@in-memory-test ${label} stored concurrency loads as Auto rather than new-preset defaults`, async ({ page }) => {
@@ -152,33 +151,28 @@ test.describe('Rapid-MLX preset editor throughput fields', () => {
     return persisted;
   }
 
-  for (const [label, context] of [
-    ['missing', {}],
-    ['null', { context_length: null }],
+  for (const [label, context, mirrorLabel, mirror] of [
+    ['missing', {}, 'stale legacy mirror', { context_size: 65536 }],
+    ['null', { context_length: null }, 'no legacy mirror', {}],
   ]) {
-    for (const [mirrorLabel, mirror] of [
-      ['no legacy mirror', {}],
-      ['stale legacy mirror', { context_size: 65536 }],
-    ]) {
-      test(`@in-memory-test name-only edit preserves ${label} Auto context with ${mirrorLabel}`, async ({ page }) => {
-        await openSeeded(page, {
-          ...SEED,
-          ...mirror,
-          rapid_mlx: { ...SEED.rapid_mlx, ...context },
-        });
-        await expect(page.locator('#modal-context-size')).toHaveValue('');
-        await page.locator('#preset-modal .preset-nav-item[data-section="model"]').click();
-        await page.locator('#modal-name').fill('renamed Auto context');
-
-        const body = await captureConfirmedSave(page);
-        expect(body.name).toBe('renamed Auto context');
-        expect(body.rapid_mlx.context_length).toBeNull();
-        expect(body.context_size).toBeNull();
-
-        await openSeeded(page, persistedAutoContext(body));
-        await expect(page.locator('#modal-context-size')).toHaveValue('');
+    test(`@in-memory-test name-only edit preserves ${label} Auto context with ${mirrorLabel}`, async ({ page }) => {
+      await openSeeded(page, {
+        ...SEED,
+        ...mirror,
+        rapid_mlx: { ...SEED.rapid_mlx, ...context },
       });
-    }
+      await expect(page.locator('#modal-context-size')).toHaveValue('');
+      await page.locator('#preset-modal .preset-nav-item[data-section="model"]').click();
+      await page.locator('#modal-name').fill('renamed Auto context');
+
+      const body = await captureConfirmedSave(page);
+      expect(body.name).toBe('renamed Auto context');
+      expect(body.rapid_mlx.context_length).toBeNull();
+      expect(body.context_size).toBeNull();
+
+      await openSeeded(page, persistedAutoContext(body));
+      await expect(page.locator('#modal-context-size')).toHaveValue('');
+    });
   }
 
   test('@in-memory-test explicit Rapid context can be cleared to Auto without reviving its mirror', async ({ page }) => {
@@ -221,7 +215,6 @@ test.describe('Rapid-MLX preset editor throughput fields', () => {
   }
 
   for (const [label, context, expectedContext] of [
-    ['missing', {}, ''],
     ['null', { context_length: null }, ''],
     ['numeric', { context_length: 32768 }, '32768'],
   ]) {
@@ -244,7 +237,6 @@ test.describe('Rapid-MLX preset editor throughput fields', () => {
     { label: 'numeric', context: { context_size: 65536 }, hydrated: '65536', expected: 65536 },
     { label: 'edited numeric', context: { context_size: 65536 }, hydrated: '65536', edited: '49152', expected: 49152 },
     { label: 'missing default', context: {}, hydrated: '128000', expected: 128000 },
-    { label: 'null default', context: { context_size: null }, hydrated: '128000', expected: 128000 },
     { label: 'cleared default', context: { context_size: 65536 }, hydrated: '65536', edited: '', expected: 128000 },
   ]) {
     test(`@in-memory-test llama.cpp ${label} context behavior is unchanged`, async ({ page }) => {

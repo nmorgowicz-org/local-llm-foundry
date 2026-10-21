@@ -141,13 +141,21 @@ jobs:
       - name: ESLint static/js
         run: npm run lint
 
+      # Pure-logic UI checks (node:test, no browser, no server, no tests/ui install needed).
+      - name: UI unit tests
+        run: npm --prefix tests/ui run test:unit
+
   ui-build:
-    needs: [paths-filter, check, check-windows]
+    # Builds in parallel with `check` and `check-windows` (depends only on
+    # paths-filter): the release build is the longest serial stage, so waiting for
+    # the checks first added their whole duration to every run. The expensive part
+    # of the pipeline is still gated: `ui` needs `check`, `check-windows` AND this
+    # job, so no UI shard starts if a check fails. The cost is that a failing check
+    # still pays for one wasted release build.
+    needs: paths-filter
     timeout-minutes: 90
     if: >-
       always() &&
-      needs.check.result != 'failure' &&
-      needs.check-windows.result != 'failure' &&
       !startsWith(github.event.pull_request.head.ref, 'release-please--') &&
       (github.event.action != 'labeled' || github.event.label.name == 'ready-to-test') &&
       needs.paths-filter.outputs.ui == 'true' &&
@@ -363,7 +371,32 @@ jobs:
         timeout-minutes: 60
         env:
           PLAYWRIGHT_HTML_OUTPUT_DIR: ${{ env.UI_JOB_DIR }}/playwright-report
-        run: npm test -- --workers=1 --shard=${{ matrix.shard }}/2 --output="$UI_JOB_DIR/test-results"
+          # Adding the `ui-smoke` label next to `ready-to-test` runs the short smoke tier
+          # (tests/ui/playwright.smoke.config.js) instead of the full suite. Without it the
+          # full suite runs, exactly as before.
+          UI_SMOKE: ${{ contains(github.event.pull_request.labels.*.name, 'ui-smoke') }}
+          # Processes per shard. Defaults to 1, which is the serial run this job has always
+          # done. Set the repository variable UI_PROCS (Settings > Variables) to run that many
+          # isolated Playwright processes in parallel inside each shard, each with its own
+          # server and a disjoint slice of the tests (tests/ui/run-parallel.mjs). Only raise it
+          # once the runner has CPU to spare: if it is already saturated this adds no speed.
+          UI_PROCS: ${{ vars.UI_PROCS || '1' }}
+        run: |
+          script="test"
+          config_args=()
+          if [ "$UI_SMOKE" = "true" ]; then
+            script="test:smoke"
+            config_args=(-c playwright.smoke.config.js)
+          fi
+          if [ "$UI_PROCS" -gt 1 ]; then
+            # Each process starts its own server, so leave the pre-started shard server
+            # (used by the contract gate) alone and use a separate port range.
+            export LLAMA_MONITOR_TEST_PORT=$((18000 + 100 * ${{ matrix.shard }}))
+            node run-parallel.mjs --procs "$UI_PROCS" --shard "${{ matrix.shard }}/2" \
+              --output "$UI_JOB_DIR/test-results" -- "${config_args[@]}"
+          else
+            npm run "$script" -- --workers=1 --shard=${{ matrix.shard }}/2 --output="$UI_JOB_DIR/test-results"
+          fi
 
       - name: Stop isolated UI server
         if: always()

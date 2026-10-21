@@ -53,7 +53,9 @@ test.describe('Phase 5 llama.cpp preset editor parity', () => {
       } }),
     }));
     await openEditor(page, { ctk: 'future_kv', ctv: 'iq4_xl' });
-    await page.waitForTimeout(50);
+    // iq4_xl is not in the static markup; it only appears once the capability snapshot has
+    // been applied (configureCapabilityFields rewrites every select in one synchronous pass).
+    await expect(page.locator('#modal-ctk option[value="iq4_xl"]')).toHaveCount(1);
     const result = await page.evaluate(() => {
       const read = id => [...document.getElementById(id).options].map(option => ({
         value: option.value, disabled: option.disabled,
