@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.4.1...v2.5.0) (2026-10-22)
+
+
+### Features
+
+* **api:** model-aware K/V support and runtime status endpoints ([b6dff8e](https://github.com/nmorgowicz-org/local-llm-foundry/commit/b6dff8e3edbdfce91ed580ed9fe3238cdd136a39))
+* **binary:** build llama.cpp from source with detected toolchains ([b6dff8e](https://github.com/nmorgowicz-org/local-llm-foundry/commit/b6dff8e3edbdfce91ed580ed9fe3238cdd136a39))
+* **binary:** journaled runtime promotion with rollback and recovery ([b6dff8e](https://github.com/nmorgowicz-org/local-llm-foundry/commit/b6dff8e3edbdfce91ed580ed9fe3238cdd136a39))
+* **inference:** capability-aware mixed K/V classification ([b6dff8e](https://github.com/nmorgowicz-org/local-llm-foundry/commit/b6dff8e3edbdfce91ed580ed9fe3238cdd136a39))
+* **ui:** llama.cpp runtime panel for builds, updates and rollback ([b6dff8e](https://github.com/nmorgowicz-org/local-llm-foundry/commit/b6dff8e3edbdfce91ed580ed9fe3238cdd136a39))
+
+
+### Bug Fixes
+
+* **binary:** harden build supervision and runtime swap ownership ([b6dff8e](https://github.com/nmorgowicz-org/local-llm-foundry/commit/b6dff8e3edbdfce91ed580ed9fe3238cdd136a39))
+* **binary:** stop scanning migration receipts byte by byte ([a297b9a](https://github.com/nmorgowicz-org/local-llm-foundry/commit/a297b9a07942a329cfa13940a8c5b71550d33e2d))
+
 ## [2.4.1](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.4.0...v2.4.1) (2026-10-10)
 
 
