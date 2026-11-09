@@ -215,9 +215,10 @@ pub fn free_space_of(path: &Path) -> Option<u64> {
         }
     };
     let existing = super::paths::without_verbatim_prefix(&existing);
-    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let Ok(disks) = sysinfo::Disks::new_with_refreshed_list() else {
+        return None;
+    };
     disks
-        .list()
         .iter()
         .filter(|d| existing.starts_with(super::paths::without_verbatim_prefix(d.mount_point())))
         .max_by_key(|d| d.mount_point().as_os_str().len())

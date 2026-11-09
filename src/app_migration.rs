@@ -374,9 +374,10 @@ fn ensure_free_space(destination: &Path, required_bytes: u64) -> Result<()> {
             return Ok(());
         }
     }
-    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let Ok(disks) = sysinfo::Disks::new_with_refreshed_list() else {
+        return Ok(());
+    };
     let available = disks
-        .list()
         .iter()
         .filter(|disk| probe.starts_with(disk.mount_point()))
         .max_by_key(|disk| disk.mount_point().as_os_str().len())

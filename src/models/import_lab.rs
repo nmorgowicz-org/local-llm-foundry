@@ -90,12 +90,13 @@ pub fn resource_estimate(models_dir: &Path, source_path: &Path) -> Result<Import
     let required_disk_bytes = estimated_fp16_bytes
         .saturating_mul(2)
         .saturating_add(DEFAULT_DISK_MARGIN);
-    let mut system = sysinfo::System::new();
+    let mut system = sysinfo::System::new()
+        .map_err(|error| anyhow!("failed to initialize system info: {error}"))?;
     system.refresh_memory();
     let available_ram_bytes = system.available_memory();
-    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let disks = sysinfo::Disks::new_with_refreshed_list()
+        .map_err(|error| anyhow!("failed to read disk information: {error}"))?;
     let available_disk_bytes = disks
-        .list()
         .iter()
         .filter(|disk| models_dir.starts_with(disk.mount_point()))
         .max_by_key(|disk| disk.mount_point().components().count())

@@ -221,7 +221,9 @@ pub struct SysinfoLister;
 impl ProcessLister for SysinfoLister {
     fn list(&self) -> Vec<ProcessInfo> {
         use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-        let mut sys = System::new();
+        let Ok(mut sys) = System::new() else {
+            return Vec::new();
+        };
         sys.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,

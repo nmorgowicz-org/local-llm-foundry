@@ -61,7 +61,9 @@ fn top_processes(ctx: ApiCtx) -> ApiRoute {
 }
 
 fn get_top_processes(n: usize) -> Vec<ProcessInfo> {
-    let sys = sysinfo::System::new_all();
+    let Ok(sys) = sysinfo::System::new_all() else {
+        return Vec::new();
+    };
     let mut procs: Vec<ProcessInfo> = sys
         .processes()
         .iter()

@@ -681,7 +681,7 @@ fn available_space(destination: &Path) -> Option<u64> {
         }
     }
     sysinfo::Disks::new_with_refreshed_list()
-        .list()
+        .ok()?
         .iter()
         .filter(|disk| probe.starts_with(disk.mount_point()))
         .max_by_key(|disk| disk.mount_point().as_os_str().len())

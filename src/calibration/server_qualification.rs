@@ -457,7 +457,7 @@ pub async fn run_managed_server_with_capabilities(
 
 async fn sample_process_memory(pid: Option<u32>, stop: Arc<AtomicBool>) -> Option<MemoryTelemetry> {
     let pid = pid?;
-    let mut system = sysinfo::System::new();
+    let mut system = sysinfo::System::new().ok()?;
     let process_id = sysinfo::Pid::from_u32(pid);
     let mut before = None;
     let mut peak = None;

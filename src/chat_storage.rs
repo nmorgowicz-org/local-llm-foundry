@@ -1146,7 +1146,7 @@ impl ChatStorage {
 
         // Try to execute as a query that returns multiple rows
         let mut stmt = conn.prepare(trimmed)?;
-        let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+        let column_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
 
         let cols: Vec<String> = column_names.clone();
         let rows = stmt.query_map([], |row| {
