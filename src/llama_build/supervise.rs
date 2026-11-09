@@ -733,7 +733,7 @@ pub struct ProcessRecord {
 
 /// Creation time of `pid` as the OS reports it, or `None` if it is not running.
 pub fn process_start_time(pid: u32) -> Option<u64> {
-    let mut sys = sysinfo::System::new();
+    let mut sys = sysinfo::System::new().ok()?;
     let pid = sysinfo::Pid::from_u32(pid);
     sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
     sys.process(pid).map(|p| p.start_time())

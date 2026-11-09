@@ -29,7 +29,7 @@ impl SystemSampler {
 
     /// `now` is the injectable clock reading used for the priming refresh.
     fn new_at(now: Instant) -> Self {
-        let mut sys = System::new();
+        let mut sys = System::new().expect("failed to initialize sysinfo");
         // Prime the counters, but do not publish sysinfo's first-sample usage.
         sys.refresh_cpu_all();
         Self {
@@ -519,9 +519,8 @@ fn get_cpu_temp(sys: &System) -> (f32, bool) {
     {
         use std::fs;
 
-        let components = sysinfo::Components::new_with_refreshed_list();
-
-        if !components.is_empty()
+        if let Ok(components) = sysinfo::Components::new_with_refreshed_list()
+            && !components.is_empty()
             && let Some(comp) = components.iter().next()
         {
             return (comp.temperature().unwrap_or(0.0), true);
@@ -573,7 +572,7 @@ fn get_cpu_load(sys: &System) -> Option<u32> {
         return None;
     }
 
-    Some((sys.cpus().iter().map(|cpu| cpu.cpu_usage()).sum::<f32>() / sys.cpus().len() as f32) as _)
+    Some((sys.cpus().iter().map(|cpu| cpu.usage()).sum::<f32>() / sys.cpus().len() as f32) as _)
 }
 
 #[cfg(target_os = "linux")]
@@ -1156,9 +1155,13 @@ fn get_memory_pressure(total_ram_gb: f64, available_ram_gb: f64) -> MemoryPressu
 
     // Pagefile/commit usage via sysinfo's cheap memory refresh, which calls
     // GlobalMemoryStatusEx underneath — no WMI/COM round-trip per poll.
-    let mut sys = sysinfo::System::new();
-    sys.refresh_memory();
-    let swap_used_gb = sys.used_swap() as f64 / 1024.0 / 1024.0 / 1024.0;
+    let swap_used_gb = match sysinfo::System::new() {
+        Ok(mut sys) => {
+            sys.refresh_memory();
+            sys.used_swap() as f64 / 1024.0 / 1024.0 / 1024.0
+        }
+        Err(_) => 0.0,
+    };
 
     let available_ratio = if total_ram_gb > 0.0 {
         available_gb / total_ram_gb
@@ -1565,7 +1568,9 @@ fn collect_sysinfo_processes(limit: usize) -> Vec<ProcessFootprint> {
 
 /// Shared sysinfo-based process collection.
 fn collect_sysinfo_processes_inner(limit: usize) -> Vec<ProcessFootprint> {
-    let sys = sysinfo::System::new_all();
+    let Ok(sys) = sysinfo::System::new_all() else {
+        return Vec::new();
+    };
     let mut procs: Vec<ProcessFootprint> = sys
         .processes()
         .iter()

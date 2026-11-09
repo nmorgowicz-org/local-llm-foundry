@@ -2072,7 +2072,7 @@ fn build_calibration_fingerprint(
         ))
         .context("serialize managed capability signature")?,
     );
-    let system = sysinfo::System::new_all();
+    let system = sysinfo::System::new_all().ok();
     let logical_cores = std::thread::available_parallelism()
         .map(|count| count.get() as u32)
         .unwrap_or_default();
@@ -2112,10 +2112,18 @@ fn build_calibration_fingerprint(
         hardware: HardwareFingerprint {
             os: std::env::consts::OS.into(),
             arch: std::env::consts::ARCH.into(),
-            cpu_identity: system.cpus().first().map(|cpu| cpu.brand().to_string()),
-            physical_cores: sysinfo::System::physical_core_count().map(|count| count as u32),
+            cpu_identity: system
+                .as_ref()
+                .and_then(|system| system.cpus().first())
+                .map(|cpu| cpu.brand().to_string()),
+            physical_cores: sysinfo::System::physical_core_count()
+                .ok()
+                .map(|count| count as u32),
             logical_cores,
-            memory_bytes: system.total_memory(),
+            memory_bytes: system
+                .as_ref()
+                .map(|system| system.total_memory())
+                .unwrap_or(0),
             gpu_devices,
             unified_memory: cfg!(target_os = "macos"),
         },
