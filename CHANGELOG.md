@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.1](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.5.0...v2.5.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **deps:** consolidate Renovate dependency updates ([#494](https://github.com/nmorgowicz-org/local-llm-foundry/issues/494)-[#497](https://github.com/nmorgowicz-org/local-llm-foundry/issues/497)) ([#498](https://github.com/nmorgowicz-org/local-llm-foundry/issues/498)) ([71d5321](https://github.com/nmorgowicz-org/local-llm-foundry/commit/71d532135e2f06d4b82440b398dffbe3c5995f6e))
+* **deps:** update rust dependencies ([#473](https://github.com/nmorgowicz-org/local-llm-foundry/issues/473)) ([5c96361](https://github.com/nmorgowicz-org/local-llm-foundry/commit/5c963610f77d4e7b4eedc8b50d14822ac2e92a56))
+* **deps:** update rust dependencies ([#480](https://github.com/nmorgowicz-org/local-llm-foundry/issues/480)) ([78a7652](https://github.com/nmorgowicz-org/local-llm-foundry/commit/78a7652c3a460b0df0150e70d11a059d42f23736))
+* **deps:** update rust dependencies ([#499](https://github.com/nmorgowicz-org/local-llm-foundry/issues/499)) ([86321e1](https://github.com/nmorgowicz-org/local-llm-foundry/commit/86321e19996e1866211da9c3a39439673a219252))
+
 ## [2.5.0](https://github.com/nmorgowicz-org/local-llm-foundry/compare/v2.4.1...v2.5.0) (2026-10-22)
 
 
